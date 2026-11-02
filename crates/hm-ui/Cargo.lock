@@ -1197,6 +1197,7 @@ version = "0.0.1"
 dependencies = [
  "hm-core",
  "hm-design",
+ "hm-formula",
  "hm-units",
  "iced",
 ]

@@ -17,4 +17,5 @@ path = "src/main.rs"
 iced = { version = "0.14", features = ["canvas"] }
 hm-core = { path = "../hm-core" }
 hm-design = { path = "../hm-design" }
+hm-formula = { path = "../hm-formula" }
 hm-units = { path = "../hm-units" }

@@ -6,6 +6,7 @@
 
 use hm_core::Diagnostic;
 use hm_design::{CurvePoint, DesignInput, DesignResult, design, performance_curve};
+use hm_formula::Registry;
 use hm_units::parse_quantity;
 use iced::widget::canvas;
 use iced::widget::canvas::{Path, Stroke};
@@ -17,6 +18,39 @@ fn main() -> iced::Result {
         .title("HidroMac Flow")
         .window_size(iced::Size::new(1200.0, 800.0))
         .run()
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Selected {
+    Q,
+    H,
+    N,
+    Rho,
+    EtaM,
+    Npsha,
+    Nq,
+    Dn,
+    Psi,
+    Phi,
+    Beta2,
+    Blades,
+    D2,
+    B2,
+    D1,
+    B1,
+    U2,
+    Eta,
+    EtaH,
+    EtaV,
+    PHyd,
+    PShaft,
+    Torque,
+    Npshr,
+    H0,
+    R3,
+    B3,
+    R4,
+    A360,
 }
 
 #[derive(Debug)]
@@ -31,6 +65,8 @@ struct App {
     curve: Vec<CurvePoint>,
     diagnostics: Vec<Diagnostic>,
     error: Option<String>,
+    selected: Selected,
+    registry: Registry,
 }
 
 impl Default for App {
@@ -46,6 +82,8 @@ impl Default for App {
             curve: Vec::new(),
             diagnostics: Vec::new(),
             error: None,
+            selected: Selected::D2,
+            registry: Registry::all(),
         }
     }
 }
@@ -58,6 +96,7 @@ enum Message {
     Rho(String),
     Eta(String),
     Npsha(String),
+    Select(Selected),
     Design,
 }
 
@@ -69,6 +108,7 @@ fn update(app: &mut App, message: Message) {
         Message::Rho(value) => app.rho = value,
         Message::Eta(value) => app.eta_m = value,
         Message::Npsha(value) => app.npsha = value,
+        Message::Select(selected) => app.selected = selected,
         Message::Design => app.run_design(),
     }
 }
@@ -115,13 +155,49 @@ impl App {
 }
 
 fn view(app: &App) -> Element<'_, Message> {
-    let title = column![
-        text("HidroMac Flow").size(30),
-        text("Diseño preliminar end-suction OH1/OH2").size(16),
+    let header = column![
+        text("HidroMac Flow").size(26),
+        text("Diseño preliminar end-suction OH1/OH2").size(13),
     ]
     .spacing(2);
 
+    let body = row![machine_map(app), workbench(app), inspector(app)]
+        .spacing(12)
+        .height(Length::Fill);
+
+    container(column![header, body, ledger(app)].spacing(12))
+        .padding(16)
+        .width(Length::Fill)
+        .height(Length::Fill)
+        .into()
+}
+
+fn panel<'a>(content: impl Into<Element<'a, Message>>, width: Length) -> Element<'a, Message> {
+    container(content)
+        .padding(14)
+        .width(width)
+        .height(Length::Fill)
+        .style(container::bordered_box)
+        .into()
+}
+
+fn machine_map(_app: &App) -> Element<'_, Message> {
+    let mut parts = column![text("Máquina").size(18), text("Etapa 1").size(12)].spacing(8);
+    for part in ["Impulsor", "Voluta", "Sello", "Cojinetes"] {
+        parts = parts.push(text(format!("· {part}")).size(14));
+    }
+    parts = parts.push(
+        text("Mapa 3D pendiente")
+            .size(12)
+            .color(Color::from_rgb(0.6, 0.6, 0.6)),
+    );
+
+    panel(scrollable(parts), Length::Fixed(210.0))
+}
+
+fn workbench(app: &App) -> Element<'_, Message> {
     let inputs = column![
+        text("Punto de diseño").size(14),
         row![
             field("Q", &app.q, Message::Q),
             field("H", &app.h, Message::H),
@@ -138,7 +214,7 @@ fn view(app: &App) -> Element<'_, Message> {
     ]
     .spacing(12);
 
-    let mut content = column![title, inputs].spacing(12);
+    let mut content = column![text("Banco de trabajo").size(18), inputs].spacing(12);
 
     if let Some(error) = &app.error {
         content =
@@ -147,23 +223,293 @@ fn view(app: &App) -> Element<'_, Message> {
 
     if let Some(result) = &app.result {
         content = content.push(results(result));
+        content = content.push(parameters(app));
         if !app.curve.is_empty() {
+            content = content.push(text("Curvas").size(14));
             content = content.push(
                 canvas(CurvePlot {
                     points: app.curve.clone(),
                 })
                 .width(Length::Fill)
-                .height(Length::Fixed(260.0)),
+                .height(Length::Fixed(280.0)),
             );
         }
-        content = content.push(diagnostics(&app.diagnostics));
     }
 
-    container(scrollable(content).width(Length::Fill))
-        .padding(24)
+    panel(scrollable(content), Length::Fill)
+}
+
+fn inspector(app: &App) -> Element<'_, Message> {
+    let mut content = column![text("Inspector").size(18)].spacing(8);
+
+    if let Some(result) = &app.result {
+        let (title, value, formula) = selected_info(app, result);
+        content = content.push(text(title).size(13).color(Color::from_rgb(0.7, 0.75, 0.8)));
+        content = content.push(text(value).size(22));
+
+        if let Some(formula) = formula
+            && let Some(spec) = app.registry.get(formula)
+        {
+            content = content.push(text(format!("Fórmula: {}", spec.title)).size(13));
+            content = content.push(text(format!("Fuente: {}", spec.source)).size(12));
+            content = content.push(text(format!("Rango: {}", spec.range)).size(12));
+            if let Some(notes) = &spec.notes
+                && let Some(assumptions) = &notes.assumptions
+            {
+                content = content.push(text(assumptions.clone()).size(12));
+            }
+        }
+    } else {
+        content = content.push(text("Diseña para inspeccionar un parámetro."));
+    }
+
+    panel(scrollable(content), Length::Fixed(310.0))
+}
+
+fn ledger(app: &App) -> Element<'_, Message> {
+    let mut content = column![text("Ledger").size(16)].spacing(4);
+
+    if app.diagnostics.is_empty() {
+        content = content.push(text("Sin cambios ni avisos.").size(12));
+    } else {
+        for diagnostic in &app.diagnostics {
+            content = content.push(text(format!(
+                "[{:?}] {}: {}",
+                diagnostic.severity, diagnostic.code, diagnostic.message
+            )));
+            if let Some(hint) = &diagnostic.hint {
+                content = content.push(
+                    text(format!("  {hint}"))
+                        .size(11)
+                        .color(Color::from_rgb(0.65, 0.65, 0.65)),
+                );
+            }
+        }
+    }
+
+    container(scrollable(content))
+        .padding(12)
         .width(Length::Fill)
-        .height(Length::Fill)
+        .height(Length::Fixed(150.0))
+        .style(container::bordered_box)
         .into()
+}
+
+fn metric_button(label: &str, selected: Selected, current: Selected) -> Element<'_, Message> {
+    let label = if selected == current {
+        format!("▸ {label}")
+    } else {
+        label.to_string()
+    };
+
+    button(text(label).size(12))
+        .on_press(Message::Select(selected))
+        .into()
+}
+
+fn parameters(app: &App) -> Element<'_, Message> {
+    let rows: &[&[Selected]] = &[
+        &[Selected::Nq, Selected::Dn, Selected::D2, Selected::B2],
+        &[Selected::D1, Selected::B1, Selected::U2, Selected::Eta],
+        &[
+            Selected::EtaH,
+            Selected::EtaV,
+            Selected::PHyd,
+            Selected::PShaft,
+        ],
+        &[
+            Selected::Torque,
+            Selected::Npshr,
+            Selected::H0,
+            Selected::R3,
+        ],
+        &[Selected::B3, Selected::R4, Selected::A360, Selected::Psi],
+        &[
+            Selected::Phi,
+            Selected::Beta2,
+            Selected::Blades,
+            Selected::Q,
+        ],
+        &[
+            Selected::H,
+            Selected::N,
+            Selected::Rho,
+            Selected::EtaM,
+            Selected::Npsha,
+        ],
+    ];
+
+    let mut content = column![text("Parámetros").size(14)].spacing(6);
+
+    for row_items in rows {
+        let mut line = row![].spacing(6);
+        for &selected in *row_items {
+            line = line.push(metric_button(label_for(selected), selected, app.selected));
+        }
+        content = content.push(line);
+    }
+
+    content.into()
+}
+
+fn label_for(selected: Selected) -> &'static str {
+    match selected {
+        Selected::Q => "Q",
+        Selected::H => "H",
+        Selected::N => "n",
+        Selected::Rho => "rho",
+        Selected::EtaM => "eta_m",
+        Selected::Npsha => "NPSHa",
+        Selected::Nq => "nq",
+        Selected::Dn => "Dn",
+        Selected::Psi => "psi",
+        Selected::Phi => "phi",
+        Selected::Beta2 => "beta2",
+        Selected::Blades => "Z",
+        Selected::D2 => "D2",
+        Selected::B2 => "B2",
+        Selected::D1 => "D1",
+        Selected::B1 => "B1",
+        Selected::U2 => "u2",
+        Selected::Eta => "eta",
+        Selected::EtaH => "eta_h",
+        Selected::EtaV => "eta_v",
+        Selected::PHyd => "P_hyd",
+        Selected::PShaft => "P_eje",
+        Selected::Torque => "T",
+        Selected::Npshr => "NPSHr",
+        Selected::H0 => "H0",
+        Selected::R3 => "R3",
+        Selected::B3 => "B3",
+        Selected::R4 => "R4",
+        Selected::A360 => "A360",
+    }
+}
+
+fn selected_info(app: &App, result: &DesignResult) -> (&'static str, String, Option<&'static str>) {
+    match app.selected {
+        Selected::Q => ("Caudal de diseño", app.q.clone(), None),
+        Selected::H => ("Altura de diseño", app.h.clone(), None),
+        Selected::N => ("Velocidad de giro", app.n.clone(), None),
+        Selected::Rho => ("Densidad", app.rho.clone(), None),
+        Selected::EtaM => ("Eficiencia mecánica", app.eta_m.clone(), None),
+        Selected::Npsha => ("NPSH disponible", app.npsha.clone(), None),
+        Selected::Nq => (
+            "Velocidad específica nq",
+            format!("{:.3}", result.nq),
+            Some("similarity.nq"),
+        ),
+        Selected::Dn => (
+            "Diámetro específico",
+            format!("{:.2} mm", result.specific_diameter_mm),
+            Some("design.specific_diameter"),
+        ),
+        Selected::Psi => (
+            "Coeficiente de altura",
+            format!("{:.3}", result.selection.psi),
+            None,
+        ),
+        Selected::Phi => (
+            "Coeficiente de caudal",
+            format!("{:.3}", result.selection.phi),
+            None,
+        ),
+        Selected::Beta2 => (
+            "Ángulo de salida del álabe",
+            format!("{:.1}°", result.selection.beta2_deg),
+            None,
+        ),
+        Selected::Blades => (
+            "Número de álabes",
+            format!("{}", result.selection.blade_count),
+            None,
+        ),
+        Selected::D2 => (
+            "Diámetro exterior",
+            format!("{:.2} mm", result.d2.value() * 1000.0),
+            Some("design.d2"),
+        ),
+        Selected::B2 => (
+            "Ancho de salida",
+            format!("{:.2} mm", result.b2.value() * 1000.0),
+            Some("design.b2"),
+        ),
+        Selected::D1 => (
+            "Diámetro de entrada",
+            format!("{:.2} mm", result.d1.value() * 1000.0),
+            Some("design.d1"),
+        ),
+        Selected::B1 => (
+            "Ancho de entrada",
+            format!("{:.2} mm", result.b1.value() * 1000.0),
+            Some("design.b1"),
+        ),
+        Selected::U2 => (
+            "Velocidad periférica",
+            format!("{:.2} m/s", result.u2.value()),
+            Some("design.u2"),
+        ),
+        Selected::Eta => (
+            "Eficiencia total",
+            format!("{:.3}", result.eta),
+            Some("design.overall_efficiency"),
+        ),
+        Selected::EtaH => (
+            "Eficiencia hidráulica",
+            format!("{:.3}", result.eta_h),
+            Some("design.hydraulic_efficiency"),
+        ),
+        Selected::EtaV => (
+            "Eficiencia volumétrica",
+            format!("{:.3}", result.eta_v),
+            Some("design.volumetric_efficiency"),
+        ),
+        Selected::PHyd => (
+            "Potencia hidráulica",
+            format!("{:.0} W", result.p_hyd.value()),
+            Some("perf.hydraulic_power"),
+        ),
+        Selected::PShaft => (
+            "Potencia en el eje",
+            format!("{:.0} W", result.p_shaft.value()),
+            Some("design.shaft_power"),
+        ),
+        Selected::Torque => (
+            "Par en el eje",
+            format!("{:.1} N·m", result.torque.value()),
+            Some("mech.shaft_torque"),
+        ),
+        Selected::Npshr => (
+            "NPSHr de diseño",
+            format!("{:.2} m", result.npshr_design.value()),
+            Some("design.npshr_design"),
+        ),
+        Selected::H0 => (
+            "Altura a caudal cero",
+            format!("{:.2} m", result.shutoff_head.value()),
+            Some("design.shutoff_head"),
+        ),
+        Selected::R3 => (
+            "Radio de la voluta",
+            format!("{:.1} mm", result.volute.base_radius.value() * 1000.0),
+            Some("design.volute_base_radius"),
+        ),
+        Selected::B3 => (
+            "Ancho de la voluta",
+            format!("{:.1} mm", result.volute.width.value() * 1000.0),
+            Some("design.volute_width"),
+        ),
+        Selected::R4 => (
+            "Radio exterior de la voluta",
+            format!("{:.1} mm", result.volute.outer_radius.value() * 1000.0),
+            Some("design.volute_outer_radius"),
+        ),
+        Selected::A360 => (
+            "Área de garganta",
+            format!("{:.6} m²", result.volute.throat_area.value()),
+            Some("design.volute_throat_area"),
+        ),
+    }
 }
 
 fn field<'a>(
@@ -230,27 +576,6 @@ fn results(result: &DesignResult) -> Element<'_, Message> {
     .spacing(6);
 
     container(geometry)
-        .padding(16)
-        .width(Length::Fill)
-        .style(container::rounded_box)
-        .into()
-}
-
-fn diagnostics(diagnostics: &[Diagnostic]) -> Element<'_, Message> {
-    let mut list = column![text("Diagnósticos").size(18)].spacing(4);
-
-    if diagnostics.is_empty() {
-        list = list.push(text("Sin avisos."));
-    } else {
-        for diagnostic in diagnostics {
-            list = list.push(text(format!(
-                "[{:?}] {}: {}",
-                diagnostic.severity, diagnostic.code, diagnostic.message
-            )));
-        }
-    }
-
-    container(list)
         .padding(16)
         .width(Length::Fill)
         .style(container::rounded_box)
@@ -330,6 +655,28 @@ impl<Message> canvas::Program<Message> for CurvePlot {
         let x = |q: f64| left + ((q - q_min) / (q_max - q_min).max(1e-9)) as f32 * (right - left);
         let y = |value: f64, max: f64| bottom - (value / max.max(1e-9)) as f32 * (bottom - top);
 
+        for index in 0..=4 {
+            let t = index as f32 / 4.0;
+            let grid_x = left + t * (right - left);
+            let grid_y = top + t * (bottom - top);
+
+            let vertical = Path::line(Point::new(grid_x, top), Point::new(grid_x, bottom));
+            frame.stroke(
+                &vertical,
+                Stroke::default()
+                    .with_color(Color::from_rgba(0.55, 0.6, 0.65, 0.18))
+                    .with_width(1.0),
+            );
+
+            let horizontal = Path::line(Point::new(left, grid_y), Point::new(right, grid_y));
+            frame.stroke(
+                &horizontal,
+                Stroke::default()
+                    .with_color(Color::from_rgba(0.55, 0.6, 0.65, 0.18))
+                    .with_width(1.0),
+            );
+        }
+
         let axis = Path::new(|builder| {
             builder.move_to(Point::new(left, top));
             builder.line_to(Point::new(left, bottom));
@@ -378,6 +725,52 @@ impl<Message> canvas::Program<Message> for CurvePlot {
                 .with_width(2.0),
         );
 
+        draw_text(
+            &mut frame,
+            "H(Q)",
+            left + 8.0,
+            top + 2.0,
+            Color::from_rgb(0.25, 0.65, 1.0),
+        );
+        draw_text(
+            &mut frame,
+            "NPSHr(Q)",
+            left + 62.0,
+            top + 2.0,
+            Color::from_rgb(1.0, 0.65, 0.2),
+        );
+        draw_text(
+            &mut frame,
+            &format!("{q_min:.0}"),
+            left,
+            bottom + 6.0,
+            Color::from_rgb(0.65, 0.65, 0.65),
+        );
+        draw_text(
+            &mut frame,
+            &format!("{q_max:.0} m3/h"),
+            right - 58.0,
+            bottom + 6.0,
+            Color::from_rgb(0.65, 0.65, 0.65),
+        );
+        draw_text(
+            &mut frame,
+            &format!("{h_max:.0} m"),
+            left + 4.0,
+            top + 18.0,
+            Color::from_rgb(0.65, 0.65, 0.65),
+        );
+
         vec![frame.into_geometry()]
     }
+}
+
+fn draw_text(frame: &mut canvas::Frame, content: &str, x: f32, y: f32, color: Color) {
+    frame.fill_text(canvas::Text {
+        content: content.to_string(),
+        position: Point::new(x, y),
+        color,
+        size: 12.0.into(),
+        ..Default::default()
+    });
 }

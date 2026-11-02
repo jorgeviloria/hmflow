@@ -42,6 +42,23 @@ fn every_value_is_coherent_si() {
             ("outer_radius", &section.outer_radius),
         ]);
     }
+    let hydraulics = report
+        .hydraulics
+        .as_ref()
+        .expect("el informe lleva hidráulica");
+    measures.extend([
+        ("beta1b", &hydraulics.beta1b),
+        ("shockless_flow", &hydraulics.shockless_flow),
+        ("throat_flow", &hydraulics.throat_flow),
+        ("volute_matching_flow", &hydraulics.volute_matching_flow),
+        ("transition_ratio", &hydraulics.transition_ratio),
+        ("recirculation_onset", &hydraulics.recirculation_onset),
+        ("leakage_eta_v", &hydraulics.leakage_eta_v),
+        (
+            "mechanical_eta_estimate",
+            &hydraulics.mechanical_eta_estimate,
+        ),
+    ]);
     for point in &report.curve {
         measures.extend([
             ("q", &point.q),

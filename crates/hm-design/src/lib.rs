@@ -16,7 +16,8 @@ mod viscous;
 pub use fluid::{WATER_DENSITY_RANGE_C, water_density};
 pub use report::{
     DesignReport, Measure, REPORT_FORMAT, REPORT_VERSION, ReportBladePoint, ReportGeometry,
-    ReportImpeller, ReportPoint, ReportSection, ReportViscous, ReportVoluteOutlet,
+    ReportHydraulics, ReportImpeller, ReportPoint, ReportSection, ReportViscous,
+    ReportVoluteOutlet,
 };
 pub use viscous::{
     REFERENCE_WATER_NU, VISCOUS_EFFICIENCY_LOSS, VISCOUS_HEAD_LOSS, ViscousCorrection,
@@ -101,6 +102,23 @@ pub struct DesignResult {
     pub w1: Quantity,
     /// Velocidad relativa a la salida: `w2 = √(cm2² + (u2 − cu2)²)`.
     pub w2: Quantity,
+    /// Ángulo del álabe a la entrada, rad (`design.blade_inlet_angle`).
+    pub beta1b: f64,
+    /// Caudal de entrada sin choque QSF (Gülich ec. 6.17).
+    pub shockless_flow: Quantity,
+    /// Caudal con w1 = w1q, QW (Gülich ec. 6.18).
+    pub throat_flow: Quantity,
+    /// Caudal en que la voluta casa con el rodete, Qc (Gülich ec. 6.19).
+    pub volute_matching_flow: Quantity,
+    /// Qsa = min(Qc, (QSF + QW)/2), comienzo de la subida brusca del NPSH3
+    /// (Gülich p. 342), como fracción del caudal de diseño.
+    pub transition_ratio: f64,
+    /// Inicio estimado de la recirculación a la entrada, fracción de Qd.
+    pub recirculation_onset: f64,
+    /// ηv por la fuga estimada de Gülich (ec. 3.10.3), para contraste.
+    pub leakage_eta_v: f64,
+    /// ηm estimado de Gülich (ec. 3.10.14), para contraste.
+    pub mechanical_eta_estimate: f64,
     pub slip: f64,
     pub cu2: Quantity,
     pub volute: VoluteResult,
@@ -153,10 +171,12 @@ pub struct ParamSpec {
 ///   término, NPSHr con k = 1,5 y margen fijo de 0,5 m.
 /// - v0.2: ψ y φ de Gülich, β2 por Euler, c2u de Gülich (tabla 3.2), NPSHr y
 ///   margen de Gülich (§6.3.3 y tabla 6.2), H0 de Gülich (3.28).
-pub const METHOD: &str = "end_suction_v0.2";
+/// - v0.3: la transición del NPSHr a la subida brusca sale de la geometría
+///   (Gülich ec. 6.17–6.20) en vez de suponerla en el caudal de diseño.
+pub const METHOD: &str = "end_suction_v0.3";
 
 /// Métodos anteriores que `recalc` sabe migrar a [`METHOD`].
-pub const LEGACY_METHODS: &[&str] = &["end_suction_v0.1"];
+pub const LEGACY_METHODS: &[&str] = &["end_suction_v0.1", "end_suction_v0.2"];
 
 /// Parámetros que genera o consume el método [`METHOD`].
 pub const PARAM_SPECS: &[ParamSpec] = &[
@@ -918,6 +938,94 @@ pub fn design_with_options(
     let w1 = Quantity::from_si(selection.cm0.hypot(u1.si), ms.clone());
     let w2 = Quantity::from_si(cm2.si.hypot(u2.si - cu2.si), ms.clone());
 
+    // Transición del NPSH3 (Gülich §6.3.3, ec. 6.17–6.20), sin espesor de
+    // álabe ni prerrotación y con el borde de ataque cilíndrico del álabe 2D.
+    let deg = unit("deg")?;
+    let m2 = unit("m2")?;
+    let beta1b = evaluate(
+        &registry,
+        "design.blade_inlet_angle",
+        &[
+            ("c1m", quantity(selection.cm0, ms.clone())),
+            ("u1", u1.clone()),
+            (
+                "i1",
+                Quantity::from_si(geometry::DEFAULT_INCIDENCE_DEG.to_radians(), deg.clone()),
+            ),
+        ],
+    )?
+    .si;
+    let beta1b_quantity = Quantity::from_si(beta1b, deg.clone());
+    let eta_v_quantity = quantity(eta_v, one.clone());
+    let shockless_flow = evaluate(
+        &registry,
+        "design.shockless_flow",
+        &[
+            ("d1", d1.clone()),
+            ("b1", b1.clone()),
+            ("beta1b", beta1b_quantity.clone()),
+            ("u1", u1.clone()),
+            ("eta_v", eta_v_quantity.clone()),
+        ],
+    )?;
+    let inlet_area = std::f64::consts::PI * d1.si * b1.si;
+    let throat_flow = evaluate(
+        &registry,
+        "design.throat_flow",
+        &[
+            ("A1", Quantity::from_si(inlet_area, m2.clone())),
+            (
+                "A1q",
+                Quantity::from_si(inlet_area * beta1b.sin(), m2.clone()),
+            ),
+            ("u1m", u1.clone()),
+            ("eta_v", eta_v_quantity.clone()),
+        ],
+    )?;
+    let volute_matching_flow = evaluate(
+        &registry,
+        "design.volute_matching_flow",
+        &[
+            ("u2", u2.clone()),
+            (
+                "A2",
+                Quantity::from_si(std::f64::consts::PI * d2.si * b2.si, m2.clone()),
+            ),
+            ("slip", quantity(slip, one.clone())),
+            ("A3q", Quantity::from_si(volute.throat_area.si, m2.clone())),
+            ("eta_v", eta_v_quantity),
+            (
+                "beta2",
+                Quantity::from_si(selection.beta2_deg.to_radians(), deg.clone()),
+            ),
+        ],
+    )?;
+    let pressure_side_flow = 0.5 * (shockless_flow.si + throat_flow.si);
+    let transition_ratio = volute_matching_flow.si.min(pressure_side_flow) / input.q.si;
+    let recirculation_onset = evaluate(
+        &registry,
+        "design.recirculation_onset",
+        &[("nq", quantity(nq, one.clone()))],
+    )?
+    .value();
+    let leakage_eta_v = evaluate(
+        &registry,
+        "design.leakage_volumetric_efficiency",
+        &[("nq", quantity(nq, one.clone()))],
+    )?
+    .value();
+    let mechanical_eta_estimate = evaluate(
+        &registry,
+        "design.mechanical_efficiency_estimate",
+        &[
+            ("Q", input.q.clone()),
+            ("n", input.n.clone()),
+            ("Q_ref", quantity(1.0, m3s.clone())),
+            ("n_ref", Quantity::from_si(1500.0 / 60.0, unit("1/s")?)),
+        ],
+    )?
+    .value();
+
     let mut result = DesignResult {
         nq,
         specific_diameter_mm,
@@ -948,6 +1056,14 @@ pub fn design_with_options(
         u1: with_unit(u1, &ms),
         w1,
         w2,
+        beta1b,
+        shockless_flow: with_unit(shockless_flow, &m3s),
+        throat_flow: with_unit(throat_flow, &m3s),
+        volute_matching_flow: with_unit(volute_matching_flow, &m3s),
+        transition_ratio,
+        recirculation_onset,
+        leakage_eta_v,
+        mechanical_eta_estimate,
         slip,
         cu2,
         volute,
@@ -993,21 +1109,24 @@ fn npsh3_velocity_shape(result: &DesignResult, ratio: f64) -> f64 {
 
 /// NPSHr relativo al de diseño para una fracción `ratio = Q/Qd`.
 ///
-/// Se supone entrada sin choque en el punto de diseño, así que el caudal de
-/// transición de Gülich, Qsa, es Qd:
+/// La transición a la subida brusca es Qsa (`transition_ratio`), calculada
+/// de la geometría con Gülich ec. (6.17)–(6.20):
 ///
-/// - Por debajo, la forma de `NPSH3 = λc·c1m²/2g + λw·w1²/2g` con
+/// - Hasta Qsa, la forma de `NPSH3 = λc·c1m²/2g + λw·w1²/2g` con
 ///   `c1m ∝ Q`, `w1² = c1m² + u1²` y `λw ∝ (Q/Qd)^0,57` (ec. (6.10) y
 ///   (6.21)). El NPSH3 baja al reducir el caudal, como en la fig. 6.23 para
 ///   nq bajos y medios.
-/// - Por encima, `(Q/Qd)^3` (ec. (6.22)).
+/// - Por encima, `NPSH(Qsa)·(Q/Qsa)^3` (ec. (6.22)).
 ///
-/// El nivel lo fija `npshr_design`; aquí solo se da la forma.
+/// La parte plana vale 1 en Qd: `npshr_design` es su nivel. Si Qsa < Qd, el
+/// punto de diseño ya está en la subida y su NPSHr supera `npshr_design`.
 pub fn npshr_ratio(result: &DesignResult, ratio: f64) -> f64 {
-    if ratio >= 1.0 {
-        ratio.powf(NPSH_OVERLOAD_EXPONENT)
+    let transition = result.transition_ratio;
+    let flat = |q: f64| npsh3_velocity_shape(result, q) / npsh3_velocity_shape(result, 1.0);
+    if ratio <= transition {
+        flat(ratio)
     } else {
-        npsh3_velocity_shape(result, ratio) / npsh3_velocity_shape(result, 1.0)
+        flat(transition) * (ratio / transition).powf(NPSH_OVERLOAD_EXPONENT)
     }
 }
 
@@ -1062,6 +1181,14 @@ pub const MIN_HEAD_RISE: f64 = 1.2;
 /// Diferencia admitida entre la altura de Euler y la pedida cuando β2 se
 /// fija a mano. Con β2 calculado por Euler la diferencia es nula.
 pub const EULER_HEAD_TOLERANCE: f64 = 0.03;
+
+/// Qsa/Qd mínimo sin aviso: Gülich (p. 411) quiere la entrada sin choque
+/// cerca o algo por encima del punto de diseño; el 5 % de tolerancia es del
+/// motor.
+pub const MIN_TRANSITION_RATIO: f64 = 0.95;
+
+/// Dispersión del inicio de la recirculación según Gülich 2020, p. 237.
+pub const RECIRCULATION_SCATTER: f64 = 0.1;
 
 /// nq por encima del cual el álabe cilíndrico de la geometría es solo una
 /// simplificación (Gülich 2020, p. 413: β2B variable a lo ancho por encima de
@@ -1293,6 +1420,40 @@ fn diagnostics_for(result: &DesignResult, input: &DesignInput) -> Diagnostics {
                 ),
             )
             .with_hint("Aumenta k3 o déjalo sin fijar para que tome el valor de Gülich."),
+        );
+    }
+
+    if result.transition_ratio < MIN_TRANSITION_RATIO {
+        diagnostics.push(
+            Diagnostic::warning(
+                "HM-DES-025",
+                format!(
+                    "el NPSH3 empieza a subir con fuerza en {:.2}·Qd, antes del punto de diseño \
+                     (Gülich 2020, §6.3.3): QSF = {:.2}·Qd y Qc = {:.2}·Qd",
+                    result.transition_ratio,
+                    result.shockless_flow.si / input.q.si,
+                    result.volute_matching_flow.si / input.q.si
+                ),
+            )
+            .with_hint(
+                "Con Qc bajo, agranda la garganta de la voluta; con QSF bajo, sube β1B o el \
+                 área de entrada.",
+            ),
+        );
+    }
+
+    let (por_low, _) = PREFERRED_OPERATING_REGION;
+    if result.recirculation_onset + RECIRCULATION_SCATTER >= por_low {
+        diagnostics.push(
+            Diagnostic::warning(
+                "HM-DES-026",
+                format!(
+                    "la recirculación a la entrada puede empezar en {:.2}·Qd (±{RECIRCULATION_SCATTER}), \
+                     dentro de la región preferente desde {por_low}·Qd (Gülich 2020, p. 237)",
+                    result.recirculation_onset
+                ),
+            )
+            .with_hint("Evita operar por debajo de ese caudal o confírmalo con ensayo."),
         );
     }
 

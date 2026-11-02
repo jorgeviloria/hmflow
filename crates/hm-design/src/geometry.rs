@@ -139,22 +139,9 @@ pub fn camber_line(
 /// Geometría del rodete y de la salida de la voluta de un diseño.
 pub fn geometry(input: &DesignInput, result: &DesignResult) -> Result<Geometry, DesignError> {
     let registry = Registry::all();
-    let ms = parse_unit("m/s")?;
-    let deg = parse_unit("deg")?;
     let m = parse_unit("m")?;
 
-    let beta1b = evaluate(
-        &registry,
-        "design.blade_inlet_angle",
-        &[
-            ("c1m", Quantity::from_si(result.selection.cm0, ms.clone())),
-            ("u1", result.u1.clone()),
-            (
-                "i1",
-                Quantity::from_si(DEFAULT_INCIDENCE_DEG.to_radians(), deg.clone()),
-            ),
-        ],
-    )?;
+    let beta1b = result.beta1b;
     let blade = camber_line(
         (result.d1.si / 2.0, result.d2.si / 2.0),
         (beta1b, result.selection.beta2_deg.to_radians()),

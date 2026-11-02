@@ -269,6 +269,16 @@ pub const CODES: &[CodeInfo] = &[
         Info,
         "Con nq > 40 el álabe cilíndrico de la geometría es una simplificación.",
     ),
+    active(
+        "HM-DES-025",
+        Warning,
+        "La subida brusca del NPSH3 (Qsa) empieza antes del punto de diseño.",
+    ),
+    active(
+        "HM-DES-026",
+        Warning,
+        "La recirculación a la entrada puede empezar dentro de la región preferente.",
+    ),
 ];
 
 /// Busca un código en el registro.

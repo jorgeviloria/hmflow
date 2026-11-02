@@ -502,3 +502,51 @@ fn unreachable_head_is_an_error() {
     .to_string();
     assert!(error.contains("ningún β2"), "{error}");
 }
+
+#[test]
+fn transition_comes_from_the_geometry() {
+    // Gülich ec. 6.17-6.20 con el diseño por defecto de 120 m3/h y 45 m:
+    // la voluta manda (Qc < QSF) y la subida empieza muy cerca de Qd.
+    let input = input("120 m3/h", "45 m", "2900 rpm");
+    let result = design(&input).unwrap();
+    let qd = input.q.si;
+    close(result.shockless_flow.si / qd, 1.274, 0.005);
+    close(result.volute_matching_flow.si / qd, 0.989, 0.005);
+    // Sin espesor de álabe, QW = QSF.
+    close(result.throat_flow.si, result.shockless_flow.si, 1e-12);
+    close(
+        result.transition_ratio,
+        result.volute_matching_flow.si / qd,
+        1e-12,
+    );
+    assert!(!has(&result, "HM-DES-025"));
+    close(result.recirculation_onset, 0.513, 0.002);
+    assert!(!has(&result, "HM-DES-026"));
+}
+
+#[test]
+fn high_nq_transition_and_recirculation_are_reported() {
+    // nq ≈ 98: Qc = 0,93·Qd y recirculación desde 0,63·Qd (±0,1).
+    let input = input("954 m3/h", "15 m", "1450 rpm");
+    let result = design(&input).unwrap();
+    assert!(
+        result.transition_ratio < 0.95,
+        "{}",
+        result.transition_ratio
+    );
+    assert!(has(&result, "HM-DES-025"));
+    assert!(has(&result, "HM-DES-026"));
+}
+
+#[test]
+fn loss_estimates_follow_gulich() {
+    let input = input("120 m3/h", "45 m", "2900 rpm");
+    let result = design(&input).unwrap();
+    // 1/(1 + 4,1·nq^−1,6) y 1 − 0,0045·(1/Q)^0,4·(1500/n)^0,3
+    close(
+        result.leakage_eta_v,
+        1.0 / (1.0 + 4.1 * result.nq.powf(-1.6)),
+        1e-12,
+    );
+    close(result.mechanical_eta_estimate, 0.98561, 1e-4);
+}

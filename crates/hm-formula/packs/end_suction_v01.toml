@@ -815,3 +815,138 @@ value = "atan(c1m/u1) + i1"
 
 [formula.notes]
 assumptions = "β1 = arctan(c1m/(u1 − c1u)) sin prerrotación (c1u = 0) y sin bloqueo por espesor de álabe (τ1 = 1); i1 = 0..4° para rodetes sin exigencia especial de cavitación."
+
+[[formula]]
+id = "design.shockless_flow"
+version = 1
+validation = "pilot"
+module = "design"
+title = "Caudal de entrada sin choque"
+source = "Gülich 2020, ec. (6.17), p. 342"
+units = "m3/s"
+range = "0 .. 100"
+test = "crates/hm-formula/tests/end_suction.rs::shockless_flow"
+
+[formula.inputs]
+d1 = "m"
+b1 = "m"
+beta1b = "deg"
+u1 = "m/s"
+eta_v = "1"
+
+[formula.expr]
+value = "eta_v*pi*d1*b1*tan(beta1b)*u1"
+
+[formula.notes]
+assumptions = "QSF = fq A1 tan β1B u1a/(τ1 (1 + tan β1B/(τ1 tan α1))) con fq = 1, τ1 = 1 (sin espesor), α1 = 90° (sin prerrotación) y A1 = π d1 b1 por ser cilíndrico el borde de ataque del álabe 2D. Se multiplica por ηv para dar caudal de bomba."
+
+[[formula]]
+id = "design.throat_flow"
+version = 1
+validation = "pilot"
+module = "design"
+title = "Caudal con w1 igual a la velocidad en la garganta de entrada"
+source = "Gülich 2020, ec. (6.18), p. 342"
+units = "m3/s"
+range = "0 .. 100"
+test = "crates/hm-formula/tests/end_suction.rs::throat_flow"
+
+[formula.inputs]
+A1 = "m2"
+A1q = "m2"
+u1m = "m/s"
+eta_v = "1"
+
+[formula.expr]
+value = "eta_v*A1*u1m/sqrt((A1/A1q)^2 - 1)"
+
+[formula.notes]
+assumptions = "QW = fq A1 u1m/√((A1/(zLa A1q))² − 1 + 1/tan α1) con α1 = 90°; A1q es el área de garganta total zLa·A1q. Sin espesor de álabe, zLa A1q = π d1 b1 sen β1B y QW coincide con QSF."
+
+[[formula]]
+id = "design.volute_matching_flow"
+version = 1
+validation = "pilot"
+module = "design"
+title = "Caudal en que la voluta casa con el rodete"
+source = "Gülich 2020, ec. (6.19), p. 342"
+units = "m3/s"
+range = "0 .. 100"
+test = "crates/hm-formula/tests/end_suction.rs::volute_matching_flow"
+
+[formula.inputs]
+u2 = "m/s"
+A2 = "m2"
+slip = "1"
+A3q = "m2"
+eta_v = "1"
+beta2 = "deg"
+
+[formula.expr]
+value = "u2*A2*slip/(A2/A3q + 1/(eta_v*tan(beta2)))"
+
+[formula.notes]
+assumptions = "Qc = fq u2 A2 γ/(fq A2/(zLe A3q) + τ2/(ηv tan β2B)) con fq = 1, zLe = 1 (voluta simple) y τ2 = 1; es el caudal en que c2u = c3q."
+
+[[formula]]
+id = "design.recirculation_onset"
+version = 1
+validation = "pilot"
+module = "design"
+title = "Inicio estimado de la recirculación a la entrada"
+source = "Gülich 2020, p. 237 (q*RB = 0,4..0,75 ± 0,1 de nq 10 a 300); interpolación del motor"
+units = "1"
+range = "0.4 .. 0.75"
+test = "crates/hm-formula/tests/end_suction.rs::recirculation_onset"
+
+[formula.inputs]
+nq = "1"
+
+[formula.expr]
+value = "max(0.4, min(0.75, 0.4 + 0.35*ln(nq/10)/ln(30)))"
+
+[formula.notes]
+assumptions = "Gülich da solo el intervalo, creciente con nq, y advierte que ninguna correlación simple lo predice bien; la interpolación logarítmica entre nq 10 y 300 es del motor. Datos de ensayo en la tabla D5.1: nq 26 → 0,57, nq 29 → 0,62..0,67, nq 90 → 0,8."
+
+[[formula]]
+id = "design.leakage_volumetric_efficiency"
+version = 1
+validation = "pilot"
+module = "design"
+title = "Rendimiento volumétrico por la fuga estimada"
+source = "Gülich 2020, tabla 3.10, ec. (3.10.3) y (3.10.4), p. 164"
+units = "1"
+range = "0.8 .. 1"
+test = "crates/hm-formula/tests/end_suction.rs::leakage_volumetric_efficiency"
+
+[formula.inputs]
+nq = "1"
+
+[formula.expr]
+value = "1/(1 + 4.1*nq^(-1.6))"
+
+[formula.notes]
+assumptions = "Qsp/Qopt = 4,1/nq^1,6 sin detalle de los anillos, y ηvol = Q/(Q + Qsp) sin compensación axial (QE = 0) ni etapas (Qs3 = 0). Es una primera aproximación para contrastar ηv."
+
+[[formula]]
+id = "design.mechanical_efficiency_estimate"
+version = 1
+validation = "pilot"
+module = "design"
+title = "Rendimiento mecánico estimado"
+source = "Gülich 2020, tabla 3.10, ec. (3.10.14), p. 165"
+units = "1"
+range = "0.9 .. 1"
+test = "crates/hm-formula/tests/end_suction.rs::mechanical_efficiency_estimate"
+
+[formula.inputs]
+Q = "m3/s"
+n = "1/s"
+Q_ref = "m3/s"
+n_ref = "1/s"
+
+[formula.expr]
+value = "1 - 0.0045*(Q_ref/Q)^0.4*(n_ref/n)^0.3"
+
+[formula.notes]
+assumptions = "Pm/Pu = 0,0045/η·(QRef/Q)^0,4·(nRef/n)^0,3 con QRef = 1 m3/s y nRef = 1500 rpm, así que Pm/P = 0,0045·(QRef/Q)^0,4·(nRef/n)^0,3 y ηm = 1 − Pm/P."

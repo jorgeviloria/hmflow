@@ -452,6 +452,17 @@ fn run(cli: Cli) -> Result<ExitCode, Box<dyn std::error::Error>> {
                 result.p_vol_loss.value(),
                 result.p_mech_loss.value()
             );
+            println!(
+                "  NPSH3: entrada sin choque {:.2}·Qd   voluta {:.2}·Qd   subida desde {:.2}·Qd   recirculación ≈ {:.2}·Qd",
+                result.shockless_flow.si / input.q.si,
+                result.volute_matching_flow.si / input.q.si,
+                result.transition_ratio,
+                result.recirculation_onset
+            );
+            println!(
+                "  Contraste Gülich: ηv por fugas {:.3} (motor {:.3})   ηm {:.3} (motor {:.3})",
+                result.leakage_eta_v, result.eta_v, result.mechanical_eta_estimate, input.eta_m
+            );
             let shape = geometry(&input, &result)?;
             println!(
                 "  Álabe: β1B = {:.1} deg   envolvimiento = {:.1} deg",
@@ -1285,7 +1296,7 @@ fn design_audit(project: &Project) -> Diagnostics {
             Diagnostic::error(
                 "HM-PROJ-025",
                 format!(
-                    "el proyecto se diseñó con {}; el motor actual es {METHOD} y da otra geometría",
+                    "el proyecto se diseñó con {}; el motor actual es {METHOD} y puede dar otros resultados",
                     project.design.method
                 ),
             )
@@ -1856,7 +1867,7 @@ mod tests {
     #[test]
     fn reference_project_of_the_current_method_audits_clean() {
         let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
-            .join("../hm-project/tests/fixtures/end_suction_v0.2.hmf");
+            .join("../hm-project/tests/fixtures/end_suction_v0.3.hmf");
         let project = Project::load(&path).unwrap();
         assert_eq!(
             project.design.method, METHOD,

@@ -1,4 +1,4 @@
-use hm_design::{DesignInput, design, performance_curve};
+use hm_design::{DesignInput, design, npshr_ratio, performance_curve};
 use hm_units::parse_quantity;
 
 fn input() -> DesignInput {
@@ -32,7 +32,12 @@ fn design_point_is_on_curve() {
     close(point.h.si, input.h.si, 1e-6);
     close(point.eta, result.eta, 1e-9);
     close(point.p_shaft.si, result.p_shaft.si, 0.1);
-    close(point.npshr.si, result.npshr_design.si, 1e-9);
+    // En Qd, la parte plana vale NPSHr_d; si Qsa < Qd ya está en la subida.
+    close(
+        point.npshr.si,
+        result.npshr_design.si * npshr_ratio(&result, 1.0),
+        1e-9,
+    );
 }
 
 #[test]
@@ -73,7 +78,20 @@ fn npshr_rises_with_flow() {
     let low = curve[0].npshr.si / design_point;
     assert!((0.3..0.8).contains(&low), "NPSHr(0,3 Qd)/NPSHr_d = {low}");
     // Por encima del diseño, (Q/Qd)^3.
-    close(curve[10].npshr.si / design_point, 1.3f64.powi(3), 1e-9);
+    // Por encima de Qsa, NPSH(Qsa)·(Q/Qsa)^3.
+    let transition = result.transition_ratio;
+    for q in [transition + 0.05, 1.2, 1.3] {
+        close(
+            npshr_ratio(&result, q) / npshr_ratio(&result, transition),
+            (q / transition).powi(3),
+            1e-9,
+        );
+    }
+    close(
+        curve[10].npshr.si,
+        result.npshr_design.si * npshr_ratio(&result, 1.3),
+        1e-9,
+    );
 }
 
 #[test]

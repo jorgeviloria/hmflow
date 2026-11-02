@@ -111,6 +111,20 @@ pub struct ReportGeometry {
     pub volute_outlet: ReportVoluteOutlet,
 }
 
+/// Hidráulica fina: transición del NPSH3, recirculación y contraste de
+/// pérdidas con Gülich.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct ReportHydraulics {
+    pub beta1b: Measure,
+    pub shockless_flow: Measure,
+    pub throat_flow: Measure,
+    pub volute_matching_flow: Measure,
+    pub transition_ratio: Measure,
+    pub recirculation_onset: Measure,
+    pub leakage_eta_v: Measure,
+    pub mechanical_eta_estimate: Measure,
+}
+
 /// Informe completo de un diseño.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct DesignReport {
@@ -129,6 +143,9 @@ pub struct DesignReport {
     pub results: BTreeMap<String, Measure>,
     pub volute_sections: Vec<ReportSection>,
     pub curve: Vec<ReportPoint>,
+    /// Hidráulica fina (Gülich §6.3.3, p. 237 y tabla 3.10).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub hydraulics: Option<ReportHydraulics>,
     /// Corrección por viscosidad; ausente si no se evaluó.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub viscous: Option<ReportViscous>,
@@ -221,6 +238,16 @@ impl DesignReport {
             results,
             volute_sections,
             curve,
+            hydraulics: Some(ReportHydraulics {
+                beta1b: Measure::new(result.beta1b, "rad"),
+                shockless_flow: Measure::new(result.shockless_flow.si, "m3/s"),
+                throat_flow: Measure::new(result.throat_flow.si, "m3/s"),
+                volute_matching_flow: Measure::new(result.volute_matching_flow.si, "m3/s"),
+                transition_ratio: Measure::new(result.transition_ratio, "1"),
+                recirculation_onset: Measure::new(result.recirculation_onset, "1"),
+                leakage_eta_v: Measure::new(result.leakage_eta_v, "1"),
+                mechanical_eta_estimate: Measure::new(result.mechanical_eta_estimate, "1"),
+            }),
             viscous: None,
             geometry: None,
             diagnostics,

@@ -26,13 +26,13 @@ fn pack_is_audit_clean() {
 }
 
 #[test]
-fn pack_has_thirty_eight_formulas() {
-    assert_eq!(Registry::from_toml(END_SUCTION_V01_PACK).unwrap().len(), 38);
+fn pack_has_forty_four_formulas() {
+    assert_eq!(Registry::from_toml(END_SUCTION_V01_PACK).unwrap().len(), 44);
 }
 
 #[test]
 fn all_merges_both_packs() {
-    assert_eq!(Registry::all().len(), 48);
+    assert_eq!(Registry::all().len(), 54);
 }
 
 #[test]
@@ -513,5 +513,117 @@ fn blade_inlet_angle() {
         ),
         18.891,
         1e-3,
+    );
+}
+
+#[test]
+fn shockless_flow() {
+    // 0,9714·π·0,1135·0,0428·tan 9,44°·17,23
+    close(
+        evaluate(
+            "design.shockless_flow",
+            &[
+                ("d1", "0.1135 m"),
+                ("b1", "0.0428 m"),
+                ("beta1b", "9.44 deg"),
+                ("u1", "17.23 m/s"),
+                ("eta_v", "0.9714"),
+            ],
+        ),
+        0.042469,
+        1e-5,
+    );
+}
+
+#[test]
+fn throat_flow() {
+    // Sin espesor, zLa·A1q = A1·sen β1B y QW = QSF.
+    let a1 = std::f64::consts::PI * 0.1135 * 0.0428;
+    let a1q = a1 * 9.44f64.to_radians().sin();
+    close(
+        evaluate(
+            "design.throat_flow",
+            &[
+                ("A1", &format!("{a1} m2")),
+                ("A1q", &format!("{a1q} m2")),
+                ("u1m", "17.23 m/s"),
+                ("eta_v", "0.9714"),
+            ],
+        ),
+        0.042469,
+        1e-5,
+    );
+}
+
+#[test]
+fn volute_matching_flow() {
+    // 30,37·A2·0,8365/(A2/0,001975 + 1/(0,9714·tan 19,08°)), A2 = π·0,2·0,01794
+    let a2 = std::f64::consts::PI * 0.2 * 0.01794;
+    close(
+        evaluate(
+            "design.volute_matching_flow",
+            &[
+                ("u2", "30.37 m/s"),
+                ("A2", &format!("{a2} m2")),
+                ("slip", "0.8365"),
+                ("A3q", "0.001975 m2"),
+                ("eta_v", "0.9714"),
+                ("beta2", "19.08 deg"),
+            ],
+        ),
+        0.032977,
+        1e-5,
+    );
+}
+
+#[test]
+fn recirculation_onset() {
+    close(
+        evaluate("design.recirculation_onset", &[("nq", "10")]),
+        0.4,
+        1e-12,
+    );
+    close(
+        evaluate("design.recirculation_onset", &[("nq", "300")]),
+        0.75,
+        1e-12,
+    );
+    close(
+        evaluate("design.recirculation_onset", &[("nq", "1000")]),
+        0.75,
+        1e-12,
+    );
+    close(
+        evaluate("design.recirculation_onset", &[("nq", "30")]),
+        0.51305,
+        1e-4,
+    );
+}
+
+#[test]
+fn leakage_volumetric_efficiency() {
+    // 1/(1 + 4,1·30^−1,6)
+    close(
+        evaluate("design.leakage_volumetric_efficiency", &[("nq", "30")]),
+        0.98255,
+        1e-4,
+    );
+}
+
+#[test]
+fn mechanical_efficiency_estimate() {
+    // 1 − 0,0045·(1/0,03333)^0,4·(1500/2900)^0,3
+    close(
+        evaluate(
+            "design.mechanical_efficiency_estimate",
+            &[
+                ("Q", "120 m3/h"),
+                ("n", "2900 rpm"),
+                ("Q_ref", "1 m3/s"),
+                ("n_ref", "1500 rpm"),
+            ],
+        ),
+        0.98561,
+        1e-4,
     );
 }

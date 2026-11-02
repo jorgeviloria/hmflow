@@ -45,7 +45,7 @@ cargo run -p hmflow-cli -- new bomba-demo
 # Diseñar una bomba end-suction con curvas
 cargo run -p hmflow-cli -- design --q "120 m3/h" --h "45 m" --n "2900 rpm" --out bomba.hmf --curves
 
-# Validarlo: dimensiones, signos, campos desconocidos y avisos de diseño
+# Validarlo: dimensiones, signos, campos desconocidos, esquema del método y avisos
 cargo run -p hmflow-cli -- check bomba.hmf
 
 # Ver las fórmulas disponibles

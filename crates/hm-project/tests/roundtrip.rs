@@ -68,6 +68,70 @@ fn zero_stages_is_reported() {
 }
 
 #[test]
+fn unknown_param_field_is_rejected() {
+    let text = r#"
+schema = 1
+
+[project]
+name = "demo"
+
+[design]
+pump_type = "end_suction"
+stages = 1
+
+[operating]
+Q = "120 m3/h"
+H = "45 m"
+n = "2900 rpm"
+
+[params.d2]
+mode = "manual"
+value = "0.2 m"
+extra = "x"
+"#;
+    assert!(Project::from_toml(text).is_err());
+}
+
+#[test]
+fn non_finite_quantity_is_reported() {
+    let mut project = Project::new("demo", PumpType::EndSuction);
+    project.operating.q = "1e309 m3/h".to_string();
+
+    let diagnostics = project.validate(&Registry::builtin());
+    assert!(
+        diagnostics
+            .iter()
+            .any(|diagnostic| diagnostic.code == "HM-PROJ-002")
+    );
+}
+
+#[test]
+fn two_stage_end_suction_is_reported() {
+    let mut project = Project::new("demo", PumpType::EndSuction);
+    project.design.stages = 2;
+
+    let diagnostics = project.validate(&Registry::builtin());
+    assert!(
+        diagnostics
+            .iter()
+            .any(|diagnostic| diagnostic.code == "HM-PROJ-021")
+    );
+}
+
+#[test]
+fn iso_2858_for_barrel_is_reported() {
+    let mut project = Project::new("demo", PumpType::Barrel);
+    project.design.standard = "ISO 2858".to_string();
+
+    let diagnostics = project.validate(&Registry::builtin());
+    assert!(
+        diagnostics
+            .iter()
+            .any(|diagnostic| diagnostic.code == "HM-PROJ-022")
+    );
+}
+
+#[test]
 fn unknown_fields_are_rejected() {
     let text = r#"
 schema = 1

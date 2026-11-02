@@ -57,6 +57,8 @@ pub struct Design {
     pub stages: u32,
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub standard: String,
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub method: String,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -126,7 +128,7 @@ pub struct Operating {
 
 /// Modo de un parámetro de diseño.
 #[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(tag = "mode", rename_all = "snake_case")]
+#[serde(tag = "mode", rename_all = "snake_case", deny_unknown_fields)]
 pub enum Param {
     Auto {
         formula: String,
@@ -163,6 +165,7 @@ impl Project {
                 pump_type,
                 stages: 1,
                 standard: pump_type.default_standard().to_string(),
+                method: String::new(),
             },
             operating: Operating {
                 q: "120 m3/h".to_string(),
@@ -219,6 +222,28 @@ impl Project {
             diagnostics.push(
                 Diagnostic::error("HM-PROJ-007", "el número de etapas debe ser al menos 1")
                     .with_hint("Un proyecto sin etapas no se puede calcular."),
+            );
+        }
+
+        if self.design.pump_type == PumpType::EndSuction && self.design.stages != 1 {
+            diagnostics.push(
+                Diagnostic::error(
+                    "HM-PROJ-021",
+                    format!(
+                        "el motor de diseño end-suction v0.1 solo soporta una etapa; hay {}",
+                        self.design.stages
+                    ),
+                )
+                .with_hint("Usa un proyecto de una etapa o espera al diseño multietapa."),
+            );
+        }
+
+        if self.design.pump_type != PumpType::EndSuction
+            && self.design.standard.trim().eq_ignore_ascii_case("ISO 2858")
+        {
+            diagnostics.push(
+                Diagnostic::error("HM-PROJ-022", "ISO 2858 es una norma de bombas end-suction")
+                    .with_hint("Declara la norma correcta para este tipo o déjala vacía."),
             );
         }
 
@@ -368,7 +393,12 @@ fn check_quantity(
 
     match parse_quantity(text) {
         Ok(quantity) => {
-            if quantity.dim() != expected.dim {
+            if !quantity.si.is_finite() {
+                diagnostics.push(Diagnostic::error(
+                    code,
+                    format!("`{label}` debe ser finito: {text}"),
+                ));
+            } else if quantity.dim() != expected.dim {
                 diagnostics.push(Diagnostic::error(
                     code,
                     format!("`{label}` debe ser {expected_unit}: {text}"),

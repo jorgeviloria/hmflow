@@ -115,8 +115,282 @@ pub struct CurvePoint {
     pub npshr: Quantity,
 }
 
+/// Especificación de un parámetro del diseño end-suction.
+#[derive(Debug, Clone, Copy)]
+pub struct ParamSpec {
+    pub name: &'static str,
+    pub unit: &'static str,
+    pub formula: Option<&'static str>,
+}
+
+/// Parámetros que genera o consume el diseño end-suction v0.1.
+pub const PARAM_SPECS: &[ParamSpec] = &[
+    ParamSpec {
+        name: "rho",
+        unit: "kg/m3",
+        formula: None,
+    },
+    ParamSpec {
+        name: "eta_m",
+        unit: "1",
+        formula: None,
+    },
+    ParamSpec {
+        name: "mm",
+        unit: "m",
+        formula: None,
+    },
+    ParamSpec {
+        name: "psi",
+        unit: "1",
+        formula: None,
+    },
+    ParamSpec {
+        name: "phi",
+        unit: "1",
+        formula: None,
+    },
+    ParamSpec {
+        name: "beta2",
+        unit: "deg",
+        formula: None,
+    },
+    ParamSpec {
+        name: "blade_count",
+        unit: "1",
+        formula: None,
+    },
+    ParamSpec {
+        name: "c0",
+        unit: "m/s",
+        formula: None,
+    },
+    ParamSpec {
+        name: "cm0",
+        unit: "m/s",
+        formula: None,
+    },
+    ParamSpec {
+        name: "A",
+        unit: "1",
+        formula: None,
+    },
+    ParamSpec {
+        name: "J",
+        unit: "1",
+        formula: None,
+    },
+    ParamSpec {
+        name: "margin",
+        unit: "1",
+        formula: None,
+    },
+    ParamSpec {
+        name: "k3",
+        unit: "1",
+        formula: None,
+    },
+    ParamSpec {
+        name: "volute_c",
+        unit: "1",
+        formula: None,
+    },
+    ParamSpec {
+        name: "k_eff",
+        unit: "1",
+        formula: None,
+    },
+    ParamSpec {
+        name: "slip",
+        unit: "1",
+        formula: None,
+    },
+    ParamSpec {
+        name: "cu2",
+        unit: "m/s",
+        formula: None,
+    },
+    ParamSpec {
+        name: "nq",
+        unit: "1",
+        formula: Some("similarity.nq"),
+    },
+    ParamSpec {
+        name: "dn",
+        unit: "1",
+        formula: Some("design.specific_diameter"),
+    },
+    ParamSpec {
+        name: "sigma",
+        unit: "1",
+        formula: Some("design.thoma_sigma"),
+    },
+    ParamSpec {
+        name: "d0",
+        unit: "m",
+        formula: Some("design.d0"),
+    },
+    ParamSpec {
+        name: "d1",
+        unit: "m",
+        formula: Some("design.d1"),
+    },
+    ParamSpec {
+        name: "b1",
+        unit: "m",
+        formula: Some("design.b1"),
+    },
+    ParamSpec {
+        name: "u2",
+        unit: "m/s",
+        formula: Some("design.u2"),
+    },
+    ParamSpec {
+        name: "d2",
+        unit: "m",
+        formula: Some("design.d2"),
+    },
+    ParamSpec {
+        name: "qth",
+        unit: "m3/s",
+        formula: Some("design.qth"),
+    },
+    ParamSpec {
+        name: "cm2",
+        unit: "m/s",
+        formula: Some("design.cm2"),
+    },
+    ParamSpec {
+        name: "b2",
+        unit: "m",
+        formula: Some("design.b2"),
+    },
+    ParamSpec {
+        name: "eta_h",
+        unit: "1",
+        formula: Some("design.hydraulic_efficiency"),
+    },
+    ParamSpec {
+        name: "eta_v",
+        unit: "1",
+        formula: Some("design.volumetric_efficiency"),
+    },
+    ParamSpec {
+        name: "eta",
+        unit: "1",
+        formula: Some("design.overall_efficiency"),
+    },
+    ParamSpec {
+        name: "p_hyd",
+        unit: "W",
+        formula: Some("perf.hydraulic_power"),
+    },
+    ParamSpec {
+        name: "p_shaft",
+        unit: "W",
+        formula: Some("design.shaft_power"),
+    },
+    ParamSpec {
+        name: "torque",
+        unit: "N*m",
+        formula: Some("mech.shaft_torque"),
+    },
+    ParamSpec {
+        name: "p_max",
+        unit: "W",
+        formula: Some("design.max_power"),
+    },
+    ParamSpec {
+        name: "p_hyd_loss",
+        unit: "W",
+        formula: Some("design.hydraulic_loss"),
+    },
+    ParamSpec {
+        name: "p_vol_loss",
+        unit: "W",
+        formula: Some("design.volumetric_loss"),
+    },
+    ParamSpec {
+        name: "p_mech_loss",
+        unit: "W",
+        formula: Some("design.mechanical_loss"),
+    },
+    ParamSpec {
+        name: "npshr_d",
+        unit: "m",
+        formula: Some("design.npshr_design"),
+    },
+    ParamSpec {
+        name: "h0",
+        unit: "m",
+        formula: Some("design.shutoff_head"),
+    },
+    ParamSpec {
+        name: "r3",
+        unit: "m",
+        formula: Some("design.volute_base_radius"),
+    },
+    ParamSpec {
+        name: "b3",
+        unit: "m",
+        formula: Some("design.volute_width"),
+    },
+    ParamSpec {
+        name: "c3",
+        unit: "m/s",
+        formula: Some("design.volute_inlet_velocity"),
+    },
+    ParamSpec {
+        name: "a360",
+        unit: "m2",
+        formula: Some("design.volute_throat_area"),
+    },
+    ParamSpec {
+        name: "d360",
+        unit: "m",
+        formula: Some("design.volute_throat_diameter"),
+    },
+    ParamSpec {
+        name: "r4",
+        unit: "m",
+        formula: Some("design.volute_outer_radius"),
+    },
+];
+
+/// Busca la especificación de un parámetro del diseño.
+pub fn param_spec(name: &str) -> Option<&'static ParamSpec> {
+    PARAM_SPECS.iter().find(|spec| spec.name == name)
+}
+
+/// Selecciones que se pueden fijar desde el proyecto.
+#[derive(Debug, Clone, Default)]
+pub struct DesignOptions {
+    pub psi: Option<f64>,
+    pub phi: Option<f64>,
+    pub beta2_rad: Option<f64>,
+    pub blade_count: Option<u32>,
+    pub c0: Option<f64>,
+    pub cm0: Option<f64>,
+    pub a: Option<f64>,
+    pub j: Option<f64>,
+    pub margin: Option<f64>,
+    pub k3: Option<f64>,
+    pub volute_width_factor: Option<f64>,
+    pub k_eff: Option<f64>,
+    pub slip: Option<f64>,
+    pub cu2: Option<f64>,
+}
+
 /// Calcula un diseño preliminar end-suction.
 pub fn design(input: &DesignInput) -> Result<DesignResult, DesignError> {
+    design_with_options(input, &DesignOptions::default())
+}
+
+/// Calcula un diseño preliminar con selecciones explícitas.
+pub fn design_with_options(
+    input: &DesignInput,
+    options: &DesignOptions,
+) -> Result<DesignResult, DesignError> {
     validate_input(input)?;
 
     let registry = Registry::all();
@@ -140,15 +414,18 @@ pub fn design(input: &DesignInput) -> Result<DesignResult, DesignError> {
     .value();
 
     let selection = DesignSelection {
-        psi: head_coefficient(nq),
-        phi: flow_coefficient(nq),
-        beta2_deg: blade_angle_deg(nq),
-        blade_count: blade_count(nq),
-        c0: inlet_velocity(nq),
-        cm0: inlet_meridional_velocity(nq),
-        a: 4.5,
-        j: 1.03,
-        margin: 1.1,
+        psi: options.psi.unwrap_or_else(|| head_coefficient(nq)),
+        phi: options.phi.unwrap_or_else(|| flow_coefficient(nq)),
+        beta2_deg: options
+            .beta2_rad
+            .map(f64::to_degrees)
+            .unwrap_or_else(|| blade_angle_deg(nq)),
+        blade_count: options.blade_count.unwrap_or_else(|| blade_count(nq)),
+        c0: options.c0.unwrap_or_else(|| inlet_velocity(nq)),
+        cm0: options.cm0.unwrap_or_else(|| inlet_meridional_velocity(nq)),
+        a: options.a.unwrap_or(4.5),
+        j: options.j.unwrap_or(1.03),
+        margin: options.margin.unwrap_or(1.1),
     };
 
     let specific_diameter_mm = evaluate(
@@ -275,14 +552,20 @@ pub fn design(input: &DesignInput) -> Result<DesignResult, DesignError> {
         ],
     )?;
 
-    let beta2_rad = selection.beta2_deg.to_radians();
-    let slip = 1.0 - beta2_rad.sin().sqrt() / (selection.blade_count as f64).powf(0.7);
-    let cu2_si = slip * (u2.si - cm2.si / beta2_rad.tan());
+    let beta2_rad = options
+        .beta2_rad
+        .unwrap_or_else(|| selection.beta2_deg.to_radians());
+    let slip = options
+        .slip
+        .unwrap_or_else(|| 1.0 - beta2_rad.sin().sqrt() / (selection.blade_count as f64).powf(0.7));
+    let cu2_si = options
+        .cu2
+        .unwrap_or_else(|| slip * (u2.si - cm2.si / beta2_rad.tan()));
     let cu2 = Quantity::from_si(cu2_si, ms.clone());
 
-    let k3 = quantity(1.04, one.clone());
-    let volute_width_factor = quantity(0.05, one.clone());
-    let k_eff = quantity(1.1, one.clone());
+    let k3 = quantity(options.k3.unwrap_or(1.04), one.clone());
+    let volute_width_factor = quantity(options.volute_width_factor.unwrap_or(0.05), one.clone());
+    let k_eff = quantity(options.k_eff.unwrap_or(1.1), one.clone());
 
     let r3 = evaluate(
         &registry,
@@ -467,7 +750,7 @@ pub fn performance_curve(
     result: &DesignResult,
     points: usize,
 ) -> Vec<CurvePoint> {
-    let count = points.max(2);
+    let count = points.clamp(2, 1000);
     let q_design = input.q.si;
     let h_design = input.h.si;
     let eta_design = result.eta;
@@ -557,7 +840,7 @@ pub fn stored_si_matches(expected: f64, actual: f64) -> bool {
     if !expected.is_finite() || !actual.is_finite() {
         return false;
     }
-    let scale = expected.abs().max(1.0);
+    let scale = expected.abs().max(1e-9);
     (expected - actual).abs() <= 1e-4 * scale
 }
 

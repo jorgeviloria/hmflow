@@ -87,6 +87,15 @@ fn efficiency_peaks_at_design() {
 }
 
 #[test]
+fn curve_points_are_capped() {
+    let input = input();
+    let result = design(&input).unwrap();
+
+    assert_eq!(performance_curve(&input, &result, 1).len(), 2);
+    assert_eq!(performance_curve(&input, &result, 10_000).len(), 1000);
+}
+
+#[test]
 fn power_is_positive() {
     let input = input();
     let result = design(&input).unwrap();

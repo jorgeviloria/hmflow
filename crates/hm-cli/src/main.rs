@@ -7,11 +7,12 @@ use std::process::ExitCode;
 use clap::{Parser, Subcommand};
 use hm_core::{Diagnostic, Diagnostics};
 use hm_design::{
-    DesignInput, DesignResult, design, designed_si, performance_curve, stored_si_matches,
+    DesignInput, DesignOptions, DesignResult, PARAM_SPECS, design, design_with_options,
+    designed_si, param_spec, performance_curve, stored_si_matches,
 };
 use hm_formula::{Registry, eval, infer, parse};
 use hm_project::{Param, Project, PumpType};
-use hm_units::{Quantity, parse_quantity};
+use hm_units::{Quantity, parse_quantity, parse_unit};
 
 #[derive(Parser)]
 #[command(
@@ -79,8 +80,8 @@ enum Command {
         #[arg(long, default_value_t = 0.96)]
         eta_m: f64,
         /// NPSH disponible, por ejemplo "10 m".
-        #[arg(long)]
-        npsha: Option<String>,
+        #[arg(long, default_value = "10 m")]
+        npsha: String,
         /// Archivo de salida; por defecto <name>.hmf.
         #[arg(long)]
         out: Option<PathBuf>,
@@ -253,8 +254,12 @@ fn run(cli: Cli) -> Result<ExitCode, Box<dyn std::error::Error>> {
                 n: parse_quantity(&n)?,
                 rho: parse_quantity(&rho)?,
                 eta_m,
-                npsha: npsha.as_deref().map(parse_quantity).transpose()?,
+                npsha: Some(parse_quantity(&npsha)?),
             };
+
+            if !(2..=1000).contains(&curve_points) {
+                return Err("--curve-points debe estar entre 2 y 1000".into());
+            }
 
             let result = design(&input)?;
 
@@ -371,7 +376,8 @@ fn run(cli: Cli) -> Result<ExitCode, Box<dyn std::error::Error>> {
                 }
             });
             project.operating.temperature = temperature;
-            project.operating.npsha = npsha_text.unwrap_or_default();
+            project.operating.npsha = npsha_text;
+            project.design.method = "end_suction_v0.1".to_string();
 
             let mut params = BTreeMap::new();
             params.insert("rho".to_string(), manual(rho_text));
@@ -637,26 +643,17 @@ fn recompute_design_diagnostics(
     let q = parse_quantity(&project.operating.q)?;
     let h = parse_quantity(&project.operating.h)?;
     let n = parse_quantity(&project.operating.n)?;
-    let rho = project
-        .params
-        .get("rho")
-        .and_then(param_value)
-        .map(parse_quantity)
-        .transpose()?
+    let rho_unit = parse_unit("kg/m3")?;
+    let rho = param_f64(project, "rho", "kg/m3")?
+        .map(|value| Quantity::from_si(value, rho_unit))
         .unwrap_or(parse_quantity("998.2 kg/m3")?);
-    let eta_m = project
-        .params
-        .get("eta_m")
-        .and_then(param_value)
-        .map(parse_quantity)
-        .transpose()?
-        .map(|value| value.si)
-        .unwrap_or(0.96);
+    let eta_m = param_f64(project, "eta_m", "1")?.unwrap_or(0.96);
     let npsha = if project.operating.npsha.trim().is_empty() {
         None
     } else {
         Some(parse_quantity(&project.operating.npsha)?)
     };
+    let options = design_options(project)?;
 
     let input = DesignInput {
         q,
@@ -667,18 +664,139 @@ fn recompute_design_diagnostics(
         npsha,
     };
 
-    let result = design(&input)?;
+    let result = design_with_options(&input, &options)?;
     let mut diagnostics = result.diagnostics.clone();
+    add_fluid_temperature_diagnostics(project, &input, &mut diagnostics);
     compare_stored_autos(&result, project, &mut diagnostics);
     Ok(Some(diagnostics))
 }
 
+fn design_options(project: &Project) -> Result<DesignOptions, Box<dyn std::error::Error>> {
+    Ok(DesignOptions {
+        psi: param_f64(project, "psi", "1")?,
+        phi: param_f64(project, "phi", "1")?,
+        beta2_rad: param_f64(project, "beta2", "deg")?,
+        blade_count: param_u32(project, "blade_count")?,
+        c0: param_f64(project, "c0", "m/s")?,
+        cm0: param_f64(project, "cm0", "m/s")?,
+        a: param_f64(project, "A", "1")?,
+        j: param_f64(project, "J", "1")?,
+        margin: param_f64(project, "margin", "1")?,
+        k3: param_f64(project, "k3", "1")?,
+        volute_width_factor: param_f64(project, "volute_c", "1")?,
+        k_eff: param_f64(project, "k_eff", "1")?,
+        slip: param_f64(project, "slip", "1")?,
+        cu2: param_f64(project, "cu2", "m/s")?,
+    })
+}
+
+fn param_f64(
+    project: &Project,
+    name: &str,
+    unit_text: &str,
+) -> Result<Option<f64>, Box<dyn std::error::Error>> {
+    let Some(param) = project.params.get(name) else {
+        return Ok(None);
+    };
+    if matches!(param, Param::Override { .. }) {
+        return Err(format!("`{name}` está en override; la auditoría no evalúa overrides").into());
+    }
+    let Some(value) = param_value(param) else {
+        return Ok(None);
+    };
+    let quantity = parse_quantity(value)?;
+    let expected = parse_unit(unit_text)?;
+    if quantity.dim() != expected.dim {
+        return Err(format!("`{name}` debe ser {unit_text}").into());
+    }
+    Ok(Some(quantity.si))
+}
+
+fn param_u32(project: &Project, name: &str) -> Result<Option<u32>, Box<dyn std::error::Error>> {
+    let Some(value) = param_f64(project, name, "1")? else {
+        return Ok(None);
+    };
+    if value.fract() != 0.0 || !(1.0..=100.0).contains(&value) {
+        return Err(format!("`{name}` debe ser un entero entre 1 y 100").into());
+    }
+    Ok(Some(value as u32))
+}
+
+fn add_fluid_temperature_diagnostics(
+    project: &Project,
+    input: &DesignInput,
+    diagnostics: &mut Diagnostics,
+) {
+    if project.operating.fluid.eq_ignore_ascii_case("water") && (input.rho.si - 998.2).abs() > 10.0
+    {
+        diagnostics.push(
+            Diagnostic::warning(
+                "HM-DES-009",
+                format!(
+                    "el fluido es `water` pero la densidad es {:.1} kg/m3; revisa fluid y rho",
+                    input.rho.si
+                ),
+            )
+            .with_hint("Usa fluid = \"custom\" o corrige la densidad."),
+        );
+    }
+
+    if !project.operating.temperature.trim().is_empty()
+        && let Ok(temperature) = parse_quantity(&project.operating.temperature)
+        && (temperature.si - 293.15).abs() > 0.5
+    {
+        diagnostics.push(
+            Diagnostic::warning(
+                "HM-DES-010",
+                "la temperatura no ajusta la densidad en este modelo",
+            )
+            .with_hint("Comprueba que rho corresponda a la temperatura de operación."),
+        );
+    }
+}
+
 fn design_audit(project: &Project) -> Diagnostics {
+    let mut diagnostics = Diagnostics::new();
+
+    if !project.design.method.is_empty() && project.design.method != "end_suction_v0.1" {
+        diagnostics.push(
+            Diagnostic::error(
+                "HM-PROJ-016",
+                format!("método de diseño desconocido: {}", project.design.method),
+            )
+            .with_hint("Métodos conocidos: end_suction_v0.1."),
+        );
+        return diagnostics;
+    }
+
+    if project.design.method == "end_suction_v0.1"
+        && project.design.pump_type != PumpType::EndSuction
+    {
+        diagnostics.push(
+            Diagnostic::error(
+                "HM-PROJ-016",
+                format!(
+                    "el método end_suction_v0.1 no aplica a {}",
+                    project.design.pump_type
+                ),
+            )
+            .with_hint("Corrige el tipo de bomba o el método de diseño."),
+        );
+        return diagnostics;
+    }
+
+    if project.design.pump_type == PumpType::EndSuction
+        && (project.design.method == "end_suction_v0.1" || !project.params.is_empty())
+    {
+        validate_design_schema(project, &mut diagnostics);
+    }
+
     match recompute_design_diagnostics(project) {
-        Ok(Some(diagnostics)) => diagnostics,
-        Ok(None) => Diagnostics::new(),
+        Ok(Some(design_diagnostics)) => {
+            diagnostics.extend(design_diagnostics.into_vec());
+        }
+        Ok(None) => {}
         Err(error) => {
-            let mut diagnostics = Diagnostics::new();
             diagnostics.push(
                 Diagnostic::error(
                     "HM-PROJ-014",
@@ -686,8 +804,116 @@ fn design_audit(project: &Project) -> Diagnostics {
                 )
                 .with_hint("Revisa la densidad, la eficiencia mecánica y el punto de operación."),
             );
-            diagnostics
         }
+    }
+
+    diagnostics
+}
+
+fn validate_design_schema(project: &Project, diagnostics: &mut Diagnostics) {
+    for name in project.params.keys() {
+        if param_spec(name).is_none() {
+            diagnostics.push(
+                Diagnostic::error("HM-PROJ-016", format!("parámetro desconocido: `{name}`"))
+                    .with_hint("Revisa el nombre o vuelve a generar el diseño."),
+            );
+        }
+    }
+
+    for spec in PARAM_SPECS {
+        let Some(param) = project.params.get(spec.name) else {
+            diagnostics.push(
+                Diagnostic::error("HM-PROJ-017", format!("falta el parámetro `{}`", spec.name))
+                    .with_hint("Vuelve a ejecutar el diseño."),
+            );
+            continue;
+        };
+
+        match (spec.formula, param) {
+            (Some(expected), Param::Auto { formula, value }) => {
+                if formula != expected {
+                    diagnostics.push(Diagnostic::error(
+                        "HM-PROJ-018",
+                        format!("`{}` usa `{formula}`; se esperaba `{expected}`", spec.name),
+                    ));
+                }
+                match value {
+                    Some(value) => check_parameter_unit(diagnostics, spec, value),
+                    None => diagnostics.push(Diagnostic::error(
+                        "HM-PROJ-017",
+                        format!("`{}` no guarda su valor calculado", spec.name),
+                    )),
+                }
+            }
+            (Some(_), _) => diagnostics.push(Diagnostic::error(
+                "HM-PROJ-018",
+                format!("`{}` debe ser auto", spec.name),
+            )),
+            (None, Param::Manual { value } | Param::Locked { value }) => {
+                check_parameter_unit(diagnostics, spec, value);
+                if spec.name == "blade_count" {
+                    check_blade_count(diagnostics, value);
+                }
+            }
+            (None, Param::Override { .. }) => diagnostics.push(
+                Diagnostic::error(
+                    "HM-PROJ-019",
+                    format!(
+                        "`{}` está en override; la auditoría no evalúa overrides",
+                        spec.name
+                    ),
+                )
+                .with_hint("Usa manual o locked."),
+            ),
+            (None, Param::Auto { .. }) => diagnostics.push(Diagnostic::error(
+                "HM-PROJ-018",
+                format!("`{}` debe ser manual o locked", spec.name),
+            )),
+        }
+    }
+}
+
+fn check_parameter_unit(diagnostics: &mut Diagnostics, spec: &hm_design::ParamSpec, text: &str) {
+    let expected = match parse_unit(spec.unit) {
+        Ok(unit) => unit,
+        Err(error) => {
+            diagnostics.push(Diagnostic::error(
+                "HM-PROJ-020",
+                format!("unidad esperada inválida para `{}`: {error}", spec.name),
+            ));
+            return;
+        }
+    };
+
+    match parse_quantity(text) {
+        Ok(quantity) => {
+            if !quantity.si.is_finite() {
+                diagnostics.push(Diagnostic::error(
+                    "HM-PROJ-020",
+                    format!("`{}` debe ser finito: {text}", spec.name),
+                ));
+            } else if quantity.dim() != expected.dim {
+                diagnostics.push(Diagnostic::error(
+                    "HM-PROJ-020",
+                    format!("`{}` debe ser {}: {text}", spec.name, spec.unit),
+                ));
+            }
+        }
+        Err(error) => diagnostics.push(Diagnostic::error(
+            "HM-PROJ-020",
+            format!("`{}` no se puede interpretar: {text} ({error})", spec.name),
+        )),
+    }
+}
+
+fn check_blade_count(diagnostics: &mut Diagnostics, text: &str) {
+    if let Ok(quantity) = parse_quantity(text)
+        && (quantity.si.fract() != 0.0 || !(1.0..=100.0).contains(&quantity.si))
+    {
+        diagnostics.push(Diagnostic::error(
+            "HM-PROJ-020",
+            format!("`blade_count` debe ser un entero entre 1 y 100: {text}"),
+        ));
     }
 }
 
@@ -784,6 +1010,151 @@ mod tests {
         assert!(diagnostics.is_empty());
     }
 
+    fn sample_design() -> DesignResult {
+        design(&DesignInput {
+            q: parse_quantity("120 m3/h").unwrap(),
+            h: parse_quantity("45 m").unwrap(),
+            n: parse_quantity("2900 rpm").unwrap(),
+            rho: parse_quantity("998.2 kg/m3").unwrap(),
+            eta_m: 0.96,
+            npsha: Some(parse_quantity("10 m").unwrap()),
+        })
+        .unwrap()
+    }
+
+    #[test]
+    fn end_suction_method_on_barrel_is_reported() {
+        let mut project = Project::new("demo", PumpType::Barrel);
+        project.design.method = "end_suction_v0.1".to_string();
+
+        let diagnostics = design_audit(&project);
+        assert!(codes(&diagnostics).contains(&"HM-PROJ-016"));
+    }
+
+    #[test]
+    fn unknown_method_is_reported() {
+        let mut project = Project::new("demo", PumpType::EndSuction);
+        project.design.method = "end_suction_v9".to_string();
+
+        let diagnostics = design_audit(&project);
+        assert!(codes(&diagnostics).contains(&"HM-PROJ-016"));
+    }
+
+    #[test]
+    fn unknown_only_parameter_is_reported() {
+        let mut project = Project::new("demo", PumpType::EndSuction);
+        project
+            .params
+            .insert("d22".to_string(), manual("0.2 m".to_string()));
+
+        let diagnostics = design_audit(&project);
+        assert!(codes(&diagnostics).contains(&"HM-PROJ-016"));
+    }
+
+    #[test]
+    fn unknown_parameter_is_reported() {
+        let mut project = Project::new("demo", PumpType::EndSuction);
+        project.design.method = "end_suction_v0.1".to_string();
+        project
+            .params
+            .insert("d22".to_string(), manual("0.2 m".to_string()));
+
+        let mut diagnostics = Diagnostics::new();
+        validate_design_schema(&project, &mut diagnostics);
+        assert!(codes(&diagnostics).contains(&"HM-PROJ-016"));
+    }
+
+    #[test]
+    fn missing_parameter_is_reported() {
+        let mut project = Project::new("demo", PumpType::EndSuction);
+        project.design.method = "end_suction_v0.1".to_string();
+
+        let mut diagnostics = Diagnostics::new();
+        validate_design_schema(&project, &mut diagnostics);
+        assert!(codes(&diagnostics).contains(&"HM-PROJ-017"));
+    }
+
+    #[test]
+    fn wrong_formula_is_reported() {
+        let mut project = Project::new("demo", PumpType::EndSuction);
+        project.design.method = "end_suction_v0.1".to_string();
+        project
+            .params
+            .insert("d2".to_string(), auto("design.d1", "0.2 m".to_string()));
+
+        let mut diagnostics = Diagnostics::new();
+        validate_design_schema(&project, &mut diagnostics);
+        assert!(codes(&diagnostics).contains(&"HM-PROJ-018"));
+    }
+
+    #[test]
+    fn override_is_not_audited() {
+        let mut project = Project::new("demo", PumpType::EndSuction);
+        project.design.method = "end_suction_v0.1".to_string();
+        project.params.insert(
+            "psi".to_string(),
+            Param::Override {
+                expr: "0.8".to_string(),
+                author: "test".to_string(),
+                date: "2026-11-01".to_string(),
+                reason: "prueba".to_string(),
+            },
+        );
+
+        let mut diagnostics = Diagnostics::new();
+        validate_design_schema(&project, &mut diagnostics);
+        assert!(codes(&diagnostics).contains(&"HM-PROJ-019"));
+    }
+
+    #[test]
+    fn blade_count_must_be_an_integer() {
+        let mut project = Project::new("demo", PumpType::EndSuction);
+        project.design.method = "end_suction_v0.1".to_string();
+        project
+            .params
+            .insert("blade_count".to_string(), manual("7.5".to_string()));
+
+        let mut diagnostics = Diagnostics::new();
+        validate_design_schema(&project, &mut diagnostics);
+        assert!(codes(&diagnostics).contains(&"HM-PROJ-020"));
+    }
+
+    #[test]
+    fn manual_psi_changes_the_recomputed_design() {
+        let designed = sample_design();
+        let mut project = Project::new("demo", PumpType::EndSuction);
+        project
+            .params
+            .insert("psi".to_string(), manual("0.5".to_string()));
+        project.params.insert(
+            "d2".to_string(),
+            auto("design.d2", format!("{} m", designed.d2.value())),
+        );
+
+        let diagnostics = design_audit(&project);
+        assert!(codes(&diagnostics).contains(&"HM-PROJ-015"));
+    }
+
+    #[test]
+    fn water_with_high_density_warns() {
+        let mut project = Project::new("demo", PumpType::EndSuction);
+        project
+            .params
+            .insert("rho".to_string(), manual("1200 kg/m3".to_string()));
+
+        let diagnostics = design_audit(&project);
+        assert!(codes(&diagnostics).contains(&"HM-DES-009"));
+    }
+
+    #[test]
+    fn high_temperature_warns() {
+        let mut project = Project::new("demo", PumpType::EndSuction);
+        project.operating.temperature = "80 degC".to_string();
+
+        let diagnostics = design_audit(&project);
+        assert!(codes(&diagnostics).contains(&"HM-DES-010"));
+    }
+
     #[test]
     fn a_density_with_the_wrong_dimension_fails_the_check() {
         let mut project = Project::new("demo", PumpType::EndSuction);
@@ -849,13 +1220,6 @@ mod tests {
                 format!("{:.4}", designed.specific_diameter_mm),
             ),
         );
-        project
-            .params
-            .insert("psi".to_string(), auto("similarity.nq", "9".to_string()));
-        project
-            .params
-            .insert("b2".to_string(), manual("9 m".to_string()));
-
         let diagnostics = design_audit(&project);
         assert!(
             !codes(&diagnostics).contains(&"HM-PROJ-015"),

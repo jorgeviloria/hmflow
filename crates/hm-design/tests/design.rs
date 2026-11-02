@@ -1,4 +1,7 @@
-use hm_design::{DesignInput, design, designed_si, stored_si_matches};
+use hm_design::{
+    DesignInput, DesignOptions, PARAM_SPECS, design, design_with_options, designed_si, param_spec,
+    stored_si_matches,
+};
 use hm_units::parse_quantity;
 
 fn input(q: &str, h: &str, n: &str) -> DesignInput {
@@ -70,6 +73,38 @@ fn existing_case_is_consistent() {
 }
 
 #[test]
+fn options_override_selections() {
+    let input = input("0.016 m3/s", "13.8 m", "1800 rpm");
+    let default = design(&input).unwrap();
+    let options = DesignOptions {
+        psi: Some(0.5),
+        blade_count: Some(9),
+        ..DesignOptions::default()
+    };
+    let custom = design_with_options(&input, &options).unwrap();
+
+    assert!((custom.selection.psi - 0.5).abs() < 1e-12);
+    assert_eq!(custom.selection.blade_count, 9);
+    assert!((custom.d2.si - default.d2.si).abs() > 1e-3);
+}
+
+#[test]
+fn schema_formulas_exist() {
+    let registry = hm_formula::Registry::all();
+    for spec in PARAM_SPECS {
+        if let Some(formula) = spec.formula {
+            assert!(
+                registry.get(formula).is_some(),
+                "{} apunta a {formula}",
+                spec.name
+            );
+        }
+        assert!(param_spec(spec.name).is_some());
+    }
+    assert!(param_spec("no_existe").is_none());
+}
+
+#[test]
 fn loss_breakdown_closes() {
     let result = design(&input("0.016 m3/s", "13.8 m", "1800 rpm")).unwrap();
     let total =
@@ -100,6 +135,7 @@ fn stored_snapshot_tolerates_rounding_only() {
         .unwrap();
     assert!(stored_si_matches(result.specific_diameter_mm, rounded));
     assert!(!stored_si_matches(result.d2.si, 9.0));
+    assert!(!stored_si_matches(result.volute.throat_area.si, 0.0018));
     assert_eq!(designed_si(&result, "d2"), Some(result.d2.si));
     assert!(designed_si(&result, "psi").is_none());
 }

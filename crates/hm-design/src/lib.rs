@@ -875,7 +875,7 @@ pub fn npshr_ratio(result: &DesignResult, ratio: f64) -> f64 {
 /// - Siempre: `NPSHA ≥ max(1,25·NPSH3; NPSH3 + 0,6 m)`.
 /// - Con 10 ≤ u1 ≤ 50 m/s (agua): `σA ≥ σ3 + FR·FF·{0,05 + 2(u1/100)³}`, con
 ///   `σ = 2g·NPSH/u1²` (ec. (6.5)), FF = 1 (agua) y FR = 1 entre 0,8 y
-///   1,1 Qd o 1,2 fuera (caudal parcial o Q > QSF).
+///   1,0 Qd o 1,2 fuera (caudal parcial, o Q > QSF con QSF = Qd).
 ///
 /// Por encima de 50 m/s la tabla pide experiencia o datos de cavidad; se
 /// aplica solo el mínimo y `npsh_diagnostics` lo avisa.
@@ -884,7 +884,13 @@ pub fn required_npsha(npsh3: f64, u1: f64, ratio: f64) -> f64 {
     if !(10.0..=50.0).contains(&u1) {
         return minimum;
     }
-    let risk = if ratio > 0.8 && ratio < 1.1 { 1.0 } else { 1.2 };
+    // La tabla da FR = 1 entre 0,8 y 1,1 Qd y 1,2 con Q > QSF. Como se supone
+    // entrada sin choque en Qd (QSF = Qd), por encima de Qd manda 1,2.
+    let risk = if ratio > 0.8 && ratio <= 1.0 {
+        1.0
+    } else {
+        1.2
+    };
     let fluid = 1.0;
     let g = 9.806_65;
     let extra = risk * fluid * (0.05 + 2.0 * (u1 / 100.0).powi(3)) * u1.powi(2) / (2.0 * g);
@@ -908,6 +914,9 @@ pub const B2_STAR_BAND: (f64, f64) = (0.6, 1.4);
 /// Intervalo habitual del ángulo de salida del álabe, en grados
 /// (Gülich 2020, p. 412).
 pub const BETA2_RANGE_DEG: (f64, f64) = (15.0, 45.0);
+
+/// Subida mínima deseada `H0/Hd` con nq < 40 (Gülich 2020, §7.1.2, p. 403).
+pub const MIN_HEAD_RISE: f64 = 1.2;
 
 /// Deceleración mínima `w2/w1` (criterio de de Haller; Gülich 2020, p. 413).
 pub const DE_HALLER_MIN: f64 = 0.7;
@@ -1070,6 +1079,33 @@ fn diagnostics_for(result: &DesignResult, input: &DesignInput) -> Diagnostics {
                 result.selection.beta2_deg
             ),
         ));
+    }
+
+    let head_rise = result.shutoff_head.si / input.h.si;
+    if head_rise < 1.0 {
+        diagnostics.push(
+            Diagnostic::error(
+                "HM-DES-016",
+                format!(
+                    "H0/Hd = {head_rise:.2}: la altura a caudal cero queda por debajo de la de diseño \
+                     y la curva H(Q) subiría con el caudal"
+                ),
+            )
+            .with_hint(
+                "ψ es mayor que ψo = 1,25·e^(−0,3·nq/100) (Gülich ec. 3.28); reduce el coeficiente de altura.",
+            ),
+        );
+    } else if result.nq < 40.0 && head_rise < MIN_HEAD_RISE {
+        diagnostics.push(
+            Diagnostic::warning(
+                "HM-DES-017",
+                format!(
+                    "H0/Hd = {head_rise:.2} por debajo de {MIN_HEAD_RISE}: curva Q-H plana, riesgo de \
+                     inestabilidad (Gülich 2020, p. 403)"
+                ),
+            )
+            .with_hint("Reduce el coeficiente de altura ψ."),
+        );
     }
 
     let deceleration = result.w2.si / result.w1.si;

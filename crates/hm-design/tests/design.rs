@@ -328,6 +328,9 @@ fn required_npsha_follows_gulich_table_6_2() {
     let term = (0.05 + 2.0 * 0.3f64.powi(3)) * u1.powi(2) / (2.0 * 9.80665);
     close(required_npsha(2.0, u1, 1.0), 2.0 + term, 1e-12);
     close(required_npsha(2.0, u1, 1.2), 2.0 + 1.2 * term, 1e-12);
+    // Entre 1,0 y 1,1 Qd también 1,2: se supone QSF = Qd.
+    close(required_npsha(2.0, u1, 1.05), 2.0 + 1.2 * term, 1e-12);
+    close(required_npsha(2.0, u1, 0.9), 2.0 + term, 1e-12);
     // Con NPSH3 grande domina el mínimo de 1,25·NPSH3.
     close(required_npsha(20.0, u1, 1.0), 25.0, 1e-12);
 
@@ -388,4 +391,51 @@ fn de_haller_ratio_is_reported() {
     let ratio = slow.w2.si / slow.w1.si;
     assert!(ratio < 0.6, "w2/w1 = {ratio}");
     assert!(has(&slow, "HM-DES-014"));
+}
+
+#[test]
+fn shutoff_head_below_design_head_is_an_error() {
+    // ψo(nq = 30,5) = 1,142; con ψ = 1,3, H0/Hd = 0,88.
+    let input = input("120 m3/h", "45 m", "2900 rpm");
+    let result = design_with_options(
+        &input,
+        &DesignOptions {
+            psi: Some(1.3),
+            ..DesignOptions::default()
+        },
+    )
+    .unwrap();
+    assert!(result.shutoff_head.si < input.h.si);
+    assert!(has(&result, "HM-DES-016"));
+    assert!(result.diagnostics.has_errors());
+}
+
+#[test]
+fn flat_head_rise_warns_below_nq_40() {
+    // Con ψ = 1,0, H0/Hd = 1,142/1,0 = 1,14 < 1,2.
+    let input = input("120 m3/h", "45 m", "2900 rpm");
+    let result = design_with_options(
+        &input,
+        &DesignOptions {
+            psi: Some(1.0),
+            ..DesignOptions::default()
+        },
+    )
+    .unwrap();
+    assert!(has(&result, "HM-DES-017"));
+    assert!(!has(&result, "HM-DES-016"));
+
+    // Las selecciones por defecto dan H0/Hd ≥ 1,2.
+    let default = design(&input).unwrap();
+    assert!(default.shutoff_head.si / input.h.si >= 1.2);
+    assert!(!has(&default, "HM-DES-017"));
+}
+
+#[test]
+fn inlet_speed_above_50_m_s_is_reported() {
+    let mut input = input("2000 m3/h", "200 m", "3000 rpm");
+    input.npsha = Some(parse_quantity("100 m").unwrap());
+    let result = design(&input).unwrap();
+    assert!(result.u1.si > 50.0, "u1 = {}", result.u1.si);
+    assert!(has(&result, "HM-DES-015"));
 }

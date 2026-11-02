@@ -367,6 +367,7 @@ fn run(cli: Cli) -> Result<ExitCode, Box<dyn std::error::Error>> {
 
             let mut shown = result.diagnostics.clone();
             shown.extend(fluid_diagnostics(&fluid, &temperature, input.rho.si).into_vec());
+            shown.extend(npsh_fluid_diagnostics(&fluid, input.npsha.is_some()).into_vec());
             print_diagnostics(&shown);
 
             if shown.has_errors() {
@@ -928,6 +929,28 @@ fn add_fluid_temperature_diagnostics(
         )
         .into_vec(),
     );
+    diagnostics
+        .extend(npsh_fluid_diagnostics(&project.operating.fluid, input.npsha.is_some()).into_vec());
+}
+
+/// El NPSHA necesario de `hm-design` usa el factor de fluido del agua
+/// (FF = 1, Gülich 2020, tabla 6.2). Con otro fluido se avisa.
+fn npsh_fluid_diagnostics(fluid: &str, npsh_checked: bool) -> Diagnostics {
+    let mut diagnostics = Diagnostics::new();
+    if npsh_checked && !fluid.eq_ignore_ascii_case("water") {
+        diagnostics.push(
+            Diagnostic::warning(
+                "HM-DES-018",
+                format!(
+                    "el NPSHA necesario supone agua (FF = 1) y el fluido es `{fluid}`; \
+                     la tabla 6.2 de Gülich pide FF ≥ 1,15 con agua de mar o fluidos corrosivos \
+                     y otros criterios con hidrocarburos"
+                ),
+            )
+            .with_hint("Aumenta el NPSHA en consecuencia o confirma el NPSHR con el fabricante."),
+        );
+    }
+    diagnostics
 }
 
 fn design_audit(project: &Project) -> Diagnostics {
@@ -1412,6 +1435,16 @@ mod tests {
 
         let cli = Cli::try_parse_from(["hmflow-cli", "design", "--npsha", "-3 m"]).unwrap();
         assert!(matches!(cli.command, Command::Design { npsha: Some(text), .. } if text == "-3 m"));
+    }
+
+    #[test]
+    fn npsh_criterion_warns_for_fluids_other_than_water() {
+        assert_eq!(
+            codes(&npsh_fluid_diagnostics("custom", true)),
+            ["HM-DES-018"]
+        );
+        assert!(npsh_fluid_diagnostics("water", true).is_empty());
+        assert!(npsh_fluid_diagnostics("custom", false).is_empty());
     }
 
     #[test]

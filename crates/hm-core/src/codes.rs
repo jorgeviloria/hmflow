@@ -279,6 +279,16 @@ pub const CODES: &[CodeInfo] = &[
         Warning,
         "La recirculación a la entrada puede empezar dentro de la región preferente.",
     ),
+    active(
+        "HM-DES-027",
+        Warning,
+        "El cubo del eje mínimo es grande frente al ojo, calculado sin cubo.",
+    ),
+    active(
+        "HM-DES-028",
+        Info,
+        "nq fuera de la figura del empuje radial a válvula cerrada; kR0 en el extremo.",
+    ),
 ];
 
 /// Busca un código en el registro.

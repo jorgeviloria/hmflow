@@ -10,13 +10,14 @@ use std::collections::BTreeMap;
 
 pub mod fluid;
 pub mod geometry;
+pub mod mechanics;
 mod report;
 mod viscous;
 
 pub use fluid::{WATER_DENSITY_RANGE_C, water_density};
 pub use report::{
     DesignReport, Measure, REPORT_FORMAT, REPORT_VERSION, ReportBladePoint, ReportGeometry,
-    ReportHydraulics, ReportImpeller, ReportPoint, ReportSection, ReportViscous,
+    ReportHydraulics, ReportImpeller, ReportMechanics, ReportPoint, ReportSection, ReportViscous,
     ReportVoluteOutlet,
 };
 pub use viscous::{
@@ -1198,6 +1199,14 @@ pub const CYLINDRICAL_BLADE_MAX_NQ: f64 = 40.0;
 /// Deceleración mínima `w2/w1` (criterio de de Haller; Gülich 2020, p. 413).
 pub const DE_HALLER_MIN: f64 = 0.7;
 
+/// Altura de la curva preliminar en `ratio` veces el caudal de diseño, m:
+/// parábola de H0 al punto de diseño.
+pub fn curve_head(input: &DesignInput, result: &DesignResult, ratio: f64) -> f64 {
+    let h_design = input.h.si;
+    let shutoff_ratio = result.shutoff_head.si / h_design;
+    h_design * (shutoff_ratio - (shutoff_ratio - 1.0) * ratio.powi(2))
+}
+
 /// Curva preliminar de prestaciones entre 0.3 y 1.3 veces el caudal de diseño.
 ///
 /// Es un modelo fenomenológico anclado en el punto de diseño, no un modelo de
@@ -1209,11 +1218,9 @@ pub fn performance_curve(
 ) -> Vec<CurvePoint> {
     let count = points.clamp(2, 1000);
     let q_design = input.q.si;
-    let h_design = input.h.si;
     let eta_design = result.eta;
     let rho = input.rho.si;
     let g = 9.806_65;
-    let shutoff_ratio = result.shutoff_head.si / h_design;
     let npshr_design = result.npshr_design.si;
 
     let m = Unit::new("m", Dimension::LENGTH, 1.0);
@@ -1226,7 +1233,7 @@ pub fn performance_curve(
         let ratio =
             CURVE_RANGE.0 + (CURVE_RANGE.1 - CURVE_RANGE.0) * index as f64 / (count - 1) as f64;
         let q = q_design * ratio;
-        let h = h_design * (shutoff_ratio - (shutoff_ratio - 1.0) * ratio.powi(2));
+        let h = curve_head(input, result, ratio);
         let eta = eta_design
             * if ratio <= 1.0 {
                 1.0 - 0.60 * (ratio - 1.0).powi(2)

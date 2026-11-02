@@ -1,0 +1,8 @@
+id = "0016-d1a1-shaft"
+title = "D1.A1 diámetro mínimo del eje"
+formula = "mech.shaft_min_diameter"
+source = "Srinivasan 2017, Rotodynamic Pumps, 2nd ed., Diseño D1.A1, pp. 415-416; SS316, fu = 180 MPa, FS = 8, ds = 0,015212 m (toma 25 mm)"
+
+[inputs]
+T = "15.56 N*m"
+tau = "22.5 MPa"

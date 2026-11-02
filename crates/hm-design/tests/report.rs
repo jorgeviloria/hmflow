@@ -1,3 +1,4 @@
+use hm_design::mechanics::{DEFAULT_SHAFT_SHEAR_STRESS, mechanics};
 use hm_design::{DesignInput, DesignReport, PARAM_SPECS, REPORT_FORMAT, REPORT_VERSION, design};
 use hm_units::{parse_quantity, parse_unit};
 
@@ -16,7 +17,8 @@ fn report() -> DesignReport {
     let input = input();
     let result = design(&input).unwrap();
     let diagnostics = result.diagnostics.clone().into_vec();
-    DesignReport::new(&input, &result, 11, diagnostics)
+    let mech = mechanics(&input, &result, DEFAULT_SHAFT_SHEAR_STRESS).unwrap();
+    DesignReport::new(&input, &result, 11, diagnostics).with_mechanics(&mech)
 }
 
 #[test]
@@ -58,6 +60,29 @@ fn every_value_is_coherent_si() {
             "mechanical_eta_estimate",
             &hydraulics.mechanical_eta_estimate,
         ),
+    ]);
+    let mech = report
+        .mechanics
+        .as_ref()
+        .expect("el informe lleva mecánica");
+    measures.extend([
+        ("shaft_torque", &mech.shaft_torque),
+        ("shaft_shear_stress", &mech.shaft_shear_stress),
+        ("shaft_min_diameter", &mech.shaft_min_diameter),
+        ("hub_diameter", &mech.hub_diameter),
+        (
+            "radial_coefficient_shutoff",
+            &mech.radial_coefficient_shutoff,
+        ),
+        ("radial_coefficient_design", &mech.radial_coefficient_design),
+        ("radial_width", &mech.radial_width),
+        ("radial_thrust_shutoff", &mech.radial_thrust_shutoff),
+        ("radial_thrust_design", &mech.radial_thrust_design),
+        ("radial_thrust_overload", &mech.radial_thrust_overload),
+        ("front_seal_diameter", &mech.front_seal_diameter),
+        ("shaft_seal_diameter", &mech.shaft_seal_diameter),
+        ("axial_thrust_low", &mech.axial_thrust_low),
+        ("axial_thrust_high", &mech.axial_thrust_high),
     ]);
     for point in &report.curve {
         measures.extend([

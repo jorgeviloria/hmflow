@@ -8,6 +8,7 @@ use clap::{Parser, Subcommand};
 use hm_core::{Diagnostic, Diagnostics};
 use hm_design::fluid::{water_kinematic_viscosity, water_vapor_pressure};
 use hm_design::geometry::geometry;
+use hm_design::mechanics::{DEFAULT_SHAFT_SHEAR_STRESS, mechanics, mechanics_diagnostics};
 use hm_design::{
     DEFAULT_K_EFF, DEFAULT_VOLUTE_C, DesignInput, DesignOptions, DesignReport, DesignResult,
     LEGACY_METHODS, METHOD, PARAM_SPECS, ParamSpec, WATER_DENSITY_RANGE_C, design,
@@ -476,6 +477,22 @@ fn run(cli: Cli) -> Result<ExitCode, Box<dyn std::error::Error>> {
                 shape.outlet.min_length,
                 shape.outlet.half_angle.to_degrees()
             );
+            let mech = mechanics(&input, &result, DEFAULT_SHAFT_SHEAR_STRESS)?;
+            println!(
+                "  Eje: ds ≥ {:.1} mm (torsión, τ = {:.1} MPa)   cubo ≈ {:.1} mm",
+                mech.shaft_min_diameter * 1000.0,
+                mech.shaft_shear_stress / 1e6,
+                mech.hub_diameter * 1000.0
+            );
+            println!(
+                "  Empuje radial: {:.0} N cerrada   {:.0} N diseño   {:.0} N a {:.1}·Qd   axial ≈ {:.0}..{:.0} N",
+                mech.radial_thrust_shutoff,
+                mech.radial_thrust_design,
+                mech.radial_thrust_overload,
+                hm_design::PREFERRED_OPERATING_REGION.1,
+                mech.axial_thrust.0,
+                mech.axial_thrust.1
+            );
             if let (Some(npsha), Some(_)) = (&input.npsha, &suction) {
                 println!("  NPSHa de la instalación = {:.2} m", npsha.si);
             }
@@ -495,6 +512,7 @@ fn run(cli: Cli) -> Result<ExitCode, Box<dyn std::error::Error>> {
                 );
             }
             shown.extend(viscous_diagnostics.into_vec());
+            shown.extend(mechanics_diagnostics(&mech, &result).into_vec());
             print_diagnostics(&shown);
 
             if shown.has_errors() {
@@ -650,6 +668,8 @@ fn recompute_design_diagnostics(
             .0
             .into_vec(),
     );
+    let mech = mechanics(&input, &result, DEFAULT_SHAFT_SHEAR_STRESS)?;
+    diagnostics.extend(mechanics_diagnostics(&mech, &result).into_vec());
     add_selection_diagnostics(project, &result, &mut diagnostics);
     compare_stored_autos(&result, project, &mut diagnostics);
     Ok(Some(diagnostics))
@@ -779,6 +799,8 @@ fn recalc(file: &std::path::Path, reselect: bool) -> Result<ExitCode, Box<dyn st
             .0
             .into_vec(),
     );
+    let mech = mechanics(&input, &result, DEFAULT_SHAFT_SHEAR_STRESS)?;
+    diagnostics.extend(mechanics_diagnostics(&mech, &result).into_vec());
     add_selection_diagnostics(&project, &result, &mut diagnostics);
     print_diagnostics(&diagnostics);
     if diagnostics.has_errors() {
@@ -868,7 +890,8 @@ fn design_report(
     let mut diagnostics = validation.into_vec();
     diagnostics.extend(design_audit(&project).into_vec());
     let report = DesignReport::new(&input, &result, curve_points, diagnostics)
-        .with_geometry(&geometry(&input, &result)?);
+        .with_geometry(&geometry(&input, &result)?)
+        .with_mechanics(&mechanics(&input, &result, DEFAULT_SHAFT_SHEAR_STRESS)?);
     Ok(
         match project_viscosity_effect(&project, &input, &result)?.1 {
             Some(correction) => report.with_viscous(&correction),
@@ -1853,6 +1876,15 @@ mod tests {
             hm_design::geometry::BLADE_STEPS + 1
         );
         assert!(geometry.volute_outlet.nominal_diameter.value > 0.0);
+        let mechanics = report
+            .mechanics
+            .as_ref()
+            .expect("el informe lleva mecánica");
+        assert_eq!(
+            mechanics.shaft_shear_stress.value,
+            DEFAULT_SHAFT_SHEAR_STRESS
+        );
+        assert!(mechanics.shaft_min_diameter.value > 0.0);
         let stored = parse_quantity(param_value(&project.params["d2"]).unwrap())
             .unwrap()
             .si;

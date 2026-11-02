@@ -15,6 +15,7 @@ use hm_core::Diagnostic;
 use serde::{Deserialize, Serialize};
 
 use crate::geometry::Geometry;
+use crate::mechanics::Mechanics;
 use crate::{
     DesignInput, DesignResult, METHOD, PARAM_SPECS, ViscousCorrection, designed_si,
     performance_curve,
@@ -111,6 +112,25 @@ pub struct ReportGeometry {
     pub volute_outlet: ReportVoluteOutlet,
 }
 
+/// Mecánica preliminar: eje por torsión, cubo y empujes hidráulicos.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct ReportMechanics {
+    pub shaft_torque: Measure,
+    pub shaft_shear_stress: Measure,
+    pub shaft_min_diameter: Measure,
+    pub hub_diameter: Measure,
+    pub radial_coefficient_shutoff: Measure,
+    pub radial_coefficient_design: Measure,
+    pub radial_width: Measure,
+    pub radial_thrust_shutoff: Measure,
+    pub radial_thrust_design: Measure,
+    pub radial_thrust_overload: Measure,
+    pub front_seal_diameter: Measure,
+    pub shaft_seal_diameter: Measure,
+    pub axial_thrust_low: Measure,
+    pub axial_thrust_high: Measure,
+}
+
 /// Hidráulica fina: transición del NPSH3, recirculación y contraste de
 /// pérdidas con Gülich.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -152,6 +172,9 @@ pub struct DesignReport {
     /// Geometría del álabe y de la salida de la voluta.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub geometry: Option<ReportGeometry>,
+    /// Mecánica preliminar (eje, cubo y empujes).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub mechanics: Option<ReportMechanics>,
     pub diagnostics: Vec<Diagnostic>,
 }
 
@@ -250,6 +273,7 @@ impl DesignReport {
             }),
             viscous: None,
             geometry: None,
+            mechanics: None,
             diagnostics,
         }
     }
@@ -281,6 +305,27 @@ impl DesignReport {
                 min_length: Measure::new(outlet.min_length, "m"),
                 half_angle: Measure::new(outlet.half_angle, "rad"),
             },
+        });
+        self
+    }
+
+    /// Añade la mecánica preliminar.
+    pub fn with_mechanics(mut self, mechanics: &Mechanics) -> Self {
+        self.mechanics = Some(ReportMechanics {
+            shaft_torque: Measure::new(mechanics.shaft_torque, "N*m"),
+            shaft_shear_stress: Measure::new(mechanics.shaft_shear_stress, "Pa"),
+            shaft_min_diameter: Measure::new(mechanics.shaft_min_diameter, "m"),
+            hub_diameter: Measure::new(mechanics.hub_diameter, "m"),
+            radial_coefficient_shutoff: Measure::new(mechanics.radial_coefficient_shutoff, "1"),
+            radial_coefficient_design: Measure::new(mechanics.radial_coefficient_design, "1"),
+            radial_width: Measure::new(mechanics.radial_width, "m"),
+            radial_thrust_shutoff: Measure::new(mechanics.radial_thrust_shutoff, "N"),
+            radial_thrust_design: Measure::new(mechanics.radial_thrust_design, "N"),
+            radial_thrust_overload: Measure::new(mechanics.radial_thrust_overload, "N"),
+            front_seal_diameter: Measure::new(mechanics.front_seal_diameter, "m"),
+            shaft_seal_diameter: Measure::new(mechanics.shaft_seal_diameter, "m"),
+            axial_thrust_low: Measure::new(mechanics.axial_thrust.0, "N"),
+            axial_thrust_high: Measure::new(mechanics.axial_thrust.1, "N"),
         });
         self
     }

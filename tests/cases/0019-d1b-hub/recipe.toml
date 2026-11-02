@@ -1,0 +1,8 @@
+id = "0019-d1b-hub"
+title = "D1.B diámetro del cubo"
+formula = "mech.hub_diameter"
+source = "Srinivasan 2017, Rotodynamic Pumps, 2nd ed., Diseño D1.B (bomba multietapa, por etapa), pp. 435-438; dh = 1,3 × 60 mm = 78 mm"
+
+[inputs]
+ds = "0.06 m"
+k_hub = "1.3"

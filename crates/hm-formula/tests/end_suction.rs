@@ -26,13 +26,13 @@ fn pack_is_audit_clean() {
 }
 
 #[test]
-fn pack_has_forty_four_formulas() {
-    assert_eq!(Registry::from_toml(END_SUCTION_V01_PACK).unwrap().len(), 44);
+fn pack_has_fifty_formulas() {
+    assert_eq!(Registry::from_toml(END_SUCTION_V01_PACK).unwrap().len(), 50);
 }
 
 #[test]
 fn all_merges_both_packs() {
-    assert_eq!(Registry::all().len(), 54);
+    assert_eq!(Registry::all().len(), 60);
 }
 
 #[test]
@@ -625,5 +625,116 @@ fn mechanical_efficiency_estimate() {
         ),
         0.98561,
         1e-4,
+    );
+}
+
+#[test]
+fn shaft_min_diameter() {
+    // D1.A1: T = 15,56 N·m, τ = 180/8 MPa → 15,212 mm.
+    close(
+        evaluate(
+            "mech.shaft_min_diameter",
+            &[("T", "15.56 N*m"), ("tau", "22500000 Pa")],
+        ),
+        0.015212,
+        1e-5,
+    );
+    // D1.B: T = 369,2395 N·m, τ = 40,4/4 MPa → 57,10 mm. El libro escribe
+    // 58,7 mm, pero sus propios datos dan 57,10 (errata; toma 60 mm).
+    close(
+        evaluate(
+            "mech.shaft_min_diameter",
+            &[("T", "369.2395 N*m"), ("tau", "10100000 Pa")],
+        ),
+        0.057102,
+        1e-6,
+    );
+}
+
+#[test]
+fn hub_diameter() {
+    close(
+        evaluate("mech.hub_diameter", &[("ds", "0.025 m"), ("k_hub", "1.25")]),
+        0.03125,
+        1e-12,
+    );
+    close(
+        evaluate("mech.hub_diameter", &[("ds", "0.06 m"), ("k_hub", "1.3")]),
+        0.078,
+        1e-12,
+    );
+}
+
+#[test]
+fn radial_shutoff_coefficient() {
+    // Curva 1 de la fig. 9.46: ≈ 0,089 en nq 10, ≈ 0,375 en el máximo
+    // (nq ≈ 57) y ≈ 0,29 en nq 95.
+    close(
+        evaluate("mech.radial_shutoff_coefficient", &[("nq", "10")]),
+        0.089049,
+        1e-6,
+    );
+    close(
+        evaluate("mech.radial_shutoff_coefficient", &[("nq", "60")]),
+        0.373724,
+        1e-6,
+    );
+    close(
+        evaluate("mech.radial_shutoff_coefficient", &[("nq", "95")]),
+        0.292923,
+        1e-6,
+    );
+}
+
+#[test]
+fn radial_thrust_coefficient() {
+    let k = |q: &str| {
+        evaluate(
+            "mech.radial_thrust_coefficient",
+            &[("q", q), ("kR0", "0.3"), ("kR_opt", "0.08")],
+        )
+    };
+    close(k("0"), 0.3, 1e-12);
+    // (0,3 − 0,08)(1 − 0,25) + 0,08
+    close(k("0.5"), 0.245, 1e-12);
+    close(k("1"), 0.08, 1e-12);
+    close(k("1.2"), 0.08 * 1.44, 1e-12);
+}
+
+#[test]
+fn radial_thrust() {
+    // 0,08·1000·9,80665·45·0,2·0,02
+    close(
+        evaluate(
+            "mech.radial_thrust",
+            &[
+                ("kR", "0.08"),
+                ("rho", "1000 kg/m3"),
+                ("H", "45 m"),
+                ("d2", "0.2 m"),
+                ("b2tot", "0.02 m"),
+            ],
+        ),
+        141.2158,
+        1e-3,
+    );
+}
+
+#[test]
+fn axial_thrust_estimate() {
+    // 0,8·1000·9,80665·45·π/4·(0,1² − 0,03²)
+    close(
+        evaluate(
+            "mech.axial_thrust_estimate",
+            &[
+                ("f_ax", "0.8"),
+                ("rho", "1000 kg/m3"),
+                ("H", "45 m"),
+                ("dsp", "0.1 m"),
+                ("dD", "0.03 m"),
+            ],
+        ),
+        2523.216,
+        1e-3,
     );
 }

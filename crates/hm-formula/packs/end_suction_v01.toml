@@ -950,3 +950,135 @@ value = "1 - 0.0045*(Q_ref/Q)^0.4*(n_ref/n)^0.3"
 
 [formula.notes]
 assumptions = "Pm/Pu = 0,0045/η·(QRef/Q)^0,4·(nRef/n)^0,3 con QRef = 1 m3/s y nRef = 1500 rpm, así que Pm/P = 0,0045·(QRef/Q)^0,4·(nRef/n)^0,3 y ηm = 1 − Pm/P."
+
+[[formula]]
+id = "mech.shaft_min_diameter"
+version = 1
+validation = "reference"
+module = "mech"
+title = "Diámetro mínimo del eje por torsión"
+source = "Srinivasan 2017, §4.14, p. 116; Diseños D1.A1 (p. 415) y D1.B (pp. 435-438)"
+units = "m"
+range = "0 .. 1"
+test = "crates/hm-formula/tests/end_suction.rs::shaft_min_diameter"
+
+[formula.inputs]
+T = "N*m"
+tau = "Pa"
+
+[formula.expr]
+value = "(16*T/(pi*tau))^(1/3)"
+
+[formula.notes]
+assumptions = "Torsión pura: π ds³ τ/16 = T, con τ = fu/FS (FS 2..6 según Srinivasan; 8 en D1.A1). T es el par con la sobrecarga de potencia (10..15 %). No incluye flexión por el empuje radial ni velocidades críticas. D1.A1: T = 15,56 N·m, τ = 180/8 MPa → 15,212 mm; D1.B: T = 369,24 N·m, τ = 40,4/4 MPa → 57,10 mm (el libro escribe 58,7 mm; errata aritmética, sus datos dan 57,10)."
+
+[[formula]]
+id = "mech.hub_diameter"
+version = 1
+validation = "reference"
+module = "mech"
+title = "Diámetro del cubo del rodete"
+source = "Srinivasan 2017, ec. (4.48), p. 116; Diseños D1.A1 (p. 415) y D1.B (pp. 435-438)"
+units = "m"
+range = "0 .. 1"
+test = "crates/hm-formula/tests/end_suction.rs::hub_diameter"
+
+[formula.inputs]
+ds = "m"
+k_hub = "1"
+
+[formula.expr]
+value = "k_hub*ds"
+
+[formula.notes]
+assumptions = "dh = (1,2..1,3)·ds según el tamaño de la bomba, con sitio para la chaveta. D1.A1: 1,25 × 25 mm = 31,25 mm; D1.B: 1,3 × 60 mm = 78 mm."
+
+[[formula]]
+id = "mech.radial_shutoff_coefficient"
+version = 1
+validation = "pilot"
+module = "mech"
+title = "Coeficiente de empuje radial a válvula cerrada, voluta simple"
+source = "Gülich 2020, fig. 9.46, curva 1 (tabla 9.7 (2)), p. 705"
+units = "1"
+range = "0.08 .. 0.4"
+test = "crates/hm-formula/tests/end_suction.rs::radial_shutoff_coefficient"
+
+[formula.inputs]
+nq = "1"
+
+[formula.expr]
+value = "3.730e-8*nq^4 - 7.274e-6*nq^3 + 3.610e-4*nq^2 + 2.041e-3*nq + 3.944e-2"
+
+[formula.notes]
+assumptions = "Ajuste de Gülich a la curva 1 (holguras de los anillos según la ec. 3.12), rodete de una entrada (nq,tot = nq). La figura cubre nq ≈ 10..95; fuera de ese intervalo el motor evalúa en el extremo. Con holguras dobles o desgaste, la curva 2 da coeficientes mayores."
+
+[[formula]]
+id = "mech.radial_thrust_coefficient"
+version = 1
+validation = "pilot"
+module = "mech"
+title = "Coeficiente de empuje radial a caudal parcial y sobrecarga, voluta simple"
+source = "Gülich 2020, tabla 9.7 (1), p. 704"
+units = "1"
+range = "0 .. 0.5"
+test = "crates/hm-formula/tests/end_suction.rs::radial_thrust_coefficient"
+
+[formula.inputs]
+q = "1"
+kR0 = "1"
+kR_opt = "1"
+
+[formula.expr]
+value = "max((kR0 - kR_opt)*(1 - q^2) + kR_opt, kR_opt*q^2)"
+
+[formula.notes]
+assumptions = "q = Q/Q de diseño de la voluta. Para 0 < q < 1, kR = (kR0 − kR,opt)(1 − q²) + kR,opt; para q > 1, kR = kR,opt·q² (la tabla admite kR,opt en lugar del factor 0,09). El máximo de los dos tramos es cada uno en su intervalo cuando kR0 ≥ kR,opt."
+
+[[formula]]
+id = "mech.radial_thrust"
+version = 1
+validation = "pilot"
+module = "mech"
+title = "Empuje radial estacionario"
+source = "Gülich 2020, tabla 9.7 (1), p. 704"
+units = "N"
+range = "0 .. 10000000"
+test = "crates/hm-formula/tests/end_suction.rs::radial_thrust"
+
+[formula.inputs]
+kR = "1"
+rho = "kg/m3"
+H = "m"
+d2 = "m"
+b2tot = "m"
+
+[formula.expr]
+value = "kR*rho*g*H*d2*b2tot"
+
+[formula.notes]
+assumptions = "H es la altura en el caudal considerado y b2tot la anchura a la salida con las tapas del rodete."
+
+[[formula]]
+id = "mech.axial_thrust_estimate"
+version = 1
+validation = "pilot"
+module = "mech"
+title = "Estimación del empuje axial hidráulico"
+source = "Gülich 2020, tabla 9.2, ec. (9.2.12), p. 656"
+units = "N"
+range = "0 .. 10000000"
+test = "crates/hm-formula/tests/end_suction.rs::axial_thrust_estimate"
+
+[formula.inputs]
+f_ax = "1"
+rho = "kg/m3"
+H = "m"
+dsp = "m"
+dD = "m"
+
+[formula.expr]
+value = "f_ax*rho*g*H*pi/4*(dsp^2 - dD^2)"
+
+[formula.notes]
+assumptions = "Estimación para bombas radiales y semiaxiales sin compensación, con f_ax = 0,7..0,9. dsp es el diámetro del anillo de la tapa anterior y dD el del cierre del eje en la tapa posterior. No incluye la fuerza de cantidad de movimiento ni la del eje (ec. 9.2.9 y 9.2.10)."

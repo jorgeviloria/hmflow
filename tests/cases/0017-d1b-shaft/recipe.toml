@@ -1,0 +1,8 @@
+id = "0017-d1b-shaft"
+title = "D1.B diámetro mínimo del eje"
+formula = "mech.shaft_min_diameter"
+source = "Srinivasan 2017, Rotodynamic Pumps, 2nd ed., Diseño D1.B (bomba multietapa, por etapa), pp. 435-438; SS316, fu = 40,4 MPa, FS = 4. El libro escribe 58,7 mm; sus datos dan 57,10 mm (errata aritmética; toma 60 mm)"
+
+[inputs]
+T = "369.2395 N*m"
+tau = "10.1 MPa"

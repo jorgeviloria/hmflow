@@ -512,6 +512,55 @@ pub fn performance_curve(
     curve
 }
 
+/// Valor en SI que el diseño asigna a un parámetro `auto` conocido.
+///
+/// `nq`, `dn`, `sigma` y las eficiencias son números adimensionales. El resto
+/// usa la unidad SI de su magnitud.
+pub fn designed_si(result: &DesignResult, name: &str) -> Option<f64> {
+    Some(match name {
+        "nq" => result.nq,
+        "dn" => result.specific_diameter_mm,
+        "sigma" => result.sigma,
+        "d0" => result.d0.si,
+        "d1" => result.d1.si,
+        "b1" => result.b1.si,
+        "u2" => result.u2.si,
+        "d2" => result.d2.si,
+        "qth" => result.qth.si,
+        "cm2" => result.cm2.si,
+        "b2" => result.b2.si,
+        "eta_h" => result.eta_h,
+        "eta_v" => result.eta_v,
+        "eta" => result.eta,
+        "p_hyd" => result.p_hyd.si,
+        "p_shaft" => result.p_shaft.si,
+        "p_max" => result.p_max.si,
+        "p_hyd_loss" => result.p_hyd_loss.si,
+        "p_vol_loss" => result.p_vol_loss.si,
+        "p_mech_loss" => result.p_mech_loss.si,
+        "torque" => result.torque.si,
+        "npshr_d" => result.npshr_design.si,
+        "h0" => result.shutoff_head.si,
+        "r3" => result.volute.base_radius.si,
+        "b3" => result.volute.width.si,
+        "c3" => result.volute.inlet_velocity.si,
+        "a360" => result.volute.throat_area.si,
+        "d360" => result.volute.throat_diameter.si,
+        "r4" => result.volute.outer_radius.si,
+        _ => return None,
+    })
+}
+
+/// Acepta el redondeo con el que se escriben los `auto` y rechaza un valor
+/// sustituido a mano.
+pub fn stored_si_matches(expected: f64, actual: f64) -> bool {
+    if !expected.is_finite() || !actual.is_finite() {
+        return false;
+    }
+    let scale = expected.abs().max(1.0);
+    (expected - actual).abs() <= 1e-4 * scale
+}
+
 fn diagnostics_for(result: &DesignResult, input: &DesignInput) -> Diagnostics {
     let mut diagnostics = Diagnostics::new();
 

@@ -1,4 +1,4 @@
-use hm_design::{DesignInput, design};
+use hm_design::{DesignInput, design, designed_si, stored_si_matches};
 use hm_units::parse_quantity;
 
 fn input(q: &str, h: &str, n: &str) -> DesignInput {
@@ -79,6 +79,29 @@ fn loss_breakdown_closes() {
     assert!(result.p_hyd_loss.si > 0.0);
     assert!(result.p_vol_loss.si > 0.0);
     assert!(result.p_mech_loss.si > 0.0);
+}
+
+#[test]
+fn sample_duty_with_ten_metres_of_npsha_has_no_errors() {
+    let mut input = input("120 m3/h", "45 m", "2900 rpm");
+    input.npsha = Some(parse_quantity("10 m").unwrap());
+    let result = design(&input).unwrap();
+    assert!(
+        !result.diagnostics.has_errors(),
+        "el NPSHa de plantilla no cubre la curva"
+    );
+}
+
+#[test]
+fn stored_snapshot_tolerates_rounding_only() {
+    let result = design(&input("120 m3/h", "45 m", "2900 rpm")).unwrap();
+    let rounded: f64 = format!("{:.4}", result.specific_diameter_mm)
+        .parse()
+        .unwrap();
+    assert!(stored_si_matches(result.specific_diameter_mm, rounded));
+    assert!(!stored_si_matches(result.d2.si, 9.0));
+    assert_eq!(designed_si(&result, "d2"), Some(result.d2.si));
+    assert!(designed_si(&result, "psi").is_none());
 }
 
 #[test]

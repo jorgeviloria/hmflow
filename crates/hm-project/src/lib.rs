@@ -170,7 +170,9 @@ impl Project {
                 n: "2900 rpm".to_string(),
                 fluid: "water".to_string(),
                 temperature: "20 degC".to_string(),
-                npsha: "6 m".to_string(),
+                // 10 m deja al menos 0,5 m sobre el NPSHr de la curva
+                // preliminar en el punto de ejemplo (120 m3/h, 45 m, 2900 rpm).
+                npsha: "10 m".to_string(),
             },
             params: BTreeMap::new(),
         }

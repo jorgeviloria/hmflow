@@ -5,7 +5,10 @@ use std::path::PathBuf;
 use std::process::ExitCode;
 
 use clap::{Parser, Subcommand};
-use hm_design::{DesignInput, design, performance_curve};
+use hm_core::{Diagnostic, Diagnostics};
+use hm_design::{
+    DesignInput, DesignResult, design, designed_si, performance_curve, stored_si_matches,
+};
 use hm_formula::{Registry, eval, infer, parse};
 use hm_project::{Param, Project, PumpType};
 use hm_units::{Quantity, parse_quantity};
@@ -72,10 +75,10 @@ enum Command {
         /// Temperatura del fluido.
         #[arg(long, default_value = "20 degC")]
         temperature: String,
-        /// Eficiencia mecánica entre 0 y 1.
+        /// Eficiencia mecánica, mayor que 0 y menor que 1.
         #[arg(long, default_value_t = 0.96)]
         eta_m: f64,
-        /// NPSH disponible, por ejemplo "6 m".
+        /// NPSH disponible, por ejemplo "10 m".
         #[arg(long)]
         npsha: Option<String>,
         /// Archivo de salida; por defecto <name>.hmf.
@@ -139,15 +142,9 @@ fn run(cli: Cli) -> Result<ExitCode, Box<dyn std::error::Error>> {
             let project = Project::load(&file)?;
             let diagnostics = project.validate(&Registry::all());
             let design_diagnostics = if diagnostics.has_errors() {
-                None
+                Diagnostics::new()
             } else {
-                match recompute_design_diagnostics(&project) {
-                    Ok(value) => value,
-                    Err(error) => {
-                        eprintln!("no se pudo recalcular el diseño: {error}");
-                        None
-                    }
-                }
+                design_audit(&project)
             };
 
             let mut printed = false;
@@ -161,27 +158,21 @@ fn run(cli: Cli) -> Result<ExitCode, Box<dyn std::error::Error>> {
                 }
                 printed = true;
             }
-            if let Some(design_diagnostics) = &design_diagnostics {
-                for diagnostic in design_diagnostics.iter() {
-                    println!(
-                        "[{:?}] {}: {}",
-                        diagnostic.severity, diagnostic.code, diagnostic.message
-                    );
-                    if let Some(hint) = &diagnostic.hint {
-                        println!("        sugerencia: {hint}");
-                    }
-                    printed = true;
+            for diagnostic in design_diagnostics.iter() {
+                println!(
+                    "[{:?}] {}: {}",
+                    diagnostic.severity, diagnostic.code, diagnostic.message
+                );
+                if let Some(hint) = &diagnostic.hint {
+                    println!("        sugerencia: {hint}");
                 }
+                printed = true;
             }
             if !printed {
                 println!("{}: sin diagnósticos", file.display());
             }
 
-            let design_has_errors = design_diagnostics
-                .as_ref()
-                .is_some_and(hm_core::Diagnostics::has_errors);
-
-            if diagnostics.has_errors() || design_has_errors {
+            if diagnostics.has_errors() || design_diagnostics.has_errors() {
                 Ok(ExitCode::FAILURE)
             } else {
                 Ok(ExitCode::SUCCESS)
@@ -676,7 +667,75 @@ fn recompute_design_diagnostics(
         npsha,
     };
 
-    Ok(Some(design(&input)?.diagnostics))
+    let result = design(&input)?;
+    let mut diagnostics = result.diagnostics.clone();
+    compare_stored_autos(&result, project, &mut diagnostics);
+    Ok(Some(diagnostics))
+}
+
+fn design_audit(project: &Project) -> Diagnostics {
+    match recompute_design_diagnostics(project) {
+        Ok(Some(diagnostics)) => diagnostics,
+        Ok(None) => Diagnostics::new(),
+        Err(error) => {
+            let mut diagnostics = Diagnostics::new();
+            diagnostics.push(
+                Diagnostic::error(
+                    "HM-PROJ-014",
+                    format!("no se pudo recalcular el diseño: {error}"),
+                )
+                .with_hint("Revisa la densidad, la eficiencia mecánica y el punto de operación."),
+            );
+            diagnostics
+        }
+    }
+}
+
+fn compare_stored_autos(result: &DesignResult, project: &Project, diagnostics: &mut Diagnostics) {
+    for (name, param) in &project.params {
+        let Param::Auto {
+            value: Some(text), ..
+        } = param
+        else {
+            continue;
+        };
+        let Some(expected) = designed_si(result, name) else {
+            continue;
+        };
+
+        match parse_quantity(text) {
+            Ok(actual) if stored_si_matches(expected, actual.si) => {}
+            Ok(actual) => {
+                let shown = Quantity::from_si(expected, actual.unit);
+                diagnostics.push(
+                    Diagnostic::error(
+                        "HM-PROJ-015",
+                        format!(
+                            "`{name}` guardado como «{text}» no coincide con el diseño recalculado ({:.6} {})",
+                            shown.value(),
+                            shown.unit.symbol
+                        ),
+                    )
+                    .with_hint(
+                        "Vuelve a ejecutar el diseño para regenerar los parámetros automáticos.",
+                    ),
+                );
+            }
+            Err(error) => {
+                diagnostics.push(
+                    Diagnostic::error(
+                        "HM-PROJ-015",
+                        format!(
+                            "`{name}` guardado como «{text}» no se puede comparar con el diseño ({error})"
+                        ),
+                    )
+                    .with_hint(
+                        "Vuelve a ejecutar el diseño para regenerar los parámetros automáticos.",
+                    ),
+                );
+            }
+        }
+    }
 }
 
 fn param_value(param: &Param) -> Option<&str> {
@@ -695,5 +754,113 @@ fn auto(formula: &str, value: String) -> Param {
     Param::Auto {
         formula: formula.to_string(),
         value: Some(value),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn codes(diagnostics: &Diagnostics) -> Vec<&str> {
+        diagnostics
+            .iter()
+            .map(|diagnostic| diagnostic.code.as_str())
+            .collect()
+    }
+
+    #[test]
+    fn fresh_end_suction_clears_the_design_check() {
+        let diagnostics = design_audit(&Project::new("demo", PumpType::EndSuction));
+        assert!(
+            !diagnostics.has_errors(),
+            "códigos: {:?}",
+            codes(&diagnostics)
+        );
+    }
+
+    #[test]
+    fn other_pump_types_skip_the_end_suction_recompute() {
+        let diagnostics = design_audit(&Project::new("demo", PumpType::Barrel));
+        assert!(diagnostics.is_empty());
+    }
+
+    #[test]
+    fn a_density_with_the_wrong_dimension_fails_the_check() {
+        let mut project = Project::new("demo", PumpType::EndSuction);
+        project
+            .params
+            .insert("rho".to_string(), manual("1200 kg".to_string()));
+        let diagnostics = design_audit(&project);
+        assert!(codes(&diagnostics).contains(&"HM-PROJ-014"));
+        assert!(diagnostics.has_errors());
+    }
+
+    #[test]
+    fn an_efficiency_outside_the_open_interval_fails_the_check() {
+        let mut project = Project::new("demo", PumpType::EndSuction);
+        project
+            .params
+            .insert("eta_m".to_string(), manual("2".to_string()));
+        let diagnostics = design_audit(&project);
+        assert!(codes(&diagnostics).contains(&"HM-PROJ-014"));
+    }
+
+    #[test]
+    fn a_tampered_auto_value_fails_the_check() {
+        let mut project = Project::new("demo", PumpType::EndSuction);
+        project
+            .params
+            .insert("d2".to_string(), auto("design.d2", "9 m".to_string()));
+        let diagnostics = design_audit(&project);
+        assert!(
+            codes(&diagnostics).contains(&"HM-PROJ-015"),
+            "códigos: {:?}",
+            codes(&diagnostics)
+        );
+    }
+
+    #[test]
+    fn a_rounded_auto_value_matches_the_recomputed_design() {
+        let project = Project::new("demo", PumpType::EndSuction);
+        let result = recompute_design_diagnostics(&project)
+            .unwrap()
+            .expect("end-suction recalcula");
+        assert!(!result.has_errors());
+
+        let designed = design(&DesignInput {
+            q: parse_quantity("120 m3/h").unwrap(),
+            h: parse_quantity("45 m").unwrap(),
+            n: parse_quantity("2900 rpm").unwrap(),
+            rho: parse_quantity("998.2 kg/m3").unwrap(),
+            eta_m: 0.96,
+            npsha: Some(parse_quantity("10 m").unwrap()),
+        })
+        .unwrap();
+
+        let mut project = project;
+        project.params.insert(
+            "d2".to_string(),
+            auto("design.d2", format!("{} m", designed.d2.value())),
+        );
+        project.params.insert(
+            "dn".to_string(),
+            auto(
+                "design.specific_diameter",
+                format!("{:.4}", designed.specific_diameter_mm),
+            ),
+        );
+        project
+            .params
+            .insert("psi".to_string(), auto("similarity.nq", "9".to_string()));
+        project
+            .params
+            .insert("b2".to_string(), manual("9 m".to_string()));
+
+        let diagnostics = design_audit(&project);
+        assert!(
+            !codes(&diagnostics).contains(&"HM-PROJ-015"),
+            "códigos: {:?}",
+            codes(&diagnostics)
+        );
     }
 }

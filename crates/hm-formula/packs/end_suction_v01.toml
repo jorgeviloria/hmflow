@@ -1063,6 +1063,48 @@ value = "eta_h*eta_v*eta_m/(1 + eta_h*eta_v*disk_ratio)"
 assumptions = "De ηh = η/(ηvol{1 − η[PRR/Pu + Pm/Pu]}) con Pm/Pu = (1 − ηm)/η: η = ηh ηvol ηm/(1 + ηh ηvol PRR/Pu). ηm es el rendimiento mecánico sin el rozamiento de discos (ec. 3.10.14)."
 
 [[formula]]
+id = "design.disk_friction_loss"
+version = 1
+validation = "pilot"
+module = "design"
+title = "Pérdida por rozamiento de discos"
+source = "Gülich 2020, tabla 3.10, ec. (3.10.13), p. 165"
+units = "W"
+range = "0 .. 100000000"
+test = "crates/hm-formula/tests/end_suction.rs::disk_friction_loss"
+
+[formula.inputs]
+P_hyd = "W"
+disk_ratio = "1"
+
+[formula.expr]
+value = "P_hyd*disk_ratio"
+
+[formula.notes]
+assumptions = "PRR = Pu·(PRR/Pu), con Pu la potencia útil ρgQH."
+
+[[formula]]
+id = "design.bearing_seal_loss"
+version = 1
+validation = "pilot"
+module = "design"
+title = "Pérdida en cojinetes y cierre"
+source = "Gülich 2020, tabla 3.10, ec. (3.10.14) y (3.10.15), p. 165"
+units = "W"
+range = "0 .. 100000000"
+test = "crates/hm-formula/tests/end_suction.rs::bearing_seal_loss"
+
+[formula.inputs]
+P_shaft = "W"
+eta_m = "1"
+
+[formula.expr]
+value = "P_shaft*(1 - eta_m)"
+
+[formula.notes]
+assumptions = "Pm = P·(1 − ηm), con ηm sin el rozamiento de discos, que va aparte en design.disk_friction_loss."
+
+[[formula]]
 id = "mech.shaft_min_diameter"
 version = 1
 validation = "reference"

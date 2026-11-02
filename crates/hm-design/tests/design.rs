@@ -1,16 +1,21 @@
 use hm_design::{
-    DesignInput, DesignOptions, PARAM_SPECS, design, design_with_options, designed_si,
-    gulich_b2_star, param_spec, required_npsha, stored_si_matches, water_density,
+    DesignInput, DesignOptions, PARAM_SPECS, default_mechanical_efficiency, design,
+    design_with_options, designed_si, gulich_b2_star, param_spec, required_npsha,
+    stored_si_matches, water_density,
 };
 use hm_units::parse_quantity;
 
 fn input(q: &str, h: &str, n: &str) -> DesignInput {
+    let q = parse_quantity(q).unwrap();
+    let n = parse_quantity(n).unwrap();
     DesignInput {
-        q: parse_quantity(q).unwrap(),
+        // Con entradas inválidas la estimación falla; los tests de error
+        // necesitan llegar a `design` para ver su rechazo.
+        eta_m: default_mechanical_efficiency(&q, &n).unwrap_or(0.98),
+        q,
         h: parse_quantity(h).unwrap(),
-        n: parse_quantity(n).unwrap(),
+        n,
         rho: parse_quantity("998.2 kg/m3").unwrap(),
-        eta_m: 0.96,
         npsha: None,
     }
 }
@@ -49,12 +54,15 @@ fn d1a1_reference() {
 
     close(result.eta_h, 0.870, 0.002);
     close(result.eta_v, 0.9722, 0.002);
-    close(result.eta, 0.812, 0.003);
+    // Desde end_suction_v0.4 η sale del análisis de pérdidas de Gülich; el
+    // libro da 0,813 con su cadena ηh·ηv·ηm. La diferencia (−0,4 % en
+    // potencia y par) es la del modelo, no la de la cadena de fórmulas.
+    close(result.eta, 0.812, 0.005);
     close(result.p_hyd.value(), 2161.4, 5.0);
-    close(result.p_shaft.value(), 2661.8, 10.0);
-    close(result.p_max.value(), 2928.0, 15.0);
-    close(result.torque.value(), 14.12, 0.05);
-    close(result.torque_max.value(), 15.53, 0.05);
+    close(result.p_shaft.value(), 2661.8, 15.0);
+    close(result.p_max.value(), 2928.0, 20.0);
+    close(result.torque.value(), 14.12, 0.08);
+    close(result.torque_max.value(), 15.53, 0.1);
     close(result.npshr_design.value(), 1.67, 0.05);
     // Gülich (3.28) da 18,0 m; la fig. D1.A2 de Srinivasan, ≈19 m (−5 %).
     close(result.shutoff_head.value(), 18.03, 0.05);
@@ -106,10 +114,16 @@ fn existing_case_is_consistent() {
     close(result.b2.value(), 0.01794, 0.0003);
     close(result.d1.value(), 0.1135, 0.001);
     close(result.b1.value(), 0.0428, 0.001);
-    close(result.eta, 0.816, 0.003);
+    // end_suction_v0.4 (análisis de pérdidas): 0,843; v0.3 daba 0,816.
+    // Gülich ec. 3.9.1 da 0,812 ± 0,038 para este Q y nq.
+    close(result.eta, 0.843, 0.003);
     close(result.p_hyd.value(), 14681.5, 5.0);
-    close(result.p_shaft.value(), 17990.0, 50.0);
-    close(result.torque.value(), 59.25, 0.2);
+    close(result.p_shaft.value(), 14681.5 / 0.8431616, 20.0);
+    close(
+        result.torque.value(),
+        14681.5 / 0.8431616 / (2.0 * std::f64::consts::PI * 2900.0 / 60.0),
+        0.1,
+    );
     close(result.npshr_design.value(), 5.14, 0.1);
     close(result.shutoff_head.value(), 53.65, 0.1);
     // H0/Hd = 1,19: por debajo del 1,2 de Gülich, informativo.
@@ -151,13 +165,37 @@ fn schema_formulas_exist() {
 #[test]
 fn loss_breakdown_closes() {
     let result = design(&input("0.016 m3/s", "13.8 m", "1800 rpm")).unwrap();
-    let total =
-        result.p_hyd.si + result.p_hyd_loss.si + result.p_vol_loss.si + result.p_mech_loss.si;
+    let total = result.p_hyd.si
+        + result.p_hyd_loss.si
+        + result.p_vol_loss.si
+        + result.p_disk_loss.si
+        + result.p_mech_loss.si;
 
     close(total, result.p_shaft.si, 0.5);
     assert!(result.p_hyd_loss.si > 0.0);
     assert!(result.p_vol_loss.si > 0.0);
+    assert!(result.p_disk_loss.si > 0.0);
     assert!(result.p_mech_loss.si > 0.0);
+}
+
+#[test]
+fn efficiency_is_the_loss_analysis() {
+    // end_suction_v0.4: η = ηh ηv ηm/(1 + ηh ηv PRR/Pu) con el ηh estadístico,
+    // la fuga estimada y el ηm de la entrada (sin rozamiento de discos).
+    let input = input("120 m3/h", "45 m", "2900 rpm");
+    let result = design(&input).unwrap();
+    let chain = result.statistical_eta_h * result.leakage_eta_v;
+    close(
+        result.eta,
+        chain * input.eta_m / (1.0 + chain * result.disk_friction_ratio),
+        1e-12,
+    );
+    close(result.loss_eta, result.eta, 1e-12);
+    close(
+        result.p_disk_loss.si,
+        result.p_hyd.si * result.disk_friction_ratio,
+        1e-6,
+    );
 }
 
 #[test]

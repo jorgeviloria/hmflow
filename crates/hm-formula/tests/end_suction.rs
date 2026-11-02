@@ -26,13 +26,13 @@ fn pack_is_audit_clean() {
 }
 
 #[test]
-fn pack_has_fifty_nine_formulas() {
-    assert_eq!(Registry::from_toml(END_SUCTION_V01_PACK).unwrap().len(), 59);
+fn pack_has_sixty_one_formulas() {
+    assert_eq!(Registry::from_toml(END_SUCTION_V01_PACK).unwrap().len(), 61);
 }
 
 #[test]
 fn all_merges_both_packs() {
-    assert_eq!(Registry::all().len(), 69);
+    assert_eq!(Registry::all().len(), 71);
 }
 
 #[test]
@@ -883,5 +883,31 @@ fn loss_efficiency() {
         ),
         0.757_738,
         1e-5,
+    );
+}
+
+#[test]
+fn disk_friction_loss() {
+    // PRR = Pu·PRR/Pu
+    close(
+        evaluate(
+            "design.disk_friction_loss",
+            &[("P_hyd", "50000 W"), ("disk_ratio", "0.09")],
+        ),
+        4500.0,
+        1e-9,
+    );
+}
+
+#[test]
+fn bearing_seal_loss() {
+    // Pm = P·(1 − ηm)
+    close(
+        evaluate(
+            "design.bearing_seal_loss",
+            &[("P_shaft", "70000 W"), ("eta_m", "0.987")],
+        ),
+        910.0,
+        1e-6,
     );
 }

@@ -190,7 +190,7 @@ fn inputs_panel(ui: &mut egui::Ui, app: &mut App) {
                 (Field::H, "Altura H", "45 m"),
                 (Field::N, "Velocidad n", "2900 rpm"),
                 (Field::Temperature, "Temperatura del agua, °C", "20"),
-                (Field::EtaM, "Rendimiento mecánico ηm", "0.96"),
+                (Field::EtaM, "ηm cojinetes y cierre (vacío: Gülich)", "auto"),
                 (
                     Field::Npsha,
                     "NPSH disponible (opcional)",

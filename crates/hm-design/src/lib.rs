@@ -49,6 +49,9 @@ pub struct DesignInput {
     pub h: Quantity,
     pub n: Quantity,
     pub rho: Quantity,
+    /// Rendimiento mecánico de cojinetes y cierre, sin el rozamiento de discos
+    /// (desde `end_suction_v0.4` los discos van aparte). Sin dato, usa
+    /// [`default_mechanical_efficiency`].
     pub eta_m: f64,
     pub npsha: Option<Quantity>,
 }
@@ -91,6 +94,8 @@ pub struct DesignResult {
     pub p_hyd_loss: Quantity,
     pub p_vol_loss: Quantity,
     pub p_mech_loss: Quantity,
+    /// Pérdida por rozamiento de discos (Gülich ec. 3.10.13), W.
+    pub p_disk_loss: Quantity,
     pub torque: Quantity,
     pub torque_max: Quantity,
     pub npshr_design: Quantity,
@@ -126,7 +131,8 @@ pub struct DesignResult {
     /// ηh estadístico de Gülich (ec. 3.9.6), para contraste.
     pub statistical_eta_h: f64,
     /// η por análisis de pérdidas (Gülich ec. 3.10.15) con `statistical_eta_h`,
-    /// `leakage_eta_v`, `mechanical_eta_estimate` y `disk_friction_ratio`.
+    /// `leakage_eta_v`, el `eta_m` de la entrada y `disk_friction_ratio`.
+    /// Desde `end_suction_v0.4` es igual a `eta`.
     pub loss_eta: f64,
     pub slip: f64,
     pub cu2: Quantity,
@@ -182,10 +188,10 @@ pub struct ParamSpec {
 ///   margen de Gülich (§6.3.3 y tabla 6.2), H0 de Gülich (3.28).
 /// - v0.3: la transición del NPSHr a la subida brusca sale de la geometría
 ///   (Gülich ec. 6.17–6.20) en vez de suponerla en el caudal de diseño.
-pub const METHOD: &str = "end_suction_v0.3";
+pub const METHOD: &str = "end_suction_v0.4";
 
 /// Métodos anteriores que `recalc` sabe migrar a [`METHOD`].
-pub const LEGACY_METHODS: &[&str] = &["end_suction_v0.1", "end_suction_v0.2"];
+pub const LEGACY_METHODS: &[&str] = &["end_suction_v0.1", "end_suction_v0.2", "end_suction_v0.3"];
 
 /// Parámetros que genera o consume el método [`METHOD`].
 pub const PARAM_SPECS: &[ParamSpec] = &[
@@ -342,7 +348,7 @@ pub const PARAM_SPECS: &[ParamSpec] = &[
     ParamSpec {
         name: "eta",
         unit: "1",
-        formula: Some("design.overall_efficiency"),
+        formula: Some("design.loss_efficiency"),
     },
     ParamSpec {
         name: "p_hyd",
@@ -377,7 +383,12 @@ pub const PARAM_SPECS: &[ParamSpec] = &[
     ParamSpec {
         name: "p_mech_loss",
         unit: "W",
-        formula: Some("design.mechanical_loss"),
+        formula: Some("design.bearing_seal_loss"),
+    },
+    ParamSpec {
+        name: "p_disk_loss",
+        unit: "W",
+        formula: Some("design.disk_friction_loss"),
     },
     ParamSpec {
         name: "npshr_d",
@@ -592,6 +603,23 @@ pub fn design(input: &DesignInput) -> Result<DesignResult, DesignError> {
     design_with_options(input, &DesignOptions::default())
 }
 
+/// Rendimiento mecánico por defecto, sin rozamiento de discos: la estimación
+/// de Gülich 2020, ec. (3.10.14), con QRef = 1 m³/s y nRef = 1500 rpm.
+pub fn default_mechanical_efficiency(q: &Quantity, n: &Quantity) -> Result<f64, DesignError> {
+    let registry = Registry::all();
+    Ok(evaluate(
+        &registry,
+        "design.mechanical_efficiency_estimate",
+        &[
+            ("Q", q.clone()),
+            ("n", n.clone()),
+            ("Q_ref", Quantity::from_si(1.0, unit("m3/s")?)),
+            ("n_ref", Quantity::from_si(1500.0 / 60.0, unit("1/s")?)),
+        ],
+    )?
+    .value())
+}
+
 /// Calcula un diseño preliminar con selecciones explícitas.
 pub fn design_with_options(
     input: &DesignInput,
@@ -678,17 +706,6 @@ pub fn design_with_options(
     )?
     .value();
 
-    let eta = evaluate(
-        &registry,
-        "design.overall_efficiency",
-        &[
-            ("eta_h", quantity(eta_h, one.clone())),
-            ("eta_v", quantity(eta_v, one.clone())),
-            ("eta_m", quantity(input.eta_m, one.clone())),
-        ],
-    )?
-    .value();
-
     let p_hyd = evaluate(
         &registry,
         "perf.hydraulic_power",
@@ -696,36 +713,6 @@ pub fn design_with_options(
             ("rho", input.rho.clone()),
             ("Q", input.q.clone()),
             ("H", input.h.clone()),
-        ],
-    )?;
-
-    let p_hyd_loss = evaluate(
-        &registry,
-        "design.hydraulic_loss",
-        &[
-            ("P_hyd", p_hyd.clone()),
-            ("eta_h", quantity(eta_h, one.clone())),
-        ],
-    )?;
-
-    let p_vol_loss = evaluate(
-        &registry,
-        "design.volumetric_loss",
-        &[
-            ("P_hyd", p_hyd.clone()),
-            ("eta_h", quantity(eta_h, one.clone())),
-            ("eta_v", quantity(eta_v, one.clone())),
-        ],
-    )?;
-
-    let p_mech_loss = evaluate(
-        &registry,
-        "design.mechanical_loss",
-        &[
-            ("P_hyd", p_hyd.clone()),
-            ("eta_h", quantity(eta_h, one.clone())),
-            ("eta_v", quantity(eta_v, one.clone())),
-            ("eta_m", quantity(input.eta_m, one.clone())),
         ],
     )?;
 
@@ -890,12 +877,119 @@ pub fn design_with_options(
         ],
     )?;
 
+    let leakage_eta_v = evaluate(
+        &registry,
+        "design.leakage_volumetric_efficiency",
+        &[("nq", quantity(nq, one.clone()))],
+    )?
+    .value();
+    let mechanical_eta_estimate = evaluate(
+        &registry,
+        "design.mechanical_efficiency_estimate",
+        &[
+            ("Q", input.q.clone()),
+            ("n", input.n.clone()),
+            ("Q_ref", quantity(1.0, m3s.clone())),
+            ("n_ref", Quantity::from_si(1500.0 / 60.0, unit("1/s")?)),
+        ],
+    )?
+    .value();
+    let disk_reynolds = evaluate(
+        &registry,
+        "design.disk_reynolds",
+        &[
+            ("n", input.n.clone()),
+            ("d2", d2.clone()),
+            ("nu", Quantity::from_si(DISK_NU, unit("m2/s")?)),
+        ],
+    )?;
+    let disk_friction_coefficient = evaluate(
+        &registry,
+        "design.disk_friction_coefficient",
+        &[
+            ("Re", disk_reynolds),
+            ("k0", quantity(DISK_K0, one.clone())),
+        ],
+    )?;
+    let disk_friction_ratio = evaluate(
+        &registry,
+        "design.disk_friction_ratio",
+        &[
+            ("k_rr", disk_friction_coefficient),
+            ("f_geo", quantity(DISK_F_GEO, one.clone())),
+            ("nq", quantity(nq, one.clone())),
+            ("psi", quantity(selection.psi, one.clone())),
+        ],
+    )?
+    .value();
+    let statistical_eta_h = evaluate(
+        &registry,
+        "design.statistical_hydraulic_efficiency",
+        &[
+            ("Q", input.q.clone()),
+            ("Q_ref", quantity(1.0, m3s.clone())),
+            ("nq", quantity(nq, one.clone())),
+        ],
+    )?
+    .value();
+    let loss_eta = evaluate(
+        &registry,
+        "design.loss_efficiency",
+        &[
+            ("eta_h", quantity(statistical_eta_h, one.clone())),
+            ("eta_v", quantity(leakage_eta_v, one.clone())),
+            ("eta_m", quantity(input.eta_m, one.clone())),
+            ("disk_ratio", quantity(disk_friction_ratio, one.clone())),
+        ],
+    )?
+    .value();
+
+    // end_suction_v0.4: el η del método es el del análisis de pérdidas.
+    let eta = loss_eta;
+
+    let p_hyd_loss = evaluate(
+        &registry,
+        "design.hydraulic_loss",
+        &[
+            ("P_hyd", p_hyd.clone()),
+            ("eta_h", quantity(statistical_eta_h, one.clone())),
+        ],
+    )?;
+
+    let p_vol_loss = evaluate(
+        &registry,
+        "design.volumetric_loss",
+        &[
+            ("P_hyd", p_hyd.clone()),
+            ("eta_h", quantity(statistical_eta_h, one.clone())),
+            ("eta_v", quantity(leakage_eta_v, one.clone())),
+        ],
+    )?;
+
+    let p_disk_loss = evaluate(
+        &registry,
+        "design.disk_friction_loss",
+        &[
+            ("P_hyd", p_hyd.clone()),
+            ("disk_ratio", quantity(disk_friction_ratio, one.clone())),
+        ],
+    )?;
+
     let p_shaft = evaluate(
         &registry,
         "design.shaft_power",
         &[
             ("P_hyd", p_hyd.clone()),
             ("eta", quantity(eta, one.clone())),
+        ],
+    )?;
+
+    let p_mech_loss = evaluate(
+        &registry,
+        "design.bearing_seal_loss",
+        &[
+            ("P_shaft", p_shaft.clone()),
+            ("eta_m", quantity(input.eta_m, one.clone())),
         ],
     )?;
 
@@ -1017,73 +1111,6 @@ pub fn design_with_options(
         &[("nq", quantity(nq, one.clone()))],
     )?
     .value();
-    let leakage_eta_v = evaluate(
-        &registry,
-        "design.leakage_volumetric_efficiency",
-        &[("nq", quantity(nq, one.clone()))],
-    )?
-    .value();
-    let mechanical_eta_estimate = evaluate(
-        &registry,
-        "design.mechanical_efficiency_estimate",
-        &[
-            ("Q", input.q.clone()),
-            ("n", input.n.clone()),
-            ("Q_ref", quantity(1.0, m3s.clone())),
-            ("n_ref", Quantity::from_si(1500.0 / 60.0, unit("1/s")?)),
-        ],
-    )?
-    .value();
-    let disk_reynolds = evaluate(
-        &registry,
-        "design.disk_reynolds",
-        &[
-            ("n", input.n.clone()),
-            ("d2", d2.clone()),
-            ("nu", Quantity::from_si(DISK_NU, unit("m2/s")?)),
-        ],
-    )?;
-    let disk_friction_coefficient = evaluate(
-        &registry,
-        "design.disk_friction_coefficient",
-        &[
-            ("Re", disk_reynolds),
-            ("k0", quantity(DISK_K0, one.clone())),
-        ],
-    )?;
-    let disk_friction_ratio = evaluate(
-        &registry,
-        "design.disk_friction_ratio",
-        &[
-            ("k_rr", disk_friction_coefficient),
-            ("f_geo", quantity(DISK_F_GEO, one.clone())),
-            ("nq", quantity(nq, one.clone())),
-            ("psi", quantity(selection.psi, one.clone())),
-        ],
-    )?
-    .value();
-    let statistical_eta_h = evaluate(
-        &registry,
-        "design.statistical_hydraulic_efficiency",
-        &[
-            ("Q", input.q.clone()),
-            ("Q_ref", quantity(1.0, m3s.clone())),
-            ("nq", quantity(nq, one.clone())),
-        ],
-    )?
-    .value();
-    let loss_eta = evaluate(
-        &registry,
-        "design.loss_efficiency",
-        &[
-            ("eta_h", quantity(statistical_eta_h, one.clone())),
-            ("eta_v", quantity(leakage_eta_v, one.clone())),
-            ("eta_m", quantity(mechanical_eta_estimate, one.clone())),
-            ("disk_ratio", quantity(disk_friction_ratio, one.clone())),
-        ],
-    )?
-    .value();
-
     let mut result = DesignResult {
         nq,
         specific_diameter_mm,
@@ -1106,6 +1133,7 @@ pub fn design_with_options(
         p_hyd_loss: with_unit(p_hyd_loss, &w),
         p_vol_loss: with_unit(p_vol_loss, &w),
         p_mech_loss: with_unit(p_mech_loss, &w),
+        p_disk_loss: with_unit(p_disk_loss, &w),
         torque: with_unit(torque, &nm),
         torque_max: with_unit(torque_max, &nm),
         npshr_design,
@@ -1354,6 +1382,7 @@ pub fn designed_si(result: &DesignResult, name: &str) -> Option<f64> {
         "p_hyd_loss" => result.p_hyd_loss.si,
         "p_vol_loss" => result.p_vol_loss.si,
         "p_mech_loss" => result.p_mech_loss.si,
+        "p_disk_loss" => result.p_disk_loss.si,
         "torque" => result.torque.si,
         "slip" => result.slip,
         "cu2" => result.cu2.si,

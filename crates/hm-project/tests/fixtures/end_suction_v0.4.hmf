@@ -1,13 +1,13 @@
 schema = 2
 
 [project]
-name = "referencia-v0.3"
+name = "referencia-v0.4"
 
 [design]
 pump_type = "end_suction"
 stages = 1
 standard = "ISO 2858"
-method = "end_suction_v0.3"
+method = "end_suction_v0.4"
 
 [operating]
 Q = "120 m3/h"
@@ -103,8 +103,8 @@ value = "101.55611909853526"
 
 [params.eta]
 mode = "auto"
-formula = "design.overall_efficiency"
-value = "0.8162214131609656"
+formula = "design.loss_efficiency"
+value = "0.8431615843939474"
 
 [params.eta_h]
 mode = "auto"
@@ -113,7 +113,7 @@ value = "0.8752282454001429"
 
 [params.eta_m]
 mode = "manual"
-value = "0.96"
+value = "0.9856064144305404"
 
 [params.eta_v]
 mode = "auto"
@@ -151,6 +151,11 @@ mode = "auto"
 formula = "similarity.nq"
 value = "30.47389629010233"
 
+[params.p_disk_loss]
+mode = "auto"
+formula = "design.disk_friction_loss"
+value = "640.4860807982909 W"
+
 [params.p_hyd]
 mode = "auto"
 formula = "perf.hydraulic_power"
@@ -159,27 +164,27 @@ value = "14683.555884899997 W"
 [params.p_hyd_loss]
 mode = "auto"
 formula = "design.hydraulic_loss"
-value = "2093.2745728360524 W"
+value = "1558.8857399516612 W"
 
 [params.p_max]
 mode = "auto"
 formula = "design.max_power"
-value = "19788.63971583248 W"
+value = "19156.365484795853 W"
 
 [params.p_mech_loss]
 mode = "auto"
-formula = "design.mechanical_loss"
-value = "719.586898757546 W"
+formula = "design.bearing_seal_loss"
+value = "250.66253255022824 W"
 
 [params.p_shaft]
 mode = "auto"
 formula = "design.shaft_power"
-value = "17989.672468938617 W"
+value = "17414.877713450773 W"
 
 [params.p_vol_loss]
 mode = "auto"
 formula = "design.volumetric_loss"
-value = "493.2551124450265 W"
+value = "281.28747525059555 W"
 
 [params.phi]
 mode = "manual"
@@ -221,7 +226,7 @@ value = "0.8364925213618993"
 [params.torque]
 mode = "auto"
 formula = "mech.shaft_torque"
-value = "59.23748892487783 N*m"
+value = "57.344769753860156 N*m"
 
 [params.u2]
 mode = "auto"

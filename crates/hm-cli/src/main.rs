@@ -11,9 +11,9 @@ use hm_design::geometry::geometry;
 use hm_design::mechanics::{DEFAULT_SHAFT_SHEAR_STRESS, mechanics, mechanics_diagnostics};
 use hm_design::{
     DEFAULT_K_EFF, DEFAULT_VOLUTE_C, DesignInput, DesignOptions, DesignReport, DesignResult,
-    LEGACY_METHODS, METHOD, PARAM_SPECS, ParamSpec, WATER_DENSITY_RANGE_C, design,
-    design_with_options, designed_si, param_spec, performance_curve, stored_si_matches,
-    table_selection, water_density,
+    LEGACY_METHODS, METHOD, PARAM_SPECS, ParamSpec, WATER_DENSITY_RANGE_C,
+    default_mechanical_efficiency, design, design_with_options, designed_si, param_spec,
+    performance_curve, stored_si_matches, table_selection, water_density,
 };
 use hm_design::{ViscousCorrection, viscous_correction, viscous_diagnostics};
 use hm_formula::{Registry, eval, infer, parse};
@@ -115,9 +115,11 @@ enum Command {
         /// Temperatura del fluido.
         #[arg(long, default_value = "20 degC", allow_hyphen_values = true)]
         temperature: String,
-        /// Eficiencia mecánica, mayor que 0 y menor que 1.
-        #[arg(long, default_value_t = 0.96)]
-        eta_m: f64,
+        /// Rendimiento mecánico de cojinetes y cierre, sin el rozamiento de
+        /// discos, mayor que 0 y menor que 1. Sin él se usa la estimación de
+        /// Gülich (ec. 3.10.14) para el caudal y la velocidad del punto.
+        #[arg(long)]
+        eta_m: Option<f64>,
         /// NPSH disponible de la instalación, por ejemplo "10 m". Sin él (ni
         /// --suction-pressure) no se evalúa el margen de cavitación.
         #[arg(long, allow_hyphen_values = true)]
@@ -377,10 +379,16 @@ fn run(cli: Cli) -> Result<ExitCode, Box<dyn std::error::Error>> {
                 )?),
                 None => npsha.as_deref().map(parse_quantity).transpose()?,
             };
+            let q_quantity = parse_quantity(&q)?;
+            let n_quantity = parse_quantity(&n)?;
+            let eta_m = match eta_m {
+                Some(eta_m) => eta_m,
+                None => default_mechanical_efficiency(&q_quantity, &n_quantity)?,
+            };
             let input = DesignInput {
-                q: parse_quantity(&q)?,
+                q: q_quantity,
                 h: parse_quantity(&h)?,
-                n: parse_quantity(&n)?,
+                n: n_quantity,
                 rho: rho_quantity,
                 eta_m,
                 npsha: npsha_quantity,
@@ -448,9 +456,10 @@ fn run(cli: Cli) -> Result<ExitCode, Box<dyn std::error::Error>> {
                 result.volute.outer_radius.value()
             );
             println!(
-                "  Pérdidas: hyd = {:.0} W   vol = {:.0} W   mech = {:.0} W",
+                "  Pérdidas: hyd = {:.0} W   vol = {:.0} W   discos = {:.0} W   mech = {:.0} W",
                 result.p_hyd_loss.value(),
                 result.p_vol_loss.value(),
+                result.p_disk_loss.value(),
                 result.p_mech_loss.value()
             );
             println!(
@@ -465,11 +474,12 @@ fn run(cli: Cli) -> Result<ExitCode, Box<dyn std::error::Error>> {
                 result.leakage_eta_v, result.eta_v, result.mechanical_eta_estimate, input.eta_m
             );
             println!(
-                "  Pérdidas Gülich: discos PRR/Pu {:.3}   ηh estadístico {:.3} (motor {:.3})   η {:.3} (motor {:.3})",
+                "  Pérdidas Gülich: discos PRR/Pu {:.3}   ηh estadístico {:.3} (dimensionado {:.3})   ηv fugas {:.3}   ηm {:.3}   → η {:.3}",
                 result.disk_friction_ratio,
                 result.statistical_eta_h,
                 result.eta_h,
-                result.loss_eta,
+                result.leakage_eta_v,
+                input.eta_m,
                 result.eta
             );
             let shape = geometry(&input, &result)?;
@@ -657,7 +667,10 @@ fn design_inputs(
         param_f64(project, "rho", "kg/m3")?.unwrap_or_else(|| default_density(project)),
         rho_unit,
     );
-    let eta_m = param_f64(project, "eta_m", "1")?.unwrap_or(0.96);
+    let eta_m = match param_f64(project, "eta_m", "1")? {
+        Some(eta_m) => eta_m,
+        None => default_mechanical_efficiency(&q, &n)?,
+    };
     let npsha = match &project.suction {
         Some(suction) => Some(suction_npsha(
             suction,
@@ -811,6 +824,19 @@ fn recalc(file: &std::path::Path, reselect: bool) -> Result<ExitCode, Box<dyn st
         );
     }
 
+    // Hasta end_suction_v0.3, ηm incluía el rozamiento de discos; desde la
+    // v0.4 va aparte, así que el ηm guardado ya no significa lo mismo.
+    let old_eta_m = if migrated_from.is_some() {
+        project
+            .params
+            .remove("eta_m")
+            .as_ref()
+            .and_then(param_value)
+            .map(str::to_string)
+    } else {
+        None
+    };
+
     let mut reselected = Vec::new();
     if reselect {
         for name in NQ_SELECTIONS {
@@ -869,11 +895,18 @@ fn recalc(file: &std::path::Path, reselect: bool) -> Result<ExitCode, Box<dyn st
     for name in filled
         .iter()
         .filter(|name| !reselected.iter().any(|(old, _)| old == name))
+        .filter(|name| !(old_eta_m.is_some() && name.as_str() == "eta_m"))
     {
         let value = project.params.get(name).and_then(param_value).unwrap_or("");
         println!("  `{name}` no estaba en el proyecto; se usó {value}");
     }
     if let Some(old) = migrated_from {
+        if let Some(old_eta_m) = old_eta_m {
+            println!(
+                "  `eta_m`: {old_eta_m} → {} (desde end_suction_v0.4 no incluye el rozamiento de discos)",
+                input.eta_m
+            );
+        }
         println!("  método migrado de {old} a {METHOD}");
     }
     println!("recalculado {}", file.display());
@@ -1867,7 +1900,11 @@ mod tests {
             std::thread::current().id()
         ));
         let mut project = designed_project();
-        project.design.method = "end_suction_v0.1".to_string();
+        project.design.method = "end_suction_v0.3".to_string();
+        // Hasta la v0.3, ηm incluía el rozamiento de discos.
+        project
+            .params
+            .insert("eta_m".to_string(), manual("0.96".to_string()));
         project.save(&path).unwrap();
 
         recalc(&path, true).unwrap();
@@ -1875,6 +1912,13 @@ mod tests {
         std::fs::remove_file(&path).unwrap();
 
         assert_eq!(project.design.method, METHOD);
+        let (input, _) = design_inputs(&project).unwrap();
+        let expected = default_mechanical_efficiency(&input.q, &input.n).unwrap();
+        assert!(
+            (input.eta_m - expected).abs() < 1e-12,
+            "eta_m {} frente a la estimación {expected}",
+            input.eta_m
+        );
         let diagnostics = design_audit(&project);
         assert!(
             !diagnostics.has_errors(),
@@ -1923,14 +1967,14 @@ mod tests {
     }
 
     /// Guarda de versionado: el `.hmf` de referencia se escribió con
-    /// `end_suction_v0.2`. Si el motor cambia sus resultados sin cambiar
+    /// `end_suction_v0.4`. Si el motor cambia sus resultados sin cambiar
     /// `METHOD`, sus valores `auto` dejan de cuadrar y este test falla. La
     /// salida correcta es subir `METHOD`, añadir el anterior a
     /// `LEGACY_METHODS` y regenerar el archivo con `design`.
     #[test]
     fn reference_project_of_the_current_method_audits_clean() {
         let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
-            .join("../hm-project/tests/fixtures/end_suction_v0.3.hmf");
+            .join("../hm-project/tests/fixtures/end_suction_v0.4.hmf");
         let project = Project::load(&path).unwrap();
         assert_eq!(
             project.design.method, METHOD,

@@ -12,8 +12,8 @@ use hm_design::mechanics::{
     DEFAULT_SHAFT_SHEAR_STRESS, Mechanics, mechanics, mechanics_diagnostics,
 };
 use hm_design::{
-    CurvePoint, DesignInput, DesignResult, ViscousCorrection, design, performance_curve,
-    viscous_correction, viscous_diagnostics, water_density,
+    CurvePoint, DesignInput, DesignResult, ViscousCorrection, default_mechanical_efficiency,
+    design, performance_curve, viscous_correction, viscous_diagnostics, water_density,
 };
 use hm_units::{Quantity, parse_quantity};
 
@@ -40,7 +40,7 @@ impl Default for Inputs {
             h: "45 m".into(),
             n: "2900 rpm".into(),
             temperature_c: "20".into(),
-            eta_m: "0.96".into(),
+            eta_m: String::new(),
             npsha: "15 m".into(),
         }
     }
@@ -117,11 +117,19 @@ pub fn parse(inputs: &Inputs) -> Result<(DesignInput, f64), FieldErrors> {
         }
     });
 
-    let eta_m = match inputs.eta_m.trim().replace(',', ".").parse::<f64>() {
-        Ok(value) if value > 0.0 && value <= 1.0 => Some(value),
-        _ => {
-            errors.push((Field::EtaM, "número entre 0 y 1".into()));
-            None
+    // Vacío: la estimación de Gülich para cojinetes y cierre (ec. 3.10.14).
+    let eta_m = if inputs.eta_m.trim().is_empty() {
+        match (&q, &n) {
+            (Some(q), Some(n)) => default_mechanical_efficiency(q, n).ok(),
+            _ => None,
+        }
+    } else {
+        match inputs.eta_m.trim().replace(',', ".").parse::<f64>() {
+            Ok(value) if value > 0.0 && value <= 1.0 => Some(value),
+            _ => {
+                errors.push((Field::EtaM, "número entre 0 y 1, o vacío".into()));
+                None
+            }
         }
     };
 

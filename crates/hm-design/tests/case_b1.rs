@@ -10,7 +10,7 @@
 //! banda simétrica, porque lo que se juzga es la exactitud del modelo y no la
 //! aceptación de una bomba.
 
-use hm_design::{DesignInput, curve_head, design};
+use hm_design::{DesignInput, curve_head, default_mechanical_efficiency, design};
 use hm_units::parse_quantity;
 
 /// Punto de máximo rendimiento del catálogo.
@@ -42,13 +42,15 @@ const GRADE_2B_HEAD: f64 = 0.05;
 const GRADE_2B_EFFICIENCY: f64 = 0.05;
 
 fn input() -> DesignInput {
+    let q = parse_quantity(&format!("{Q_DESIGN_GPM} gpm")).unwrap();
+    let n = parse_quantity(&format!("{SPEED_RPM} rpm")).unwrap();
     DesignInput {
-        q: parse_quantity(&format!("{Q_DESIGN_GPM} gpm")).unwrap(),
         h: parse_quantity(&format!("{H_DESIGN_M} m")).unwrap(),
-        n: parse_quantity(&format!("{SPEED_RPM} rpm")).unwrap(),
         rho: parse_quantity("998.2 kg/m3").unwrap(),
-        eta_m: 0.96,
+        eta_m: default_mechanical_efficiency(&q, &n).unwrap(),
         npsha: None,
+        q,
+        n,
     }
 }
 
@@ -90,24 +92,9 @@ fn b1_head_curve_inside_grade_2b() {
 }
 
 #[test]
-fn b1_loss_efficiency_inside_grade_2b() {
-    // Rendimiento por análisis de pérdidas (Gülich tabla 3.10): ηh estadístico,
-    // fuga estimada, rozamiento de discos y pérdidas mecánicas.
-    let result = design(&input()).unwrap();
-    let deviation = result.loss_eta / ETA_DESIGN - 1.0;
-    assert!(
-        deviation.abs() <= GRADE_2B_EFFICIENCY,
-        "η por pérdidas {:.3} frente a {ETA_DESIGN} ({:+.1} %)",
-        result.loss_eta,
-        100.0 * deviation
-    );
-}
-
-#[test]
-#[ignore = "desviación conocida: el η del método (Srinivasan) da ≈ 0,82 con nq 16 \
-            frente a 0,73 del catálogo. El análisis de pérdidas (`loss_eta`) ya \
-            cumple; falta adoptarlo como η del método. Ver docs/validation/matrix.md"]
 fn b1_efficiency_inside_grade_2b() {
+    // Desde end_suction_v0.4, η sale del análisis de pérdidas de Gülich
+    // (tabla 3.10): ηh estadístico, fuga, rozamiento de discos y ηm.
     let result = design(&input()).unwrap();
     let deviation = result.eta / ETA_DESIGN - 1.0;
     assert!(

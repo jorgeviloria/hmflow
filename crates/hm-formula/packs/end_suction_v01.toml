@@ -559,11 +559,11 @@ assumptions = "Coeficiente de presión a caudal cero de bombas de voluta, ψo = 
 
 [[formula]]
 id = "design.slip_factor"
-version = 1
+version = 2
 validation = "pilot"
 module = "design"
-title = "Factor de deslizamiento de Wiesner"
-source = "Wiesner 1967, J. Eng. Power 89(4); Gülich 2020, cap. 3"
+title = "Factor de deslizamiento"
+source = "Gülich 2020, tabla 3.2, ec. (3.2.6), p. 152 (Wiesner con f1 = 0,98)"
 units = "1"
 range = "0 .. 1"
 test = "crates/hm-formula/tests/end_suction.rs::slip_factor"
@@ -573,18 +573,18 @@ beta2 = "deg"
 Z = "1"
 
 [formula.expr]
-value = "1 - sqrt(sin(beta2))/Z^0.7"
+value = "0.98*(1 - sqrt(sin(beta2))/Z^0.7)"
 
 [formula.notes]
-assumptions = "σ = 1 − √(sen β2)/Z^0,7, sin corrección por solidez del rodete. Con β2=23,5° y Z=7 da 0,838."
+assumptions = "γ = f1 (1 − √(sen β2B)/z^0,7) kw con f1 = 0,98 (rodetes radiales) y kw = 1, válido si el diámetro medio de entrada d1m/d2 no supera εLim = exp(−8,16 sen β2B/z) (ec. 3.2.4)."
 
 [[formula]]
 id = "design.cu2"
-version = 1
+version = 2
 validation = "pilot"
 module = "design"
 title = "Componente tangencial a la salida del rodete"
-source = "Triángulo de velocidades de Euler con deslizamiento; Gülich 2020, cap. 3"
+source = "Gülich 2020, tabla 3.2, ec. (3.2.7), p. 152"
 units = "m/s"
 range = "-100 .. 100"
 test = "crates/hm-formula/tests/end_suction.rs::cu2"
@@ -596,7 +596,92 @@ cm2 = "m/s"
 beta2 = "deg"
 
 [formula.expr]
-value = "slip*(u2 - cm2/tan(beta2))"
+value = "u2*slip - cm2/tan(beta2)"
 
 [formula.notes]
-assumptions = "cu2 = σ (u2 − cm2/tan β2). El deslizamiento se aplica a toda la componente, como en el motor v0.1."
+assumptions = "c2u = u2 (γ − c2m τ2/(u2 tan β2B)) con τ2 = 1: el motor no conoce el espesor de álabe, así que no descuenta el bloqueo. El deslizamiento afecta solo a u2. Con la geometría publicada de D1.A1 da Hth = 16,6 m frente a 15,85 m del libro (+4,6 %)."
+
+[[formula]]
+id = "design.head_coefficient"
+version = 1
+validation = "pilot"
+module = "design"
+title = "Coeficiente de altura en el punto de diseño"
+source = "Gülich 2020, ec. (3.26), p. 131"
+units = "1"
+range = "0 .. 1.3"
+test = "crates/hm-formula/tests/end_suction.rs::head_coefficient"
+
+[formula.inputs]
+nq = "1"
+
+[formula.expr]
+value = "1.21*exp(-0.77*nq/100)"
+
+[formula.notes]
+assumptions = "ψopt = 1,21 fT e^(−0,77 nq/100) con fT = 1,0, la curva media de la fig. 3.24. Con fT = 1,1 el β2 que pide Euler sube a 18..34°, pero w2/w1 baja de 0,7 entre nq 30 y 60."
+
+[[formula]]
+id = "design.relative_outlet_width"
+version = 1
+validation = "pilot"
+module = "design"
+title = "Anchura relativa de salida del rodete"
+source = "Gülich 2020, ec. (7.1), p. 412"
+units = "1"
+range = "0 .. 0.4"
+test = "crates/hm-formula/tests/end_suction.rs::relative_outlet_width"
+
+[formula.inputs]
+nq = "1"
+
+[formula.expr]
+value = "0.017 + 0.262*(nq/100) - 0.08*(nq/100)^2 + 0.0093*(nq/100)^3"
+
+[formula.notes]
+assumptions = "b2* = b2/d2 medio de la fig. 7.2 para rodetes radiales y semiaxiales; la banda medida es de unos ±20 %."
+
+[[formula]]
+id = "design.flow_coefficient"
+version = 1
+validation = "pilot"
+module = "design"
+title = "Coeficiente de caudal de salida para una anchura relativa"
+source = "Continuidad b2 = Qth/(π d2 cm2) con b2* de Gülich 2020, ec. (7.1), p. 412"
+units = "1"
+range = "0 .. 0.5"
+test = "crates/hm-formula/tests/end_suction.rs::flow_coefficient"
+
+[formula.inputs]
+nq = "1"
+psi = "1"
+eta_v = "1"
+b2_star = "1"
+
+[formula.expr]
+value = "pi*nq^2*psi^1.5/(3600*eta_v*(2*9.80665)^1.5*b2_star)"
+
+[formula.notes]
+assumptions = "φ = cm2/u2 que da b2/d2 = b2*. Sale de b2* = Qth/(π d2² φ u2) con d2 = 60 u2/(π n), u2 = √(2gH/ψ), Qth = Q/ηv y Q = (nq H^0,75/n)²; los números llevan las unidades de nq (rpm, m3/s, m). Con nq = 31,8, ψ = 0,87, ηv = 0,972 y b2* = 0,0652 da φ = 0,13, el valor de D1.A1."
+
+[[formula]]
+id = "design.euler_cu2"
+version = 1
+validation = "pilot"
+module = "design"
+title = "Componente tangencial que exige la altura"
+source = "Gülich 2020, tabla 3.2, ec. (3.2.8), p. 152"
+units = "m/s"
+range = "0 .. 100"
+test = "crates/hm-formula/tests/end_suction.rs::euler_cu2"
+
+[formula.inputs]
+H = "m"
+eta_h = "1"
+u2 = "m/s"
+
+[formula.expr]
+value = "g*H/(eta_h*u2)"
+
+[formula.notes]
+assumptions = "c2u = gH/(ηh u2) + u1m c1u/u2 sin prerrotación (c1u = 0). El motor elige β2 para que design.cu2 dé este valor (Gülich 2020, p. 412, paso 10)."

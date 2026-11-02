@@ -22,19 +22,15 @@ fn close(actual: f64, expected: f64, tolerance: f64) {
     );
 }
 
-/// Sin NPSHa, el único diagnóstico admitido es el aviso de que no se evaluó.
-fn assert_only_missing_npsha(result: &hm_design::DesignResult) {
-    let codes: Vec<&str> = result
-        .diagnostics
-        .iter()
-        .map(|diagnostic| diagnostic.code.as_str())
-        .collect();
-    assert_eq!(codes, ["HM-DES-012"]);
-}
-
 #[test]
 fn d1a1_reference() {
-    let result = design(&input("0.016 m3/s", "13.8 m", "1800 rpm")).unwrap();
+    // Las selecciones publicadas de D1.A1: el test valida la cadena de
+    // fórmulas contra el libro, no la selección automática del motor.
+    let result = design_with_options(
+        &input("0.016 m3/s", "13.8 m", "1800 rpm"),
+        &d1a1_selections(),
+    )
+    .unwrap();
 
     close(result.nq, 31.7997, 0.05);
     close(result.specific_diameter_mm, 93.24, 0.5);
@@ -62,7 +58,41 @@ fn d1a1_reference() {
     close(result.npshr_design.value(), 1.67, 0.05);
     // Gülich (3.28) da 18,0 m; la fig. D1.A2 de Srinivasan, ≈19 m (−5 %).
     close(result.shutoff_head.value(), 18.03, 0.05);
-    assert_only_missing_npsha(&result);
+    // Con β2 = 23,5° y c2u de Gülich (3.2.7), Euler da +4,5 % de altura.
+    assert_eq!(codes(&result), ["HM-DES-019", "HM-DES-012"]);
+}
+
+fn d1a1_selections() -> DesignOptions {
+    DesignOptions {
+        psi: Some(0.87),
+        phi: Some(0.13),
+        beta2_rad: Some(23.5f64.to_radians()),
+        ..DesignOptions::default()
+    }
+}
+
+fn codes(result: &hm_design::DesignResult) -> Vec<&str> {
+    result
+        .diagnostics
+        .iter()
+        .map(|diagnostic| diagnostic.code.as_str())
+        .collect()
+}
+
+#[test]
+fn d1a1_duty_with_default_selections() {
+    // ψ de Gülich (3.26), φ para la anchura media de Gülich (7.1) y β2 por
+    // Euler: la altura de Euler coincide con la pedida.
+    let input = input("0.016 m3/s", "13.8 m", "1800 rpm");
+    let result = design(&input).unwrap();
+
+    close(result.selection.psi, 0.9472, 1e-4);
+    close(result.selection.phi, 0.1040, 1e-3);
+    close(result.selection.beta2_deg, 19.8, 0.1);
+    close(result.b2.si / result.d2.si, gulich_b2_star(result.nq), 1e-6);
+    let euler_head = result.eta_h * result.u2.si * result.cu2.si / 9.80665;
+    close(euler_head, input.h.si, 1e-6);
+    assert!(!codes(&result).contains(&"HM-DES-019"));
 }
 
 #[test]
@@ -70,8 +100,10 @@ fn existing_case_is_consistent() {
     let result = design(&input("120 m3/h", "45 m", "2900 rpm")).unwrap();
 
     close(result.nq, 30.474, 0.05);
-    close(result.d2.value(), 0.2097, 0.001);
-    close(result.b2.value(), 0.0126, 0.0003);
+    close(result.selection.psi, 0.9569, 1e-4);
+    close(result.selection.beta2_deg, 19.08, 0.02);
+    close(result.d2.value(), 0.2000, 0.001);
+    close(result.b2.value(), 0.01794, 0.0003);
     close(result.d1.value(), 0.1135, 0.001);
     close(result.b1.value(), 0.0428, 0.001);
     close(result.eta, 0.816, 0.003);
@@ -79,8 +111,9 @@ fn existing_case_is_consistent() {
     close(result.p_shaft.value(), 17990.0, 50.0);
     close(result.torque.value(), 59.25, 0.2);
     close(result.npshr_design.value(), 5.14, 0.1);
-    close(result.shutoff_head.value(), 59.0, 0.1);
-    assert_only_missing_npsha(&result);
+    close(result.shutoff_head.value(), 53.65, 0.1);
+    // H0/Hd = 1,19: por debajo del 1,2 de Gülich, informativo.
+    assert_eq!(codes(&result), ["HM-DES-017", "HM-DES-012"]);
 }
 
 #[test]
@@ -376,18 +409,15 @@ fn de_haller_ratio_is_reported() {
     assert!(ratio > 0.7, "w2/w1 = {ratio}");
     assert!(!has(&result, "HM-DES-014"));
 
-    // Un caudal de entrada grande con φ bajo decelera de más.
+    // Un ojo muy grande (c0 = 1 m/s) sube u1 y con él w1.
     let slow = design_with_options(
         &input,
         &DesignOptions {
-            phi: Some(0.03),
-            c0: Some(9.0),
-            cm0: Some(9.0),
+            c0: Some(1.0),
             ..DesignOptions::default()
         },
     )
     .unwrap();
-    // w2 ≈ 7,1 m/s y w1 ≈ 14,1 m/s: w2/w1 ≈ 0,5.
     let ratio = slow.w2.si / slow.w1.si;
     assert!(ratio < 0.6, "w2/w1 = {ratio}");
     assert!(has(&slow, "HM-DES-014"));
@@ -395,12 +425,12 @@ fn de_haller_ratio_is_reported() {
 
 #[test]
 fn shutoff_head_below_design_head_is_an_error() {
-    // ψo(nq = 30,5) = 1,142; con ψ = 1,3, H0/Hd = 0,88.
+    // ψo(nq = 30,5) = 1,142; con ψ = 1,2, H0/Hd = 0,95.
     let input = input("120 m3/h", "45 m", "2900 rpm");
     let result = design_with_options(
         &input,
         &DesignOptions {
-            psi: Some(1.3),
+            psi: Some(1.2),
             ..DesignOptions::default()
         },
     )
@@ -424,11 +454,12 @@ fn flat_head_rise_warns_below_nq_40() {
     .unwrap();
     assert!(has(&result, "HM-DES-017"));
     assert!(!has(&result, "HM-DES-016"));
+    assert!(!result.diagnostics.has_errors());
 
-    // Las selecciones por defecto dan H0/Hd ≥ 1,2.
+    // Con ψ y ψo medios de Gülich, H0/Hd queda en 1,19: solo informa.
     let default = design(&input).unwrap();
-    assert!(default.shutoff_head.si / input.h.si >= 1.2);
-    assert!(!has(&default, "HM-DES-017"));
+    assert!(has(&default, "HM-DES-017"));
+    assert!(!default.diagnostics.has_errors());
 }
 
 #[test]
@@ -438,4 +469,36 @@ fn inlet_speed_above_50_m_s_is_reported() {
     let result = design(&input).unwrap();
     assert!(result.u1.si > 50.0, "u1 = {}", result.u1.si);
     assert!(has(&result, "HM-DES-015"));
+}
+
+#[test]
+fn manual_beta2_reports_the_euler_head_mismatch() {
+    let input = input("120 m3/h", "45 m", "2900 rpm");
+    let solved = design(&input).unwrap();
+    let off = design_with_options(
+        &input,
+        &DesignOptions {
+            beta2_rad: Some((solved.selection.beta2_deg + 8.0).to_radians()),
+            ..DesignOptions::default()
+        },
+    )
+    .unwrap();
+    assert!(has(&off, "HM-DES-019"));
+    assert!(!has(&solved, "HM-DES-019"));
+}
+
+#[test]
+fn unreachable_head_is_an_error() {
+    // Con ψ = 1,3 y Z = 7 haría falta cu2/u2 = 0,74 y el máximo es 0,73.
+    let input = input("120 m3/h", "45 m", "2900 rpm");
+    let error = design_with_options(
+        &input,
+        &DesignOptions {
+            psi: Some(1.3),
+            ..DesignOptions::default()
+        },
+    )
+    .unwrap_err()
+    .to_string();
+    assert!(error.contains("ningún β2"), "{error}");
 }

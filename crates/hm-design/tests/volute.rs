@@ -1,4 +1,4 @@
-use hm_design::{DesignInput, design};
+use hm_design::{DesignInput, DesignOptions, design, design_with_options};
 use hm_units::parse_quantity;
 
 fn input() -> DesignInput {
@@ -20,18 +20,27 @@ fn close(actual: f64, expected: f64, tolerance: f64) {
 }
 
 #[test]
-fn volute_matches_d2_2() {
-    let result = design(&input()).unwrap();
+fn volute_follows_d2_2() {
+    // Selecciones publicadas de D1.A1. Frente a D2.2: R3 −1,7 %, B3 −2,0 %,
+    // R4 +1,0 %; C3 −21 % y D360 +13 %, porque el libro toma C3 con Hth∞
+    // (sin deslizamiento) y el motor con el c2u de Gülich (3.2.7).
+    let options = DesignOptions {
+        psi: Some(0.87),
+        phi: Some(0.13),
+        beta2_rad: Some(23.5f64.to_radians()),
+        ..DesignOptions::default()
+    };
+    let result = design_with_options(&input(), &options).unwrap();
     let volute = &result.volute;
 
-    close(result.slip, 0.8383, 0.001);
-    close(result.cu2.value(), 10.363, 0.02);
-    close(volute.base_radius.value(), 0.097292, 0.0001);
-    close(volute.width.value(), 0.021555, 0.0001);
-    close(volute.inlet_velocity.value(), 10.613, 0.02);
-    close(volute.throat_area.value(), 0.0015075, 1e-6);
-    close(volute.throat_diameter.value(), 0.04819, 1e-4);
-    close(volute.outer_radius.value(), 0.12139, 1e-4);
+    close(result.slip, 0.82151, 1e-4);
+    close(result.cu2.value(), 9.2165, 0.001);
+    close(volute.base_radius.value(), 0.097317, 0.0001);
+    close(volute.width.value(), 0.021565, 0.0001);
+    close(volute.inlet_velocity.value(), 9.4974, 0.001);
+    close(volute.throat_area.value(), 0.0016847, 1e-6);
+    close(volute.throat_diameter.value(), 0.050945, 1e-4);
+    close(volute.outer_radius.value(), 0.12279, 1e-4);
 }
 
 #[test]

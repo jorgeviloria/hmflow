@@ -415,20 +415,142 @@ pub fn water_density(temperature_k: f64) -> Option<f64> {
     Some(numerator / (1.0 + 16.879_850e-3 * t))
 }
 
-/// Selecciones que el motor toma de sus tablas para un `nq` dado, sin
-/// ninguna opción del proyecto.
-pub fn table_selection(nq: f64) -> DesignSelection {
-    DesignSelection {
-        psi: head_coefficient(nq),
-        phi: flow_coefficient(nq),
-        beta2_deg: blade_angle_deg(nq),
+/// Intervalo de búsqueda de β2, en grados.
+const BETA2_SEARCH_DEG: (f64, f64) = (1.0, 89.0);
+
+/// Selecciones que dependen solo de `nq`; β2 queda sin fijar (NaN).
+///
+/// - ψ: Gülich 2020, ec. (3.26) con fT = 1,0.
+/// - φ: el que da la anchura relativa media de Gülich, ec. (7.1), con ese ψ y
+///   el ηv del motor. Un φ constante por tramos no puede seguir esa curva,
+///   porque b2* crece con nq² a φ fijo.
+/// - Z, c0 y cm0: tablas por tramos de nq.
+fn base_selection(registry: &Registry, nq: f64) -> Result<DesignSelection, DesignError> {
+    let one = Unit::dimensionless();
+    let psi = evaluate(
+        registry,
+        "design.head_coefficient",
+        &[("nq", quantity(nq, one.clone()))],
+    )?
+    .value();
+    let eta_v = evaluate(
+        registry,
+        "design.volumetric_efficiency",
+        &[("nq", quantity(nq, one.clone()))],
+    )?
+    .value();
+    let b2_star = evaluate(
+        registry,
+        "design.relative_outlet_width",
+        &[("nq", quantity(nq, one.clone()))],
+    )?
+    .value();
+    let phi = evaluate(
+        registry,
+        "design.flow_coefficient",
+        &[
+            ("nq", quantity(nq, one.clone())),
+            ("psi", quantity(psi, one.clone())),
+            ("eta_v", quantity(eta_v, one.clone())),
+            ("b2_star", quantity(b2_star, one)),
+        ],
+    )?
+    .value();
+    Ok(DesignSelection {
+        psi,
+        phi,
+        beta2_deg: f64::NAN,
         blade_count: blade_count(nq),
         c0: inlet_velocity(nq),
         cm0: inlet_meridional_velocity(nq),
         a: 4.5,
         j: 1.03,
         margin: 1.1,
+    })
+}
+
+/// Selecciones que el motor toma por defecto para `nq`, con β2 resuelto por
+/// Euler para el rendimiento hidráulico `eta_h`.
+pub fn table_selection(nq: f64, eta_h: f64) -> Result<DesignSelection, DesignError> {
+    let registry = Registry::all();
+    let mut selection = base_selection(&registry, nq)?;
+    selection.beta2_deg = euler_blade_angle(
+        &registry,
+        selection.psi,
+        selection.phi,
+        eta_h,
+        selection.blade_count,
+    )?;
+    Ok(selection)
+}
+
+/// Ángulo de salida del álabe β2, en grados, que hace que el rodete dé la
+/// altura pedida (Gülich 2020, p. 412, paso 10).
+///
+/// Resuelve `design.cu2(γ(β2, Z), u2, cm2, β2) = design.euler_cu2` en forma
+/// adimensional: con u2 = 1, cm2/u2 = φ y la altura que exige Euler,
+/// `c2u/u2 = gH/(ηh·u2²) = ψ/(2ηh)`.
+fn euler_blade_angle(
+    registry: &Registry,
+    psi: f64,
+    phi: f64,
+    eta_h: f64,
+    blade_count: u32,
+) -> Result<f64, DesignError> {
+    let one = Unit::dimensionless();
+    let ms = unit("m/s")?;
+    let deg = unit("deg")?;
+    let target = psi / (2.0 * eta_h);
+    let cu2_over_u2 = |beta2_rad: f64| -> Result<f64, DesignError> {
+        let beta2 = Quantity::from_si(beta2_rad, deg.clone());
+        let slip = evaluate(
+            registry,
+            "design.slip_factor",
+            &[
+                ("beta2", beta2.clone()),
+                ("Z", quantity(f64::from(blade_count), one.clone())),
+            ],
+        )?;
+        Ok(evaluate(
+            registry,
+            "design.cu2",
+            &[
+                ("slip", slip),
+                ("u2", Quantity::from_si(1.0, ms.clone())),
+                ("cm2", Quantity::from_si(phi, ms.clone())),
+                ("beta2", beta2),
+            ],
+        )?
+        .si)
+    };
+
+    let (low, high) = (
+        BETA2_SEARCH_DEG.0.to_radians(),
+        BETA2_SEARCH_DEG.1.to_radians(),
+    );
+    let reachable = cu2_over_u2(high)?;
+    if reachable < target {
+        return Err(DesignError::Input(format!(
+            "con ψ = {psi:.3}, φ = {phi:.3} y Z = {blade_count}, ningún β2 da la altura: \
+             hace falta cu2/u2 = {target:.3} y el máximo es {reachable:.3}; aumenta Z o reduce ψ"
+        )));
     }
+    let root = hm_math::bisect(
+        |beta2| cu2_over_u2(beta2).map_or(f64::NAN, |value| value - target),
+        low,
+        high,
+        1e-10,
+        200,
+    )
+    .map_err(|error| DesignError::Input(format!("β2 por Euler: {error}")))?;
+
+    let residual = cu2_over_u2(root)? - target;
+    if !residual.is_finite() || residual.abs() > 1e-6 {
+        return Err(DesignError::Input(format!(
+            "β2 por Euler no converge (residuo {residual:e})"
+        )));
+    }
+    Ok(root.to_degrees())
 }
 
 /// Calcula un diseño preliminar end-suction.
@@ -463,14 +585,14 @@ pub fn design_with_options(
     )?
     .value();
 
-    let table = table_selection(nq);
-    let selection = DesignSelection {
+    let table = base_selection(&registry, nq)?;
+    let manual_beta2 = options.beta2_rad.map(f64::to_degrees);
+    let mut selection = DesignSelection {
         psi: options.psi.unwrap_or(table.psi),
         phi: options.phi.unwrap_or(table.phi),
-        beta2_deg: options
-            .beta2_rad
-            .map(f64::to_degrees)
-            .unwrap_or(table.beta2_deg),
+        // Valor provisional para validar el resto; si no es manual, se
+        // resuelve por Euler en cuanto se conoce ηh.
+        beta2_deg: manual_beta2.unwrap_or(45.0),
         blade_count: options.blade_count.unwrap_or(table.blade_count),
         c0: options.c0.unwrap_or(table.c0),
         cm0: options.cm0.unwrap_or(table.cm0),
@@ -501,6 +623,16 @@ pub fn design_with_options(
         &[("Dn", quantity(specific_diameter_mm, one.clone()))],
     )?
     .value();
+
+    if manual_beta2.is_none() {
+        selection.beta2_deg = euler_blade_angle(
+            &registry,
+            selection.psi,
+            selection.phi,
+            eta_h,
+            selection.blade_count,
+        )?;
+    }
 
     let eta_v = evaluate(
         &registry,
@@ -918,6 +1050,10 @@ pub const BETA2_RANGE_DEG: (f64, f64) = (15.0, 45.0);
 /// Subida mínima deseada `H0/Hd` con nq < 40 (Gülich 2020, §7.1.2, p. 403).
 pub const MIN_HEAD_RISE: f64 = 1.2;
 
+/// Diferencia admitida entre la altura de Euler y la pedida cuando β2 se
+/// fija a mano. Con β2 calculado por Euler la diferencia es nula.
+pub const EULER_HEAD_TOLERANCE: f64 = 0.03;
+
 /// Deceleración mínima `w2/w1` (criterio de de Haller; Gülich 2020, p. 413).
 pub const DE_HALLER_MIN: f64 = 0.7;
 
@@ -1096,15 +1232,38 @@ fn diagnostics_for(result: &DesignResult, input: &DesignInput) -> Diagnostics {
             ),
         );
     } else if result.nq < 40.0 && head_rise < MIN_HEAD_RISE {
+        // Las correlaciones medias de Gülich (3.26) y (3.28) ya dan
+        // H0/Hd = 1,08..1,24 con nq < 40: es informativo, no un defecto.
         diagnostics.push(
-            Diagnostic::warning(
+            Diagnostic::info(
                 "HM-DES-017",
                 format!(
-                    "H0/Hd = {head_rise:.2} por debajo de {MIN_HEAD_RISE}: curva Q-H plana, riesgo de \
-                     inestabilidad (Gülich 2020, p. 403)"
+                    "H0/Hd = {head_rise:.2}, por debajo del {MIN_HEAD_RISE} que Gülich recomienda con \
+                     nq < 40 (p. 403): curva Q-H plana"
                 ),
             )
-            .with_hint("Reduce el coeficiente de altura ψ."),
+            .with_hint("Si hace falta una curva más estable, reduce ψ o estrecha la voluta."),
+        );
+    }
+
+    let g = 9.806_65;
+    let euler_head = result.eta_h * result.u2.si * result.cu2.si / g;
+    let head_error = euler_head / input.h.si - 1.0;
+    if head_error.abs() > EULER_HEAD_TOLERANCE {
+        diagnostics.push(
+            Diagnostic::warning(
+                "HM-DES-019",
+                format!(
+                    "con β2 = {:.1}°, Euler da H = ηh·u2·cu2/g = {euler_head:.2} m, un {:+.1} % \
+                     respecto a la altura pedida",
+                    result.selection.beta2_deg,
+                    100.0 * head_error
+                ),
+            )
+            .with_hint(
+                "Deja β2 sin fijar para que se calcule por Euler, o ajusta ψ, φ o Z \
+                 (recalc --reselect lo vuelve a calcular).",
+            ),
         );
     }
 
@@ -1376,45 +1535,6 @@ fn evaluate(
         .map(|(name, value)| ((*name).to_string(), value.clone()))
         .collect();
     Ok(registry.evaluate(id, &inputs)?)
-}
-
-/// Coeficiente de altura `psi = 2gH/u2^2`.
-fn head_coefficient(nq: f64) -> f64 {
-    if nq < 25.0 {
-        0.95
-    } else if nq < 40.0 {
-        0.87
-    } else if nq < 60.0 {
-        0.80
-    } else {
-        0.70
-    }
-}
-
-/// Coeficiente de caudal `phi = cm2/u2`.
-fn flow_coefficient(nq: f64) -> f64 {
-    if nq < 25.0 {
-        0.10
-    } else if nq < 40.0 {
-        0.13
-    } else if nq < 60.0 {
-        0.16
-    } else {
-        0.20
-    }
-}
-
-/// Ángulo de salida del álabe, en grados.
-fn blade_angle_deg(nq: f64) -> f64 {
-    if nq < 25.0 {
-        28.0
-    } else if nq < 40.0 {
-        23.5
-    } else if nq < 60.0 {
-        20.0
-    } else {
-        17.5
-    }
 }
 
 /// Número de álabes.

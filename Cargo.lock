@@ -129,6 +129,7 @@ version = "0.0.1"
 dependencies = [
  "hm-core",
  "hm-formula",
+ "hm-math",
  "hm-units",
  "thiserror",
 ]

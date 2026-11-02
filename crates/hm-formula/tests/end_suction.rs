@@ -26,13 +26,13 @@ fn pack_is_audit_clean() {
 }
 
 #[test]
-fn pack_has_twenty_eight_formulas() {
-    assert_eq!(Registry::from_toml(END_SUCTION_V01_PACK).unwrap().len(), 28);
+fn pack_has_thirty_two_formulas() {
+    assert_eq!(Registry::from_toml(END_SUCTION_V01_PACK).unwrap().len(), 32);
 }
 
 #[test]
 fn all_merges_both_packs() {
-    assert_eq!(Registry::all().len(), 38);
+    assert_eq!(Registry::all().len(), 42);
 }
 
 #[test]
@@ -348,17 +348,17 @@ fn shutoff_head() {
 
 #[test]
 fn slip_factor() {
-    // 1 − √(sen 23,5°)/7^0,7
+    // 0,98·(1 − √(sen 23,5°)/7^0,7)
     close(
         evaluate("design.slip_factor", &[("beta2", "23.5 deg"), ("Z", "7")]),
-        0.83827,
+        0.82151,
         1e-4,
     );
 }
 
 #[test]
 fn cu2() {
-    // 0,8 · (30 − 4/tan 30°) = 0,8 · (30 − 6,9282)
+    // 30·0,8 − 4/tan 30° = 24 − 6,9282
     close(
         evaluate(
             "design.cu2",
@@ -369,7 +369,58 @@ fn cu2() {
                 ("beta2", "30 deg"),
             ],
         ),
-        18.4574,
+        17.0718,
+        1e-3,
+    );
+}
+
+#[test]
+fn head_coefficient() {
+    // 1,21·e^(−0,77·0,318)
+    close(
+        evaluate("design.head_coefficient", &[("nq", "31.8")]),
+        0.94721,
+        1e-4,
+    );
+}
+
+#[test]
+fn relative_outlet_width() {
+    // 0,017 + 0,262·0,318 − 0,08·0,318² + 0,0093·0,318³
+    close(
+        evaluate("design.relative_outlet_width", &[("nq", "31.8")]),
+        0.09253,
+        1e-4,
+    );
+}
+
+#[test]
+fn flow_coefficient() {
+    // D1.A1: nq = 31,8, ψ = 0,87, ηv = 0,972 y b2/d2 = 0,0122/0,1871.
+    close(
+        evaluate(
+            "design.flow_coefficient",
+            &[
+                ("nq", "31.8"),
+                ("psi", "0.87"),
+                ("eta_v", "0.972"),
+                ("b2_star", "0.065206"),
+            ],
+        ),
+        0.13,
+        0.001,
+    );
+}
+
+#[test]
+fn euler_cu2() {
+    // D1.A1: 9,80665·13,8/(0,871·17,64)
+    close(
+        evaluate(
+            "design.euler_cu2",
+            &[("H", "13.8 m"), ("eta_h", "0.871"), ("u2", "17.64 m/s")],
+        ),
+        8.8083,
         1e-3,
     );
 }

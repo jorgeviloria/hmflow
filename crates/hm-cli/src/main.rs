@@ -49,9 +49,9 @@ enum Command {
     Recalc {
         /// Ruta del archivo .hmf.
         file: PathBuf,
-        /// Vuelve a tomar de la tabla las selecciones que dependen de nq
-        /// (psi, phi, beta2, blade_count, c0, cm0) salvo las que estén en
-        /// locked.
+        /// Vuelve a calcular las selecciones que dependen de nq (psi y phi
+        /// según Gülich, beta2 por Euler, blade_count, c0 y cm0 de tabla),
+        /// salvo las que estén en locked.
         #[arg(long)]
         reselect: bool,
     },
@@ -516,13 +516,15 @@ fn recompute_design_diagnostics(
 /// Selecciones que el motor toma de sus tablas según `nq`.
 const NQ_SELECTIONS: [&str; 6] = ["psi", "phi", "beta2", "blade_count", "c0", "cm0"];
 
-/// Valor de tabla, en SI, de una selección que depende de `nq`.
-fn table_si(name: &str, nq: f64) -> Option<f64> {
-    let table = table_selection(nq);
+/// Valor por defecto, en SI, de una selección que depende de `nq`.
+///
+/// β2 no se compara: no sale de una tabla, sino de Euler con ψ, φ y Z del
+/// proyecto. Si no cuadra con ellos, lo señala `HM-DES-019`.
+fn table_si(name: &str, nq: f64, eta_h: f64) -> Option<f64> {
+    let table = table_selection(nq, eta_h).ok()?;
     Some(match name {
         "psi" => table.psi,
         "phi" => table.phi,
-        "beta2" => table.beta2_deg.to_radians(),
         "blade_count" => f64::from(table.blade_count),
         "c0" => table.c0,
         "cm0" => table.cm0,
@@ -535,14 +537,15 @@ fn table_si(name: &str, nq: f64) -> Option<f64> {
 /// `design` escribe como `manual` lo que eligió la tabla. Si después cambia
 /// el punto de operación, esos valores quedan de otro `nq`. Las `locked` son
 /// decisiones explícitas y no se señalan.
-fn stale_selections(project: &Project, nq: f64) -> Vec<&'static str> {
+fn stale_selections(project: &Project, nq: f64, eta_h: f64) -> Vec<&'static str> {
     NQ_SELECTIONS
         .into_iter()
         .filter(|name| {
             let Some(Param::Manual { value }) = project.params.get(*name) else {
                 return false;
             };
-            let (Ok(quantity), Some(expected)) = (parse_quantity(value), table_si(name, nq)) else {
+            let (Ok(quantity), Some(expected)) = (parse_quantity(value), table_si(name, nq, eta_h))
+            else {
                 return false;
             };
             !stored_si_matches(expected, quantity.si)
@@ -555,7 +558,7 @@ fn add_selection_diagnostics(
     result: &DesignResult,
     diagnostics: &mut Diagnostics,
 ) {
-    let stale = stale_selections(project, result.nq);
+    let stale = stale_selections(project, result.nq, result.eta_h);
     if stale.is_empty() {
         return;
     }
@@ -656,7 +659,7 @@ fn recalc(file: &std::path::Path, reselect: bool) -> Result<ExitCode, Box<dyn st
             .unwrap_or("");
         if old != value {
             println!(
-                "  `{name}`: {old} → {value} (tabla para nq = {:.2})",
+                "  `{name}`: {old} → {value} (selección por defecto para nq = {:.2})",
                 result.nq
             );
         }
@@ -1705,7 +1708,7 @@ mod tests {
                 .params
                 .insert(name.to_string(), Param::Locked { value });
         }
-        assert_eq!(stale_selections(&project, 44.0), Vec::<&str>::new());
+        assert_eq!(stale_selections(&project, 44.0, 0.88), Vec::<&str>::new());
     }
 
     #[test]
@@ -1728,7 +1731,18 @@ mod tests {
         let project = Project::load(&path).unwrap();
         std::fs::remove_file(&path).unwrap();
 
-        assert_eq!(project.params.get("psi").and_then(param_value), Some("0.8"));
+        // ψ de Gülich (3.26) para nq = 44.
+        let psi: f64 = project
+            .params
+            .get("psi")
+            .and_then(param_value)
+            .unwrap()
+            .parse()
+            .unwrap();
+        assert!(
+            (psi - 1.21 * (-0.77f64 * 0.4398).exp()).abs() < 1e-3,
+            "ψ = {psi}"
+        );
         assert_eq!(
             project.params.get("blade_count").and_then(param_value),
             Some("7"),
@@ -1750,7 +1764,14 @@ mod tests {
             std::process::id(),
             std::thread::current().id()
         ));
-        moved_duty_project().save(&path).unwrap();
+        let before = moved_duty_project();
+        let psi_before = before
+            .params
+            .get("psi")
+            .and_then(param_value)
+            .unwrap()
+            .to_string();
+        before.save(&path).unwrap();
 
         recalc(&path, false).unwrap();
         let project = Project::load(&path).unwrap();
@@ -1758,7 +1779,7 @@ mod tests {
 
         assert_eq!(
             project.params.get("psi").and_then(param_value),
-            Some("0.87")
+            Some(psi_before.as_str())
         );
         assert!(codes(&design_audit(&project)).contains(&"HM-DES-013"));
     }

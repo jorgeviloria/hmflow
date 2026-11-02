@@ -289,6 +289,16 @@ pub const CODES: &[CodeInfo] = &[
         Info,
         "nq fuera de la figura del empuje radial a válvula cerrada; kR0 en el extremo.",
     ),
+    active(
+        "HM-DES-029",
+        Warning,
+        "La potencia de la curva supera la del motor elegido.",
+    ),
+    active(
+        "HM-DES-030",
+        Warning,
+        "El motor necesario supera la serie normalizada de IEC 60072-1.",
+    ),
 ];
 
 /// Busca un código en el registro.

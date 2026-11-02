@@ -1,4 +1,5 @@
-//! Mecánica preliminar: eje por torsión, cubo y empujes hidráulicos.
+//! Mecánica preliminar: eje por torsión, cubo, espesores, holgura de los
+//! anillos, empujes hidráulicos y motor.
 //!
 //! Son estimaciones para dimensionar, no comprobaciones del rotor: el eje
 //! sale solo de la torsión (Srinivasan 2017, §4.14), sin flexión por el
@@ -11,7 +12,10 @@ use hm_core::{Diagnostic, Diagnostics};
 use hm_formula::Registry;
 use hm_units::{Quantity, Unit, parse_unit};
 
-use crate::{DesignError, DesignInput, DesignResult, PREFERRED_OPERATING_REGION, curve_head};
+use crate::{
+    DesignError, DesignInput, DesignResult, PREFERRED_OPERATING_REGION, curve_head,
+    performance_curve,
+};
 
 /// Tensión tangencial admisible del eje por defecto, Pa: la del ejemplo D1.A1
 /// de Srinivasan 2017 (SS316, fu = 180 MPa con FS = 8). Elección del motor
@@ -40,6 +44,31 @@ pub const AXIAL_THRUST_FACTOR: (f64, f64) = (0.7, 0.9);
 /// valor c0 real sube más de un tercio.
 pub const HUB_EYE_BLOCKAGE: f64 = 0.25;
 
+/// Espesor mínimo del álabe de un rodete fundido, relativo a d2 (Gülich
+/// 2020, tabla 14.3).
+pub const CAST_MIN_THICKNESS_RATIO: f64 = 0.015;
+
+/// Espesor mínimo que exige la fundición, m: extremo bajo de 3..5 mm
+/// (Gülich 2020, p. 413). Depende del proceso; elección del motor.
+pub const CAST_MIN_THICKNESS: f64 = 0.003;
+
+/// Diámetro de referencia de la ec. (3.12) de Gülich 2020, m.
+pub const SEAL_CLEARANCE_REFERENCE: f64 = 0.1;
+
+/// Margen del motor de API 610 (ISO 13709): (potencia nominal hasta la que
+/// se aplica, W; factor). Por encima del último tramo, el último factor.
+pub const DRIVER_MARGINS: [(f64, f64); 3] = [(22e3, 1.25), (55e3, 1.15), (f64::INFINITY, 1.10)];
+
+/// Potencias normalizadas de motores de IEC 60072-1, kW.
+pub const IEC_MOTOR_RATINGS_KW: [f64; 41] = [
+    0.06, 0.09, 0.12, 0.18, 0.25, 0.37, 0.55, 0.75, 1.1, 1.5, 2.2, 3.0, 4.0, 5.5, 7.5, 11.0, 15.0,
+    18.5, 22.0, 30.0, 37.0, 45.0, 55.0, 75.0, 90.0, 110.0, 132.0, 160.0, 200.0, 250.0, 315.0,
+    355.0, 400.0, 450.0, 500.0, 560.0, 630.0, 710.0, 800.0, 900.0, 1000.0,
+];
+
+/// Puntos con que se busca la potencia máxima de la curva.
+const DRIVER_CURVE_POINTS: usize = 101;
+
 /// Mecánica preliminar de un diseño, en SI.
 #[derive(Debug, Clone)]
 pub struct Mechanics {
@@ -55,8 +84,16 @@ pub struct Mechanics {
     pub radial_coefficient_shutoff: f64,
     /// kR,opt, en el punto de diseño.
     pub radial_coefficient_design: f64,
-    /// Anchura con tapas usada en el empuje radial, m (hoy b2: sin espesor
-    /// de las tapas).
+    /// Espesor relativo del álabe e* = e/d2 de la ec. (T14.3.1).
+    pub blade_thickness_ratio: f64,
+    /// Espesor nominal del álabe, m: el mayor de e*·d2, 0,015·d2 y el
+    /// mínimo de fundición.
+    pub blade_thickness: f64,
+    /// Espesor del borde de salida, m (e/2, ec. T14.3.2).
+    pub trailing_edge_thickness: f64,
+    /// Espesor de las tapas, m (1,25·e).
+    pub shroud_thickness: f64,
+    /// Anchura con tapas usada en el empuje radial, b2 + 2·eRS, m.
     pub radial_width: f64,
     /// Empuje radial a válvula cerrada, N.
     pub radial_thrust_shutoff: f64,
@@ -70,6 +107,36 @@ pub struct Mechanics {
     pub shaft_seal_diameter: f64,
     /// Empuje axial hidráulico estimado, extremos bajo y alto, N.
     pub axial_thrust: (f64, f64),
+    /// Holgura diametral del anillo de la tapa anterior, m (ec. 3.12).
+    pub seal_clearance: f64,
+    /// Potencia en el eje en el punto nominal, W.
+    pub rated_power: f64,
+    /// Margen del motor de API 610 para esa potencia.
+    pub driver_margin: f64,
+    /// Potencia mínima del motor, W.
+    pub driver_power: f64,
+    /// Motor normalizado de IEC 60072-1, W; `None` si supera la serie.
+    pub motor_rating: Option<f64>,
+    /// Potencia máxima en el eje a lo largo de la curva preliminar, W.
+    pub curve_max_power: f64,
+}
+
+/// Margen del motor de API 610 para una potencia nominal en W.
+pub fn driver_margin(rated_power: f64) -> f64 {
+    DRIVER_MARGINS
+        .iter()
+        .find(|(limit, _)| rated_power <= *limit)
+        .map_or(DRIVER_MARGINS[DRIVER_MARGINS.len() - 1].1, |(_, factor)| {
+            *factor
+        })
+}
+
+/// Motor normalizado de IEC 60072-1 inmediatamente mayor o igual, en W.
+pub fn motor_rating(power: f64) -> Option<f64> {
+    IEC_MOTOR_RATINGS_KW
+        .iter()
+        .map(|kw| kw * 1000.0)
+        .find(|watts| *watts >= power * (1.0 - 1e-12))
 }
 
 fn evaluate(registry: &Registry, id: &str, pairs: &[(&str, Quantity)]) -> Result<f64, DesignError> {
@@ -123,7 +190,27 @@ pub fn mechanics(
         &[("nq", pure(nq))],
     )?;
     let k_opt = RADIAL_DESIGN_COEFFICIENT;
-    let radial_width = result.b2.si;
+
+    let d2 = result.d2.si;
+    let blade_thickness_ratio = evaluate(
+        &registry,
+        "mech.blade_thickness_ratio",
+        &[
+            ("z", pure(f64::from(result.selection.blade_count))),
+            ("u2", result.u2.clone()),
+            ("u_ref", Quantity::from_si(100.0, parse_unit("m/s")?)),
+            ("nq", pure(result.nq)),
+        ],
+    )?;
+    let blade_thickness = (blade_thickness_ratio * d2)
+        .max(CAST_MIN_THICKNESS_RATIO * d2)
+        .max(CAST_MIN_THICKNESS);
+    let shroud_thickness = evaluate(
+        &registry,
+        "mech.shroud_thickness",
+        &[("e", metres(blade_thickness))],
+    )?;
+    let radial_width = result.b2.si + 2.0 * shroud_thickness;
     let radial = |ratio: f64| -> Result<f64, DesignError> {
         let k = evaluate(
             &registry,
@@ -163,6 +250,27 @@ pub fn mechanics(
         )
     };
 
+    let seal_clearance = evaluate(
+        &registry,
+        "mech.seal_clearance",
+        &[
+            ("dsp", metres(front_seal_diameter)),
+            ("d_ref", metres(SEAL_CLEARANCE_REFERENCE)),
+        ],
+    )?;
+
+    let rated_power = result.p_shaft.si;
+    let margin = driver_margin(rated_power);
+    let driver_power = evaluate(
+        &registry,
+        "mech.driver_power",
+        &[("P", result.p_shaft.clone()), ("margin", pure(margin))],
+    )?;
+    let curve_max_power = performance_curve(input, result, DRIVER_CURVE_POINTS)
+        .iter()
+        .map(|point| point.p_shaft.si)
+        .fold(rated_power, f64::max);
+
     Ok(Mechanics {
         shaft_torque,
         shaft_shear_stress: shear_stress,
@@ -170,6 +278,10 @@ pub fn mechanics(
         hub_diameter,
         radial_coefficient_shutoff: k0,
         radial_coefficient_design: k_opt,
+        blade_thickness_ratio,
+        blade_thickness,
+        trailing_edge_thickness: blade_thickness / 2.0,
+        shroud_thickness,
         radial_width,
         radial_thrust_shutoff: radial(0.0)?,
         radial_thrust_design: radial(1.0)?,
@@ -177,6 +289,12 @@ pub fn mechanics(
         front_seal_diameter,
         shaft_seal_diameter,
         axial_thrust: (axial(AXIAL_THRUST_FACTOR.0)?, axial(AXIAL_THRUST_FACTOR.1)?),
+        seal_clearance,
+        rated_power,
+        driver_margin: margin,
+        driver_power,
+        motor_rating: motor_rating(driver_power),
+        curve_max_power,
     })
 }
 
@@ -215,6 +333,37 @@ pub fn mechanics_diagnostics(mechanics: &Mechanics, result: &DesignResult) -> Di
                 result.nq
             ),
         ));
+    }
+    match mechanics.motor_rating {
+        None => diagnostics.push(
+            Diagnostic::warning(
+                "HM-DES-030",
+                format!(
+                    "el motor necesita {:.0} kW, por encima de la serie de IEC 60072-1 \
+                     (hasta {:.0} kW): no se eligió motor",
+                    mechanics.driver_power / 1000.0,
+                    IEC_MOTOR_RATINGS_KW[IEC_MOTOR_RATINGS_KW.len() - 1]
+                ),
+            )
+            .with_hint("Elige el motor con el fabricante."),
+        ),
+        Some(rating) if mechanics.curve_max_power > rating => diagnostics.push(
+            Diagnostic::warning(
+                "HM-DES-029",
+                format!(
+                    "la potencia en el eje llega a {:.1} kW en la curva y el motor de \
+                     {:.1} kW no la cubre: la bomba sobrecarga el motor por encima \
+                     del punto nominal",
+                    mechanics.curve_max_power / 1000.0,
+                    rating / 1000.0
+                ),
+            )
+            .with_hint(
+                "Elige el motor siguiente de la serie o limita el caudal máximo \
+                 de la instalación.",
+            ),
+        ),
+        Some(_) => {}
     }
     diagnostics
 }

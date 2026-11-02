@@ -83,7 +83,21 @@ fn every_value_is_coherent_si() {
         ("shaft_seal_diameter", &mech.shaft_seal_diameter),
         ("axial_thrust_low", &mech.axial_thrust_low),
         ("axial_thrust_high", &mech.axial_thrust_high),
+        ("blade_thickness_ratio", &mech.blade_thickness_ratio),
+        ("blade_thickness", &mech.blade_thickness),
+        ("trailing_edge_thickness", &mech.trailing_edge_thickness),
+        ("shroud_thickness", &mech.shroud_thickness),
+        ("seal_clearance", &mech.seal_clearance),
+        ("rated_power", &mech.rated_power),
+        ("driver_margin", &mech.driver_margin),
+        ("driver_power", &mech.driver_power),
+        ("curve_max_power", &mech.curve_max_power),
     ]);
+    measures.extend(
+        mech.motor_rating
+            .iter()
+            .map(|measure| ("motor_rating", measure)),
+    );
     for point in &report.curve {
         measures.extend([
             ("q", &point.q),

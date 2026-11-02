@@ -493,6 +493,29 @@ fn run(cli: Cli) -> Result<ExitCode, Box<dyn std::error::Error>> {
                 mech.axial_thrust.0,
                 mech.axial_thrust.1
             );
+            println!(
+                "  Espesores: álabe e = {:.1} mm   salida {:.1} mm   tapas {:.1} mm   holgura anillo Δd = {:.2} mm",
+                mech.blade_thickness * 1000.0,
+                mech.trailing_edge_thickness * 1000.0,
+                mech.shroud_thickness * 1000.0,
+                mech.seal_clearance * 1000.0
+            );
+            match mech.motor_rating {
+                Some(rating) => println!(
+                    "  Motor: {:.2} kW × {:.2} (API 610) = {:.2} kW → {} kW (IEC)   máx. curva {:.2} kW",
+                    mech.rated_power / 1000.0,
+                    mech.driver_margin,
+                    mech.driver_power / 1000.0,
+                    rating / 1000.0,
+                    mech.curve_max_power / 1000.0
+                ),
+                None => println!(
+                    "  Motor: {:.2} kW × {:.2} (API 610) = {:.2} kW, fuera de la serie IEC",
+                    mech.rated_power / 1000.0,
+                    mech.driver_margin,
+                    mech.driver_power / 1000.0
+                ),
+            }
             if let (Some(npsha), Some(_)) = (&input.npsha, &suction) {
                 println!("  NPSHa de la instalación = {:.2} m", npsha.si);
             }

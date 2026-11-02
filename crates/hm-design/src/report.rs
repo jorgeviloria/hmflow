@@ -129,6 +129,18 @@ pub struct ReportMechanics {
     pub shaft_seal_diameter: Measure,
     pub axial_thrust_low: Measure,
     pub axial_thrust_high: Measure,
+    pub blade_thickness_ratio: Measure,
+    pub blade_thickness: Measure,
+    pub trailing_edge_thickness: Measure,
+    pub shroud_thickness: Measure,
+    pub seal_clearance: Measure,
+    pub rated_power: Measure,
+    pub driver_margin: Measure,
+    pub driver_power: Measure,
+    /// Motor normalizado de IEC 60072-1; ausente si supera la serie.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub motor_rating: Option<Measure>,
+    pub curve_max_power: Measure,
 }
 
 /// Hidráulica fina: transición del NPSH3, recirculación y contraste de
@@ -326,6 +338,16 @@ impl DesignReport {
             shaft_seal_diameter: Measure::new(mechanics.shaft_seal_diameter, "m"),
             axial_thrust_low: Measure::new(mechanics.axial_thrust.0, "N"),
             axial_thrust_high: Measure::new(mechanics.axial_thrust.1, "N"),
+            blade_thickness_ratio: Measure::new(mechanics.blade_thickness_ratio, "1"),
+            blade_thickness: Measure::new(mechanics.blade_thickness, "m"),
+            trailing_edge_thickness: Measure::new(mechanics.trailing_edge_thickness, "m"),
+            shroud_thickness: Measure::new(mechanics.shroud_thickness, "m"),
+            seal_clearance: Measure::new(mechanics.seal_clearance, "m"),
+            rated_power: Measure::new(mechanics.rated_power, "W"),
+            driver_margin: Measure::new(mechanics.driver_margin, "1"),
+            driver_power: Measure::new(mechanics.driver_power, "W"),
+            motor_rating: mechanics.motor_rating.map(|watts| Measure::new(watts, "W")),
+            curve_max_power: Measure::new(mechanics.curve_max_power, "W"),
         });
         self
     }

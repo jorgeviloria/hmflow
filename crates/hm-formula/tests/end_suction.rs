@@ -26,13 +26,13 @@ fn pack_is_audit_clean() {
 }
 
 #[test]
-fn pack_has_fifty_formulas() {
-    assert_eq!(Registry::from_toml(END_SUCTION_V01_PACK).unwrap().len(), 50);
+fn pack_has_fifty_four_formulas() {
+    assert_eq!(Registry::from_toml(END_SUCTION_V01_PACK).unwrap().len(), 54);
 }
 
 #[test]
 fn all_merges_both_packs() {
-    assert_eq!(Registry::all().len(), 60);
+    assert_eq!(Registry::all().len(), 64);
 }
 
 #[test]
@@ -736,5 +736,77 @@ fn axial_thrust_estimate() {
         ),
         2523.216,
         1e-3,
+    );
+}
+
+#[test]
+fn blade_thickness_ratio() {
+    // 0,015·(7/7)^0,4·(1 + 0,25)·(1 + 0,5) con u2 = uRef y nq = nq,Ref.
+    close(
+        evaluate(
+            "mech.blade_thickness_ratio",
+            &[
+                ("z", "7"),
+                ("u2", "100 m/s"),
+                ("u_ref", "100 m/s"),
+                ("nq", "100"),
+            ],
+        ),
+        0.028125,
+        1e-12,
+    );
+    // 0,015·(7/6)^0,4·(1 + 0,25·0,3²)·(1 + 0,5·0,3²)
+    close(
+        evaluate(
+            "mech.blade_thickness_ratio",
+            &[
+                ("z", "6"),
+                ("u2", "30 m/s"),
+                ("u_ref", "100 m/s"),
+                ("nq", "30"),
+            ],
+        ),
+        0.017047,
+        1e-6,
+    );
+}
+
+#[test]
+fn shroud_thickness() {
+    close(
+        evaluate("mech.shroud_thickness", &[("e", "0.004 m")]),
+        0.005,
+        1e-12,
+    );
+}
+
+#[test]
+fn seal_clearance() {
+    // En dsp = dRef, Δd = 0,4 mm.
+    close(
+        evaluate(
+            "mech.seal_clearance",
+            &[("dsp", "0.1 m"), ("d_ref", "0.1 m")],
+        ),
+        0.0004,
+        1e-12,
+    );
+    // 0,004·250 mm·(100/250)^0,53
+    close(
+        evaluate(
+            "mech.seal_clearance",
+            &[("dsp", "0.25 m"), ("d_ref", "0.1 m")],
+        ),
+        0.000_615_31,
+        1e-8,
+    );
+}
+
+#[test]
+fn driver_power() {
+    close(
+        evaluate("mech.driver_power", &[("P", "18 kW"), ("margin", "1.25")]),
+        22500.0,
+        1e-9,
     );
 }

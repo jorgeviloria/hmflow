@@ -1082,3 +1082,88 @@ value = "f_ax*rho*g*H*pi/4*(dsp^2 - dD^2)"
 
 [formula.notes]
 assumptions = "Estimación para bombas radiales y semiaxiales sin compensación, con f_ax = 0,7..0,9. dsp es el diámetro del anillo de la tapa anterior y dD el del cierre del eje en la tapa posterior. No incluye la fuerza de cantidad de movimiento ni la del eje (ec. 9.2.9 y 9.2.10)."
+
+[[formula]]
+id = "mech.blade_thickness_ratio"
+version = 1
+validation = "pilot"
+module = "mech"
+title = "Espesor relativo del álabe, rodete cerrado"
+source = "Gülich 2020, tabla 14.3, ec. (T14.3.1), p. 1094"
+units = "1"
+range = "0.005 .. 0.1"
+test = "crates/hm-formula/tests/end_suction.rs::blade_thickness_ratio"
+
+[formula.inputs]
+z = "1"
+u2 = "m/s"
+u_ref = "m/s"
+nq = "1"
+
+[formula.expr]
+value = "0.015*(7/z)^0.4*(1 + 0.25*(u2/u_ref)^2)*(1 + 0.5*(nq/100)^2)"
+
+[formula.notes]
+assumptions = "e* = e/d2, espesor nominal sin perfilar, con uRef = 100 m/s, nq,Ref = 100 y zRef = 7; válido para 1..10 álabes. Gülich añade como mínimos e = 0,015·d2 en rodetes fundidos y el que exija el proceso de fundición (3..5 mm, p. 413)."
+
+[[formula]]
+id = "mech.shroud_thickness"
+version = 1
+validation = "pilot"
+module = "mech"
+title = "Espesor de las tapas del rodete cerrado"
+source = "Gülich 2020, tabla 14.3, ec. (T14.3.4), p. 1094"
+units = "m"
+range = "0 .. 0.2"
+test = "crates/hm-formula/tests/end_suction.rs::shroud_thickness"
+
+[formula.inputs]
+e = "m"
+
+[formula.expr]
+value = "1.25*e"
+
+[formula.notes]
+assumptions = "eRS = 1,25·e con e el espesor nominal del álabe."
+
+[[formula]]
+id = "mech.seal_clearance"
+version = 1
+validation = "pilot"
+module = "mech"
+title = "Holgura diametral del anillo de desgaste"
+source = "Gülich 2020, ec. (3.12), p. 110"
+units = "m"
+range = "0 .. 0.01"
+test = "crates/hm-formula/tests/end_suction.rs::seal_clearance"
+
+[formula.inputs]
+dsp = "m"
+d_ref = "m"
+
+[formula.expr]
+value = "0.004*dsp*(d_ref/dsp)^0.53"
+
+[formula.notes]
+assumptions = "Δd = 2s, con dRef = 100 mm. Corresponde aproximadamente a las holguras mínimas de API 610 más la mitad de las tolerancias H7/h7; las ejecutadas quedan en ±30 %. Por encima de 260 °C o con materiales propensos al gripado API 610 añade 0,125 mm, que aquí no se incluyen."
+
+[[formula]]
+id = "mech.driver_power"
+version = 1
+validation = "pilot"
+module = "mech"
+title = "Potencia mínima del motor"
+source = "API 610 (ISO 13709), margen del motor sobre la potencia en el punto nominal"
+units = "W"
+range = "0 .. 100000000"
+test = "crates/hm-formula/tests/end_suction.rs::driver_power"
+
+[formula.inputs]
+P = "W"
+margin = "1"
+
+[formula.expr]
+value = "P*margin"
+
+[formula.notes]
+assumptions = "margin = 1,25 hasta 22 kW, 1,15 de 22 a 55 kW y 1,10 por encima (API 610). El motor es la potencia normalizada de IEC 60072-1 inmediatamente mayor."

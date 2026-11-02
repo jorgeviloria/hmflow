@@ -498,10 +498,10 @@ assumptions = "Devuelve Dn en mm como número adimensional; mm=0.001 m. En D1.A1
 [[formula]]
 id = "design.thoma_sigma"
 version = 1
-validation = "reference"
+validation = "pilot"
 module = "design"
 title = "Coeficiente de Thoma"
-source = "Thoma; Gülich 2020, cap. 6"
+source = "Srinivasan 2017, ec. (9.19b), p. 241; Gülich 2020, ec. (6.7) y tabla D6.1, p. 320"
 units = "1"
 range = "0 .. 1"
 test = "crates/hm-formula/tests/end_suction.rs::thoma_sigma"
@@ -513,15 +513,15 @@ nq = "1"
 value = "0.0012*nq^(4/3)"
 
 [formula.notes]
-assumptions = "Correlación preliminar σ = 0.0012 nq^(4/3); pendiente de contraste."
+assumptions = "σ = ns^(4/3)/4700 con ns = 3,65 nq (Srinivasan) da 0,0012 nq^(4/3). Equivale a una velocidad específica de succión nss ≈ 155, algo por debajo del rango 160..220 de Gülich para rodetes estándar: es conservadora. D1.A1 no da NPSH; no hay contraste publicado."
 
 [[formula]]
 id = "design.npshr_design"
 version = 1
-validation = "reference"
+validation = "pilot"
 module = "design"
 title = "NPSH requerido en el punto de diseño"
-source = "Thoma; Gülich 2020, cap. 6"
+source = "Definición de σ: Srinivasan 2017, ec. (2.22), p. 21 y ec. (9.19b), p. 241"
 units = "m"
 range = "0 .. 100"
 test = "crates/hm-formula/tests/end_suction.rs::npshr_design"
@@ -534,7 +534,7 @@ H = "m"
 value = "sigma*H"
 
 [formula.notes]
-assumptions = "NPSHr = σH. En D1.A1 da 1,67 m."
+assumptions = "NPSHr = σH con σ de design.thoma_sigma. Para D1.A1 da 1,67 m, pero el libro no publica NPSH de ese diseño: es un valor calculado, no de referencia."
 
 [[formula]]
 id = "design.shutoff_head"

@@ -14,6 +14,7 @@ use std::collections::BTreeMap;
 use hm_core::Diagnostic;
 use serde::{Deserialize, Serialize};
 
+use crate::geometry::Geometry;
 use crate::{
     DesignInput, DesignResult, METHOD, PARAM_SPECS, ViscousCorrection, designed_si,
     performance_curve,
@@ -75,6 +76,41 @@ pub struct ReportViscous {
     pub shaft_power: Measure,
 }
 
+/// Punto de la línea media del álabe.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct ReportBladePoint {
+    pub r: Measure,
+    pub beta: Measure,
+    pub theta: Measure,
+    pub width: Measure,
+}
+
+/// Rodete: ángulo de entrada, envolvimiento y línea media.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct ReportImpeller {
+    pub beta1b: Measure,
+    pub wrap_angle: Measure,
+    pub blade: Vec<ReportBladePoint>,
+}
+
+/// Salida de la voluta: lengua y difusor de descarga.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct ReportVoluteOutlet {
+    pub cutwater_radius: Measure,
+    pub cutwater_min_radius: Measure,
+    pub nominal_diameter: Measure,
+    pub area_ratio: Measure,
+    pub min_length: Measure,
+    pub half_angle: Measure,
+}
+
+/// Geometría neutra para el CAD.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct ReportGeometry {
+    pub impeller: ReportImpeller,
+    pub volute_outlet: ReportVoluteOutlet,
+}
+
 /// Informe completo de un diseño.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct DesignReport {
@@ -96,6 +132,9 @@ pub struct DesignReport {
     /// Corrección por viscosidad; ausente si no se evaluó.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub viscous: Option<ReportViscous>,
+    /// Geometría del álabe y de la salida de la voluta.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub geometry: Option<ReportGeometry>,
     pub diagnostics: Vec<Diagnostic>,
 }
 
@@ -183,8 +222,40 @@ impl DesignReport {
             volute_sections,
             curve,
             viscous: None,
+            geometry: None,
             diagnostics,
         }
+    }
+
+    /// Añade la geometría del álabe y de la salida de la voluta.
+    pub fn with_geometry(mut self, geometry: &Geometry) -> Self {
+        let impeller = &geometry.impeller;
+        let outlet = &geometry.outlet;
+        self.geometry = Some(ReportGeometry {
+            impeller: ReportImpeller {
+                beta1b: Measure::new(impeller.beta1b, "rad"),
+                wrap_angle: Measure::new(impeller.wrap_angle, "rad"),
+                blade: impeller
+                    .blade
+                    .iter()
+                    .map(|point| ReportBladePoint {
+                        r: Measure::new(point.r, "m"),
+                        beta: Measure::new(point.beta, "rad"),
+                        theta: Measure::new(point.theta, "rad"),
+                        width: Measure::new(point.width, "m"),
+                    })
+                    .collect(),
+            },
+            volute_outlet: ReportVoluteOutlet {
+                cutwater_radius: Measure::new(outlet.cutwater_radius, "m"),
+                cutwater_min_radius: Measure::new(outlet.cutwater_min_radius, "m"),
+                nominal_diameter: Measure::new(outlet.nominal_diameter, "m"),
+                area_ratio: Measure::new(outlet.area_ratio, "1"),
+                min_length: Measure::new(outlet.min_length, "m"),
+                half_angle: Measure::new(outlet.half_angle, "rad"),
+            },
+        });
+        self
     }
 
     /// Añade la corrección por viscosidad.

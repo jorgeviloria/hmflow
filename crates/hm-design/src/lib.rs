@@ -9,12 +9,14 @@
 use std::collections::BTreeMap;
 
 pub mod fluid;
+pub mod geometry;
 mod report;
 mod viscous;
 
 pub use fluid::{WATER_DENSITY_RANGE_C, water_density};
 pub use report::{
-    DesignReport, Measure, REPORT_FORMAT, REPORT_VERSION, ReportPoint, ReportSection, ReportViscous,
+    DesignReport, Measure, REPORT_FORMAT, REPORT_VERSION, ReportBladePoint, ReportGeometry,
+    ReportImpeller, ReportPoint, ReportSection, ReportViscous, ReportVoluteOutlet,
 };
 pub use viscous::{
     REFERENCE_WATER_NU, VISCOUS_EFFICIENCY_LOSS, VISCOUS_HEAD_LOSS, ViscousCorrection,
@@ -91,6 +93,8 @@ pub struct DesignResult {
     pub torque_max: Quantity,
     pub npshr_design: Quantity,
     pub shutoff_head: Quantity,
+    /// dz/d2 mínimo de la lengua según Gülich 2020, tabla 10.2.
+    pub cutwater_min_ratio: f64,
     /// Velocidad periférica en el diámetro de entrada D1.
     pub u1: Quantity,
     /// Velocidad relativa a la entrada, en D1: `w1 = √(cm0² + u1²)`.
@@ -393,9 +397,6 @@ pub fn param_spec(name: &str) -> Option<&'static ParamSpec> {
     PARAM_SPECS.iter().find(|spec| spec.name == name)
 }
 
-/// Radio base de la voluta por defecto, `R3 = k3·D2/2` (Srinivasan 2017, ec. 5.7).
-pub const DEFAULT_K3: f64 = 1.04;
-
 /// Factor de anchura de la voluta por defecto, `B3 = B2 + c·D2` (Srinivasan 2017, ec. 5.8).
 pub const DEFAULT_VOLUTE_C: f64 = 0.05;
 
@@ -604,7 +605,10 @@ pub fn design_with_options(
         j: options.j.unwrap_or(table.j),
         margin: options.margin.unwrap_or(table.margin),
     };
-    let k3_value = options.k3.unwrap_or(DEFAULT_K3);
+    // R3 = k3·D2/2 (Srinivasan 2017, ec. 5.7) con k3 por defecto el dz/d2
+    // mínimo de Gülich 2020, tabla 10.2, para pulsaciones de presión bajas.
+    let cutwater_min_ratio = geometry::cutwater_min_ratio(&registry, input, nq)?;
+    let k3_value = options.k3.unwrap_or(cutwater_min_ratio);
     let volute_width_value = options.volute_width_factor.unwrap_or(DEFAULT_VOLUTE_C);
     let k_eff_value = options.k_eff.unwrap_or(DEFAULT_K_EFF);
     validate_selection(&selection, k3_value, volute_width_value, k_eff_value)?;
@@ -940,6 +944,7 @@ pub fn design_with_options(
         torque_max: with_unit(torque_max, &nm),
         npshr_design,
         shutoff_head: with_unit(shutoff_head, &m),
+        cutwater_min_ratio,
         u1: with_unit(u1, &ms),
         w1,
         w2,
@@ -1057,6 +1062,11 @@ pub const MIN_HEAD_RISE: f64 = 1.2;
 /// Diferencia admitida entre la altura de Euler y la pedida cuando β2 se
 /// fija a mano. Con β2 calculado por Euler la diferencia es nula.
 pub const EULER_HEAD_TOLERANCE: f64 = 0.03;
+
+/// nq por encima del cual el álabe cilíndrico de la geometría es solo una
+/// simplificación (Gülich 2020, p. 413: β2B variable a lo ancho por encima de
+/// nq ≈ 40..60; se toma el extremo inferior).
+pub const CYLINDRICAL_BLADE_MAX_NQ: f64 = 40.0;
 
 /// Deceleración mínima `w2/w1` (criterio de de Haller; Gülich 2020, p. 413).
 pub const DE_HALLER_MIN: f64 = 0.7;
@@ -1268,6 +1278,35 @@ fn diagnostics_for(result: &DesignResult, input: &DesignInput) -> Diagnostics {
                 "Deja β2 sin fijar para que se calcule por Euler, o ajusta ψ, φ o Z \
                  (recalc --reselect lo vuelve a calcular).",
             ),
+        );
+    }
+
+    let k3 = result.volute.base_radius.si / (result.d2.si / 2.0);
+    if k3 < result.cutwater_min_ratio - 1e-9 {
+        diagnostics.push(
+            Diagnostic::warning(
+                "HM-DES-023",
+                format!(
+                    "lengua de la voluta en dz/d2 = {k3:.3}, por debajo del {:.3} de Gülich \
+                     (tabla 10.2): riesgo de pulsaciones de presión",
+                    result.cutwater_min_ratio
+                ),
+            )
+            .with_hint("Aumenta k3 o déjalo sin fijar para que tome el valor de Gülich."),
+        );
+    }
+
+    if result.nq > CYLINDRICAL_BLADE_MAX_NQ {
+        diagnostics.push(
+            Diagnostic::info(
+                "HM-DES-024",
+                format!(
+                    "con nq = {:.1} el álabe cilíndrico (2D) de la geometría es una simplificación: \
+                     por encima de nq ≈ 40..60 β2B debería variar a lo ancho (Gülich 2020, p. 413)",
+                    result.nq
+                ),
+            )
+            .with_hint("Usa la línea media del informe solo como punto de partida del álabe 3D."),
         );
     }
 

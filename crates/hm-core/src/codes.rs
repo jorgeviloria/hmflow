@@ -259,6 +259,16 @@ pub const CODES: &[CodeInfo] = &[
         Info,
         "Fluido distinto de agua sin viscosidad: no se evaluó su efecto.",
     ),
+    active(
+        "HM-DES-023",
+        Warning,
+        "Lengua de la voluta más cerca del rodete que el mínimo de Gülich (tabla 10.2).",
+    ),
+    active(
+        "HM-DES-024",
+        Info,
+        "Con nq > 40 el álabe cilíndrico de la geometría es una simplificación.",
+    ),
 ];
 
 /// Busca un código en el registro.

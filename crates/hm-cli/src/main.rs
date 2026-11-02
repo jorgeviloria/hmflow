@@ -7,9 +7,10 @@ use std::process::ExitCode;
 use clap::{Parser, Subcommand};
 use hm_core::{Diagnostic, Diagnostics};
 use hm_design::fluid::{water_kinematic_viscosity, water_vapor_pressure};
+use hm_design::geometry::geometry;
 use hm_design::{
-    DEFAULT_K_EFF, DEFAULT_K3, DEFAULT_VOLUTE_C, DesignInput, DesignOptions, DesignReport,
-    DesignResult, LEGACY_METHODS, METHOD, PARAM_SPECS, ParamSpec, WATER_DENSITY_RANGE_C, design,
+    DEFAULT_K_EFF, DEFAULT_VOLUTE_C, DesignInput, DesignOptions, DesignReport, DesignResult,
+    LEGACY_METHODS, METHOD, PARAM_SPECS, ParamSpec, WATER_DENSITY_RANGE_C, design,
     design_with_options, designed_si, param_spec, performance_curve, stored_si_matches,
     table_selection, water_density,
 };
@@ -451,6 +452,19 @@ fn run(cli: Cli) -> Result<ExitCode, Box<dyn std::error::Error>> {
                 result.p_vol_loss.value(),
                 result.p_mech_loss.value()
             );
+            let shape = geometry(&input, &result)?;
+            println!(
+                "  Álabe: β1B = {:.1} deg   envolvimiento = {:.1} deg",
+                shape.impeller.beta1b.to_degrees(),
+                shape.impeller.wrap_angle.to_degrees()
+            );
+            println!(
+                "  Salida: lengua dz/d2 = {:.3}   DN {:.0}   difusor ≥ {:.3} m ({:.1} deg)",
+                2.0 * shape.outlet.cutwater_radius / result.d2.si,
+                shape.outlet.nominal_diameter * 1000.0,
+                shape.outlet.min_length,
+                shape.outlet.half_angle.to_degrees()
+            );
             if let (Some(npsha), Some(_)) = (&input.npsha, &suction) {
                 println!("  NPSHa de la instalación = {:.2} m", npsha.si);
             }
@@ -842,7 +856,8 @@ fn design_report(
     let result = design_with_options(&input, &options)?;
     let mut diagnostics = validation.into_vec();
     diagnostics.extend(design_audit(&project).into_vec());
-    let report = DesignReport::new(&input, &result, curve_points, diagnostics);
+    let report = DesignReport::new(&input, &result, curve_points, diagnostics)
+        .with_geometry(&geometry(&input, &result)?);
     Ok(
         match project_viscosity_effect(&project, &input, &result)?.1 {
             Some(correction) => report.with_viscous(&correction),
@@ -1019,7 +1034,7 @@ fn default_manual_text(
         "A" => selection.a.to_string(),
         "J" => selection.j.to_string(),
         "margin" => selection.margin.to_string(),
-        "k3" => DEFAULT_K3.to_string(),
+        "k3" => (result.volute.base_radius.si / (result.d2.si / 2.0)).to_string(),
         "volute_c" => DEFAULT_VOLUTE_C.to_string(),
         "k_eff" => DEFAULT_K_EFF.to_string(),
         _ => return None,
@@ -1818,6 +1833,15 @@ mod tests {
 
         assert_eq!(report.method, METHOD);
         assert!(report.diagnostics.iter().all(|d| !d.is_error()));
+        let geometry = report
+            .geometry
+            .as_ref()
+            .expect("el informe lleva geometría");
+        assert_eq!(
+            geometry.impeller.blade.len(),
+            hm_design::geometry::BLADE_STEPS + 1
+        );
+        assert!(geometry.volute_outlet.nominal_diameter.value > 0.0);
         let stored = parse_quantity(param_value(&project.params["d2"]).unwrap())
             .unwrap()
             .si;

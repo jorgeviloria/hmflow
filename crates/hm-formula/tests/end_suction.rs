@@ -26,13 +26,13 @@ fn pack_is_audit_clean() {
 }
 
 #[test]
-fn pack_has_thirty_five_formulas() {
-    assert_eq!(Registry::from_toml(END_SUCTION_V01_PACK).unwrap().len(), 35);
+fn pack_has_thirty_eight_formulas() {
+    assert_eq!(Registry::from_toml(END_SUCTION_V01_PACK).unwrap().len(), 38);
 }
 
 #[test]
 fn all_merges_both_packs() {
-    assert_eq!(Registry::all().len(), 45);
+    assert_eq!(Registry::all().len(), 48);
 }
 
 #[test]
@@ -460,5 +460,58 @@ fn viscous_efficiency_factor() {
         evaluate("design.viscous_efficiency_factor", &[("Re_mod", "1e4")]),
         0.76731,
         1e-4,
+    );
+}
+
+#[test]
+fn cutwater_ratio() {
+    // 1,03 + 0,1·30/40 + 0,07·998,2·45/10⁶
+    close(
+        evaluate(
+            "design.cutwater_ratio",
+            &[
+                ("nq", "30"),
+                ("rho", "998.2 kg/m3"),
+                ("H", "45 m"),
+                ("rho_ref", "1000 kg/m3"),
+                ("H_ref", "1000 m"),
+            ],
+        ),
+        1.108144,
+        1e-6,
+    );
+}
+
+#[test]
+fn diffuser_allowable_angle() {
+    // L/R1 = 1 da 16,5° (2ϑ = 33°, curva a de la fig. 1.20); L/R1 = 4, 8,25°.
+    close(
+        evaluate(
+            "design.diffuser_allowable_angle",
+            &[("R1", "0.025 m"), ("L", "0.025 m")],
+        ),
+        16.5,
+        1e-9,
+    );
+    close(
+        evaluate(
+            "design.diffuser_allowable_angle",
+            &[("R1", "0.025 m"), ("L", "0.1 m")],
+        ),
+        8.25,
+        1e-9,
+    );
+}
+
+#[test]
+fn blade_inlet_angle() {
+    // D1.A1: arctan(2,25/7,41) = 16,89° (el libro escribe 16,9°) más i1 = 2°.
+    close(
+        evaluate(
+            "design.blade_inlet_angle",
+            &[("c1m", "2.25 m/s"), ("u1", "7.41 m/s"), ("i1", "2 deg")],
+        ),
+        18.891,
+        1e-3,
     );
 }

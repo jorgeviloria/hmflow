@@ -28,6 +28,9 @@ fn volute_follows_d2_2() {
         psi: Some(0.87),
         phi: Some(0.13),
         beta2_rad: Some(23.5f64.to_radians()),
+        // k3 de Srinivasan (ec. 5.7, 1,03..1,05); por defecto el motor usa
+        // el mínimo de Gülich (tabla 10.2), 1,11 en este caso.
+        k3: Some(1.04),
         ..DesignOptions::default()
     };
     let result = design_with_options(&input(), &options).unwrap();

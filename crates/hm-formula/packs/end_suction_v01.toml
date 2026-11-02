@@ -748,3 +748,70 @@ value = "exp(-19*Re_mod^(-0.705)*ln(Re_mod))"
 
 [formula.notes]
 assumptions = "fη = Re_mod^(−y) con y = 19/Re_mod^0,705 (exponente medio). Validez: ν ≤ 4000 cSt y 7 < nq < 50."
+
+[[formula]]
+id = "design.cutwater_ratio"
+version = 1
+validation = "pilot"
+module = "design"
+title = "Diámetro mínimo de la lengua de la voluta"
+source = "Gülich 2020, tabla 10.2, p. 729"
+units = "1"
+range = "1 .. 1.5"
+test = "crates/hm-formula/tests/end_suction.rs::cutwater_ratio"
+
+[formula.inputs]
+nq = "1"
+rho = "kg/m3"
+H = "m"
+rho_ref = "kg/m3"
+H_ref = "m"
+
+[formula.expr]
+value = "1.03 + 0.1*nq/40 + 0.07*(rho*H)/(rho_ref*H_ref)"
+
+[formula.notes]
+assumptions = "dz/d2 ≥ 1,03 + 0,1 nq/nq,Ref + 0,07 ρ Hst/(ρRef HRef) con nq,Ref = 40, ρRef = 1000 kg/m3 y HRef = 1000 m, para pulsaciones de presión bajas. H es la altura por etapa."
+
+[[formula]]
+id = "design.diffuser_allowable_angle"
+version = 1
+validation = "pilot"
+module = "design"
+title = "Semiángulo admisible de un difusor"
+source = "Gülich 2020, ec. (1.44) y fig. 1.20, pp. 30-31"
+units = "deg"
+range = "0 .. 20"
+test = "crates/hm-formula/tests/end_suction.rs::diffuser_allowable_angle"
+
+[formula.inputs]
+R1 = "m"
+L = "m"
+
+[formula.expr]
+value = "16.5*pi/180*sqrt(R1/L)"
+
+[formula.notes]
+assumptions = "ϑal = 16,5° √(R1/L), curva a-a de la fig. 1.20 (flujo adherido); vale con flujo de entrada favorable. ϑ es el semiángulo de apertura."
+
+[[formula]]
+id = "design.blade_inlet_angle"
+version = 1
+validation = "pilot"
+module = "design"
+title = "Ángulo del álabe a la entrada"
+source = "Gülich 2020, p. 411 (β1B = β1' + i1) y tabla 3.1"
+units = "deg"
+range = "5 .. 40"
+test = "crates/hm-formula/tests/end_suction.rs::blade_inlet_angle"
+
+[formula.inputs]
+c1m = "m/s"
+u1 = "m/s"
+i1 = "deg"
+
+[formula.expr]
+value = "atan(c1m/u1) + i1"
+
+[formula.notes]
+assumptions = "β1 = arctan(c1m/(u1 − c1u)) sin prerrotación (c1u = 0) y sin bloqueo por espesor de álabe (τ1 = 1); i1 = 0..4° para rodetes sin exigencia especial de cavitación."

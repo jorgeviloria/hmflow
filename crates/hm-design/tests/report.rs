@@ -130,3 +130,39 @@ fn viscous_block_is_si_and_round_trips() {
     let plain = serde_json::to_value(DesignReport::new(&input, &result, 5, Vec::new())).unwrap();
     assert!(plain.get("viscous").is_none());
 }
+
+#[test]
+fn geometry_block_is_si_and_round_trips() {
+    let input = input();
+    let result = design(&input).unwrap();
+    let shape = hm_design::geometry::geometry(&input, &result).unwrap();
+    let report = DesignReport::new(&input, &result, 5, Vec::new()).with_geometry(&shape);
+    let geometry = report.geometry.as_ref().unwrap();
+    let outlet = &geometry.volute_outlet;
+    let mut measures = vec![
+        &geometry.impeller.beta1b,
+        &geometry.impeller.wrap_angle,
+        &outlet.cutwater_radius,
+        &outlet.cutwater_min_radius,
+        &outlet.nominal_diameter,
+        &outlet.area_ratio,
+        &outlet.min_length,
+        &outlet.half_angle,
+    ];
+    for point in &geometry.impeller.blade {
+        measures.extend([&point.r, &point.beta, &point.theta, &point.width]);
+    }
+    for measure in measures {
+        let unit = parse_unit(&measure.unit).unwrap();
+        assert!(
+            (unit.factor - 1.0).abs() < 1e-12 && unit.offset == 0.0,
+            "{}",
+            measure.unit
+        );
+        assert!(measure.value.is_finite());
+    }
+    assert_eq!(geometry.impeller.blade.len(), shape.impeller.blade.len());
+    let text = serde_json::to_string(&report).unwrap();
+    let back: DesignReport = serde_json::from_str(&text).unwrap();
+    assert_eq!(back, report);
+}

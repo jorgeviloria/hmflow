@@ -129,7 +129,19 @@ pub struct ParamSpec {
     pub formula: Option<&'static str>,
 }
 
-/// Parámetros que genera o consume el diseño end-suction v0.1.
+/// Método de diseño que implementa este motor, tal como se guarda en el
+/// `.hmf`. Cambia cada vez que el mismo proyecto daría otros resultados.
+///
+/// - v0.1: selecciones por tablas, c2u con el deslizamiento sobre todo el
+///   término, NPSHr con k = 1,5 y margen fijo de 0,5 m.
+/// - v0.2: ψ y φ de Gülich, β2 por Euler, c2u de Gülich (tabla 3.2), NPSHr y
+///   margen de Gülich (§6.3.3 y tabla 6.2), H0 de Gülich (3.28).
+pub const METHOD: &str = "end_suction_v0.2";
+
+/// Métodos anteriores que `recalc` sabe migrar a [`METHOD`].
+pub const LEGACY_METHODS: &[&str] = &["end_suction_v0.1"];
+
+/// Parámetros que genera o consume el método [`METHOD`].
 pub const PARAM_SPECS: &[ParamSpec] = &[
     ParamSpec {
         name: "rho",

@@ -8,8 +8,9 @@ use clap::{Parser, Subcommand};
 use hm_core::{Diagnostic, Diagnostics};
 use hm_design::{
     DEFAULT_K_EFF, DEFAULT_K3, DEFAULT_VOLUTE_C, DesignInput, DesignOptions, DesignResult,
-    PARAM_SPECS, ParamSpec, WATER_DENSITY_RANGE_C, design, design_with_options, designed_si,
-    param_spec, performance_curve, stored_si_matches, table_selection, water_density,
+    LEGACY_METHODS, METHOD, PARAM_SPECS, ParamSpec, WATER_DENSITY_RANGE_C, design,
+    design_with_options, designed_si, param_spec, performance_curve, stored_si_matches,
+    table_selection, water_density,
 };
 use hm_formula::{Registry, eval, infer, parse};
 use hm_project::{Param, Project, PumpType};
@@ -407,7 +408,7 @@ fn run(cli: Cli) -> Result<ExitCode, Box<dyn std::error::Error>> {
             project.operating.fluid = fluid;
             project.operating.temperature = temperature;
             project.operating.npsha = npsha_text.unwrap_or_default();
-            project.design.method = "end_suction_v0.1".to_string();
+            project.design.method = METHOD.to_string();
 
             let defaults = ManualDefaults {
                 rho: rho_text,
@@ -603,9 +604,11 @@ fn recalc(file: &std::path::Path, reselect: bool) -> Result<ExitCode, Box<dyn st
         )
         .into());
     }
-    if !project.design.method.is_empty() && project.design.method != "end_suction_v0.1" {
+    let legacy = LEGACY_METHODS.contains(&project.design.method.as_str());
+    if !project.design.method.is_empty() && project.design.method != METHOD && !legacy {
         return Err(format!("método de diseño desconocido: {}", project.design.method).into());
     }
+    let migrated_from = legacy.then(|| project.design.method.clone());
     if let Some(name) = project
         .params
         .keys()
@@ -642,7 +645,7 @@ fn recalc(file: &std::path::Path, reselect: bool) -> Result<ExitCode, Box<dyn st
     };
     let (params, filled) = design_params(&result, Some(&project.params), &defaults)?;
     project.params = params;
-    project.design.method = "end_suction_v0.1".to_string();
+    project.design.method = METHOD.to_string();
 
     let diagnostics = project.validate(&Registry::all());
     if diagnostics.has_errors() {
@@ -670,6 +673,9 @@ fn recalc(file: &std::path::Path, reselect: bool) -> Result<ExitCode, Box<dyn st
     {
         let value = project.params.get(name).and_then(param_value).unwrap_or("");
         println!("  `{name}` no estaba en el proyecto; se usó {value}");
+    }
+    if let Some(old) = migrated_from {
+        println!("  método migrado de {old} a {METHOD}");
     }
     println!("recalculado {}", file.display());
     Ok(ExitCode::SUCCESS)
@@ -737,7 +743,7 @@ fn auto_text(
 /// Parámetros generados y nombres de los manuales que se rellenaron.
 type GeneratedParams = (BTreeMap<String, Param>, Vec<String>);
 
-/// Parámetros del método end_suction_v0.1 para `result`.
+/// Parámetros del método [`METHOD`] para `result`.
 ///
 /// Los `auto` se escriben siempre con el valor recalculado. Los manuales y
 /// bloqueados de `existing` se conservan; los que faltan se rellenan con el
@@ -959,25 +965,40 @@ fn npsh_fluid_diagnostics(fluid: &str, npsh_checked: bool) -> Diagnostics {
 fn design_audit(project: &Project) -> Diagnostics {
     let mut diagnostics = Diagnostics::new();
 
-    if !project.design.method.is_empty() && project.design.method != "end_suction_v0.1" {
+    if LEGACY_METHODS.contains(&project.design.method.as_str()) {
+        diagnostics.push(
+            Diagnostic::error(
+                "HM-PROJ-022",
+                format!(
+                    "el proyecto se diseñó con {}; el motor actual es {METHOD} y da otra geometría",
+                    project.design.method
+                ),
+            )
+            .with_hint(
+                "Ejecuta `hmflow-cli recalc --reselect <archivo>` para migrarlo con las \
+                 selecciones nuevas, o `recalc` sin --reselect para conservar las tuyas.",
+            ),
+        );
+        return diagnostics;
+    }
+
+    if !project.design.method.is_empty() && project.design.method != METHOD {
         diagnostics.push(
             Diagnostic::error(
                 "HM-PROJ-016",
                 format!("método de diseño desconocido: {}", project.design.method),
             )
-            .with_hint("Métodos conocidos: end_suction_v0.1."),
+            .with_hint(format!("Métodos conocidos: {METHOD}.")),
         );
         return diagnostics;
     }
 
-    if project.design.method == "end_suction_v0.1"
-        && project.design.pump_type != PumpType::EndSuction
-    {
+    if project.design.method == METHOD && project.design.pump_type != PumpType::EndSuction {
         diagnostics.push(
             Diagnostic::error(
                 "HM-PROJ-016",
                 format!(
-                    "el método end_suction_v0.1 no aplica a {}",
+                    "el método {METHOD} no aplica a {}",
                     project.design.pump_type
                 ),
             )
@@ -987,7 +1008,7 @@ fn design_audit(project: &Project) -> Diagnostics {
     }
 
     if project.design.pump_type == PumpType::EndSuction
-        && (project.design.method == "end_suction_v0.1" || !project.params.is_empty())
+        && (project.design.method == METHOD || !project.params.is_empty())
     {
         validate_design_schema(project, &mut diagnostics);
     }
@@ -1244,7 +1265,7 @@ mod tests {
     #[test]
     fn end_suction_method_on_barrel_is_reported() {
         let mut project = Project::new("demo", PumpType::Barrel);
-        project.design.method = "end_suction_v0.1".to_string();
+        project.design.method = METHOD.to_string();
 
         let diagnostics = design_audit(&project);
         assert!(codes(&diagnostics).contains(&"HM-PROJ-016"));
@@ -1273,7 +1294,7 @@ mod tests {
     #[test]
     fn unknown_parameter_is_reported() {
         let mut project = Project::new("demo", PumpType::EndSuction);
-        project.design.method = "end_suction_v0.1".to_string();
+        project.design.method = METHOD.to_string();
         project
             .params
             .insert("d22".to_string(), manual("0.2 m".to_string()));
@@ -1286,7 +1307,7 @@ mod tests {
     #[test]
     fn missing_parameter_is_reported() {
         let mut project = Project::new("demo", PumpType::EndSuction);
-        project.design.method = "end_suction_v0.1".to_string();
+        project.design.method = METHOD.to_string();
 
         let mut diagnostics = Diagnostics::new();
         validate_design_schema(&project, &mut diagnostics);
@@ -1296,7 +1317,7 @@ mod tests {
     #[test]
     fn wrong_formula_is_reported() {
         let mut project = Project::new("demo", PumpType::EndSuction);
-        project.design.method = "end_suction_v0.1".to_string();
+        project.design.method = METHOD.to_string();
         project
             .params
             .insert("d2".to_string(), auto("design.d1", "0.2 m".to_string()));
@@ -1309,7 +1330,7 @@ mod tests {
     #[test]
     fn override_is_not_audited() {
         let mut project = Project::new("demo", PumpType::EndSuction);
-        project.design.method = "end_suction_v0.1".to_string();
+        project.design.method = METHOD.to_string();
         project.params.insert(
             "psi".to_string(),
             Param::Override {
@@ -1328,7 +1349,7 @@ mod tests {
     #[test]
     fn blade_count_must_be_an_integer() {
         let mut project = Project::new("demo", PumpType::EndSuction);
-        project.design.method = "end_suction_v0.1".to_string();
+        project.design.method = METHOD.to_string();
         project
             .params
             .insert("blade_count".to_string(), manual("7.5".to_string()));
@@ -1451,6 +1472,38 @@ mod tests {
     }
 
     #[test]
+    fn legacy_method_gets_a_single_migration_error() {
+        let mut project = designed_project();
+        project.design.method = "end_suction_v0.1".to_string();
+        let diagnostics = design_audit(&project);
+        assert_eq!(codes(&diagnostics), ["HM-PROJ-022"]);
+    }
+
+    #[test]
+    fn recalc_migrates_a_legacy_project() {
+        let path = std::env::temp_dir().join(format!(
+            "hmflow-legacy-{}-{:?}.hmf",
+            std::process::id(),
+            std::thread::current().id()
+        ));
+        let mut project = designed_project();
+        project.design.method = "end_suction_v0.1".to_string();
+        project.save(&path).unwrap();
+
+        recalc(&path, true).unwrap();
+        let project = Project::load(&path).unwrap();
+        std::fs::remove_file(&path).unwrap();
+
+        assert_eq!(project.design.method, METHOD);
+        let diagnostics = design_audit(&project);
+        assert!(
+            !diagnostics.has_errors(),
+            "códigos: {:?}",
+            codes(&diagnostics)
+        );
+    }
+
+    #[test]
     fn densities_of_liquid_water_are_recognised() {
         assert!(looks_like_water(998.2));
         assert!(looks_like_water(971.8));
@@ -1542,7 +1595,7 @@ mod tests {
     fn designed_project() -> Project {
         let result = sample_design();
         let mut project = Project::new("demo", PumpType::EndSuction);
-        project.design.method = "end_suction_v0.1".to_string();
+        project.design.method = METHOD.to_string();
         project.operating.npsha = "15 m".to_string();
         let defaults = ManualDefaults {
             rho: "998.2 kg/m3".to_string(),

@@ -230,7 +230,7 @@ impl Project {
                 Diagnostic::error(
                     "HM-PROJ-021",
                     format!(
-                        "el motor de diseño end-suction v0.1 solo soporta una etapa; hay {}",
+                        "el motor de diseño end-suction solo soporta una etapa; hay {}",
                         self.design.stages
                     ),
                 )

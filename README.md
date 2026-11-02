@@ -3,7 +3,7 @@
 Suite open source de diseño de bombas centrífugas, escrita en Rust.
 
 > Estado: **Parte 0 — cimientos** y primer motor de diseño end-suction. El
-> repositorio compila, hay 42 fórmulas auditadas (13 piloto, 29 con referencia
+> repositorio compila, hay 45 fórmulas auditadas (16 piloto, 29 con referencia
 > de ejemplo resuelto; sin validación de banco) y `design` genera geometría,
 > voluta, pérdidas y curvas preliminares. Todavía no hay CAD ni interfaz
 > gráfica.
@@ -48,6 +48,11 @@ cargo run -p hmflow-cli -- design --q "120 m3/h" --h "45 m" --n "2900 rpm" --nps
 
 # Agua caliente: sin --rho se usa la densidad del agua a esa temperatura
 cargo run -p hmflow-cli -- design --temperature "80 degC" --npsha "15 m" --out caliente.hmf
+
+# NPSHa calculado de la instalación (presión de vapor del agua por IAPWS-IF97)
+# y corrección por viscosidad de un aceite
+cargo run -p hmflow-cli -- design --fluid oil --rho "880 kg/m3" --viscosity "100 cSt" \
+  --suction-pressure "1 atm" --suction-height "8 m" --vapor-pressure "1 kPa" --out aceite.hmf
 
 # Validarlo: dimensiones, signos, campos desconocidos, esquema del método y avisos
 cargo run -p hmflow-cli -- check bomba.hmf

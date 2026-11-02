@@ -1,0 +1,15 @@
+HidroMac Flow (HMFlow)
+Copyright 2026 Jorge Viloria and HidroMac Flow contributors
+
+This product is licensed under the Apache License, Version 2.0, or the MIT
+License, at your option. See LICENSE-APACHE and LICENSE-MIT.
+
+Developed with the support of Hidromac and validated on its test bench.
+Hidromac does not control the roadmap of this project and is not responsible
+for its results.
+
+"Hidromac" and "HidroMac Flow" are names used with the permission of their
+respective owners. All other trademarks are the property of their owners and
+are mentioned only where required for attribution or interoperability.
+
+Third-party components and their licenses are listed in ATTRIBUTION.md.

@@ -1,0 +1,212 @@
+# Pack piloto de HidroMac Flow.
+#
+# Cada fórmula declara fuente pública, rango de validez y test.
+# Las unidades se escriben con el parser de hm-units.
+
+[[formula]]
+id = "impeller.head_euler"
+version = 1
+module = "impeller"
+title = "Altura teórica de Euler"
+source = "Euler; Gülich 2020, cap. 3"
+units = "m"
+range = "0 .. 5000"
+test = "crates/hm-formula/tests/pilot.rs::head_euler"
+
+[formula.inputs]
+u2 = "m/s"
+cu2 = "m/s"
+u1 = "m/s"
+cu1 = "m/s"
+
+[formula.expr]
+value = "(u2*cu2 - u1*cu1)/g"
+
+[formula.notes]
+assumptions = "Flujo sin pérdidas, número infinito de álabes y componente meridional despreciable a la salida."
+
+[[formula]]
+id = "impeller.peripheral_speed"
+version = 1
+module = "impeller"
+title = "Velocidad periférica"
+source = "Cinemática de turbomáquinas; Gülich 2020, cap. 2"
+units = "m/s"
+range = "0 .. 200"
+test = "crates/hm-formula/tests/pilot.rs::peripheral_speed"
+
+[formula.inputs]
+d2 = "m"
+n = "1/s"
+
+[formula.expr]
+value = "pi*d2*n"
+
+[formula.notes]
+assumptions = "n es frecuencia de giro en revoluciones por segundo."
+
+[[formula]]
+id = "impeller.flow_coefficient"
+version = 1
+module = "impeller"
+title = "Coeficiente de caudal"
+source = "Gülich 2020, cap. 3"
+units = "1"
+range = "0 .. 1"
+test = "crates/hm-formula/tests/pilot.rs::flow_coefficient"
+
+[formula.inputs]
+cm2 = "m/s"
+u2 = "m/s"
+
+[formula.expr]
+value = "cm2/u2"
+
+[formula.notes]
+assumptions = "Definición φ = cm2/u2 con la componente meridional a la salida."
+
+[[formula]]
+id = "impeller.head_coefficient"
+version = 1
+module = "impeller"
+title = "Coeficiente de altura"
+source = "Gülich 2020, cap. 3"
+units = "1"
+range = "0 .. 2"
+test = "crates/hm-formula/tests/pilot.rs::head_coefficient"
+
+[formula.inputs]
+H = "m"
+u2 = "m/s"
+
+[formula.expr]
+value = "2*g*H/u2^2"
+
+[formula.notes]
+assumptions = "Definición ψ = 2gH/u2^2."
+
+[[formula]]
+id = "impeller.meridional_velocity"
+version = 1
+module = "impeller"
+title = "Velocidad meridional a la salida"
+source = "Continuidad; Gülich 2020, cap. 3"
+units = "m/s"
+range = "0 .. 30"
+test = "crates/hm-formula/tests/pilot.rs::meridional_velocity"
+
+[formula.inputs]
+Q = "m3/s"
+d2 = "m"
+b2 = "m"
+
+[formula.expr]
+value = "Q/(pi*d2*b2)"
+
+[formula.notes]
+assumptions = "Área de salida sin bloqueo de álabes ni espesor."
+
+[[formula]]
+id = "similarity.nq"
+version = 1
+module = "similarity"
+title = "Velocidad específica nq"
+source = "Gülich 2020, cap. 1; convención europea"
+units = "1"
+range = "5 .. 150"
+test = "crates/hm-formula/tests/pilot.rs::nq"
+
+[formula.inputs]
+n = "1/s"
+Q = "m3/s"
+H = "m"
+
+[formula.expr]
+value = "nq(n, Q, H)"
+
+[formula.notes]
+assumptions = "nq = n[min^-1] * sqrt(Q[m3/s]) / H[m]^0.75. La función nq aplica el factor 60 y documenta la convención."
+
+[[formula]]
+id = "perf.hydraulic_power"
+version = 1
+module = "perf"
+title = "Potencia hidráulica"
+source = "Definición de potencia hidráulica; Gülich 2020, cap. 1"
+units = "W"
+range = "0 .. 100000000"
+test = "crates/hm-formula/tests/pilot.rs::hydraulic_power"
+
+[formula.inputs]
+rho = "kg/m3"
+Q = "m3/s"
+H = "m"
+
+[formula.expr]
+value = "rho*g*Q*H"
+
+[formula.notes]
+assumptions = "Fluido incompresible y altura manométrica total."
+
+[[formula]]
+id = "perf.efficiency"
+version = 1
+module = "perf"
+title = "Eficiencia total"
+source = "Definición de eficiencia; ISO 9906"
+units = "1"
+range = "0 .. 1"
+test = "crates/hm-formula/tests/pilot.rs::efficiency"
+
+[formula.inputs]
+P_hyd = "W"
+P_shaft = "W"
+
+[formula.expr]
+value = "P_hyd/P_shaft"
+
+[formula.notes]
+assumptions = "P_shaft medida en el eje, no en la borna del motor."
+
+[[formula]]
+id = "npsh.npsha"
+version = 1
+module = "npsh"
+title = "NPSH disponible"
+source = "Gülich 2020, cap. 6; ISO 9906"
+units = "m"
+range = "-10 .. 100"
+test = "crates/hm-formula/tests/pilot.rs::npsha"
+
+[formula.inputs]
+p_s = "Pa"
+p_v = "Pa"
+rho = "kg/m3"
+z = "m"
+hf = "m"
+
+[formula.expr]
+value = "(p_s - p_v)/(rho*g) + z - hf"
+
+[formula.notes]
+assumptions = "p_s es la presión absoluta en el depósito de succión; hf son las pérdidas en la línea."
+
+[[formula]]
+id = "mech.shaft_torque"
+version = 1
+module = "mech"
+title = "Par en el eje"
+source = "Potencia y velocidad angular; Gülich 2020, cap. 1"
+units = "N*m"
+range = "0 .. 1000000"
+test = "crates/hm-formula/tests/pilot.rs::shaft_torque"
+
+[formula.inputs]
+P = "W"
+n = "1/s"
+
+[formula.expr]
+value = "P/(2*pi*n)"
+
+[formula.notes]
+assumptions = "Régimen estacionario, sin pérdidas en el acoplamiento."

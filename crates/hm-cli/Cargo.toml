@@ -1,0 +1,18 @@
+[package]
+name = "hmflow-cli"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+authors.workspace = true
+
+[[bin]]
+name = "hmflow-cli"
+path = "src/main.rs"
+
+[dependencies]
+clap = { workspace = true }
+hm-core = { path = "../hm-core" }
+hm-formula = { path = "../hm-formula" }
+hm-project = { path = "../hm-project" }
+hm-units = { path = "../hm-units" }

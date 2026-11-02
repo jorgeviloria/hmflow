@@ -1,0 +1,9 @@
+id = "0002-power"
+title = "Potencia hidráulica de una bomba de agua"
+formula = "perf.hydraulic_power"
+source = "analytic"
+
+[inputs]
+rho = "998.2 kg/m3"
+Q = "120 m3/h"
+H = "45 m"

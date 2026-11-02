@@ -1,0 +1,11 @@
+id = "0003-npsha"
+title = "NPSH disponible en succión"
+formula = "npsh.npsha"
+source = "analytic"
+
+[inputs]
+p_s = "101325 Pa"
+p_v = "2339 Pa"
+rho = "998.2 kg/m3"
+z = "2 m"
+hf = "0.5 m"

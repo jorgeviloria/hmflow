@@ -1,0 +1,87 @@
+use hm_units::{Dimension, Unit, parse_quantity, parse_unit};
+
+#[test]
+fn adding_compatible_units_keeps_left_unit() {
+    let a = parse_quantity("1 m").unwrap();
+    let b = parse_quantity("50 cm").unwrap();
+    let sum = a.add(&b).unwrap();
+    assert!((sum.value() - 1.5).abs() < 1e-12);
+}
+
+#[test]
+fn adding_incompatible_units_fails() {
+    let a = parse_quantity("1 m").unwrap();
+    let b = parse_quantity("1 s").unwrap();
+    assert!(a.add(&b).is_err());
+}
+
+#[test]
+fn multiplying_combines_dimensions() {
+    let a = parse_quantity("2 m").unwrap();
+    let b = parse_quantity("3 m").unwrap();
+    let area = a.mul(&b);
+    assert_eq!(area.dim(), Dimension::AREA);
+    assert!((area.si - 6.0).abs() < 1e-12);
+}
+
+#[test]
+fn density_from_mass_and_volume() {
+    let mass = parse_quantity("998.2 kg").unwrap();
+    let volume = parse_quantity("1 m3").unwrap();
+    let rho = mass.div(&volume).unwrap();
+    assert_eq!(rho.dim(), Dimension::DENSITY);
+    assert!((rho.si - 998.2).abs() < 1e-9);
+}
+
+#[test]
+fn pressure_is_force_over_area() {
+    let force = parse_quantity("10 N").unwrap();
+    let area = parse_quantity("2 m2").unwrap();
+    let p = force.div(&area).unwrap();
+    assert_eq!(p.dim(), Dimension::PRESSURE);
+    assert!((p.si - 5.0).abs() < 1e-12);
+}
+
+#[test]
+fn conversion_between_units() {
+    let q = parse_quantity("1 bar").unwrap();
+    let kpa = parse_unit("kPa").unwrap();
+    let converted = q.to(&kpa).unwrap();
+    assert!((converted.value() - 100.0).abs() < 1e-9);
+}
+
+#[test]
+fn sqrt_of_area_is_length() {
+    let area = parse_quantity("4 m2").unwrap();
+    let side = area.sqrt();
+    assert_eq!(side.dim(), Dimension::LENGTH);
+    assert!((side.si - 2.0).abs() < 1e-12);
+}
+
+#[test]
+fn division_by_zero_fails() {
+    let a = parse_quantity("1 m").unwrap();
+    let b = parse_quantity("0 m").unwrap();
+    assert!(a.div(&b).is_err());
+}
+
+#[test]
+fn offset_unit_roundtrip() {
+    let q = parse_quantity("20 degC").unwrap();
+    let kelvin = parse_unit("K").unwrap();
+    assert!((q.to(&kelvin).unwrap().value() - 293.15).abs() < 1e-9);
+}
+
+#[test]
+fn us_units_convert() {
+    let q = parse_quantity("1000 gpm").unwrap();
+    // 1 gal = 3.785411784 L
+    let expected = 1000.0 * 3.785_411_784e-3 / 60.0;
+    assert!((q.si - expected).abs() < 1e-9);
+}
+
+#[test]
+fn unit_base_symbol_is_readable() {
+    let u = Unit::base(Dimension::POWER);
+    assert_eq!(u.symbol, "m2*kg/s3");
+}

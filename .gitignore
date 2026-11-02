@@ -1,0 +1,9 @@
+/target
+**/*.rs.bk
+.DS_Store
+
+# Datos de ensayo crudos: nunca se publican.
+/oracle/
+
+# Proyectos locales de trabajo
+*.local.hmf

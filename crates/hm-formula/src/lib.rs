@@ -1,0 +1,21 @@
+//! Motor de fórmulas de HidroMac Flow.
+//!
+//! Una fórmula es un TOML con entradas tipadas, una expresión, una fuente
+//! pública, un rango de validez y un test. El motor comprueba dimensiones antes
+//! de evaluar y nunca devuelve un `NaN` silencioso.
+
+mod ast;
+mod error;
+mod eval;
+mod lexer;
+mod parser;
+mod registry;
+
+pub use ast::{BinOp, Expr, UnOp};
+pub use error::FormulaError;
+pub use eval::{constant, eval, infer};
+pub use parser::parse;
+pub use registry::{AuditIssue, FormulaSpec, Notes, Pack, Registry};
+
+/// Pack de fórmulas integrado.
+pub const BUILTIN_PACK: &str = include_str!("../packs/pilot.toml");

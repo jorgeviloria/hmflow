@@ -1,0 +1,10 @@
+id = "0001-euler"
+title = "Altura de Euler con triángulo dado"
+formula = "impeller.head_euler"
+source = "analytic"
+
+[inputs]
+u2 = "30 m/s"
+cu2 = "20 m/s"
+u1 = "10 m/s"
+cu1 = "5 m/s"

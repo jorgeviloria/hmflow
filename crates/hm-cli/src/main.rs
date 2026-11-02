@@ -9,7 +9,7 @@ use hm_core::{Diagnostic, Diagnostics};
 use hm_design::{
     DEFAULT_K_EFF, DEFAULT_K3, DEFAULT_VOLUTE_C, DesignInput, DesignOptions, DesignResult,
     PARAM_SPECS, ParamSpec, design, design_with_options, designed_si, param_spec,
-    performance_curve, stored_si_matches,
+    performance_curve, stored_si_matches, table_selection,
 };
 use hm_formula::{Registry, eval, infer, parse};
 use hm_project::{Param, Project, PumpType};
@@ -49,6 +49,11 @@ enum Command {
     Recalc {
         /// Ruta del archivo .hmf.
         file: PathBuf,
+        /// Vuelve a tomar de la tabla las selecciones que dependen de nq
+        /// (psi, phi, beta2, blade_count, c0, cm0) salvo las que estén en
+        /// locked.
+        #[arg(long)]
+        reselect: bool,
     },
     /// Lista las fórmulas disponibles.
     Formulas,
@@ -188,7 +193,7 @@ fn run(cli: Cli) -> Result<ExitCode, Box<dyn std::error::Error>> {
             }
         }
 
-        Command::Recalc { file } => recalc(&file),
+        Command::Recalc { file, reselect } => recalc(&file, reselect),
 
         Command::Formulas => {
             let registry = Registry::all();
@@ -487,15 +492,84 @@ fn recompute_design_diagnostics(
     let result = design_with_options(&input, &options)?;
     let mut diagnostics = result.diagnostics.clone();
     add_fluid_temperature_diagnostics(project, &input, &mut diagnostics);
+    add_selection_diagnostics(project, &result, &mut diagnostics);
     compare_stored_autos(&result, project, &mut diagnostics);
     Ok(Some(diagnostics))
+}
+
+/// Selecciones que el motor toma de sus tablas según `nq`.
+const NQ_SELECTIONS: [&str; 6] = ["psi", "phi", "beta2", "blade_count", "c0", "cm0"];
+
+/// Valor de tabla, en SI, de una selección que depende de `nq`.
+fn table_si(name: &str, nq: f64) -> Option<f64> {
+    let table = table_selection(nq);
+    Some(match name {
+        "psi" => table.psi,
+        "phi" => table.phi,
+        "beta2" => table.beta2_deg.to_radians(),
+        "blade_count" => f64::from(table.blade_count),
+        "c0" => table.c0,
+        "cm0" => table.cm0,
+        _ => return None,
+    })
+}
+
+/// Selecciones `manual` que ya no coinciden con la tabla para el `nq` actual.
+///
+/// `design` escribe como `manual` lo que eligió la tabla. Si después cambia
+/// el punto de operación, esos valores quedan de otro `nq`. Las `locked` son
+/// decisiones explícitas y no se señalan.
+fn stale_selections(project: &Project, nq: f64) -> Vec<&'static str> {
+    NQ_SELECTIONS
+        .into_iter()
+        .filter(|name| {
+            let Some(Param::Manual { value }) = project.params.get(*name) else {
+                return false;
+            };
+            let (Ok(quantity), Some(expected)) = (parse_quantity(value), table_si(name, nq)) else {
+                return false;
+            };
+            !stored_si_matches(expected, quantity.si)
+        })
+        .collect()
+}
+
+fn add_selection_diagnostics(
+    project: &Project,
+    result: &DesignResult,
+    diagnostics: &mut Diagnostics,
+) {
+    let stale = stale_selections(project, result.nq);
+    if stale.is_empty() {
+        return;
+    }
+    let names = stale
+        .iter()
+        .map(|name| format!("`{name}`"))
+        .collect::<Vec<_>>()
+        .join(", ");
+    diagnostics.push(
+        Diagnostic::warning(
+            "HM-DES-013",
+            format!(
+                "{names} no {} con la tabla para nq = {:.2}; puede venir de otro punto de operación",
+                if stale.len() == 1 { "coincide" } else { "coinciden" },
+                result.nq
+            ),
+        )
+        .with_hint(
+            "Usa `hmflow-cli recalc --reselect <archivo>` para volver a la tabla, \
+             o márcalas como locked si son decisiones tuyas.",
+        ),
+    );
 }
 
 /// Recalcula los `auto` de un proyecto end-suction y lo reescribe.
 ///
 /// Conserva los parámetros manuales y bloqueados; los que falten se rellenan
-/// con la selección del motor y se informa de cada uno.
-fn recalc(file: &std::path::Path) -> Result<ExitCode, Box<dyn std::error::Error>> {
+/// con la selección del motor y se informa de cada uno. Con `reselect`, las
+/// selecciones `manual` que dependen de `nq` se vuelven a tomar de la tabla.
+fn recalc(file: &std::path::Path, reselect: bool) -> Result<ExitCode, Box<dyn std::error::Error>> {
     let mut project = Project::load(file)?;
 
     let diagnostics = project.validate(&Registry::all());
@@ -523,10 +597,21 @@ fn recalc(file: &std::path::Path) -> Result<ExitCode, Box<dyn std::error::Error>
         );
     }
 
+    let mut reselected = Vec::new();
+    if reselect {
+        for name in NQ_SELECTIONS {
+            if let Some(Param::Manual { value }) = project.params.get(name) {
+                reselected.push((name, value.clone()));
+                project.params.remove(name);
+            }
+        }
+    }
+
     let (input, options) = design_inputs(&project)?;
     let result = design_with_options(&input, &options)?;
     let mut diagnostics = result.diagnostics.clone();
     add_fluid_temperature_diagnostics(&project, &input, &mut diagnostics);
+    add_selection_diagnostics(&project, &result, &mut diagnostics);
     print_diagnostics(&diagnostics);
     if diagnostics.has_errors() {
         return Err("el diseño tiene errores; no se escribió el proyecto".into());
@@ -547,7 +632,23 @@ fn recalc(file: &std::path::Path) -> Result<ExitCode, Box<dyn std::error::Error>
     }
 
     project.save(file)?;
-    for name in &filled {
+    for (name, old) in &reselected {
+        let value = project
+            .params
+            .get(*name)
+            .and_then(param_value)
+            .unwrap_or("");
+        if old != value {
+            println!(
+                "  `{name}`: {old} → {value} (tabla para nq = {:.2})",
+                result.nq
+            );
+        }
+    }
+    for name in filled
+        .iter()
+        .filter(|name| !reselected.iter().any(|(old, _)| old == name))
+    {
         let value = project.params.get(name).and_then(param_value).unwrap_or("");
         println!("  `{name}` no estaba en el proyecto; se usó {value}");
     }
@@ -1349,5 +1450,96 @@ mod tests {
                 codes(&diagnostics)
             );
         }
+    }
+
+    /// Proyecto diseñado para 120 m3/h cuyo caudal pasa a 250 m3/h: nq sube
+    /// de 30,5 a 44 y cambia de tramo en la tabla.
+    fn moved_duty_project() -> Project {
+        let mut project = designed_project();
+        project.operating.q = "250 m3/h".to_string();
+        project.operating.npsha = "15 m".to_string();
+        project
+    }
+
+    #[test]
+    fn selections_from_another_duty_are_flagged() {
+        let diagnostics = design_audit(&moved_duty_project());
+        assert!(
+            codes(&diagnostics).contains(&"HM-DES-013"),
+            "códigos: {:?}",
+            codes(&diagnostics)
+        );
+        assert!(!codes(&designed_project_diagnostics()).contains(&"HM-DES-013"));
+    }
+
+    fn designed_project_diagnostics() -> Diagnostics {
+        design_audit(&designed_project())
+    }
+
+    #[test]
+    fn locked_selections_are_not_flagged() {
+        let mut project = moved_duty_project();
+        for name in NQ_SELECTIONS {
+            let value = param_value(&project.params[name]).unwrap().to_string();
+            project
+                .params
+                .insert(name.to_string(), Param::Locked { value });
+        }
+        assert_eq!(stale_selections(&project, 44.0), Vec::<&str>::new());
+    }
+
+    #[test]
+    fn reselect_takes_the_table_for_the_new_nq() {
+        let path = std::env::temp_dir().join(format!(
+            "hmflow-reselect-{}-{:?}.hmf",
+            std::process::id(),
+            std::thread::current().id()
+        ));
+        let mut project = moved_duty_project();
+        project.params.insert(
+            "blade_count".to_string(),
+            Param::Locked {
+                value: "7".to_string(),
+            },
+        );
+        project.save(&path).unwrap();
+
+        recalc(&path, true).unwrap();
+        let project = Project::load(&path).unwrap();
+        std::fs::remove_file(&path).unwrap();
+
+        assert_eq!(project.params.get("psi").and_then(param_value), Some("0.8"));
+        assert_eq!(
+            project.params.get("blade_count").and_then(param_value),
+            Some("7"),
+            "una selección locked no se toca"
+        );
+        let diagnostics = design_audit(&project);
+        assert!(
+            !diagnostics.has_errors(),
+            "códigos: {:?}",
+            codes(&diagnostics)
+        );
+        assert!(!codes(&diagnostics).contains(&"HM-DES-013"));
+    }
+
+    #[test]
+    fn recalc_without_reselect_keeps_the_old_selections() {
+        let path = std::env::temp_dir().join(format!(
+            "hmflow-keep-{}-{:?}.hmf",
+            std::process::id(),
+            std::thread::current().id()
+        ));
+        moved_duty_project().save(&path).unwrap();
+
+        recalc(&path, false).unwrap();
+        let project = Project::load(&path).unwrap();
+        std::fs::remove_file(&path).unwrap();
+
+        assert_eq!(
+            project.params.get("psi").and_then(param_value),
+            Some("0.87")
+        );
+        assert!(codes(&design_audit(&project)).contains(&"HM-DES-013"));
     }
 }

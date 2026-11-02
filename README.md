@@ -53,6 +53,10 @@ cargo run -p hmflow-cli -- check bomba.hmf
 # los parámetros automáticos conservando las selecciones manuales
 cargo run -p hmflow-cli -- recalc bomba.hmf
 
+# Tras cambiar Q, H o n, volver a tomar de la tabla las selecciones que
+# dependen de nq (las locked se respetan)
+cargo run -p hmflow-cli -- recalc --reselect bomba.hmf
+
 # Ver las fórmulas disponibles
 cargo run -p hmflow-cli -- formulas
 

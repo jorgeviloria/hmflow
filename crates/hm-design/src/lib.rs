@@ -388,6 +388,22 @@ pub struct DesignOptions {
     pub k_eff: Option<f64>,
 }
 
+/// Selecciones que el motor toma de sus tablas para un `nq` dado, sin
+/// ninguna opción del proyecto.
+pub fn table_selection(nq: f64) -> DesignSelection {
+    DesignSelection {
+        psi: head_coefficient(nq),
+        phi: flow_coefficient(nq),
+        beta2_deg: blade_angle_deg(nq),
+        blade_count: blade_count(nq),
+        c0: inlet_velocity(nq),
+        cm0: inlet_meridional_velocity(nq),
+        a: 4.5,
+        j: 1.03,
+        margin: 1.1,
+    }
+}
+
 /// Calcula un diseño preliminar end-suction.
 pub fn design(input: &DesignInput) -> Result<DesignResult, DesignError> {
     design_with_options(input, &DesignOptions::default())
@@ -420,19 +436,20 @@ pub fn design_with_options(
     )?
     .value();
 
+    let table = table_selection(nq);
     let selection = DesignSelection {
-        psi: options.psi.unwrap_or_else(|| head_coefficient(nq)),
-        phi: options.phi.unwrap_or_else(|| flow_coefficient(nq)),
+        psi: options.psi.unwrap_or(table.psi),
+        phi: options.phi.unwrap_or(table.phi),
         beta2_deg: options
             .beta2_rad
             .map(f64::to_degrees)
-            .unwrap_or_else(|| blade_angle_deg(nq)),
-        blade_count: options.blade_count.unwrap_or_else(|| blade_count(nq)),
-        c0: options.c0.unwrap_or_else(|| inlet_velocity(nq)),
-        cm0: options.cm0.unwrap_or_else(|| inlet_meridional_velocity(nq)),
-        a: options.a.unwrap_or(4.5),
-        j: options.j.unwrap_or(1.03),
-        margin: options.margin.unwrap_or(1.1),
+            .unwrap_or(table.beta2_deg),
+        blade_count: options.blade_count.unwrap_or(table.blade_count),
+        c0: options.c0.unwrap_or(table.c0),
+        cm0: options.cm0.unwrap_or(table.cm0),
+        a: options.a.unwrap_or(table.a),
+        j: options.j.unwrap_or(table.j),
+        margin: options.margin.unwrap_or(table.margin),
     };
     let k3_value = options.k3.unwrap_or(DEFAULT_K3);
     let volute_width_value = options.volute_width_factor.unwrap_or(DEFAULT_VOLUTE_C);

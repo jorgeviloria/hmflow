@@ -63,7 +63,9 @@ fn d1a1_reference() {
     close(result.p_max.value(), 2928.0, 20.0);
     close(result.torque.value(), 14.12, 0.08);
     close(result.torque_max.value(), 15.53, 0.1);
-    close(result.npshr_design.value(), 1.67, 0.05);
+    // v0.6: Gülich ec. 6.10 con c0 y u1 del ojo; σ·H daba 1,67 m. El libro
+    // no publica el NPSH de D1.A1.
+    close(result.npshr_design.value(), 1.42, 0.05);
     // Gülich (3.28) da 18,0 m; la fig. D1.A2 de Srinivasan, ≈19 m (−5 %).
     close(result.shutoff_head.value(), 18.03, 0.05);
     // Con β2 = 23,5° y c2u de Gülich (3.2.7), Euler da +4,5 % de altura.
@@ -124,7 +126,8 @@ fn existing_case_is_consistent() {
         14681.5 / 0.8431616 / (2.0 * std::f64::consts::PI * 2900.0 / 60.0),
         0.1,
     );
-    close(result.npshr_design.value(), 5.14, 0.1);
+    // v0.6: Gülich ec. 6.10 con el ojo; σ·H daba 5,14 m.
+    close(result.npshr_design.value(), 3.89, 0.05);
     close(result.shutoff_head.value(), 53.65, 0.1);
     // H0/Hd = 1,19: por debajo del 1,2 de Gülich, informativo. Desde la v0.5
     // la pendiente de la tangente (§4.3.5) es mayor de lo que admite ese H0 y
@@ -233,10 +236,10 @@ fn has(result: &hm_design::DesignResult, code: &str) -> bool {
 
 #[test]
 fn npsh_margin_is_enforced_inside_the_preferred_region() {
-    // En 1,2 Qd: NPSH3 = 5,14·1,2³ = 8,88 m; la tabla 6.2 pide
-    // max(1,25·8,88; 8,88 + 0,6; 8,88 + 1,09) = 11,10 m.
+    // Con el NPSH3 de la v0.6 la región 0,7..1,2 Qd pide ≈ 8,6 m (tabla 6.2
+    // de Gülich en 1,2 Qd); 8 m no llega.
     let mut input = input("120 m3/h", "45 m", "2900 rpm");
-    input.npsha = Some(parse_quantity("11 m").unwrap());
+    input.npsha = Some(parse_quantity("8 m").unwrap());
     let result = design(&input).unwrap();
     assert!(has(&result, "HM-DES-007"));
     assert!(result.diagnostics.has_errors());
@@ -244,9 +247,9 @@ fn npsh_margin_is_enforced_inside_the_preferred_region() {
 
 #[test]
 fn npsh_shortfall_outside_the_preferred_region_only_warns() {
-    // 12 m cubre la región 0,7..1,2 Qd (11,10 m) pero no 1,3 Qd (14,1 m).
+    // 10 m cubre la región 0,7..1,2 Qd (≈ 8,6 m) pero no 1,3 Qd (≈ 11 m).
     let mut input = input("120 m3/h", "45 m", "2900 rpm");
-    input.npsha = Some(parse_quantity("12 m").unwrap());
+    input.npsha = Some(parse_quantity("10 m").unwrap());
     let result = design(&input).unwrap();
     assert!(!result.diagnostics.has_errors());
     assert!(has(&result, "HM-DES-006"));

@@ -1384,3 +1384,27 @@ value = "h0 + (2*(1 - h0) - slope)*q + (slope - (1 - h0))*q^2"
 
 [formula.notes]
 assumptions = "Parábola en q = Q/Qd que vale h0 = H0/Hd en q = 0, 1 en el punto de diseño y tiene allí la pendiente de la tangente. Gülich deja la interpolación entre Q = 0 y la zona sin recirculación «según la experiencia»; la parábola es la forma del motor. Puede tener un máximo con q > 0: curva inestable."
+
+[[formula]]
+id = "design.npsh3_inlet"
+version = 1
+validation = "pilot"
+module = "design"
+title = "NPSH3 por las velocidades de entrada"
+source = "Gülich 2020, ec. (6.10) y (6.11), p. 337, y tabla D6.3, p. 338"
+units = "m"
+range = "0 .. 100"
+test = "crates/hm-formula/tests/end_suction.rs::npsh3_inlet"
+
+[formula.inputs]
+c1m = "m/s"
+u1 = "m/s"
+lambda_c = "1"
+lambda_w = "1"
+g = "m/s2"
+
+[formula.expr]
+value = "(lambda_c*c1m^2 + lambda_w*(c1m^2 + u1^2))/(2*g)"
+
+[formula.notes]
+assumptions = "NPSH3 = λc·c1m²/2g + λw·w1²/2g con w1² = c1m² + u1² (entrada sin prerrotación) en el diámetro exterior del borde de ataque. λc = 1,1 con entrada axial; λw = 0,1..0,3 para entrada sin choque, y el motor toma 0,2. Depende del ojo: d1 fija u1 y el área fija c1m."

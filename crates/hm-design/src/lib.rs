@@ -194,7 +194,7 @@ pub struct ParamSpec {
 ///   margen de Gülich (§6.3.3 y tabla 6.2), H0 de Gülich (3.28).
 /// - v0.3: la transición del NPSHr a la subida brusca sale de la geometría
 ///   (Gülich ec. 6.17–6.20) en vez de suponerla en el caudal de diseño.
-pub const METHOD: &str = "end_suction_v0.5";
+pub const METHOD: &str = "end_suction_v0.6";
 
 /// Métodos anteriores que `recalc` sabe migrar a [`METHOD`].
 pub const LEGACY_METHODS: &[&str] = &[
@@ -202,6 +202,7 @@ pub const LEGACY_METHODS: &[&str] = &[
     "end_suction_v0.2",
     "end_suction_v0.3",
     "end_suction_v0.4",
+    "end_suction_v0.5",
 ];
 
 /// Parámetros que genera o consume el método [`METHOD`].
@@ -404,7 +405,7 @@ pub const PARAM_SPECS: &[ParamSpec] = &[
     ParamSpec {
         name: "npshr_d",
         unit: "m",
-        formula: Some("design.npshr_design"),
+        formula: Some("design.npsh3_inlet"),
     },
     ParamSpec {
         name: "h0",
@@ -1047,14 +1048,6 @@ pub fn design_with_options(
         &[("nq", quantity(nq, one.clone()))],
     )?
     .value();
-    let npshr_design = evaluate(
-        &registry,
-        "design.npshr_design",
-        &[
-            ("sigma", quantity(sigma, one.clone())),
-            ("H", input.h.clone()),
-        ],
-    )?;
     let shutoff_head = evaluate(
         &registry,
         "design.shutoff_head",
@@ -1066,6 +1059,20 @@ pub fn design_with_options(
         &[("d2", d1.clone()), ("n", input.n.clone())],
     )?;
     let w1 = Quantity::from_si(selection.cm0.hypot(u1.si), ms.clone());
+    // end_suction_v0.6: el NPSH3 del punto sale de las velocidades de entrada
+    // (Gülich ec. 6.10), no de σ·H: depende del ojo. c1m es la velocidad
+    // meridional en el ojo, Qth sobre su área: la c0 de la selección.
+    let npshr_design = evaluate(
+        &registry,
+        "design.npsh3_inlet",
+        &[
+            ("c1m", Quantity::from_si(selection.c0, ms.clone())),
+            ("u1", u1.clone()),
+            ("lambda_c", quantity(NPSH_LAMBDA_C, one.clone())),
+            ("lambda_w", quantity(NPSH_LAMBDA_W, one.clone())),
+            ("g", Quantity::from_si(9.806_65, unit("m/s2")?)),
+        ],
+    )?;
     let w2 = Quantity::from_si(cm2.si.hypot(u2.si - cu2.si), ms.clone());
 
     // Transición del NPSH3 (Gülich §6.3.3, ec. 6.17–6.20), sin espesor de
@@ -1219,7 +1226,8 @@ pub const NPSH_OVERLOAD_EXPONENT: f64 = 3.0;
 /// NPSH3 por velocidades de entrada para la fracción `ratio = Q/Qd`, sin la
 /// constante 1/2g (solo se usa como cociente).
 fn npsh3_velocity_shape(result: &DesignResult, ratio: f64) -> f64 {
-    let c1m = result.selection.cm0 * ratio;
+    // La misma c1m que el NPSH3 del punto: la velocidad en el ojo (v0.6).
+    let c1m = result.selection.c0 * ratio;
     let u1 = result.u1.si;
     let lambda_w = NPSH_LAMBDA_W * ratio.powf(NPSH_LAMBDA_W_EXPONENT);
     NPSH_LAMBDA_C * c1m.powi(2) + lambda_w * (c1m.powi(2) + u1.powi(2))

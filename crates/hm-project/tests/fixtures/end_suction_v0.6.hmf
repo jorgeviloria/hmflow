@@ -1,13 +1,13 @@
 schema = 2
 
 [project]
-name = "referencia-v0.5"
+name = "referencia-v0.6"
 
 [design]
 pump_type = "end_suction"
 stages = 1
 standard = "ISO 2858"
-method = "end_suction_v0.5"
+method = "end_suction_v0.6"
 
 [operating]
 Q = "120 m3/h"
@@ -143,8 +143,8 @@ value = "0.001 m"
 
 [params.npshr_d]
 mode = "auto"
-formula = "design.npshr_design"
-value = "5.140015241164614 m"
+formula = "design.npsh3_inlet"
+value = "3.8860474830010667 m"
 
 [params.nq]
 mode = "auto"

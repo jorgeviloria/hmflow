@@ -1997,14 +1997,14 @@ mod tests {
     }
 
     /// Guarda de versionado: el `.hmf` de referencia se escribió con
-    /// `end_suction_v0.5`. Si el motor cambia sus resultados sin cambiar
+    /// `end_suction_v0.6`. Si el motor cambia sus resultados sin cambiar
     /// `METHOD`, sus valores `auto` dejan de cuadrar y este test falla. La
     /// salida correcta es subir `METHOD`, añadir el anterior a
     /// `LEGACY_METHODS` y regenerar el archivo con `design`.
     #[test]
     fn reference_project_of_the_current_method_audits_clean() {
         let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
-            .join("../hm-project/tests/fixtures/end_suction_v0.5.hmf");
+            .join("../hm-project/tests/fixtures/end_suction_v0.6.hmf");
         let project = Project::load(&path).unwrap();
         assert_eq!(
             project.design.method, METHOD,

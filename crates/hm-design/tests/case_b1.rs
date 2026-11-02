@@ -12,7 +12,7 @@
 
 use hm_design::{
     DesignInput, DesignOptions, curve_head, default_mechanical_efficiency, design,
-    design_with_options,
+    design_with_options, npshr_ratio,
 };
 use hm_units::parse_quantity;
 
@@ -79,13 +79,23 @@ fn b1_impeller_diameter_matches_catalog() {
 /// Geometría medida del rodete real de B1 (docs/validation/matrix.md): 6
 /// álabes y b2 ≈ 17 mm, que con el φ del motor es φ = 0,0785. β2 lo resuelve
 /// Euler.
+///
+/// La entrada: ojo de ≈ 141 mm en la tapa con cubo de ≈ 66 mm. El motor no
+/// modela el cubo: el área del ojo se representa con c0 = Qth/A = 5,73 m/s
+/// (D0 = 124,6 mm) y J = 141/124,6 para el diámetro en la tapa.
 fn real_impeller() -> DesignOptions {
     DesignOptions {
         blade_count: Some(6),
         phi: Some(0.0785),
+        c0: Some(5.73),
+        j: Some(1.132),
         ..DesignOptions::default()
     }
 }
+
+/// NPSH3 del catálogo en el punto, interpolado entre las isolíneas de 3 m
+/// (≈ 963 gpm) y 4 m (1280 gpm) sobre el rodete de 425 mm.
+const NPSH3_CATALOG_M: f64 = 3.31;
 
 /// Mayor desviación relativa de la curva frente al catálogo.
 fn worst_head_deviation(options: &DesignOptions) -> f64 {
@@ -154,4 +164,69 @@ fn b1_efficiency_inside_grade_2b() {
         result.eta,
         100.0 * deviation
     );
+}
+
+#[test]
+fn b1_real_impeller_eye_diameter() {
+    let result = design_with_options(&input(), &real_impeller()).unwrap();
+    let d1 = result.d1.si * 1000.0;
+    assert!((d1 - 141.0).abs() < 1.0, "d1 {d1:.1} mm");
+}
+
+#[test]
+fn b1_npsh3_band_contains_catalog() {
+    // Gülich ec. 6.10 con λw = 0,1..0,3 (tabla D6.3): el catálogo cae dentro
+    // de la banda con el ojo real. El motor usa el centro, λw = 0,2.
+    let result = design_with_options(&input(), &real_impeller()).unwrap();
+    let c1m = result.selection.c0;
+    let npsh = |lambda_w: f64| {
+        (hm_design::NPSH_LAMBDA_C * c1m.powi(2) + lambda_w * (c1m.powi(2) + result.u1.si.powi(2)))
+            / (2.0 * 9.806_65)
+    };
+    assert!(
+        (npsh(0.1)..=npsh(0.3)).contains(&NPSH3_CATALOG_M),
+        "banda {:.2}..{:.2} m frente a {NPSH3_CATALOG_M} m",
+        npsh(0.1),
+        npsh(0.3)
+    );
+}
+
+#[test]
+fn b1_npsh3_tells_the_eyes_apart() {
+    // Desde end_suction_v0.6 el NPSH3 del punto sale del ojo (ec. 6.10): el
+    // ojo grande del rodete por defecto pide menos NPSH que el real.
+    let real = design_with_options(&input(), &real_impeller()).unwrap();
+    let default = design(&input()).unwrap();
+    assert!(
+        default.npshr_design.si < real.npshr_design.si - 0.3,
+        "por defecto {:.2} m, real {:.2} m",
+        default.npshr_design.si,
+        real.npshr_design.si
+    );
+}
+
+/// Isolíneas de NPSH del catálogo sobre el rodete de 425 mm: (gpm, m).
+const CATALOG_NPSH: &[(f64, f64)] = &[(446.0, 1.0), (741.0, 2.0), (963.0, 3.0), (1280.0, 4.0)];
+
+#[test]
+fn b1_npsh3_shape_follows_catalog() {
+    // Forma de NPSHr(Q)/NPSHr(Qd) frente a las isolíneas del catálogo. Las
+    // isolíneas van cada 1 m: la lectura vale ±0,5 m, ±0,15 en la razón.
+    //
+    // Solo a caudal parcial. Con 1280 gpm el modelo da 1,76 frente a 1,21: la
+    // subida (Q/Qsa)³ arranca en Qsa ≈ 0,99 Qd porque la limita la garganta de
+    // la voluta simple del motor; B1 tiene doble voluta, de garganta
+    // desconocida, y su entrada sin choque está en 1,23 Qd. Desviación
+    // documentada en docs/validation/matrix.md.
+    let result = design_with_options(&input(), &real_impeller()).unwrap();
+    let at_design = npshr_ratio(&result, 1.0);
+    let mut failures = Vec::new();
+    for &(q_gpm, npsh) in CATALOG_NPSH.iter().filter(|(q, _)| *q <= Q_DESIGN_GPM) {
+        let model = npshr_ratio(&result, q_gpm / Q_DESIGN_GPM) / at_design;
+        let catalog = npsh / NPSH3_CATALOG_M;
+        if (model - catalog).abs() > 0.15 {
+            failures.push(format!("{q_gpm} gpm: {model:.2} frente a {catalog:.2}"));
+        }
+    }
+    assert!(failures.is_empty(), "{}", failures.join("\n"));
 }

@@ -26,13 +26,13 @@ fn pack_is_audit_clean() {
 }
 
 #[test]
-fn pack_has_sixty_four_formulas() {
-    assert_eq!(Registry::from_toml(END_SUCTION_V01_PACK).unwrap().len(), 64);
+fn pack_has_sixty_five_formulas() {
+    assert_eq!(Registry::from_toml(END_SUCTION_V01_PACK).unwrap().len(), 65);
 }
 
 #[test]
 fn all_merges_both_packs() {
-    assert_eq!(Registry::all().len(), 74);
+    assert_eq!(Registry::all().len(), 75);
 }
 
 #[test]
@@ -948,4 +948,23 @@ fn curve_head_ratio() {
     close(h("0"), 1.12, 1e-12);
     close(h("1"), 1.0, 1e-12);
     close((h("1.000001") - h("0.999999")) / 2e-6, -0.4, 1e-6);
+}
+
+#[test]
+fn npsh3_inlet() {
+    // (λc·c1m² + λw·(c1m² + u1²))/2g con c1m = 5,5 m/s, u1 = 13 m/s
+    close(
+        evaluate(
+            "design.npsh3_inlet",
+            &[
+                ("c1m", "5.5 m/s"),
+                ("u1", "13 m/s"),
+                ("lambda_c", "1.1"),
+                ("lambda_w", "0.2"),
+                ("g", "9.80665 m/s2"),
+            ],
+        ),
+        (1.1 * 5.5_f64.powi(2) + 0.2 * (5.5_f64.powi(2) + 13.0_f64.powi(2))) / (2.0 * 9.80665),
+        1e-9,
+    );
 }

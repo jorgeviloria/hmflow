@@ -75,8 +75,10 @@ fn npshr_rises_with_flow() {
     for pair in curve.windows(2) {
         assert!(pair[0].npshr.si < pair[1].npshr.si);
     }
+    // Baja con el caudal pero no se anula. La forma se contrasta con las
+    // isolíneas del catálogo de B1 en case_b1.rs.
     let low = curve[0].npshr.si / design_point;
-    assert!((0.3..0.8).contains(&low), "NPSHr(0,3 Qd)/NPSHr_d = {low}");
+    assert!((0.1..0.8).contains(&low), "NPSHr(0,3 Qd)/NPSHr_d = {low}");
     // Por encima del diseño, (Q/Qd)^3.
     // Por encima de Qsa, NPSH(Qsa)·(Q/Qsa)^3.
     let transition = result.transition_ratio;

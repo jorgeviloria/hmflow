@@ -10,7 +10,7 @@ use std::collections::BTreeMap;
 
 use hm_core::{Diagnostic, Diagnostics};
 use hm_formula::{FormulaError, Registry};
-use hm_units::{Quantity, Unit, UnitError, parse_unit};
+use hm_units::{Dimension, Quantity, Unit, UnitError, parse_unit};
 use thiserror::Error;
 
 #[derive(Debug, Error)]
@@ -72,7 +72,19 @@ pub struct DesignResult {
     pub p_max: Quantity,
     pub torque: Quantity,
     pub torque_max: Quantity,
+    pub npshr_design: Quantity,
+    pub shutoff_head: Quantity,
     pub diagnostics: Diagnostics,
+}
+
+/// Punto de una curva preliminar de prestaciones.
+#[derive(Debug, Clone)]
+pub struct CurvePoint {
+    pub q: Quantity,
+    pub h: Quantity,
+    pub eta: f64,
+    pub p_shaft: Quantity,
+    pub npshr: Quantity,
 }
 
 /// Calcula un diseño preliminar end-suction.
@@ -254,6 +266,11 @@ pub fn design(input: &DesignInput) -> Result<DesignResult, DesignError> {
         &[("P", p_max.clone()), ("n", input.n.clone())],
     )?;
 
+    let sigma = 0.0012 * nq.powf(4.0 / 3.0);
+    let npshr_design = Quantity::from_si(sigma * input.h.si, m.clone());
+    let shutoff_ratio = 1.25 + 0.004 * nq;
+    let shutoff_head = Quantity::from_si(shutoff_ratio * input.h.si, m.clone());
+
     let mut result = DesignResult {
         nq,
         specific_diameter_mm,
@@ -274,11 +291,63 @@ pub fn design(input: &DesignInput) -> Result<DesignResult, DesignError> {
         p_max: with_unit(p_max, &w),
         torque: with_unit(torque, &nm),
         torque_max: with_unit(torque_max, &nm),
+        npshr_design,
+        shutoff_head,
         diagnostics: Diagnostics::new(),
     };
 
     result.diagnostics = diagnostics_for(&result, input);
     Ok(result)
+}
+
+/// Curva preliminar de prestaciones entre 0.3 y 1.3 veces el caudal de diseño.
+///
+/// Es un modelo fenomenológico anclado en el punto de diseño, no un modelo de
+/// pérdidas detallado. La forma de H(Q) y η(Q) se calibrará con datos medidos.
+pub fn performance_curve(
+    input: &DesignInput,
+    result: &DesignResult,
+    points: usize,
+) -> Vec<CurvePoint> {
+    let count = points.max(2);
+    let q_design = input.q.si;
+    let h_design = input.h.si;
+    let eta_design = result.eta;
+    let rho = input.rho.si;
+    let g = 9.806_65;
+    let shutoff_ratio = result.shutoff_head.si / h_design;
+    let npshr_design = result.npshr_design.si;
+
+    let m = Unit::new("m", Dimension::LENGTH, 1.0);
+    let m3h = Unit::new("m3/h", Dimension::VOLUME.div(Dimension::TIME), 1.0 / 3600.0);
+    let kw = Unit::new("kW", Dimension::POWER, 1000.0);
+
+    let mut curve = Vec::with_capacity(count);
+
+    for index in 0..count {
+        let ratio = 0.3 + (1.3 - 0.3) * index as f64 / (count - 1) as f64;
+        let q = q_design * ratio;
+        let h = h_design * (shutoff_ratio - (shutoff_ratio - 1.0) * ratio.powi(2));
+        let eta = eta_design
+            * if ratio <= 1.0 {
+                1.0 - 0.60 * (ratio - 1.0).powi(2)
+            } else {
+                1.0 - 0.35 * (ratio - 1.0).powi(2)
+            };
+        let eta = eta.max(1e-4);
+        let p_shaft = rho * g * q * h / eta;
+        let npshr = npshr_design * ratio.powi(2);
+
+        curve.push(CurvePoint {
+            q: Quantity::from_si(q, m3h.clone()),
+            h: Quantity::from_si(h, m.clone()),
+            eta,
+            p_shaft: Quantity::from_si(p_shaft, kw.clone()),
+            npshr: Quantity::from_si(npshr, m.clone()),
+        });
+    }
+
+    curve
 }
 
 fn diagnostics_for(result: &DesignResult, input: &DesignInput) -> Diagnostics {
@@ -338,11 +407,22 @@ fn diagnostics_for(result: &DesignResult, input: &DesignInput) -> Diagnostics {
         ));
     }
 
-    if input.npsha.is_some() {
-        diagnostics.push(Diagnostic::info(
-            "HM-DES-006",
-            "NPSHa declarado; el NPSHr todavía no se estima en v0.1.",
-        ));
+    if let Some(npsha) = &input.npsha {
+        let margin = npsha.si - result.npshr_design.si;
+        if margin < 0.5 {
+            diagnostics.push(
+                Diagnostic::warning(
+                    "HM-DES-007",
+                    format!("NPSHa - NPSHr = {margin:.2} m; el margen preliminar es 0.5 m"),
+                )
+                .with_hint("Aumenta el NPSHa o reduce la velocidad de giro."),
+            );
+        } else {
+            diagnostics.push(Diagnostic::info(
+                "HM-DES-006",
+                format!("NPSHa - NPSHr = {margin:.2} m"),
+            ));
+        }
     }
 
     diagnostics

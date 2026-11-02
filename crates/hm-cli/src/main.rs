@@ -5,7 +5,7 @@ use std::path::PathBuf;
 use std::process::ExitCode;
 
 use clap::{Parser, Subcommand};
-use hm_design::{DesignInput, design};
+use hm_design::{DesignInput, design, performance_curve};
 use hm_formula::{Registry, eval, infer, parse};
 use hm_project::{Param, Project, PumpType};
 use hm_units::{Quantity, parse_quantity};
@@ -75,6 +75,15 @@ enum Command {
         /// Sobrescribe el archivo si ya existe.
         #[arg(long)]
         force: bool,
+        /// Muestra las curvas preliminares H(Q), eta(Q), P(Q) y NPSHr(Q).
+        #[arg(long)]
+        curves: bool,
+        /// Número de puntos de la curva.
+        #[arg(long, default_value_t = 11)]
+        curve_points: usize,
+        /// Archivo CSV de curvas; implica --curves.
+        #[arg(long)]
+        curves_out: Option<PathBuf>,
     },
 }
 
@@ -191,6 +200,9 @@ fn run(cli: Cli) -> Result<ExitCode, Box<dyn std::error::Error>> {
             npsha,
             out,
             force,
+            curves,
+            curve_points,
+            curves_out,
         } => {
             if name.contains('/') || name.contains('\\') {
                 return Err("el nombre no puede contener separadores de ruta".into());
@@ -245,6 +257,11 @@ fn run(cli: Cli) -> Result<ExitCode, Box<dyn std::error::Error>> {
                 result.torque.value(),
                 result.torque_max.value()
             );
+            println!(
+                "  NPSHr_d = {:.2} m   H0 = {:.2} m",
+                result.npshr_design.value(),
+                result.shutoff_head.value()
+            );
 
             for diagnostic in result.diagnostics.iter() {
                 println!(
@@ -257,10 +274,27 @@ fn run(cli: Cli) -> Result<ExitCode, Box<dyn std::error::Error>> {
             }
 
             let path = out.unwrap_or_else(|| PathBuf::from(format!("{name}.hmf")));
+            let curve_path = curves_out;
+            let curve = if curves || curve_path.is_some() {
+                Some(performance_curve(&input, &result, curve_points))
+            } else {
+                None
+            };
+
             if path.exists() && !force {
                 return Err(format!(
                     "ya existe {}; usa --force para sobrescribir",
                     path.display()
+                )
+                .into());
+            }
+            if let Some(curve_path) = &curve_path
+                && curve_path.exists()
+                && !force
+            {
+                return Err(format!(
+                    "ya existe {}; usa --force para sobrescribir",
+                    curve_path.display()
                 )
                 .into());
             }
@@ -328,6 +362,37 @@ fn run(cli: Cli) -> Result<ExitCode, Box<dyn std::error::Error>> {
 
             project.save(&path)?;
             println!("escrito {}", path.display());
+
+            if let Some(curve) = &curve {
+                println!("\n  Q (m3/h)   H (m)    eta     P_eje (kW)  NPSHr (m)");
+                for point in curve {
+                    println!(
+                        "  {:8.2}   {:6.3}   {:5.3}   {:9.3}   {:7.3}",
+                        point.q.value(),
+                        point.h.value(),
+                        point.eta,
+                        point.p_shaft.value(),
+                        point.npshr.value()
+                    );
+                }
+
+                if let Some(curve_path) = &curve_path {
+                    let mut csv = String::from("Q_m3h,H_m,eta,P_shaft_kW,NPSHr_m\n");
+                    for point in curve {
+                        csv.push_str(&format!(
+                            "{:.3},{:.4},{:.4},{:.4},{:.4}\n",
+                            point.q.value(),
+                            point.h.value(),
+                            point.eta,
+                            point.p_shaft.value(),
+                            point.npshr.value()
+                        ));
+                    }
+                    std::fs::write(curve_path, csv)?;
+                    println!("curvas escritas en {}", curve_path.display());
+                }
+            }
+
             Ok(ExitCode::SUCCESS)
         }
     }

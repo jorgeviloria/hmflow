@@ -46,6 +46,8 @@ fn d1a1_reference() {
     close(result.p_max.value(), 2928.0, 15.0);
     close(result.torque.value(), 14.12, 0.05);
     close(result.torque_max.value(), 15.53, 0.05);
+    close(result.npshr_design.value(), 1.67, 0.05);
+    close(result.shutoff_head.value(), 19.0, 0.1);
     assert!(result.diagnostics.is_empty());
 }
 
@@ -62,7 +64,31 @@ fn existing_case_is_consistent() {
     close(result.p_hyd.value(), 14681.5, 5.0);
     close(result.p_shaft.value(), 17990.0, 50.0);
     close(result.torque.value(), 59.25, 0.2);
+    close(result.npshr_design.value(), 5.14, 0.1);
+    close(result.shutoff_head.value(), 61.7, 0.2);
     assert!(result.diagnostics.is_empty());
+}
+
+#[test]
+fn npsh_margin_is_checked() {
+    let mut input = input("0.016 m3/s", "13.8 m", "1800 rpm");
+    input.npsha = Some(parse_quantity("1 m").unwrap());
+    let result = design(&input).unwrap();
+    assert!(
+        result
+            .diagnostics
+            .iter()
+            .any(|diagnostic| diagnostic.code == "HM-DES-007")
+    );
+
+    input.npsha = Some(parse_quantity("6 m").unwrap());
+    let result = design(&input).unwrap();
+    assert!(
+        result
+            .diagnostics
+            .iter()
+            .any(|diagnostic| diagnostic.code == "HM-DES-006")
+    );
 }
 
 #[test]

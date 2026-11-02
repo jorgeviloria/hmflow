@@ -1,4 +1,5 @@
 /target
+/crates/hm-ui/target/
 **/*.rs.bk
 .DS_Store
 

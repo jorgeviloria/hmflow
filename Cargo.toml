@@ -1,5 +1,7 @@
 [workspace]
 resolver = "3"
+# hm-ui es un spike con su propio workspace; no entra en el CI principal.
+exclude = ["crates/hm-ui"]
 members = [
     "crates/hm-core",
     "crates/hm-units",

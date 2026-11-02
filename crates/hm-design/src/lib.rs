@@ -388,6 +388,27 @@ pub struct DesignOptions {
     pub k_eff: Option<f64>,
 }
 
+/// Intervalo de validez de [`water_density`], en °C.
+pub const WATER_DENSITY_RANGE_C: (f64, f64) = (0.0, 150.0);
+
+/// Densidad del agua líquida a 1 atm, en kg/m³, para una temperatura en
+/// kelvin.
+///
+/// Correlación de Kell (1975), J. Chem. Eng. Data 20(1), 97–105, válida de
+/// 0 a 150 °C. Da 998,20 kg/m³ a 20 °C y 971,80 kg/m³ a 80 °C. Fuera de ese
+/// intervalo devuelve `None`.
+pub fn water_density(temperature_k: f64) -> Option<f64> {
+    let t = temperature_k - 273.15;
+    if !t.is_finite() || !(WATER_DENSITY_RANGE_C.0..=WATER_DENSITY_RANGE_C.1).contains(&t) {
+        return None;
+    }
+    let numerator =
+        999.839_52 + 16.945_176 * t - 7.987_040_1e-3 * t.powi(2) - 46.170_461e-6 * t.powi(3)
+            + 105.563_02e-9 * t.powi(4)
+            - 280.542_53e-12 * t.powi(5);
+    Some(numerator / (1.0 + 16.879_850e-3 * t))
+}
+
 /// Selecciones que el motor toma de sus tablas para un `nq` dado, sin
 /// ninguna opción del proyecto.
 pub fn table_selection(nq: f64) -> DesignSelection {

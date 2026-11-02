@@ -46,6 +46,9 @@ cargo run -p hmflow-cli -- new bomba-demo
 # cavitación; con él, el margen se exige en la región preferente (0,7–1,2 Qd)
 cargo run -p hmflow-cli -- design --q "120 m3/h" --h "45 m" --n "2900 rpm" --npsha "10 m" --out bomba.hmf --curves
 
+# Agua caliente: sin --rho se usa la densidad del agua a esa temperatura
+cargo run -p hmflow-cli -- design --temperature "80 degC" --npsha "12 m" --out caliente.hmf
+
 # Validarlo: dimensiones, signos, campos desconocidos, esquema del método y avisos
 cargo run -p hmflow-cli -- check bomba.hmf
 

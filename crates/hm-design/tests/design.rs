@@ -1,6 +1,6 @@
 use hm_design::{
     DesignInput, DesignOptions, PARAM_SPECS, design, design_with_options, designed_si, param_spec,
-    stored_si_matches,
+    stored_si_matches, water_density,
 };
 use hm_units::parse_quantity;
 
@@ -295,4 +295,21 @@ fn zero_flow_is_rejected() {
 #[test]
 fn wrong_dimension_is_rejected() {
     assert!(design(&input("120 m", "45 m", "2900 rpm")).is_err());
+}
+
+#[test]
+fn water_density_follows_kell() {
+    for (celsius, expected) in [
+        (0.0, 999.840),
+        (4.0, 999.972),
+        (20.0, 998.204),
+        (80.0, 971.798),
+        (100.0, 958.364),
+    ] {
+        let density = water_density(celsius + 273.15).unwrap();
+        close(density, expected, 0.002);
+    }
+    assert!(water_density(273.15 - 1.0).is_none());
+    assert!(water_density(273.15 + 151.0).is_none());
+    assert!(water_density(f64::NAN).is_none());
 }

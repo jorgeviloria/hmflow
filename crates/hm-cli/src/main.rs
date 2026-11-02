@@ -8,12 +8,12 @@ use clap::{Parser, Subcommand};
 use hm_core::{Diagnostic, Diagnostics};
 use hm_design::{
     DEFAULT_K_EFF, DEFAULT_K3, DEFAULT_VOLUTE_C, DesignInput, DesignOptions, DesignResult,
-    PARAM_SPECS, ParamSpec, design, design_with_options, designed_si, param_spec,
-    performance_curve, stored_si_matches, table_selection,
+    PARAM_SPECS, ParamSpec, WATER_DENSITY_RANGE_C, design, design_with_options, designed_si,
+    param_spec, performance_curve, stored_si_matches, table_selection, water_density,
 };
 use hm_formula::{Registry, eval, infer, parse};
 use hm_project::{Param, Project, PumpType};
-use hm_units::{Quantity, parse_quantity, parse_unit};
+use hm_units::{Dimension, Quantity, parse_quantity, parse_unit};
 
 #[derive(Parser)]
 #[command(
@@ -59,10 +59,11 @@ enum Command {
     Formulas,
     /// Evalúa una expresión con unidades.
     Eval {
-        /// Expresión, por ejemplo "Q/(pi*d2*b2)".
+        /// Expresión, por ejemplo "Q/(pi*d2*b2)". Puede empezar por `-`.
+        #[arg(allow_hyphen_values = true)]
         expr: String,
         /// Variable en formato nombre=valor, por ejemplo Q="120 m3/h".
-        #[arg(long = "var", value_name = "NOMBRE=VALOR")]
+        #[arg(long = "var", value_name = "NOMBRE=VALOR", allow_hyphen_values = true)]
         vars: Vec<String>,
     },
     /// Diseña preliminarmente una bomba end-suction OH1/OH2.
@@ -71,29 +72,32 @@ enum Command {
         #[arg(long, default_value = "diseno-end-suction")]
         name: String,
         /// Caudal de diseño, por ejemplo "120 m3/h".
-        #[arg(long, default_value = "120 m3/h")]
+        #[arg(long, default_value = "120 m3/h", allow_hyphen_values = true)]
         q: String,
         /// Altura de diseño, por ejemplo "45 m".
-        #[arg(long, default_value = "45 m")]
+        #[arg(long, default_value = "45 m", allow_hyphen_values = true)]
         h: String,
         /// Velocidad de giro, por ejemplo "2900 rpm".
-        #[arg(long, default_value = "2900 rpm")]
+        #[arg(long, default_value = "2900 rpm", allow_hyphen_values = true)]
         n: String,
-        /// Densidad del fluido, por ejemplo "998.2 kg/m3".
-        #[arg(long, default_value = "998.2 kg/m3")]
-        rho: String,
-        /// Fluido; por defecto se deduce de la densidad.
+        /// Densidad del fluido, por ejemplo "998.2 kg/m3". Sin ella se usa la
+        /// del agua a la temperatura indicada (Kell 1975, 0–150 °C).
+        #[arg(long, allow_hyphen_values = true)]
+        rho: Option<String>,
+        /// Fluido; por defecto `water` si la densidad está en el rango del agua
+        /// líquida (≈917..1000 kg/m3) y `custom` si no. Con `water` se comprueba
+        /// que la densidad corresponda a la temperatura.
         #[arg(long)]
         fluid: Option<String>,
         /// Temperatura del fluido.
-        #[arg(long, default_value = "20 degC")]
+        #[arg(long, default_value = "20 degC", allow_hyphen_values = true)]
         temperature: String,
         /// Eficiencia mecánica, mayor que 0 y menor que 1.
         #[arg(long, default_value_t = 0.96)]
         eta_m: f64,
         /// NPSH disponible de la instalación, por ejemplo "10 m". Sin él no
         /// se evalúa el margen de cavitación.
-        #[arg(long)]
+        #[arg(long, allow_hyphen_values = true)]
         npsha: Option<String>,
         /// Archivo de salida; por defecto <name>.hmf.
         #[arg(long)]
@@ -262,15 +266,37 @@ fn run(cli: Cli) -> Result<ExitCode, Box<dyn std::error::Error>> {
             }
 
             let npsha_text = npsha.clone();
-            let rho_text = rho.clone();
+            let temperature_k = parse_temperature(&temperature)?;
+            let rho_text = match rho {
+                Some(text) => text,
+                None => {
+                    if fluid
+                        .as_deref()
+                        .is_some_and(|fluid| !fluid.eq_ignore_ascii_case("water"))
+                    {
+                        return Err("indica --rho: solo se conoce la densidad del agua".into());
+                    }
+                    let density = water_density(temperature_k).ok_or(
+                        "la temperatura está fuera de 0..150 °C, el intervalo de la densidad del agua; indica --rho",
+                    )?;
+                    format!("{density:.3} kg/m3")
+                }
+            };
             let input = DesignInput {
                 q: parse_quantity(&q)?,
                 h: parse_quantity(&h)?,
                 n: parse_quantity(&n)?,
-                rho: parse_quantity(&rho)?,
+                rho: parse_quantity(&rho_text)?,
                 eta_m,
                 npsha: npsha.as_deref().map(parse_quantity).transpose()?,
             };
+            let fluid = fluid.unwrap_or_else(|| {
+                if looks_like_water(input.rho.si) {
+                    "water".to_string()
+                } else {
+                    "custom".to_string()
+                }
+            });
 
             if !(2..=1000).contains(&curve_points) {
                 return Err("--curve-points debe estar entre 2 y 1000".into());
@@ -339,17 +365,11 @@ fn run(cli: Cli) -> Result<ExitCode, Box<dyn std::error::Error>> {
                 result.p_mech_loss.value()
             );
 
-            for diagnostic in result.diagnostics.iter() {
-                println!(
-                    "[{:?}] {}: {}",
-                    diagnostic.severity, diagnostic.code, diagnostic.message
-                );
-                if let Some(hint) = &diagnostic.hint {
-                    println!("        sugerencia: {hint}");
-                }
-            }
+            let mut shown = result.diagnostics.clone();
+            shown.extend(fluid_diagnostics(&fluid, &temperature, input.rho.si).into_vec());
+            print_diagnostics(&shown);
 
-            if result.diagnostics.has_errors() {
+            if shown.has_errors() {
                 return Err("el diseño tiene errores; no se escribió el proyecto".into());
             }
 
@@ -383,13 +403,7 @@ fn run(cli: Cli) -> Result<ExitCode, Box<dyn std::error::Error>> {
             project.operating.q = q;
             project.operating.h = h;
             project.operating.n = n;
-            project.operating.fluid = fluid.unwrap_or_else(|| {
-                if (input.rho.si - 998.2).abs() < 10.0 {
-                    "water".to_string()
-                } else {
-                    "custom".to_string()
-                }
-            });
+            project.operating.fluid = fluid;
             project.operating.temperature = temperature;
             project.operating.npsha = npsha_text.unwrap_or_default();
             project.design.method = "end_suction_v0.1".to_string();
@@ -457,9 +471,10 @@ fn design_inputs(
     let h = parse_quantity(&project.operating.h)?;
     let n = parse_quantity(&project.operating.n)?;
     let rho_unit = parse_unit("kg/m3")?;
-    let rho = param_f64(project, "rho", "kg/m3")?
-        .map(|value| Quantity::from_si(value, rho_unit))
-        .unwrap_or(parse_quantity("998.2 kg/m3")?);
+    let rho = Quantity::from_si(
+        param_f64(project, "rho", "kg/m3")?.unwrap_or_else(|| default_density(project)),
+        rho_unit,
+    );
     let eta_m = param_f64(project, "eta_m", "1")?.unwrap_or(0.96);
     let npsha = if project.operating.npsha.trim().is_empty() {
         None
@@ -809,37 +824,110 @@ fn param_u32(project: &Project, name: &str) -> Result<Option<u32>, Box<dyn std::
     Ok(Some(value as u32))
 }
 
+/// Diferencia relativa admitida entre `rho` y la densidad del agua.
+const WATER_DENSITY_TOLERANCE: f64 = 0.005;
+
+/// Densidad dentro del rango del agua líquida entre 0 y 150 °C.
+///
+/// Sirve para suponer el fluido cuando no se indica: una densidad de agua a
+/// otra temperatura se trata como agua, para que `HM-DES-009` la señale.
+fn looks_like_water(rho_si: f64) -> bool {
+    // El agua es más densa a 4 °C y más ligera en el extremo caliente.
+    let hottest = WATER_DENSITY_RANGE_C.1 + 273.15;
+    let (Some(lightest), Some(densest)) = (water_density(hottest), water_density(277.15)) else {
+        return false;
+    };
+    (lightest * (1.0 - WATER_DENSITY_TOLERANCE)..=densest * (1.0 + WATER_DENSITY_TOLERANCE))
+        .contains(&rho_si)
+}
+
+/// Temperatura en kelvin a partir del texto del proyecto o de la CLI.
+fn parse_temperature(text: &str) -> Result<f64, Box<dyn std::error::Error>> {
+    let quantity = parse_quantity(text)?;
+    if quantity.dim() != Dimension::TEMPERATURE {
+        return Err(format!("la temperatura debe ser una temperatura: {text}").into());
+    }
+    Ok(quantity.si)
+}
+
+/// Densidad que se asume si el proyecto no guarda `rho`: la del agua a su
+/// temperatura (20 °C si no la indica), o 998,2 kg/m³ si no es agua o la
+/// temperatura cae fuera de la correlación.
+fn default_density(project: &Project) -> f64 {
+    let temperature = if project.operating.temperature.trim().is_empty() {
+        Some(293.15)
+    } else {
+        parse_temperature(&project.operating.temperature).ok()
+    };
+    let water =
+        project.operating.fluid.is_empty() || project.operating.fluid.eq_ignore_ascii_case("water");
+    temperature
+        .filter(|_| water)
+        .and_then(water_density)
+        .unwrap_or(998.2)
+}
+
+/// Coherencia entre fluido, temperatura y densidad.
+///
+/// Solo se puede comprobar el agua: su densidad se calcula con Kell (1975)
+/// entre 0 y 150 °C. Un texto de temperatura inválido lo señala la
+/// validación del proyecto, no esta función.
+fn fluid_diagnostics(fluid: &str, temperature: &str, rho_si: f64) -> Diagnostics {
+    let mut diagnostics = Diagnostics::new();
+    if !fluid.eq_ignore_ascii_case("water") {
+        return diagnostics;
+    }
+    let temperature_k = if temperature.trim().is_empty() {
+        293.15
+    } else {
+        match parse_temperature(temperature) {
+            Ok(value) => value,
+            Err(_) => return diagnostics,
+        }
+    };
+    let celsius = temperature_k - 273.15;
+
+    match water_density(temperature_k) {
+        None => diagnostics.push(
+            Diagnostic::warning(
+                "HM-DES-010",
+                format!(
+                    "el agua a {celsius:.1} °C queda fuera de la correlación de densidad (0..150 °C); \
+                     no se comprobó rho"
+                ),
+            )
+            .with_hint("Comprueba que rho corresponda a la temperatura de operación."),
+        ),
+        Some(expected) if ((rho_si - expected) / expected).abs() > WATER_DENSITY_TOLERANCE => {
+            diagnostics.push(
+                Diagnostic::warning(
+                    "HM-DES-009",
+                    format!(
+                        "rho = {rho_si:.1} kg/m3 no es la densidad del agua a {celsius:.1} °C \
+                         ({expected:.1} kg/m3)"
+                    ),
+                )
+                .with_hint("Corrige rho o, si el fluido no es agua, usa fluid = \"custom\"."),
+            );
+        }
+        Some(_) => {}
+    }
+    diagnostics
+}
+
 fn add_fluid_temperature_diagnostics(
     project: &Project,
     input: &DesignInput,
     diagnostics: &mut Diagnostics,
 ) {
-    if project.operating.fluid.eq_ignore_ascii_case("water") && (input.rho.si - 998.2).abs() > 10.0
-    {
-        diagnostics.push(
-            Diagnostic::warning(
-                "HM-DES-009",
-                format!(
-                    "el fluido es `water` pero la densidad es {:.1} kg/m3; revisa fluid y rho",
-                    input.rho.si
-                ),
-            )
-            .with_hint("Usa fluid = \"custom\" o corrige la densidad."),
-        );
-    }
-
-    if !project.operating.temperature.trim().is_empty()
-        && let Ok(temperature) = parse_quantity(&project.operating.temperature)
-        && (temperature.si - 293.15).abs() > 0.5
-    {
-        diagnostics.push(
-            Diagnostic::warning(
-                "HM-DES-010",
-                "la temperatura no ajusta la densidad en este modelo",
-            )
-            .with_hint("Comprueba que rho corresponda a la temperatura de operación."),
-        );
-    }
+    diagnostics.extend(
+        fluid_diagnostics(
+            &project.operating.fluid,
+            &project.operating.temperature,
+            input.rho.si,
+        )
+        .into_vec(),
+    );
 }
 
 fn design_audit(project: &Project) -> Diagnostics {
@@ -882,7 +970,13 @@ fn design_audit(project: &Project) -> Diagnostics {
         Ok(Some(design_diagnostics)) => {
             diagnostics.extend(design_diagnostics.into_vec());
         }
-        Ok(None) => {}
+        Ok(None) => diagnostics.push(Diagnostic::info(
+            "HM-PROJ-021",
+            format!(
+                "{} todavía no tiene motor de diseño; solo se validó el formato del proyecto",
+                project.design.pump_type
+            ),
+        )),
         Err(error) => {
             diagnostics.push(
                 Diagnostic::error(
@@ -932,10 +1026,12 @@ fn validate_design_schema(project: &Project, diagnostics: &mut Diagnostics) {
                     )),
                 }
             }
-            (Some(_), _) => diagnostics.push(Diagnostic::error(
-                "HM-PROJ-018",
-                format!("`{}` debe ser auto", spec.name),
-            )),
+            (Some(_), _) => diagnostics.push(
+                Diagnostic::error("HM-PROJ-018", format!("`{}` debe ser auto", spec.name))
+                    .with_hint(
+                        "Ejecuta `hmflow-cli recalc <archivo>`: lo convierte y calcula su valor.",
+                    ),
+            ),
             (None, Param::Manual { value } | Param::Locked { value }) => {
                 check_parameter_unit(diagnostics, spec, value);
                 if spec.name == "blade_count" {
@@ -1024,9 +1120,9 @@ fn compare_stored_autos(result: &DesignResult, project: &Project, diagnostics: &
                     Diagnostic::error(
                         "HM-PROJ-015",
                         format!(
-                            "`{name}` guardado como «{text}» no coincide con el diseño recalculado ({:.6} {})",
+                            "`{name}` guardado como «{text}» no coincide con el diseño recalculado ({:.6}{})",
                             shown.value(),
-                            shown.unit.symbol
+                            unit_suffix(&shown.unit.symbol)
                         ),
                     )
                     .with_hint(
@@ -1048,6 +1144,15 @@ fn compare_stored_autos(result: &DesignResult, project: &Project, diagnostics: &
                 );
             }
         }
+    }
+}
+
+/// Unidad para mostrar detrás de un número; vacía si es adimensional.
+fn unit_suffix(symbol: &str) -> String {
+    if symbol == "1" {
+        String::new()
+    } else {
+        format!(" {symbol}")
     }
 }
 
@@ -1094,7 +1199,8 @@ mod tests {
     #[test]
     fn other_pump_types_skip_the_end_suction_recompute() {
         let diagnostics = design_audit(&Project::new("demo", PumpType::Barrel));
-        assert!(diagnostics.is_empty());
+        assert_eq!(codes(&diagnostics), ["HM-PROJ-021"]);
+        assert!(!diagnostics.has_errors());
     }
 
     fn sample_design() -> DesignResult {
@@ -1234,12 +1340,93 @@ mod tests {
     }
 
     #[test]
-    fn high_temperature_warns() {
+    fn hot_water_with_cold_density_warns() {
         let mut project = Project::new("demo", PumpType::EndSuction);
         project.operating.temperature = "80 degC".to_string();
+        project
+            .params
+            .insert("rho".to_string(), manual("998.2 kg/m3".to_string()));
 
         let diagnostics = design_audit(&project);
-        assert!(codes(&diagnostics).contains(&"HM-DES-010"));
+        assert!(codes(&diagnostics).contains(&"HM-DES-009"));
+    }
+
+    #[test]
+    fn hot_water_with_its_density_is_quiet() {
+        let mut project = Project::new("demo", PumpType::EndSuction);
+        project.operating.temperature = "80 degC".to_string();
+        project
+            .params
+            .insert("rho".to_string(), manual("971.8 kg/m3".to_string()));
+
+        let diagnostics = design_audit(&project);
+        assert!(!codes(&diagnostics).contains(&"HM-DES-009"));
+        assert!(!codes(&diagnostics).contains(&"HM-DES-010"));
+    }
+
+    #[test]
+    fn missing_density_follows_the_water_temperature() {
+        let mut project = Project::new("demo", PumpType::EndSuction);
+        project.operating.temperature = "80 degC".to_string();
+        assert!((default_density(&project) - 971.8).abs() < 0.01);
+
+        project.operating.fluid = "custom".to_string();
+        assert!((default_density(&project) - 998.2).abs() < 1e-9);
+    }
+
+    #[test]
+    fn water_outside_the_correlation_warns() {
+        let diagnostics = fluid_diagnostics("water", "200 degC", 865.0);
+        assert_eq!(codes(&diagnostics), ["HM-DES-010"]);
+    }
+
+    #[test]
+    fn other_fluids_are_not_checked() {
+        assert!(fluid_diagnostics("custom", "20 degC", 1200.0).is_empty());
+        assert!(fluid_diagnostics("glycol", "80 degC", 1050.0).is_empty());
+    }
+
+    #[test]
+    fn old_manual_slip_points_to_recalc() {
+        let mut project = designed_project();
+        project
+            .params
+            .insert("slip".to_string(), manual("0.84".to_string()));
+        let mut diagnostics = Diagnostics::new();
+        validate_design_schema(&project, &mut diagnostics);
+        let hint = diagnostics
+            .iter()
+            .find(|diagnostic| diagnostic.code == "HM-PROJ-018")
+            .and_then(|diagnostic| diagnostic.hint.clone())
+            .unwrap_or_default();
+        assert!(hint.contains("recalc"), "{hint}");
+    }
+
+    #[test]
+    fn negative_expressions_and_values_parse() {
+        let cli = Cli::try_parse_from(["hmflow-cli", "eval", "-2^2"]).unwrap();
+        assert!(matches!(cli.command, Command::Eval { expr, .. } if expr == "-2^2"));
+
+        let cli = Cli::try_parse_from(["hmflow-cli", "eval", "-a", "--var", "a=-3 m"]).unwrap();
+        assert!(matches!(cli.command, Command::Eval { vars, .. } if vars == ["a=-3 m"]));
+
+        let cli = Cli::try_parse_from(["hmflow-cli", "design", "--npsha", "-3 m"]).unwrap();
+        assert!(matches!(cli.command, Command::Design { npsha: Some(text), .. } if text == "-3 m"));
+    }
+
+    #[test]
+    fn densities_of_liquid_water_are_recognised() {
+        assert!(looks_like_water(998.2));
+        assert!(looks_like_water(971.8));
+        assert!(looks_like_water(917.0));
+        assert!(!looks_like_water(1200.0));
+        assert!(!looks_like_water(850.0));
+    }
+
+    #[test]
+    fn dimensionless_mismatch_has_no_unit_suffix() {
+        assert_eq!(unit_suffix("1"), "");
+        assert_eq!(unit_suffix("m3/h"), " m3/h");
     }
 
     #[test]

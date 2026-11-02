@@ -20,17 +20,18 @@ const SPEED_RPM: f64 = 1750.0;
 const D2_MM: f64 = 425.0;
 const ETA_DESIGN: f64 = 0.73;
 
-/// Curva H(Q) de catálogo con el rodete de 425 mm, digitalizada del tramo
-/// continuo (de 250 a 1400 gpm). Incertidumbre de lectura ≈ ±0,5 m.
+/// Curva H(Q) de catálogo con el rodete de 425 mm, leída de los trazos
+/// vectoriales del PDF del catálogo (tramo continuo, de 306 a 1387 gpm).
+/// La lectura es exacta; la incertidumbre es la del dibujo del fabricante.
 const CATALOG_HQ: &[(f64, f64)] = &[
-    (400.0, 93.5),
-    (500.0, 92.7),
-    (600.0, 91.7),
-    (700.0, 90.3),
-    (800.0, 88.6),
-    (900.0, 86.6),
-    (1000.0, 84.3),
-    (1100.0, 81.4),
+    (400.0, 93.6),
+    (500.0, 92.8),
+    (600.0, 91.8),
+    (700.0, 90.4),
+    (800.0, 88.7),
+    (900.0, 86.7),
+    (1000.0, 84.4),
+    (1100.0, 81.7),
     (1200.0, 78.6),
     (1300.0, 75.2),
 ];

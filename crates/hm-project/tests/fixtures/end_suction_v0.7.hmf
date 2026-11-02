@@ -1,13 +1,13 @@
 schema = 2
 
 [project]
-name = "referencia-v0.6"
+name = "referencia-v0.7"
 
 [design]
 pump_type = "end_suction"
 stages = 1
 standard = "ISO 2858"
-method = "end_suction_v0.6"
+method = "end_suction_v0.7"
 
 [operating]
 Q = "120 m3/h"
@@ -28,7 +28,7 @@ value = "1.03"
 [params.a360]
 mode = "auto"
 formula = "design.volute_throat_area"
-value = "0.001974813673712972 m2"
+value = "0.0020375706143674365 m2"
 
 [params.b1]
 mode = "auto"
@@ -47,7 +47,7 @@ value = "0.027936114250489218 m"
 
 [params.beta2]
 mode = "manual"
-value = "19.081604315899316 deg"
+value = "17.819362258538597 deg"
 
 [params.blade_count]
 mode = "manual"
@@ -60,7 +60,7 @@ value = "3.6 m/s"
 [params.c3]
 mode = "auto"
 formula = "design.volute_inlet_velocity"
-value = "16.879229558230286 m/s"
+value = "16.359351228512715 m/s"
 
 [params.cm0]
 mode = "manual"
@@ -74,7 +74,7 @@ value = "3.0447255645243896 m/s"
 [params.cu2]
 mode = "auto"
 formula = "design.cu2"
-value = "16.602350337110906 m/s"
+value = "16.073519180769722 m/s"
 
 [params.d0]
 mode = "auto"
@@ -94,7 +94,7 @@ value = "0.20000721861021556 m"
 [params.d360]
 mode = "auto"
 formula = "design.volute_throat_diameter"
-value = "0.05515829170718257 m"
+value = "0.05602786567858496 m"
 
 [params.dn]
 mode = "auto"
@@ -108,8 +108,8 @@ value = "0.8431615843939474"
 
 [params.eta_h]
 mode = "auto"
-formula = "design.hydraulic_efficiency"
-value = "0.8752282454001429"
+formula = "design.statistical_hydraulic_efficiency"
+value = "0.9040239284242526"
 
 [params.eta_m]
 mode = "manual"
@@ -207,7 +207,7 @@ value = "0.11093691223965224 m"
 [params.r4]
 mode = "auto"
 formula = "design.volute_outer_radius"
-value = "0.13851605809324352 m"
+value = "0.13895084507894473 m"
 
 [params.rho]
 mode = "manual"
@@ -221,7 +221,7 @@ value = "0.11422256091476919"
 [params.slip]
 mode = "auto"
 formula = "design.slip_factor"
-value = "0.8364925213618993"
+value = "0.8411549962314847"
 
 [params.torque]
 mode = "auto"

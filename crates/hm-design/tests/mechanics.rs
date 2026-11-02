@@ -106,8 +106,21 @@ fn a_normal_pump_has_no_mechanical_warnings() {
 
 #[test]
 fn a_thick_hub_in_a_small_eye_is_flagged() {
-    let input = input("10 m3/h", "120 m", "2900 rpm");
-    let result = design(&input).unwrap();
+    // nq ≈ 9,5, por debajo de la fig. 9.46 (10..95). Con el ηh de Gülich (v0.7)
+    // la selección por defecto no alcanza la altura con nq < 10, así que se
+    // fijan ψ y Z: lo que se prueba es la mecánica, no la selección.
+    let input = input("18 m3/h", "60 m", "2900 rpm");
+    let result = hm_design::design_with_options(
+        &input,
+        &hm_design::DesignOptions {
+            psi: Some(0.8),
+            blade_count: Some(10),
+            // Ojo pequeño: velocidad de entrada alta.
+            c0: Some(6.0),
+            ..hm_design::DesignOptions::default()
+        },
+    )
+    .unwrap();
     let mech = mechanics(&input, &result, DEFAULT_SHAFT_SHEAR_STRESS).unwrap();
     let found = codes(&mechanics_diagnostics(&mech, &result));
     assert!(found.contains(&"HM-DES-027".to_string()), "{found:?}");

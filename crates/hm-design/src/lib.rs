@@ -200,7 +200,7 @@ pub struct ParamSpec {
 ///   margen de Gülich (§6.3.3 y tabla 6.2), H0 de Gülich (3.28).
 /// - v0.3: la transición del NPSHr a la subida brusca sale de la geometría
 ///   (Gülich ec. 6.17–6.20) en vez de suponerla en el caudal de diseño.
-pub const METHOD: &str = "end_suction_v0.6";
+pub const METHOD: &str = "end_suction_v0.7";
 
 /// Métodos anteriores que `recalc` sabe migrar a [`METHOD`].
 pub const LEGACY_METHODS: &[&str] = &[
@@ -209,6 +209,7 @@ pub const LEGACY_METHODS: &[&str] = &[
     "end_suction_v0.3",
     "end_suction_v0.4",
     "end_suction_v0.5",
+    "end_suction_v0.6",
 ];
 
 /// Parámetros que genera o consume el método [`METHOD`].
@@ -356,7 +357,7 @@ pub const PARAM_SPECS: &[ParamSpec] = &[
     ParamSpec {
         name: "eta_h",
         unit: "1",
-        formula: Some("design.hydraulic_efficiency"),
+        formula: Some("design.statistical_hydraulic_efficiency"),
     },
     ParamSpec {
         name: "eta_v",
@@ -703,10 +704,18 @@ pub fn design_with_options(
     )?
     .value();
 
+    // end_suction_v0.7: un solo ηh, el estadístico de Gülich (ec. 3.9.6),
+    // para cerrar Euler (β2) y para el análisis de pérdidas. Hasta la v0.6
+    // Euler usaba el de Srinivasan (diámetro específico) y la potencia el de
+    // Gülich: la geometría no daba la altura con el ηh de las pérdidas.
     let eta_h = evaluate(
         &registry,
-        "design.hydraulic_efficiency",
-        &[("Dn", quantity(specific_diameter_mm, one.clone()))],
+        "design.statistical_hydraulic_efficiency",
+        &[
+            ("Q", input.q.clone()),
+            ("Q_ref", quantity(1.0, m3s.clone())),
+            ("nq", quantity(nq, one.clone())),
+        ],
     )?
     .value();
 
@@ -959,16 +968,7 @@ pub fn design_with_options(
         ],
     )?
     .value();
-    let statistical_eta_h = evaluate(
-        &registry,
-        "design.statistical_hydraulic_efficiency",
-        &[
-            ("Q", input.q.clone()),
-            ("Q_ref", quantity(1.0, m3s.clone())),
-            ("nq", quantity(nq, one.clone())),
-        ],
-    )?
-    .value();
+    let statistical_eta_h = eta_h;
     let loss_eta = evaluate(
         &registry,
         "design.loss_efficiency",

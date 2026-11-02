@@ -52,7 +52,10 @@ fn d1a1_reference() {
     close(result.u2.value(), 17.64, 0.02);
     close(result.cm2.value(), 2.293, 0.02);
 
-    close(result.eta_h, 0.870, 0.002);
+    // v0.7: el ηh del método es el estadístico de Gülich (0,890 aquí); el
+    // libro usa la correlación de Srinivasan por el diámetro específico,
+    // 0,870, que sigue contrastada en hm-formula (hydraulic_efficiency).
+    close(result.eta_h, 0.8896, 0.001);
     close(result.eta_v, 0.9722, 0.002);
     // Desde end_suction_v0.4 η sale del análisis de pérdidas de Gülich; el
     // libro da 0,813 con su cadena ηh·ηv·ηm. La diferencia (−0,4 % en
@@ -98,7 +101,8 @@ fn d1a1_duty_with_default_selections() {
 
     close(result.selection.psi, 0.9472, 1e-4);
     close(result.selection.phi, 0.1040, 1e-3);
-    close(result.selection.beta2_deg, 19.8, 0.1);
+    // v0.7: con el ηh de Gülich (0,890 frente a 0,870) Euler pide menos cu2.
+    close(result.selection.beta2_deg, 18.85, 0.1);
     close(result.b2.si / result.d2.si, gulich_b2_star(result.nq), 1e-6);
     let euler_head = result.eta_h * result.u2.si * result.cu2.si / 9.80665;
     close(euler_head, input.h.si, 1e-6);
@@ -111,7 +115,8 @@ fn existing_case_is_consistent() {
 
     close(result.nq, 30.474, 0.05);
     close(result.selection.psi, 0.9569, 1e-4);
-    close(result.selection.beta2_deg, 19.08, 0.02);
+    // v0.7: ηh de Gülich 0,904 (Srinivasan daba 0,875): β2 baja de 19,08°.
+    close(result.selection.beta2_deg, 17.82, 0.02);
     close(result.d2.value(), 0.2000, 0.001);
     close(result.b2.value(), 0.01794, 0.0003);
     close(result.d1.value(), 0.1135, 0.001);
@@ -532,12 +537,13 @@ fn manual_beta2_reports_the_euler_head_mismatch() {
 
 #[test]
 fn unreachable_head_is_an_error() {
-    // Con ψ = 1,3 y Z = 7 haría falta cu2/u2 = 0,74 y el máximo es 0,73.
+    // Con ψ = 1,4, ηh = 0,904 y Z = 7 haría falta cu2/u2 = 0,77 y el máximo
+    // es 0,73.
     let input = input("120 m3/h", "45 m", "2900 rpm");
     let error = design_with_options(
         &input,
         &DesignOptions {
-            psi: Some(1.3),
+            psi: Some(1.4),
             ..DesignOptions::default()
         },
     )
@@ -673,4 +679,22 @@ fn seal_leakage_follows_the_ring_geometry() {
     assert!(worn.seal_eta_v < base.seal_eta_v - 0.01);
     // Es un contraste: el η del método no cambia.
     close(worn.eta, base.eta, 1e-12);
+}
+
+#[test]
+fn one_hydraulic_efficiency_for_euler_and_power() {
+    // end_suction_v0.7: el ηh que cierra Euler (β2) es el mismo que entra en
+    // el análisis de pérdidas, el estadístico de Gülich (ec. 3.9.6). Con él,
+    // ηh·u2·cu2/g da la altura pedida.
+    for (q, h, n) in [
+        ("1060 gpm", "83 m", "1750 rpm"),
+        ("120 m3/h", "45 m", "2900 rpm"),
+        ("0.016 m3/s", "13.8 m", "1800 rpm"),
+    ] {
+        let input = input(q, h, n);
+        let result = design(&input).unwrap();
+        close(result.eta_h, result.statistical_eta_h, 1e-12);
+        let euler_head = result.eta_h * result.u2.si * result.cu2.si / 9.806_65;
+        close(euler_head, input.h.si, 1e-6 * input.h.si);
+    }
 }

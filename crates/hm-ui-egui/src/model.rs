@@ -242,9 +242,13 @@ mod tests {
 
     #[test]
     fn mechanical_warnings_reach_the_interface() {
+        // Un motor por encima de la serie IEC (HM-DES-030). Hasta la v0.6 la
+        // prueba usaba el cubo grueso de 10 m³/h y 120 m; con el ηh de Gülich
+        // (v0.7) ese punto de nq ≈ 4 ya no tiene solución por defecto.
         let inputs = Inputs {
-            q: "10 m3/h".into(),
-            h: "120 m".into(),
+            q: "3000 m3/h".into(),
+            h: "150 m".into(),
+            n: "1450 rpm".into(),
             ..Inputs::default()
         };
         let outcome = compute(&inputs).unwrap();
@@ -252,7 +256,7 @@ mod tests {
             outcome
                 .diagnostics
                 .iter()
-                .any(|diagnostic| diagnostic.code == "HM-DES-027")
+                .any(|diagnostic| diagnostic.code == "HM-DES-030")
         );
     }
 

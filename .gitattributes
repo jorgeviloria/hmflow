@@ -1,0 +1,3 @@
+# Finales de línea LF en todos los sistemas. Los `.hmf` de referencia y los
+# casos se comparan byte a byte: en Windows, git los convertiría a CRLF.
+* text=auto eol=lf

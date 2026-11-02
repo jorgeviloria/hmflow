@@ -41,6 +41,12 @@ fn ci() -> ExitCode {
     if codes(false) != ExitCode::SUCCESS {
         return ExitCode::FAILURE;
     }
+    // Las mismas comprobaciones que corre GitHub (.github/workflows/ci.yml).
+    for check in [provenance, licences, assets] {
+        if check() != ExitCode::SUCCESS {
+            return ExitCode::FAILURE;
+        }
+    }
 
     let steps: Vec<(&str, Vec<&str>)> = vec![
         ("cargo", vec!["fmt", "--all", "--", "--check"]),
@@ -90,6 +96,9 @@ fn provenance() -> ExitCode {
     }
 }
 
+/// Licencia del proyecto, tal como se declara en un `Cargo.toml`.
+const PROJECT_LICENSE: &str = "license = \"MIT OR Apache-2.0\"";
+
 fn licences() -> ExitCode {
     let required = [
         "LICENSE-APACHE",
@@ -112,10 +121,15 @@ fn licences() -> ExitCode {
     collect_manifests(Path::new("crates"), &mut manifests);
     manifests.push(PathBuf::from("xtask/Cargo.toml"));
 
+    // Un crate con workspace propio (la interfaz egui) no puede heredar la
+    // licencia: basta con que declare la misma de forma explícita.
     for manifest in manifests {
         let text = std::fs::read_to_string(&manifest).unwrap_or_default();
-        if !text.contains("license.workspace = true") {
-            eprintln!("{}: falta `license.workspace = true`", manifest.display());
+        if !text.contains("license.workspace = true") && !text.contains(PROJECT_LICENSE) {
+            eprintln!(
+                "{}: falta `license.workspace = true` o `{PROJECT_LICENSE}`",
+                manifest.display()
+            );
             ok = false;
         }
     }

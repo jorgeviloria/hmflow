@@ -140,3 +140,39 @@ fn unit_base_symbol_is_readable() {
     let u = Unit::base(Dimension::POWER);
     assert_eq!(u.symbol, "m2*kg/s3");
 }
+
+#[test]
+fn composed_units_keep_their_symbol() {
+    let cases = [
+        ("120 m3/h", 120.0, "m3/h"),
+        ("1 km/h", 1.0, "km/h"),
+        ("1 kW*h", 1.0, "kW*h"),
+        ("1 kg/m/s", 1.0, "kg/m/s"),
+        ("1 kg/(m*s)", 1.0, "kg/(m*s)"),
+        ("1 (m/s)^2", 1.0, "(m/s)^2"),
+        ("1 s^-1", 1.0, "s^-1"),
+        ("2 1/s", 2.0, "1/s"),
+    ];
+    for (text, value, symbol) in cases {
+        let quantity = parse_quantity(text).unwrap();
+        assert_eq!(quantity.unit.symbol, symbol, "{text}");
+        assert!((quantity.value() - value).abs() < 1e-12, "{text}");
+    }
+}
+
+#[test]
+fn composed_symbols_parse_back_to_the_same_unit() {
+    for text in [
+        "m3/h", "km/h", "kW*h", "kg/m/s", "kg/(m*s)", "(m/s)^2", "s^-1", "L/min", "N*m", "1/s",
+        "kg/m3",
+    ] {
+        let unit = parse_unit(text).unwrap();
+        let again = parse_unit(&unit.symbol).unwrap();
+        assert_eq!(again.dim, unit.dim, "{text} → {}", unit.symbol);
+        assert!(
+            (again.factor - unit.factor).abs() <= 1e-12 * unit.factor.abs(),
+            "{text} → {}",
+            unit.symbol
+        );
+    }
+}

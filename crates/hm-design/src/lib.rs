@@ -1353,10 +1353,10 @@ const DISK_K0: f64 = 0.5;
 const DISK_F_GEO: f64 = 1.22;
 
 /// Grado de reacción para la presión estática a la salida del rodete con
-/// nq < 40 (Gülich 2020, ec. 3.7.1 y p. 155).
+/// nq < 40 (Gülich 2020, ec. 3.7.1 y p. 111).
 const SEAL_REACTION: f64 = 0.75;
 
-/// Longitud del anillo de desgaste frente a su diámetro: Gülich 2020, p. 155,
+/// Longitud del anillo de desgaste frente a su diámetro: Gülich 2020, p. 111,
 /// da 0,1..0,14; se toma el centro.
 const SEAL_LENGTH_RATIO: f64 = 0.12;
 
@@ -1364,7 +1364,7 @@ const SEAL_LENGTH_RATIO: f64 = 0.12;
 const SEAL_ZETA: f64 = 1.1;
 
 /// Rugosidad equivalente de un anillo mecanizado, m (el ejemplo de Gülich 2020,
-/// p. 155: 4 µm).
+/// p. 111: 4 µm).
 const SEAL_ROUGHNESS: f64 = 4.0e-6;
 
 /// Fuga por el anillo delantero (Gülich 2020, tabla 3.7): devuelve Qsp/Q y

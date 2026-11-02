@@ -1458,7 +1458,7 @@ d2 = "m"
 value = "RG*H - k^2*u2^2/(2*g)*(1 - dsp^2/d2^2)"
 
 [formula.notes]
-assumptions = "Hp = RG·H con RG ≈ 0,75 para nq < 40 (ec. 3.7.1 y p. 155); la rotación del fluido en la cámara lateral baja la presión hasta el anillo en k²·u2²/2g·(1 − dsp²/d2²)."
+assumptions = "Hp = RG·H con RG ≈ 0,75 para nq < 40 (ec. 3.7.1 y p. 111); la rotación del fluido en la cámara lateral baja la presión hasta el anillo en k²·u2²/2g·(1 − dsp²/d2²)."
 
 [[formula]]
 id = "design.seal_friction_coefficient"

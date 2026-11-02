@@ -1,8 +1,8 @@
 [workspace]
 resolver = "3"
-# hm-ui (iced) y hm-ui-egui son pruebas de interfaz con su propio
-# workspace; no entran en el CI principal.
-exclude = ["crates/hm-ui", "crates/hm-ui-egui"]
+# hm-ui-egui es la interfaz, todavía en prueba, con su propio workspace;
+# no entra en el CI principal.
+exclude = ["crates/hm-ui-egui"]
 members = [
     "crates/hm-core",
     "crates/hm-units",

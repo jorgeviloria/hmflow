@@ -6,9 +6,9 @@ rust-version = "1.95"
 license = "MIT OR Apache-2.0"
 authors = ["Jorge Viloria and contributors"]
 publish = false
-description = "Prueba de la interfaz de HidroMac Flow con egui, para comparar con iced."
+description = "Interfaz de HidroMac Flow con egui."
 
-# Prueba con su propio workspace, como hm-ui: no entra en el CI principal.
+# Workspace propio: todavía no entra en el CI principal.
 [workspace]
 
 [[bin]]

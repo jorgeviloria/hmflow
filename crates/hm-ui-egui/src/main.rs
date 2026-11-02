@@ -1,6 +1,6 @@
 //! Prueba de la interfaz de HidroMac Flow con egui.
 //!
-//! Vive en su propio workspace, como `hm-ui` (iced), para compararlas.
+//! Vive en su propio workspace y todavía no entra en el CI principal.
 //! Ejecutar con `cargo run --manifest-path crates/hm-ui-egui/Cargo.toml`.
 
 mod model;

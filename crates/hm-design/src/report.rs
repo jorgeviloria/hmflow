@@ -14,7 +14,10 @@ use std::collections::BTreeMap;
 use hm_core::Diagnostic;
 use serde::{Deserialize, Serialize};
 
-use crate::{DesignInput, DesignResult, METHOD, PARAM_SPECS, designed_si, performance_curve};
+use crate::{
+    DesignInput, DesignResult, METHOD, PARAM_SPECS, ViscousCorrection, designed_si,
+    performance_curve,
+};
 
 /// Identificador del formato del informe.
 pub const REPORT_FORMAT: &str = "hmflow.design-report";
@@ -57,6 +60,21 @@ pub struct ReportPoint {
     pub npshr: Measure,
 }
 
+/// Prestaciones con el fluido viscoso en el punto de diseño
+/// (Gülich 2020, tabla 13.1).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct ReportViscous {
+    pub nu: Measure,
+    pub reynolds_mod: Measure,
+    pub f_q: Measure,
+    pub f_h: Measure,
+    pub f_eta: Measure,
+    pub flow: Measure,
+    pub head: Measure,
+    pub efficiency: Measure,
+    pub shaft_power: Measure,
+}
+
 /// Informe completo de un diseño.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct DesignReport {
@@ -75,6 +93,9 @@ pub struct DesignReport {
     pub results: BTreeMap<String, Measure>,
     pub volute_sections: Vec<ReportSection>,
     pub curve: Vec<ReportPoint>,
+    /// Corrección por viscosidad; ausente si no se evaluó.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub viscous: Option<ReportViscous>,
     pub diagnostics: Vec<Diagnostic>,
 }
 
@@ -161,7 +182,24 @@ impl DesignReport {
             results,
             volute_sections,
             curve,
+            viscous: None,
             diagnostics,
         }
+    }
+
+    /// Añade la corrección por viscosidad.
+    pub fn with_viscous(mut self, correction: &ViscousCorrection) -> Self {
+        self.viscous = Some(ReportViscous {
+            nu: Measure::new(correction.nu, "m2/s"),
+            reynolds_mod: Measure::new(correction.reynolds_mod, "1"),
+            f_q: Measure::new(correction.f_q, "1"),
+            f_h: Measure::new(correction.f_h, "1"),
+            f_eta: Measure::new(correction.f_eta, "1"),
+            flow: Measure::new(correction.flow.si, "m3/s"),
+            head: Measure::new(correction.head.si, "m"),
+            efficiency: Measure::new(correction.efficiency, "1"),
+            shaft_power: Measure::new(correction.shaft_power.si, "W"),
+        });
+        self
     }
 }

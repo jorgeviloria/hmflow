@@ -685,3 +685,66 @@ value = "g*H/(eta_h*u2)"
 
 [formula.notes]
 assumptions = "c2u = gH/(ηh u2) + u1m c1u/u2 sin prerrotación (c1u = 0). El motor elige β2 para que design.cu2 dé este valor (Gülich 2020, p. 412, paso 10)."
+
+[[formula]]
+id = "design.viscous_reynolds"
+version = 1
+validation = "pilot"
+module = "design"
+title = "Número de Reynolds modificado para la corrección por viscosidad"
+source = "Gülich 2020, tabla 13.1, ec. (13.1.1)-(13.1.2), p. 1016; ωs = nq/52,9 (tabla 3.4, ec. 3.4.16)"
+units = "1"
+range = "1 .. 1e9"
+test = "crates/hm-formula/tests/end_suction.rs::viscous_reynolds"
+
+[formula.inputs]
+n = "1/s"
+d2 = "m"
+nu = "m2/s"
+nq = "1"
+
+[formula.expr]
+value = "2*pi*n*(d2/2)^2/nu*(nq/52.9)^1.5"
+
+[formula.notes]
+assumptions = "Re = ω r2²/ν y Re_mod = Re ωs^1,5 fq^0,75 con fq = 1 (rodete de simple aspiración)."
+
+[[formula]]
+id = "design.viscous_head_factor"
+version = 1
+validation = "pilot"
+module = "design"
+title = "Factor de altura por viscosidad en el punto de diseño"
+source = "Gülich 2020, tabla 13.1, ec. (13.1.3), p. 1016"
+units = "1"
+range = "0 .. 1"
+test = "crates/hm-formula/tests/end_suction.rs::viscous_head_factor"
+
+[formula.inputs]
+Re_mod = "1"
+
+[formula.expr]
+value = "exp(-6.7*Re_mod^(-0.735)*ln(Re_mod))"
+
+[formula.notes]
+assumptions = "fH,opt = Re_mod^(−x) con x = 6,7/Re_mod^0,735 (exponente medio). Validez: ν ≤ 4000 cSt y 7 < nq < 50. fQ = fH,opt (ec. 13.1.5)."
+
+[[formula]]
+id = "design.viscous_efficiency_factor"
+version = 1
+validation = "pilot"
+module = "design"
+title = "Factor de rendimiento por viscosidad en el punto de diseño"
+source = "Gülich 2020, tabla 13.1, ec. (13.1.4), p. 1016"
+units = "1"
+range = "0 .. 1"
+test = "crates/hm-formula/tests/end_suction.rs::viscous_efficiency_factor"
+
+[formula.inputs]
+Re_mod = "1"
+
+[formula.expr]
+value = "exp(-19*Re_mod^(-0.705)*ln(Re_mod))"
+
+[formula.notes]
+assumptions = "fη = Re_mod^(−y) con y = 19/Re_mod^0,705 (exponente medio). Validez: ν ≤ 4000 cSt y 7 < nq < 50."

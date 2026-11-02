@@ -6,14 +6,16 @@ use std::process::ExitCode;
 
 use clap::{Parser, Subcommand};
 use hm_core::{Diagnostic, Diagnostics};
+use hm_design::fluid::{water_kinematic_viscosity, water_vapor_pressure};
 use hm_design::{
     DEFAULT_K_EFF, DEFAULT_K3, DEFAULT_VOLUTE_C, DesignInput, DesignOptions, DesignReport,
     DesignResult, LEGACY_METHODS, METHOD, PARAM_SPECS, ParamSpec, WATER_DENSITY_RANGE_C, design,
     design_with_options, designed_si, param_spec, performance_curve, stored_si_matches,
     table_selection, water_density,
 };
+use hm_design::{ViscousCorrection, viscous_correction, viscous_diagnostics};
 use hm_formula::{Registry, eval, infer, parse};
-use hm_project::{Param, Project, PumpType};
+use hm_project::{Param, Project, PumpType, Suction};
 use hm_units::{Dimension, Quantity, parse_quantity, parse_unit};
 
 #[derive(Parser)]
@@ -27,6 +29,9 @@ struct Cli {
     command: Command,
 }
 
+// Se construye una vez por ejecución: el tamaño de la variante `Design` no
+// importa y una caja solo complicaría el `match`.
+#[allow(clippy::large_enum_variant)]
 #[derive(Subcommand)]
 enum Command {
     /// Crea un proyecto nuevo.
@@ -111,10 +116,29 @@ enum Command {
         /// Eficiencia mecánica, mayor que 0 y menor que 1.
         #[arg(long, default_value_t = 0.96)]
         eta_m: f64,
-        /// NPSH disponible de la instalación, por ejemplo "10 m". Sin él no
-        /// se evalúa el margen de cavitación.
+        /// NPSH disponible de la instalación, por ejemplo "10 m". Sin él (ni
+        /// --suction-pressure) no se evalúa el margen de cavitación.
         #[arg(long, allow_hyphen_values = true)]
         npsha: Option<String>,
+        /// Presión absoluta sobre el líquido aspirado, por ejemplo "1 atm".
+        /// Con ella el NPSHa se calcula de la instalación.
+        #[arg(long, allow_hyphen_values = true, conflicts_with = "npsha")]
+        suction_pressure: Option<String>,
+        /// Altura del nivel del líquido sobre el eje; negativa si aspira
+        /// desde abajo, por ejemplo "-3 m".
+        #[arg(long, allow_hyphen_values = true, requires = "suction_pressure")]
+        suction_height: Option<String>,
+        /// Pérdidas de carga en la aspiración, por ejemplo "0.5 m".
+        #[arg(long, allow_hyphen_values = true, requires = "suction_pressure")]
+        suction_losses: Option<String>,
+        /// Presión de vapor del fluido; sin ella, la del agua a la
+        /// temperatura indicada (IAPWS-IF97).
+        #[arg(long, allow_hyphen_values = true, requires = "suction_pressure")]
+        vapor_pressure: Option<String>,
+        /// Viscosidad del fluido, cinemática ("30 cSt") o dinámica ("25 cP");
+        /// sin ella, la del agua a la temperatura indicada si es agua.
+        #[arg(long, allow_hyphen_values = true)]
+        viscosity: Option<String>,
         /// Archivo de salida; por defecto <name>.hmf.
         #[arg(long)]
         out: Option<PathBuf>,
@@ -296,6 +320,11 @@ fn run(cli: Cli) -> Result<ExitCode, Box<dyn std::error::Error>> {
             temperature,
             eta_m,
             npsha,
+            suction_pressure,
+            suction_height,
+            suction_losses,
+            vapor_pressure,
+            viscosity,
             out,
             force,
             curves,
@@ -323,21 +352,38 @@ fn run(cli: Cli) -> Result<ExitCode, Box<dyn std::error::Error>> {
                     format!("{density:.3} kg/m3")
                 }
             };
-            let input = DesignInput {
-                q: parse_quantity(&q)?,
-                h: parse_quantity(&h)?,
-                n: parse_quantity(&n)?,
-                rho: parse_quantity(&rho_text)?,
-                eta_m,
-                npsha: npsha.as_deref().map(parse_quantity).transpose()?,
-            };
+            let rho_quantity = parse_quantity(&rho_text)?;
             let fluid = fluid.unwrap_or_else(|| {
-                if looks_like_water(input.rho.si) {
+                if looks_like_water(rho_quantity.si) {
                     "water".to_string()
                 } else {
                     "custom".to_string()
                 }
             });
+            let suction = suction_pressure.map(|pressure| Suction {
+                pressure,
+                height: suction_height.unwrap_or_default(),
+                losses: suction_losses.unwrap_or_default(),
+                vapor_pressure: vapor_pressure.unwrap_or_default(),
+            });
+            let npsha_quantity = match &suction {
+                Some(suction) => Some(suction_npsha(
+                    suction,
+                    &fluid,
+                    &temperature,
+                    rho_quantity.si,
+                )?),
+                None => npsha.as_deref().map(parse_quantity).transpose()?,
+            };
+            let input = DesignInput {
+                q: parse_quantity(&q)?,
+                h: parse_quantity(&h)?,
+                n: parse_quantity(&n)?,
+                rho: rho_quantity,
+                eta_m,
+                npsha: npsha_quantity,
+            };
+            let viscosity_text = viscosity.unwrap_or_default();
 
             if !(2..=1000).contains(&curve_points) {
                 return Err("--curve-points debe estar entre 2 y 1000".into());
@@ -405,10 +451,25 @@ fn run(cli: Cli) -> Result<ExitCode, Box<dyn std::error::Error>> {
                 result.p_vol_loss.value(),
                 result.p_mech_loss.value()
             );
+            if let (Some(npsha), Some(_)) = (&input.npsha, &suction) {
+                println!("  NPSHa de la instalación = {:.2} m", npsha.si);
+            }
 
             let mut shown = result.diagnostics.clone();
             shown.extend(fluid_diagnostics(&fluid, &temperature, input.rho.si).into_vec());
             shown.extend(npsh_fluid_diagnostics(&fluid, input.npsha.is_some()).into_vec());
+            let (viscous_diagnostics, correction) =
+                viscosity_effect(&fluid, &temperature, &viscosity_text, &input, &result)?;
+            if let Some(correction) = &correction {
+                println!(
+                    "  Viscosidad: ν = {:.3} cSt   fQ = {:.3}   fH = {:.3}   fη = {:.3}",
+                    correction.nu * 1e6,
+                    correction.f_q,
+                    correction.f_h,
+                    correction.f_eta
+                );
+            }
+            shown.extend(viscous_diagnostics.into_vec());
             print_diagnostics(&shown);
 
             if shown.has_errors() {
@@ -447,7 +508,12 @@ fn run(cli: Cli) -> Result<ExitCode, Box<dyn std::error::Error>> {
             project.operating.n = n;
             project.operating.fluid = fluid;
             project.operating.temperature = temperature;
-            project.operating.npsha = npsha_text.unwrap_or_default();
+            project.operating.viscosity = viscosity_text;
+            if suction.is_some() {
+                project.suction = suction;
+            } else {
+                project.operating.npsha = npsha_text.unwrap_or_default();
+            }
             project.design.method = METHOD.to_string();
 
             let defaults = ManualDefaults {
@@ -518,10 +584,15 @@ fn design_inputs(
         rho_unit,
     );
     let eta_m = param_f64(project, "eta_m", "1")?.unwrap_or(0.96);
-    let npsha = if project.operating.npsha.trim().is_empty() {
-        None
-    } else {
-        Some(parse_quantity(&project.operating.npsha)?)
+    let npsha = match &project.suction {
+        Some(suction) => Some(suction_npsha(
+            suction,
+            &project.operating.fluid,
+            &project.operating.temperature,
+            rho.si,
+        )?),
+        None if project.operating.npsha.trim().is_empty() => None,
+        None => Some(parse_quantity(&project.operating.npsha)?),
     };
     let options = design_options(project)?;
 
@@ -549,6 +620,11 @@ fn recompute_design_diagnostics(
     let result = design_with_options(&input, &options)?;
     let mut diagnostics = result.diagnostics.clone();
     add_fluid_temperature_diagnostics(project, &input, &mut diagnostics);
+    diagnostics.extend(
+        project_viscosity_effect(project, &input, &result)?
+            .0
+            .into_vec(),
+    );
     add_selection_diagnostics(project, &result, &mut diagnostics);
     compare_stored_autos(&result, project, &mut diagnostics);
     Ok(Some(diagnostics))
@@ -673,6 +749,11 @@ fn recalc(file: &std::path::Path, reselect: bool) -> Result<ExitCode, Box<dyn st
     let result = design_with_options(&input, &options)?;
     let mut diagnostics = result.diagnostics.clone();
     add_fluid_temperature_diagnostics(&project, &input, &mut diagnostics);
+    diagnostics.extend(
+        project_viscosity_effect(&project, &input, &result)?
+            .0
+            .into_vec(),
+    );
     add_selection_diagnostics(&project, &result, &mut diagnostics);
     print_diagnostics(&diagnostics);
     if diagnostics.has_errors() {
@@ -761,12 +842,143 @@ fn design_report(
     let result = design_with_options(&input, &options)?;
     let mut diagnostics = validation.into_vec();
     diagnostics.extend(design_audit(&project).into_vec());
-    Ok(DesignReport::new(
-        &input,
-        &result,
-        curve_points,
-        diagnostics,
-    ))
+    let report = DesignReport::new(&input, &result, curve_points, diagnostics);
+    Ok(
+        match project_viscosity_effect(&project, &input, &result)?.1 {
+            Some(correction) => report.with_viscous(&correction),
+            None => report,
+        },
+    )
+}
+
+/// NPSHa de una instalación de aspiración con la fórmula `npsh.npsha`.
+///
+/// La presión de vapor es la de `[suction]` o, si falta y el fluido es agua,
+/// la de IAPWS-IF97 a la temperatura del proyecto (20 °C si no se indica).
+fn suction_npsha(
+    suction: &Suction,
+    fluid: &str,
+    temperature: &str,
+    rho: f64,
+) -> Result<Quantity, Box<dyn std::error::Error>> {
+    let text_or_zero = |text: &str| -> Result<Quantity, Box<dyn std::error::Error>> {
+        Ok(if text.trim().is_empty() {
+            parse_quantity("0 m")?
+        } else {
+            parse_quantity(text)?
+        })
+    };
+    let pressure = parse_quantity(&suction.pressure)?;
+    let vapor = if suction.vapor_pressure.trim().is_empty() {
+        let water = fluid.is_empty() || fluid.eq_ignore_ascii_case("water");
+        if !water {
+            return Err(format!(
+                "el fluido es `{fluid}`: indica la presión de vapor de la aspiración"
+            )
+            .into());
+        }
+        let temperature_k = if temperature.trim().is_empty() {
+            293.15
+        } else {
+            parse_temperature(temperature)?
+        };
+        let pascal = water_vapor_pressure(temperature_k)
+            .ok_or("la temperatura está fuera del intervalo de la presión de vapor del agua")?;
+        Quantity::from_si(pascal, parse_unit("Pa")?)
+    } else {
+        parse_quantity(&suction.vapor_pressure)?
+    };
+    let inputs: BTreeMap<String, Quantity> = [
+        ("p_s", pressure),
+        ("p_v", vapor),
+        ("rho", Quantity::from_si(rho, parse_unit("kg/m3")?)),
+        ("z", text_or_zero(&suction.height)?),
+        ("hf", text_or_zero(&suction.losses)?),
+    ]
+    .into_iter()
+    .map(|(name, value)| (name.to_string(), value))
+    .collect();
+    Ok(Registry::all().evaluate("npsh.npsha", &inputs)?)
+}
+
+/// Viscosidad cinemática del fluido en m²/s: la indicada (cinemática, o
+/// dinámica dividida por ρ) o la del agua a la temperatura del proyecto.
+/// `None` si el fluido no es agua y no se indicó, o si la temperatura cae
+/// fuera de la correlación del agua.
+fn kinematic_viscosity(
+    viscosity: &str,
+    fluid: &str,
+    temperature: &str,
+    rho: f64,
+) -> Result<Option<f64>, Box<dyn std::error::Error>> {
+    if !viscosity.trim().is_empty() {
+        let quantity = parse_quantity(viscosity)?;
+        if quantity.dim() == parse_unit("m2/s")?.dim {
+            return Ok(Some(quantity.si));
+        }
+        if quantity.dim() == parse_unit("Pa*s")?.dim {
+            return Ok(Some(quantity.si / rho));
+        }
+        return Err(format!("la viscosidad debe ser m2/s (cSt) o Pa*s (cP): {viscosity}").into());
+    }
+    let water = fluid.is_empty() || fluid.eq_ignore_ascii_case("water");
+    if !water {
+        return Ok(None);
+    }
+    let temperature_k = if temperature.trim().is_empty() {
+        293.15
+    } else {
+        parse_temperature(temperature)?
+    };
+    Ok(water_kinematic_viscosity(temperature_k))
+}
+
+/// Corrección por viscosidad y sus avisos. Sin viscosidad conocida de un
+/// fluido que no es agua, informa de que no se evaluó (`HM-DES-022`).
+fn viscosity_effect(
+    fluid: &str,
+    temperature: &str,
+    viscosity: &str,
+    input: &DesignInput,
+    result: &DesignResult,
+) -> Result<(Diagnostics, Option<ViscousCorrection>), Box<dyn std::error::Error>> {
+    let mut diagnostics = Diagnostics::new();
+    match kinematic_viscosity(viscosity, fluid, temperature, input.rho.si)? {
+        Some(nu) => {
+            let correction = viscous_correction(input, result, nu)?;
+            diagnostics.extend(viscous_diagnostics(&correction, result.nq).into_vec());
+            Ok((diagnostics, Some(correction)))
+        }
+        None => {
+            let water = fluid.is_empty() || fluid.eq_ignore_ascii_case("water");
+            if !water {
+                diagnostics.push(
+                    Diagnostic::info(
+                        "HM-DES-022",
+                        format!(
+                            "el fluido es `{fluid}` y no tiene viscosidad: no se evaluó su efecto"
+                        ),
+                    )
+                    .with_hint("Indica la viscosidad en [operating] (viscosity = \"30 cSt\")."),
+                );
+            }
+            Ok((diagnostics, None))
+        }
+    }
+}
+
+fn project_viscosity_effect(
+    project: &Project,
+    input: &DesignInput,
+    result: &DesignResult,
+) -> Result<(Diagnostics, Option<ViscousCorrection>), Box<dyn std::error::Error>> {
+    viscosity_effect(
+        &project.operating.fluid,
+        &project.operating.temperature,
+        &project.operating.viscosity,
+        input,
+        result,
+    )
 }
 
 fn print_diagnostics(diagnostics: &Diagnostics) {
@@ -1632,6 +1844,120 @@ mod tests {
             "códigos: {:?}",
             codes(&diagnostics)
         );
+    }
+
+    #[test]
+    fn suction_npsha_uses_iapws_vapor_pressure_for_water() {
+        let suction = Suction {
+            pressure: "1 atm".to_string(),
+            height: "-3 m".to_string(),
+            losses: "0.5 m".to_string(),
+            vapor_pressure: String::new(),
+        };
+        // (101325 − 2339,2)/(998,2·9,80665) − 3 − 0,5
+        let npsha = suction_npsha(&suction, "water", "20 degC", 998.2).unwrap();
+        assert!((npsha.si - 6.612).abs() < 1e-3, "{}", npsha.si);
+
+        // Más caliente, más presión de vapor y menos NPSHa.
+        let hot = suction_npsha(&suction, "water", "80 degC", 971.8).unwrap();
+        assert!(hot.si < npsha.si - 4.0, "{}", hot.si);
+
+        assert!(suction_npsha(&suction, "glycol", "20 degC", 1050.0).is_err());
+        let mut given = suction.clone();
+        given.vapor_pressure = "0 Pa".to_string();
+        let no_vapor = suction_npsha(&given, "glycol", "20 degC", 1000.0).unwrap();
+        assert!((no_vapor.si - (101_325.0 / (1000.0 * 9.80665) - 3.5)).abs() < 1e-9);
+    }
+
+    #[test]
+    fn viscosity_can_be_kinematic_or_dynamic() {
+        let cst = kinematic_viscosity("30 cSt", "oil", "", 900.0)
+            .unwrap()
+            .unwrap();
+        assert!((cst - 30e-6).abs() < 1e-15);
+        let cp = kinematic_viscosity("27 cP", "oil", "", 900.0)
+            .unwrap()
+            .unwrap();
+        assert!((cp - 30e-6).abs() < 1e-15);
+        let water = kinematic_viscosity("", "water", "20 degC", 998.2)
+            .unwrap()
+            .unwrap();
+        assert!((water - 1.0034e-6).abs() < 1e-9);
+        assert_eq!(kinematic_viscosity("", "oil", "", 900.0).unwrap(), None);
+        assert!(kinematic_viscosity("3 m", "oil", "", 900.0).is_err());
+    }
+
+    #[test]
+    fn viscosity_effect_reports_missing_and_large_effects() {
+        let result = sample_design();
+        let input = DesignInput {
+            q: parse_quantity("120 m3/h").unwrap(),
+            h: parse_quantity("45 m").unwrap(),
+            n: parse_quantity("2900 rpm").unwrap(),
+            rho: parse_quantity("900 kg/m3").unwrap(),
+            eta_m: 0.96,
+            npsha: None,
+        };
+        let (diagnostics, correction) =
+            viscosity_effect("oil", "20 degC", "", &input, &result).unwrap();
+        assert_eq!(codes(&diagnostics), ["HM-DES-022"]);
+        assert!(correction.is_none());
+
+        let (diagnostics, correction) =
+            viscosity_effect("oil", "20 degC", "100 cSt", &input, &result).unwrap();
+        assert_eq!(codes(&diagnostics), ["HM-DES-020"]);
+        assert!(correction.unwrap().f_eta < 0.85);
+    }
+
+    #[test]
+    fn project_with_suction_audits_and_reports() {
+        let mut project = designed_project();
+        project.operating.npsha = String::new();
+        project.suction = Some(Suction {
+            pressure: "1 atm".to_string(),
+            height: "6 m".to_string(),
+            losses: String::new(),
+            vapor_pressure: String::new(),
+        });
+        project.operating.viscosity = "20 cSt".to_string();
+        let diagnostics = design_audit(&project);
+        assert!(
+            !diagnostics.has_errors(),
+            "códigos: {:?}",
+            codes(&diagnostics)
+        );
+
+        let path = std::env::temp_dir().join(format!(
+            "hmflow-suction-{}-{:?}.hmf",
+            std::process::id(),
+            std::thread::current().id()
+        ));
+        project.save(&path).unwrap();
+        let report = design_report(&path, 5);
+        std::fs::remove_file(&path).unwrap();
+        let report = report.unwrap();
+        let npsha = report.input["npsha"].value;
+        assert!(
+            (npsha - (101_325.0 - 2339.2) / (998.204 * 9.80665) - 6.0).abs() < 0.01,
+            "{npsha}"
+        );
+        let viscous = report.viscous.expect("con viscosidad hay corrección");
+        assert!((viscous.nu.value - 20e-6).abs() < 1e-15);
+        assert!(viscous.f_h.value < 1.0);
+    }
+
+    #[test]
+    fn npsha_and_suction_pressure_exclude_each_other() {
+        let result = Cli::try_parse_from([
+            "hmflow-cli",
+            "design",
+            "--npsha",
+            "10 m",
+            "--suction-pressure",
+            "1 atm",
+        ]);
+        assert!(result.is_err());
+        assert!(Cli::try_parse_from(["hmflow-cli", "design", "--suction-height", "2 m"]).is_err());
     }
 
     #[test]

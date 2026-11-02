@@ -244,6 +244,21 @@ pub const CODES: &[CodeInfo] = &[
         Warning,
         "Con β2 manual, la altura de Euler difiere más de un 3 %.",
     ),
+    active(
+        "HM-DES-020",
+        Warning,
+        "Con la viscosidad del fluido, la bomba no cumple el punto pedido (Gülich, tabla 13.1).",
+    ),
+    active(
+        "HM-DES-021",
+        Warning,
+        "Corrección por viscosidad fuera de su rango de validez.",
+    ),
+    active(
+        "HM-DES-022",
+        Info,
+        "Fluido distinto de agua sin viscosidad: no se evaluó su efecto.",
+    ),
 ];
 
 /// Busca un código en el registro.

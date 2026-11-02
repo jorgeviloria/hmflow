@@ -26,13 +26,13 @@ fn pack_is_audit_clean() {
 }
 
 #[test]
-fn pack_has_thirty_two_formulas() {
-    assert_eq!(Registry::from_toml(END_SUCTION_V01_PACK).unwrap().len(), 32);
+fn pack_has_thirty_five_formulas() {
+    assert_eq!(Registry::from_toml(END_SUCTION_V01_PACK).unwrap().len(), 35);
 }
 
 #[test]
 fn all_merges_both_packs() {
-    assert_eq!(Registry::all().len(), 42);
+    assert_eq!(Registry::all().len(), 45);
 }
 
 #[test]
@@ -422,5 +422,43 @@ fn euler_cu2() {
         ),
         8.8083,
         1e-3,
+    );
+}
+
+#[test]
+fn viscous_reynolds() {
+    // 2π·48,333·0,1²/1e−4 · (30/52,9)^1,5
+    close(
+        evaluate(
+            "design.viscous_reynolds",
+            &[
+                ("n", "2900 rpm"),
+                ("d2", "0.2 m"),
+                ("nu", "100 cSt"),
+                ("nq", "30"),
+            ],
+        ),
+        12969.5,
+        0.5,
+    );
+}
+
+#[test]
+fn viscous_head_factor() {
+    // 1e4^(−6,7/1e4^0,735)
+    close(
+        evaluate("design.viscous_head_factor", &[("Re_mod", "1e4")]),
+        0.93160,
+        1e-4,
+    );
+}
+
+#[test]
+fn viscous_efficiency_factor() {
+    // 1e4^(−19/1e4^0,705)
+    close(
+        evaluate("design.viscous_efficiency_factor", &[("Re_mod", "1e4")]),
+        0.76731,
+        1e-4,
     );
 }

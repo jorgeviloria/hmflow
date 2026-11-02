@@ -96,3 +96,37 @@ fn readers_ignore_fields_added_later() {
     let back: DesignReport = serde_json::from_value(value).unwrap();
     assert_eq!(back.version, REPORT_VERSION);
 }
+
+#[test]
+fn viscous_block_is_si_and_round_trips() {
+    let input = input();
+    let result = design(&input).unwrap();
+    let correction = hm_design::viscous_correction(&input, &result, 100e-6).unwrap();
+    let report = DesignReport::new(&input, &result, 5, Vec::new()).with_viscous(&correction);
+    let viscous = report.viscous.as_ref().unwrap();
+    for measure in [
+        &viscous.nu,
+        &viscous.reynolds_mod,
+        &viscous.f_q,
+        &viscous.f_h,
+        &viscous.f_eta,
+        &viscous.flow,
+        &viscous.head,
+        &viscous.efficiency,
+        &viscous.shaft_power,
+    ] {
+        let unit = parse_unit(&measure.unit).unwrap();
+        assert!(
+            (unit.factor - 1.0).abs() < 1e-12 && unit.offset == 0.0,
+            "{}",
+            measure.unit
+        );
+    }
+    let text = serde_json::to_string(&report).unwrap();
+    let back: DesignReport = serde_json::from_str(&text).unwrap();
+    assert_eq!(back, report);
+
+    // Sin corrección, el campo no se escribe.
+    let plain = serde_json::to_value(DesignReport::new(&input, &result, 5, Vec::new())).unwrap();
+    assert!(plain.get("viscous").is_none());
+}

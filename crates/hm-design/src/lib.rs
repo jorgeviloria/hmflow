@@ -70,6 +70,9 @@ pub struct DesignResult {
     pub p_hyd: Quantity,
     pub p_shaft: Quantity,
     pub p_max: Quantity,
+    pub p_hyd_loss: Quantity,
+    pub p_vol_loss: Quantity,
+    pub p_mech_loss: Quantity,
     pub torque: Quantity,
     pub torque_max: Quantity,
     pub npshr_design: Quantity,
@@ -182,6 +185,36 @@ pub fn design(input: &DesignInput) -> Result<DesignResult, DesignError> {
             ("rho", input.rho.clone()),
             ("Q", input.q.clone()),
             ("H", input.h.clone()),
+        ],
+    )?;
+
+    let p_hyd_loss = evaluate(
+        &registry,
+        "design.hydraulic_loss",
+        &[
+            ("P_hyd", p_hyd.clone()),
+            ("eta_h", quantity(eta_h, one.clone())),
+        ],
+    )?;
+
+    let p_vol_loss = evaluate(
+        &registry,
+        "design.volumetric_loss",
+        &[
+            ("P_hyd", p_hyd.clone()),
+            ("eta_h", quantity(eta_h, one.clone())),
+            ("eta_v", quantity(eta_v, one.clone())),
+        ],
+    )?;
+
+    let p_mech_loss = evaluate(
+        &registry,
+        "design.mechanical_loss",
+        &[
+            ("P_hyd", p_hyd.clone()),
+            ("eta_h", quantity(eta_h, one.clone())),
+            ("eta_v", quantity(eta_v, one.clone())),
+            ("eta_m", quantity(input.eta_m, one.clone())),
         ],
     )?;
 
@@ -382,6 +415,9 @@ pub fn design(input: &DesignInput) -> Result<DesignResult, DesignError> {
         p_hyd: with_unit(p_hyd, &w),
         p_shaft: with_unit(p_shaft, &w),
         p_max: with_unit(p_max, &w),
+        p_hyd_loss: with_unit(p_hyd_loss, &w),
+        p_vol_loss: with_unit(p_vol_loss, &w),
+        p_mech_loss: with_unit(p_mech_loss, &w),
         torque: with_unit(torque, &nm),
         torque_max: with_unit(torque_max, &nm),
         npshr_design,

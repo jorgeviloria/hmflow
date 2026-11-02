@@ -70,6 +70,18 @@ fn existing_case_is_consistent() {
 }
 
 #[test]
+fn loss_breakdown_closes() {
+    let result = design(&input("0.016 m3/s", "13.8 m", "1800 rpm")).unwrap();
+    let total =
+        result.p_hyd.si + result.p_hyd_loss.si + result.p_vol_loss.si + result.p_mech_loss.si;
+
+    close(total, result.p_shaft.si, 0.5);
+    assert!(result.p_hyd_loss.si > 0.0);
+    assert!(result.p_vol_loss.si > 0.0);
+    assert!(result.p_mech_loss.si > 0.0);
+}
+
+#[test]
 fn npsh_margin_is_checked() {
     let mut input = input("0.016 m3/s", "13.8 m", "1800 rpm");
     input.npsha = Some(parse_quantity("1 m").unwrap());

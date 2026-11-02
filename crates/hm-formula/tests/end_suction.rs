@@ -26,13 +26,13 @@ fn pack_is_audit_clean() {
 }
 
 #[test]
-fn pack_has_nineteen_formulas() {
-    assert_eq!(Registry::from_toml(END_SUCTION_V01_PACK).unwrap().len(), 19);
+fn pack_has_twenty_two_formulas() {
+    assert_eq!(Registry::from_toml(END_SUCTION_V01_PACK).unwrap().len(), 22);
 }
 
 #[test]
 fn all_merges_both_packs() {
-    assert_eq!(Registry::all().len(), 29);
+    assert_eq!(Registry::all().len(), 32);
 }
 
 #[test]
@@ -247,5 +247,50 @@ fn volute_outer_radius() {
         ),
         0.121387,
         1e-5,
+    );
+}
+
+#[test]
+fn hydraulic_loss() {
+    close(
+        evaluate(
+            "design.hydraulic_loss",
+            &[("P_hyd", "2167.5 W"), ("eta_h", "0.87")],
+        ),
+        323.8,
+        0.5,
+    );
+}
+
+#[test]
+fn volumetric_loss() {
+    close(
+        evaluate(
+            "design.volumetric_loss",
+            &[
+                ("P_hyd", "2167.5 W"),
+                ("eta_h", "0.87"),
+                ("eta_v", "0.9722"),
+            ],
+        ),
+        71.2,
+        0.5,
+    );
+}
+
+#[test]
+fn mechanical_loss() {
+    close(
+        evaluate(
+            "design.mechanical_loss",
+            &[
+                ("P_hyd", "2167.5 W"),
+                ("eta_h", "0.87"),
+                ("eta_v", "0.9722"),
+                ("eta_m", "0.96"),
+            ],
+        ),
+        106.8,
+        0.5,
     );
 }

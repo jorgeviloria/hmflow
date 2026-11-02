@@ -274,6 +274,12 @@ fn run(cli: Cli) -> Result<ExitCode, Box<dyn std::error::Error>> {
                 result.volute.throat_diameter.value(),
                 result.volute.outer_radius.value()
             );
+            println!(
+                "  Pérdidas: hyd = {:.0} W   vol = {:.0} W   mech = {:.0} W",
+                result.p_hyd_loss.value(),
+                result.p_vol_loss.value(),
+                result.p_mech_loss.value()
+            );
 
             for diagnostic in result.diagnostics.iter() {
                 println!(
@@ -359,6 +365,9 @@ fn run(cli: Cli) -> Result<ExitCode, Box<dyn std::error::Error>> {
             params.insert("p_shaft".to_string(), auto("design.shaft_power"));
             params.insert("torque".to_string(), auto("mech.shaft_torque"));
             params.insert("p_max".to_string(), auto("design.max_power"));
+            params.insert("p_hyd_loss".to_string(), auto("design.hydraulic_loss"));
+            params.insert("p_vol_loss".to_string(), auto("design.volumetric_loss"));
+            params.insert("p_mech_loss".to_string(), auto("design.mechanical_loss"));
             params.insert("k3".to_string(), manual("1.04".to_string()));
             params.insert("volute_c".to_string(), manual("0.05".to_string()));
             params.insert("k_eff".to_string(), manual("1.1".to_string()));

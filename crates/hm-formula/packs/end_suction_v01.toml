@@ -405,3 +405,69 @@ value = "R3 + D360/2"
 
 [formula.notes]
 assumptions = "Radio exterior de la sección de garganta. En D2.2, R4=0.1216 m."
+
+[[formula]]
+id = "design.hydraulic_loss"
+version = 1
+validation = "reference"
+module = "design"
+title = "Pérdida hidráulica"
+source = "Descomposición de la cadena de eficiencias; Srinivasan 2017, D1.A1"
+units = "W"
+range = "0 .. 100000000"
+test = "crates/hm-formula/tests/end_suction.rs::hydraulic_loss"
+
+[formula.inputs]
+P_hyd = "W"
+eta_h = "1"
+
+[formula.expr]
+value = "P_hyd*(1/eta_h - 1)"
+
+[formula.notes]
+assumptions = "Pérdida implícita en la eficiencia hidráulica; no es una predicción independiente."
+
+[[formula]]
+id = "design.volumetric_loss"
+version = 1
+validation = "reference"
+module = "design"
+title = "Pérdida volumétrica"
+source = "Descomposición de la cadena de eficiencias; Srinivasan 2017, D1.A1"
+units = "W"
+range = "0 .. 100000000"
+test = "crates/hm-formula/tests/end_suction.rs::volumetric_loss"
+
+[formula.inputs]
+P_hyd = "W"
+eta_h = "1"
+eta_v = "1"
+
+[formula.expr]
+value = "P_hyd/eta_h*(1/eta_v - 1)"
+
+[formula.notes]
+assumptions = "Potencia extra para bombear la fuga; se calcula después de la pérdida hidráulica."
+
+[[formula]]
+id = "design.mechanical_loss"
+version = 1
+validation = "reference"
+module = "design"
+title = "Pérdida mecánica"
+source = "Descomposición de la cadena de eficiencias; Srinivasan 2017, D1.A1"
+units = "W"
+range = "0 .. 100000000"
+test = "crates/hm-formula/tests/end_suction.rs::mechanical_loss"
+
+[formula.inputs]
+P_hyd = "W"
+eta_h = "1"
+eta_v = "1"
+eta_m = "1"
+
+[formula.expr]
+value = "P_hyd/(eta_h*eta_v)*(1/eta_m - 1)"
+
+[formula.notes]
+assumptions = "Incluye cojinetes, cierre y fricción de disco agrupados en eta_m."

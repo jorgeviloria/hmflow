@@ -585,7 +585,7 @@ fn diagnostics_for(result: &DesignResult, input: &DesignInput) -> Diagnostics {
 
         if worst_margin < 0.5 {
             diagnostics.push(
-                Diagnostic::warning(
+                Diagnostic::error(
                     "HM-DES-007",
                     format!(
                         "margen NPSHa - NPSHr mínimo = {worst_margin:.2} m a Q = {worst_flow:.0} m3/h; el mínimo preliminar es 0.5 m"

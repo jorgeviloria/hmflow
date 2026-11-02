@@ -103,7 +103,7 @@ fn npsh_margin_is_checked() {
         result
             .diagnostics
             .iter()
-            .any(|diagnostic| diagnostic.code == "HM-DES-007")
+            .any(|diagnostic| diagnostic.code == "HM-DES-007" && diagnostic.is_error())
     );
 
     input.npsha = Some(parse_quantity("6 m").unwrap());

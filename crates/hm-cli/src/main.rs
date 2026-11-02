@@ -177,7 +177,11 @@ fn run(cli: Cli) -> Result<ExitCode, Box<dyn std::error::Error>> {
                 println!("{}: sin diagnósticos", file.display());
             }
 
-            if diagnostics.has_errors() {
+            let design_has_errors = design_diagnostics
+                .as_ref()
+                .is_some_and(hm_core::Diagnostics::has_errors);
+
+            if diagnostics.has_errors() || design_has_errors {
                 Ok(ExitCode::FAILURE)
             } else {
                 Ok(ExitCode::SUCCESS)
@@ -332,6 +336,10 @@ fn run(cli: Cli) -> Result<ExitCode, Box<dyn std::error::Error>> {
                 if let Some(hint) = &diagnostic.hint {
                     println!("        sugerencia: {hint}");
                 }
+            }
+
+            if result.diagnostics.has_errors() {
+                return Err("el diseño tiene errores; no se escribió el proyecto".into());
             }
 
             let path = out.unwrap_or_else(|| PathBuf::from(format!("{name}.hmf")));

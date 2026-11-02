@@ -1,0 +1,24 @@
+[package]
+name = "hm-ui-egui"
+version = "0.0.1"
+edition = "2024"
+rust-version = "1.95"
+license = "MIT OR Apache-2.0"
+authors = ["Jorge Viloria and contributors"]
+publish = false
+description = "Prueba de la interfaz de HidroMac Flow con egui, para comparar con iced."
+
+# Prueba con su propio workspace, como hm-ui: no entra en el CI principal.
+[workspace]
+
+[[bin]]
+name = "hmflow-egui"
+path = "src/main.rs"
+
+[dependencies]
+eframe = "0.37"
+egui_plot = "0.38"
+hm-core = { path = "../hm-core" }
+hm-design = { path = "../hm-design" }
+hm-formula = { path = "../hm-formula" }
+hm-units = { path = "../hm-units" }

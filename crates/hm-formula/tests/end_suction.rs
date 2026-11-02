@@ -26,13 +26,13 @@ fn pack_is_audit_clean() {
 }
 
 #[test]
-fn pack_has_fifty_four_formulas() {
-    assert_eq!(Registry::from_toml(END_SUCTION_V01_PACK).unwrap().len(), 54);
+fn pack_has_fifty_nine_formulas() {
+    assert_eq!(Registry::from_toml(END_SUCTION_V01_PACK).unwrap().len(), 59);
 }
 
 #[test]
 fn all_merges_both_packs() {
-    assert_eq!(Registry::all().len(), 64);
+    assert_eq!(Registry::all().len(), 69);
 }
 
 #[test]
@@ -808,5 +808,80 @@ fn driver_power() {
         evaluate("mech.driver_power", &[("P", "18 kW"), ("margin", "1.25")]),
         22500.0,
         1e-9,
+    );
+}
+
+#[test]
+fn disk_reynolds() {
+    // ω r2² / ν con n = 1750 rpm, d2 = 0,4 m y ν = 1e-6 m²/s
+    close(
+        evaluate(
+            "design.disk_reynolds",
+            &[("n", "1750 rpm"), ("d2", "0.4 m"), ("nu", "1e-6 m2/s")],
+        ),
+        7.330_383e6,
+        10.0,
+    );
+}
+
+#[test]
+fn disk_friction_coefficient() {
+    // 0,0625/Re^0,2·(1 − k0)^1,75 con Re = 1e7 y k0 = 0,5
+    close(
+        evaluate(
+            "design.disk_friction_coefficient",
+            &[("Re", "1e7"), ("k0", "0.5")],
+        ),
+        7.397_37e-4,
+        1e-8,
+    );
+}
+
+#[test]
+fn disk_friction_ratio() {
+    // 31680·kRR·fgeo/(nq²·ψ^2,5) con kRR = 0,0008, fgeo = 1,22, nq = 16, ψ = 1
+    close(
+        evaluate(
+            "design.disk_friction_ratio",
+            &[
+                ("k_rr", "0.0008"),
+                ("f_geo", "1.22"),
+                ("nq", "16"),
+                ("psi", "1"),
+            ],
+        ),
+        0.12078,
+        1e-5,
+    );
+}
+
+#[test]
+fn statistical_hydraulic_efficiency() {
+    // Gülich ec. 3.9.6 con Q = 0,1 m³/s y nq = 30
+    close(
+        evaluate(
+            "design.statistical_hydraulic_efficiency",
+            &[("Q", "0.1 m3/s"), ("Q_ref", "1 m3/s"), ("nq", "30")],
+        ),
+        0.919_964,
+        1e-5,
+    );
+}
+
+#[test]
+fn loss_efficiency() {
+    // ηh·ηv·ηm/(1 + ηh·ηv·PRR/Pu) con 0,87, 0,95, 0,985 y 0,09
+    close(
+        evaluate(
+            "design.loss_efficiency",
+            &[
+                ("eta_h", "0.87"),
+                ("eta_v", "0.95"),
+                ("eta_m", "0.985"),
+                ("disk_ratio", "0.09"),
+            ],
+        ),
+        0.757_738,
+        1e-5,
     );
 }

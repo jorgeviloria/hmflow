@@ -155,6 +155,9 @@ pub struct ReportHydraulics {
     pub recirculation_onset: Measure,
     pub leakage_eta_v: Measure,
     pub mechanical_eta_estimate: Measure,
+    pub disk_friction_ratio: Measure,
+    pub statistical_eta_h: Measure,
+    pub loss_eta: Measure,
 }
 
 /// Informe completo de un diseño.
@@ -282,6 +285,9 @@ impl DesignReport {
                 recirculation_onset: Measure::new(result.recirculation_onset, "1"),
                 leakage_eta_v: Measure::new(result.leakage_eta_v, "1"),
                 mechanical_eta_estimate: Measure::new(result.mechanical_eta_estimate, "1"),
+                disk_friction_ratio: Measure::new(result.disk_friction_ratio, "1"),
+                statistical_eta_h: Measure::new(result.statistical_eta_h, "1"),
+                loss_eta: Measure::new(result.loss_eta, "1"),
             }),
             viscous: None,
             geometry: None,

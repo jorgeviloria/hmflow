@@ -120,6 +120,14 @@ pub struct DesignResult {
     pub leakage_eta_v: f64,
     /// ηm estimado de Gülich (ec. 3.10.14), para contraste.
     pub mechanical_eta_estimate: f64,
+    /// Pérdida por rozamiento de discos frente a la potencia útil, PRR/Pu
+    /// (Gülich ec. 3.10.13), para contraste.
+    pub disk_friction_ratio: f64,
+    /// ηh estadístico de Gülich (ec. 3.9.6), para contraste.
+    pub statistical_eta_h: f64,
+    /// η por análisis de pérdidas (Gülich ec. 3.10.15) con `statistical_eta_h`,
+    /// `leakage_eta_v`, `mechanical_eta_estimate` y `disk_friction_ratio`.
+    pub loss_eta: f64,
     pub slip: f64,
     pub cu2: Quantity,
     pub volute: VoluteResult,
@@ -1026,6 +1034,55 @@ pub fn design_with_options(
         ],
     )?
     .value();
+    let disk_reynolds = evaluate(
+        &registry,
+        "design.disk_reynolds",
+        &[
+            ("n", input.n.clone()),
+            ("d2", d2.clone()),
+            ("nu", Quantity::from_si(DISK_NU, unit("m2/s")?)),
+        ],
+    )?;
+    let disk_friction_coefficient = evaluate(
+        &registry,
+        "design.disk_friction_coefficient",
+        &[
+            ("Re", disk_reynolds),
+            ("k0", quantity(DISK_K0, one.clone())),
+        ],
+    )?;
+    let disk_friction_ratio = evaluate(
+        &registry,
+        "design.disk_friction_ratio",
+        &[
+            ("k_rr", disk_friction_coefficient),
+            ("f_geo", quantity(DISK_F_GEO, one.clone())),
+            ("nq", quantity(nq, one.clone())),
+            ("psi", quantity(selection.psi, one.clone())),
+        ],
+    )?
+    .value();
+    let statistical_eta_h = evaluate(
+        &registry,
+        "design.statistical_hydraulic_efficiency",
+        &[
+            ("Q", input.q.clone()),
+            ("Q_ref", quantity(1.0, m3s.clone())),
+            ("nq", quantity(nq, one.clone())),
+        ],
+    )?
+    .value();
+    let loss_eta = evaluate(
+        &registry,
+        "design.loss_efficiency",
+        &[
+            ("eta_h", quantity(statistical_eta_h, one.clone())),
+            ("eta_v", quantity(leakage_eta_v, one.clone())),
+            ("eta_m", quantity(mechanical_eta_estimate, one.clone())),
+            ("disk_ratio", quantity(disk_friction_ratio, one.clone())),
+        ],
+    )?
+    .value();
 
     let mut result = DesignResult {
         nq,
@@ -1065,6 +1122,9 @@ pub fn design_with_options(
         recirculation_onset,
         leakage_eta_v,
         mechanical_eta_estimate,
+        disk_friction_ratio,
+        statistical_eta_h,
+        loss_eta,
         slip,
         cu2,
         volute,
@@ -1195,6 +1255,18 @@ pub const RECIRCULATION_SCATTER: f64 = 0.1;
 /// simplificación (Gülich 2020, p. 413: β2B variable a lo ancho por encima de
 /// nq ≈ 40..60; se toma el extremo inferior).
 pub const CYLINDRICAL_BLADE_MAX_NQ: f64 = 40.0;
+
+/// Viscosidad cinemática para el rozamiento de discos, m²/s: agua a unos
+/// 20 °C. Entra como Re^0,2, así que su efecto es pequeño.
+const DISK_NU: f64 = 1.0e-6;
+
+/// Rotación del fluido en las cámaras laterales sin fuga y con cámaras
+/// abiertas (Gülich 2020, ec. 3.10.8 con rw = r2 y tax = 0).
+const DISK_K0: f64 = 0.5;
+
+/// Pérdidas de todas las superficies del rodete frente a las de las caras
+/// planas de las tapas (Gülich 2020, tabla 3.10, rodetes radiales típicos).
+const DISK_F_GEO: f64 = 1.22;
 
 /// Deceleración mínima `w2/w1` (criterio de de Haller; Gülich 2020, p. 413).
 pub const DE_HALLER_MIN: f64 = 0.7;

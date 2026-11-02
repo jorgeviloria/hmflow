@@ -952,6 +952,117 @@ value = "1 - 0.0045*(Q_ref/Q)^0.4*(n_ref/n)^0.3"
 assumptions = "Pm/Pu = 0,0045/η·(QRef/Q)^0,4·(nRef/n)^0,3 con QRef = 1 m3/s y nRef = 1500 rpm, así que Pm/P = 0,0045·(QRef/Q)^0,4·(nRef/n)^0,3 y ηm = 1 − Pm/P."
 
 [[formula]]
+id = "design.disk_reynolds"
+version = 1
+validation = "pilot"
+module = "design"
+title = "Número de Reynolds del disco del rodete"
+source = "Gülich 2020, tabla 3.10, ec. (3.10.2), p. 164"
+units = "1"
+range = "1e5 .. 1e9"
+test = "crates/hm-formula/tests/end_suction.rs::disk_reynolds"
+
+[formula.inputs]
+n = "1/s"
+d2 = "m"
+nu = "m2/s"
+
+[formula.expr]
+value = "2*pi*n*(d2/2)^2/nu"
+
+[formula.notes]
+assumptions = "Re = u2 r2/ν = ω r2²/ν, con n en revoluciones por segundo."
+
+[[formula]]
+id = "design.disk_friction_coefficient"
+version = 1
+validation = "pilot"
+module = "design"
+title = "Coeficiente de rozamiento de discos"
+source = "Gülich 2020, tabla 3.10, ec. (3.10.8) y (3.10.9), p. 164"
+units = "1"
+range = "1e-4 .. 5e-3"
+test = "crates/hm-formula/tests/end_suction.rs::disk_friction_coefficient"
+
+[formula.inputs]
+Re = "1"
+k0 = "1"
+
+[formula.expr]
+value = "0.0625/Re^0.2*(1 - k0)^1.75"
+
+[formula.notes]
+assumptions = "Solo el término turbulento de la ec. 3.10.9: con Re > 1e6 el término laminar π r2/(2 Re sax) es despreciable. Paredes lisas (fR = 1), sin fuga por las cámaras laterales (fL = 1), sin álabes dorsales (fRS = 1) y agua (ftherm ≈ 1). k0 = 0,5 corresponde a cámaras abiertas (rw = r2, tax = 0, ec. 3.10.8). La rugosidad de fundición sube kRR: queda para cuando se conozca."
+
+[[formula]]
+id = "design.disk_friction_ratio"
+version = 1
+validation = "pilot"
+module = "design"
+title = "Pérdida por rozamiento de discos frente a la potencia útil"
+source = "Gülich 2020, tabla 3.10, ec. (3.10.13), p. 165"
+units = "1"
+range = "0 .. 0.5"
+test = "crates/hm-formula/tests/end_suction.rs::disk_friction_ratio"
+
+[formula.inputs]
+k_rr = "1"
+f_geo = "1"
+nq = "1"
+psi = "1"
+
+[formula.expr]
+value = "31680*k_rr*f_geo/(nq^2*psi^2.5)"
+
+[formula.notes]
+assumptions = "PRR/Pu con fq = 1 (una entrada) y fgeo ≈ 1,22 para rodetes radiales típicos. Crece con 1/nq²: con nq ≈ 16 ronda el 9 % y con nq ≈ 30 el 3..6 %."
+
+[[formula]]
+id = "design.statistical_hydraulic_efficiency"
+version = 1
+validation = "pilot"
+module = "design"
+title = "Rendimiento hidráulico estadístico"
+source = "Gülich 2020, tabla 3.9, ec. (3.9.6), p. 163"
+units = "1"
+range = "0.5 .. 1"
+test = "crates/hm-formula/tests/end_suction.rs::statistical_hydraulic_efficiency"
+
+[formula.inputs]
+Q = "m3/s"
+Q_ref = "m3/s"
+nq = "1"
+
+[formula.expr]
+value = "1 - 0.055*exp(ln(Q_ref/Q)*0.08*(Q_ref/Q)^0.15*(45/nq)^0.06) - 0.2*(0.26 - log10(nq/25))^2*(Q_ref/Q)^0.1"
+
+[formula.notes]
+assumptions = "Bombas radiales de una etapa con nq ≤ 100, Q ≥ 0,005 m3/s y Q ≤ 1 m3/s (a = 1 en el exponente). QRef = 1 m3/s. Es una media estadística de bombas bien diseñadas; la incertidumbre de η es ±0,2(1 − ηopt) (ec. 3.9.10)."
+
+[[formula]]
+id = "design.loss_efficiency"
+version = 1
+validation = "pilot"
+module = "design"
+title = "Rendimiento total por análisis de pérdidas"
+source = "Gülich 2020, tabla 3.10, ec. (3.10.15) despejada para η, p. 165"
+units = "1"
+range = "0.3 .. 1"
+test = "crates/hm-formula/tests/end_suction.rs::loss_efficiency"
+
+[formula.inputs]
+eta_h = "1"
+eta_v = "1"
+eta_m = "1"
+disk_ratio = "1"
+
+[formula.expr]
+value = "eta_h*eta_v*eta_m/(1 + eta_h*eta_v*disk_ratio)"
+
+[formula.notes]
+assumptions = "De ηh = η/(ηvol{1 − η[PRR/Pu + Pm/Pu]}) con Pm/Pu = (1 − ηm)/η: η = ηh ηvol ηm/(1 + ηh ηvol PRR/Pu). ηm es el rendimiento mecánico sin el rozamiento de discos (ec. 3.10.14)."
+
+[[formula]]
 id = "mech.shaft_min_diameter"
 version = 1
 validation = "reference"

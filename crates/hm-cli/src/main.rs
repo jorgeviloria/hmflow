@@ -464,6 +464,14 @@ fn run(cli: Cli) -> Result<ExitCode, Box<dyn std::error::Error>> {
                 "  Contraste Gülich: ηv por fugas {:.3} (motor {:.3})   ηm {:.3} (motor {:.3})",
                 result.leakage_eta_v, result.eta_v, result.mechanical_eta_estimate, input.eta_m
             );
+            println!(
+                "  Pérdidas Gülich: discos PRR/Pu {:.3}   ηh estadístico {:.3} (motor {:.3})   η {:.3} (motor {:.3})",
+                result.disk_friction_ratio,
+                result.statistical_eta_h,
+                result.eta_h,
+                result.loss_eta,
+                result.eta
+            );
             let shape = geometry(&input, &result)?;
             println!(
                 "  Álabe: β1B = {:.1} deg   envolvimiento = {:.1} deg",

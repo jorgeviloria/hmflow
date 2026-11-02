@@ -90,9 +90,23 @@ fn b1_head_curve_inside_grade_2b() {
 }
 
 #[test]
-#[ignore = "desviación conocida: el motor da η ≈ 0,82 con nq 16 frente a 0,73 del \
-            catálogo; falta el rozamiento de discos (Gülich tabla 3.10). \
-            Ver docs/validation/matrix.md, caso B1"]
+fn b1_loss_efficiency_inside_grade_2b() {
+    // Rendimiento por análisis de pérdidas (Gülich tabla 3.10): ηh estadístico,
+    // fuga estimada, rozamiento de discos y pérdidas mecánicas.
+    let result = design(&input()).unwrap();
+    let deviation = result.loss_eta / ETA_DESIGN - 1.0;
+    assert!(
+        deviation.abs() <= GRADE_2B_EFFICIENCY,
+        "η por pérdidas {:.3} frente a {ETA_DESIGN} ({:+.1} %)",
+        result.loss_eta,
+        100.0 * deviation
+    );
+}
+
+#[test]
+#[ignore = "desviación conocida: el η del método (Srinivasan) da ≈ 0,82 con nq 16 \
+            frente a 0,73 del catálogo. El análisis de pérdidas (`loss_eta`) ya \
+            cumple; falta adoptarlo como η del método. Ver docs/validation/matrix.md"]
 fn b1_efficiency_inside_grade_2b() {
     let result = design(&input()).unwrap();
     let deviation = result.eta / ETA_DESIGN - 1.0;

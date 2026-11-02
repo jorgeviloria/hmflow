@@ -60,6 +60,10 @@ cargo run -p hmflow-cli -- recalc bomba.hmf
 # dependen de nq (las locked se respetan)
 cargo run -p hmflow-cli -- recalc --reselect bomba.hmf
 
+# Informe JSON para la interfaz o el CAD: valores en SI, voluta, curva y
+# diagnósticos (formato en docs/report-format.md)
+cargo run -p hmflow-cli -- report bomba.hmf --out bomba.json
+
 # Ver las fórmulas disponibles
 cargo run -p hmflow-cli -- formulas
 

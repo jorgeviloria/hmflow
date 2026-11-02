@@ -54,6 +54,7 @@ pub fn lookup(name: &str) -> Option<Unit> {
         // Fuerza, energía, potencia
         "N" => Unit::new("N", D::FORCE, 1.0),
         "kN" => Unit::new("kN", D::FORCE, 1e3),
+        "kgf" => Unit::new("kgf", D::FORCE, 9.806_65),
         "J" => Unit::new("J", D::ENERGY, 1.0),
         "kJ" => Unit::new("kJ", D::ENERGY, 1e3),
         "kWh" => Unit::new("kWh", D::ENERGY, 3.6e6),
@@ -75,6 +76,12 @@ pub fn lookup(name: &str) -> Option<Unit> {
 
         // Velocidad
         "knot" | "nudo" => Unit::new("knot", D::VELOCITY, 0.514_444),
+
+        // Viscosidad dinámica (Pa·s) y cinemática (m²/s)
+        "P" | "poise" => Unit::new("P", D::PRESSURE.mul(D::TIME), 0.1),
+        "cP" => Unit::new("cP", D::PRESSURE.mul(D::TIME), 1e-3),
+        "St" | "stokes" => Unit::new("St", D::AREA.div(D::TIME), 1e-4),
+        "cSt" => Unit::new("cSt", D::AREA.div(D::TIME), 1e-6),
 
         _ => return None,
     };

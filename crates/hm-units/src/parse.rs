@@ -15,6 +15,12 @@ pub fn parse_quantity(input: &str) -> Result<Quantity, UnitError> {
 
     let (value, rest) =
         split_number(text).ok_or_else(|| UnitError::InvalidQuantity(input.to_string()))?;
+    if rest.starts_with(',') && rest[1..].starts_with(|c: char| c.is_ascii_digit()) {
+        return Err(UnitError::InvalidQuantity(format!(
+            "{input} (el separador decimal es el punto: {})",
+            text.replacen(',', ".", 1)
+        )));
+    }
     let rest = rest.trim();
 
     if rest.is_empty() {

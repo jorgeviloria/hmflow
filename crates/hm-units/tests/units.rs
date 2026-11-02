@@ -176,3 +176,26 @@ fn composed_symbols_parse_back_to_the_same_unit() {
         );
     }
 }
+
+#[test]
+fn force_and_viscosity_units() {
+    let kgf = parse_quantity("1 kgf").unwrap();
+    assert_eq!(kgf.dim(), Dimension::FORCE);
+    assert!((kgf.si - 9.80665).abs() < 1e-12);
+
+    let water = parse_quantity("1 cP").unwrap();
+    assert_eq!(water.dim(), parse_unit("Pa*s").unwrap().dim);
+    assert!((water.si - 1e-3).abs() < 1e-15);
+    assert!((parse_quantity("1 P").unwrap().si - 0.1).abs() < 1e-15);
+
+    let kinematic = parse_quantity("1 cSt").unwrap();
+    assert_eq!(kinematic.dim(), parse_unit("m2/s").unwrap().dim);
+    assert!((kinematic.si - 1e-6).abs() < 1e-18);
+    assert!((parse_quantity("1 St").unwrap().si - 1e-4).abs() < 1e-16);
+}
+
+#[test]
+fn decimal_comma_explains_the_fix() {
+    let error = parse_quantity("1,5 m").unwrap_err().to_string();
+    assert!(error.contains("1.5 m"), "{error}");
+}

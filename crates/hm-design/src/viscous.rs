@@ -27,6 +27,10 @@ pub const VISCOUS_EFFICIENCY_LOSS: f64 = 0.05;
 /// motor son las de agua fría y los factores se toman relativos a ella.
 pub const REFERENCE_WATER_NU: f64 = 1.003_4e-6;
 
+/// Viscosidad por debajo de la cual el fluido se trata como agua y no se
+/// avisa: 1,5 veces la del agua de referencia (elección del motor).
+pub const WATER_LIKE_NU: f64 = 1.5 * REFERENCE_WATER_NU;
+
 /// Viscosidad cinemática máxima del método, en m²/s (tabla 13.1).
 pub const VISCOUS_MAX_NU: f64 = 4000e-6;
 
@@ -131,6 +135,11 @@ pub fn viscous_correction(
 /// Avisos de la corrección por viscosidad.
 pub fn viscous_diagnostics(correction: &ViscousCorrection, nq: f64) -> Diagnostics {
     let mut diagnostics = Diagnostics::new();
+    // Con agua o un fluido tan fluido como ella los factores valen 1 por
+    // construcción: ni el rango del método ni la corrección importan.
+    if correction.nu <= WATER_LIKE_NU {
+        return diagnostics;
+    }
     let (low, high) = VISCOUS_NQ_RANGE;
     if correction.nu > VISCOUS_MAX_NU || !(low..=high).contains(&nq) {
         diagnostics.push(

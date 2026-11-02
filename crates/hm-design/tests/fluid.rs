@@ -118,8 +118,11 @@ fn outside_the_method_range_is_reported() {
     let result = design(&input).unwrap();
     let thick = viscous_correction(&input, &result, 5000e-6).unwrap();
     assert!(codes(&viscous_diagnostics(&thick, result.nq)).contains(&"HM-DES-021".to_string()));
-    let fine = viscous_correction(&input, &result, 1e-6).unwrap();
-    assert_eq!(codes(&viscous_diagnostics(&fine, 60.0)), ["HM-DES-021"]);
+    let oil = viscous_correction(&input, &result, 20e-6).unwrap();
+    assert!(codes(&viscous_diagnostics(&oil, 60.0)).contains(&"HM-DES-021".to_string()));
+    // Con agua, nq fuera del rango no importa: la corrección vale 1.
+    let water = viscous_correction(&input, &result, 1e-6).unwrap();
+    assert!(viscous_diagnostics(&water, 60.0).is_empty());
     assert!(viscous_correction(&input, &result, 0.0).is_err());
 }
 

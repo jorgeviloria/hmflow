@@ -228,7 +228,7 @@ impl Project {
         if self.design.pump_type == PumpType::EndSuction && self.design.stages != 1 {
             diagnostics.push(
                 Diagnostic::error(
-                    "HM-PROJ-021",
+                    "HM-PROJ-024",
                     format!(
                         "el motor de diseño end-suction solo soporta una etapa; hay {}",
                         self.design.stages

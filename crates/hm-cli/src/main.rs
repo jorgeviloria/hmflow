@@ -7,8 +7,8 @@ use std::process::ExitCode;
 use clap::{Parser, Subcommand};
 use hm_core::{Diagnostic, Diagnostics};
 use hm_design::{
-    DEFAULT_K_EFF, DEFAULT_K3, DEFAULT_VOLUTE_C, DesignInput, DesignOptions, DesignResult,
-    LEGACY_METHODS, METHOD, PARAM_SPECS, ParamSpec, WATER_DENSITY_RANGE_C, design,
+    DEFAULT_K_EFF, DEFAULT_K3, DEFAULT_VOLUTE_C, DesignInput, DesignOptions, DesignReport,
+    DesignResult, LEGACY_METHODS, METHOD, PARAM_SPECS, ParamSpec, WATER_DENSITY_RANGE_C, design,
     design_with_options, designed_si, param_spec, performance_curve, stored_si_matches,
     table_selection, water_density,
 };
@@ -55,6 +55,21 @@ enum Command {
         /// salvo las que estén en locked.
         #[arg(long)]
         reselect: bool,
+    },
+    /// Escribe el informe del diseño en JSON (formato hmflow.design-report):
+    /// valores en SI, selecciones, secciones de voluta, curva y diagnósticos.
+    Report {
+        /// Ruta del archivo .hmf.
+        file: PathBuf,
+        /// Archivo JSON de salida; sin él, la salida estándar.
+        #[arg(long)]
+        out: Option<PathBuf>,
+        /// Sobrescribe el archivo de salida si ya existe.
+        #[arg(long)]
+        force: bool,
+        /// Número de puntos de la curva.
+        #[arg(long, default_value_t = 11)]
+        curve_points: usize,
     },
     /// Lista las fórmulas disponibles.
     Formulas,
@@ -199,6 +214,31 @@ fn run(cli: Cli) -> Result<ExitCode, Box<dyn std::error::Error>> {
         }
 
         Command::Recalc { file, reselect } => recalc(&file, reselect),
+
+        Command::Report {
+            file,
+            out,
+            force,
+            curve_points,
+        } => {
+            let report = design_report(&file, curve_points)?;
+            let json = serde_json::to_string_pretty(&report)?;
+            match out {
+                Some(path) => {
+                    if path.exists() && !force {
+                        return Err(format!(
+                            "ya existe {}; usa --force para sobrescribir",
+                            path.display()
+                        )
+                        .into());
+                    }
+                    std::fs::write(&path, json + "\n")?;
+                    eprintln!("informe escrito en {}", path.display());
+                }
+                None => println!("{json}"),
+            }
+            Ok(ExitCode::SUCCESS)
+        }
 
         Command::Formulas => {
             let registry = Registry::all();
@@ -681,6 +721,54 @@ fn recalc(file: &std::path::Path, reselect: bool) -> Result<ExitCode, Box<dyn st
     Ok(ExitCode::SUCCESS)
 }
 
+/// Informe del diseño de un proyecto end-suction con el método actual.
+///
+/// Lleva los diagnósticos de la validación del proyecto y de la auditoría del
+/// diseño. Un proyecto con errores de formato o de un método anterior no
+/// tiene informe: primero hay que corregirlo o migrarlo.
+fn design_report(
+    file: &std::path::Path,
+    curve_points: usize,
+) -> Result<DesignReport, Box<dyn std::error::Error>> {
+    if !(2..=1000).contains(&curve_points) {
+        return Err("--curve-points debe estar entre 2 y 1000".into());
+    }
+    let project = Project::load(file)?;
+    let validation = project.validate(&Registry::all());
+    if validation.has_errors() {
+        print_diagnostics(&validation);
+        return Err("el proyecto tiene errores; no hay informe".into());
+    }
+    if project.design.pump_type != PumpType::EndSuction {
+        return Err(format!(
+            "solo hay informe de end-suction; el proyecto es {}",
+            project.design.pump_type
+        )
+        .into());
+    }
+    if LEGACY_METHODS.contains(&project.design.method.as_str()) {
+        return Err(format!(
+            "el proyecto es de {}; migra con `hmflow-cli recalc` antes de pedir el informe",
+            project.design.method
+        )
+        .into());
+    }
+    if !project.design.method.is_empty() && project.design.method != METHOD {
+        return Err(format!("método de diseño desconocido: {}", project.design.method).into());
+    }
+
+    let (input, options) = design_inputs(&project)?;
+    let result = design_with_options(&input, &options)?;
+    let mut diagnostics = validation.into_vec();
+    diagnostics.extend(design_audit(&project).into_vec());
+    Ok(DesignReport::new(
+        &input,
+        &result,
+        curve_points,
+        diagnostics,
+    ))
+}
+
 fn print_diagnostics(diagnostics: &Diagnostics) {
     for diagnostic in diagnostics.iter() {
         println!(
@@ -968,7 +1056,7 @@ fn design_audit(project: &Project) -> Diagnostics {
     if LEGACY_METHODS.contains(&project.design.method.as_str()) {
         diagnostics.push(
             Diagnostic::error(
-                "HM-PROJ-022",
+                "HM-PROJ-025",
                 format!(
                     "el proyecto se diseñó con {}; el motor actual es {METHOD} y da otra geometría",
                     project.design.method
@@ -1042,7 +1130,7 @@ fn validate_design_schema(project: &Project, diagnostics: &mut Diagnostics) {
     for name in project.params.keys() {
         if param_spec(name).is_none() {
             diagnostics.push(
-                Diagnostic::error("HM-PROJ-016", format!("parámetro desconocido: `{name}`"))
+                Diagnostic::error("HM-PROJ-023", format!("parámetro desconocido: `{name}`"))
                     .with_hint("Revisa el nombre o vuelve a generar el diseño."),
             );
         }
@@ -1288,7 +1376,7 @@ mod tests {
             .insert("d22".to_string(), manual("0.2 m".to_string()));
 
         let diagnostics = design_audit(&project);
-        assert!(codes(&diagnostics).contains(&"HM-PROJ-016"));
+        assert!(codes(&diagnostics).contains(&"HM-PROJ-023"));
     }
 
     #[test]
@@ -1301,7 +1389,7 @@ mod tests {
 
         let mut diagnostics = Diagnostics::new();
         validate_design_schema(&project, &mut diagnostics);
-        assert!(codes(&diagnostics).contains(&"HM-PROJ-016"));
+        assert!(codes(&diagnostics).contains(&"HM-PROJ-023"));
     }
 
     #[test]
@@ -1476,7 +1564,7 @@ mod tests {
         let mut project = designed_project();
         project.design.method = "end_suction_v0.1".to_string();
         let diagnostics = design_audit(&project);
-        assert_eq!(codes(&diagnostics), ["HM-PROJ-022"]);
+        assert_eq!(codes(&diagnostics), ["HM-PROJ-025"]);
     }
 
     #[test]
@@ -1495,6 +1583,49 @@ mod tests {
         std::fs::remove_file(&path).unwrap();
 
         assert_eq!(project.design.method, METHOD);
+        let diagnostics = design_audit(&project);
+        assert!(
+            !diagnostics.has_errors(),
+            "códigos: {:?}",
+            codes(&diagnostics)
+        );
+    }
+
+    #[test]
+    fn report_of_a_designed_project_matches_its_stored_values() {
+        let path = std::env::temp_dir().join(format!(
+            "hmflow-report-{}-{:?}.hmf",
+            std::process::id(),
+            std::thread::current().id()
+        ));
+        let project = designed_project();
+        project.save(&path).unwrap();
+        let report = design_report(&path, 11);
+        std::fs::remove_file(&path).unwrap();
+        let report = report.unwrap();
+
+        assert_eq!(report.method, METHOD);
+        assert!(report.diagnostics.iter().all(|d| !d.is_error()));
+        let stored = parse_quantity(param_value(&project.params["d2"]).unwrap())
+            .unwrap()
+            .si;
+        assert!((report.results["d2"].value - stored).abs() < 1e-12);
+    }
+
+    /// Guarda de versionado: el `.hmf` de referencia se escribió con
+    /// `end_suction_v0.2`. Si el motor cambia sus resultados sin cambiar
+    /// `METHOD`, sus valores `auto` dejan de cuadrar y este test falla. La
+    /// salida correcta es subir `METHOD`, añadir el anterior a
+    /// `LEGACY_METHODS` y regenerar el archivo con `design`.
+    #[test]
+    fn reference_project_of_the_current_method_audits_clean() {
+        let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../hm-project/tests/fixtures/end_suction_v0.2.hmf");
+        let project = Project::load(&path).unwrap();
+        assert_eq!(
+            project.design.method, METHOD,
+            "METHOD cambió: regenera el .hmf de referencia y añade el método anterior a LEGACY_METHODS"
+        );
         let diagnostics = design_audit(&project);
         assert!(
             !diagnostics.has_errors(),

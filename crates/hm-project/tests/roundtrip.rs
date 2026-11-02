@@ -114,7 +114,7 @@ fn two_stage_end_suction_is_reported() {
     assert!(
         diagnostics
             .iter()
-            .any(|diagnostic| diagnostic.code == "HM-PROJ-021")
+            .any(|diagnostic| diagnostic.code == "HM-PROJ-024")
     );
 }
 
@@ -263,4 +263,18 @@ fn pump_type_aliases() {
 fn sample_quantities_parse() {
     let q = parse_quantity("120 m3/h").unwrap();
     assert!((q.value() - 120.0).abs() < 1e-9);
+}
+
+/// Un `.hmf` escrito por `design` con el método end_suction_v0.2 debe seguir
+/// cargando y validando mientras el esquema sea el 1. Si cambia el esquema,
+/// hace falta una migración, no editar este archivo.
+#[test]
+fn schema_1_fixture_still_loads_and_validates() {
+    let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("tests/fixtures/end_suction_v0.2.hmf");
+    let project = Project::load(&path).unwrap();
+    assert_eq!(project.schema, 1);
+    assert_eq!(project.design.method, "end_suction_v0.2");
+    let diagnostics = project.validate(&Registry::all());
+    assert!(!diagnostics.has_errors());
 }

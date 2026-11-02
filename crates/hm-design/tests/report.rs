@@ -1,0 +1,98 @@
+use hm_design::{DesignInput, DesignReport, PARAM_SPECS, REPORT_FORMAT, REPORT_VERSION, design};
+use hm_units::{parse_quantity, parse_unit};
+
+fn input() -> DesignInput {
+    DesignInput {
+        q: parse_quantity("120 m3/h").unwrap(),
+        h: parse_quantity("45 m").unwrap(),
+        n: parse_quantity("2900 rpm").unwrap(),
+        rho: parse_quantity("998.2 kg/m3").unwrap(),
+        eta_m: 0.96,
+        npsha: Some(parse_quantity("15 m").unwrap()),
+    }
+}
+
+fn report() -> DesignReport {
+    let input = input();
+    let result = design(&input).unwrap();
+    let diagnostics = result.diagnostics.clone().into_vec();
+    DesignReport::new(&input, &result, 11, diagnostics)
+}
+
+#[test]
+fn identifies_format_version_and_method() {
+    let report = report();
+    assert_eq!(report.format, REPORT_FORMAT);
+    assert_eq!(report.version, REPORT_VERSION);
+    assert_eq!(report.method, hm_design::METHOD);
+}
+
+#[test]
+fn every_value_is_coherent_si() {
+    let report = report();
+    let mut measures: Vec<(&str, &hm_design::Measure)> = Vec::new();
+    for map in [&report.input, &report.selection, &report.results] {
+        measures.extend(map.iter().map(|(name, measure)| (name.as_str(), measure)));
+    }
+    for section in &report.volute_sections {
+        measures.extend([
+            ("angle", &section.angle),
+            ("area", &section.area),
+            ("diameter", &section.diameter),
+            ("outer_radius", &section.outer_radius),
+        ]);
+    }
+    for point in &report.curve {
+        measures.extend([
+            ("q", &point.q),
+            ("h", &point.h),
+            ("eta", &point.eta),
+            ("p_shaft", &point.p_shaft),
+            ("npshr", &point.npshr),
+        ]);
+    }
+    for (name, measure) in measures {
+        let unit = parse_unit(&measure.unit).unwrap();
+        assert!(
+            (unit.factor - 1.0).abs() < 1e-12 && unit.offset == 0.0,
+            "`{name}` en {} no es SI",
+            measure.unit
+        );
+        assert!(measure.value.is_finite(), "`{name}` no es finito");
+    }
+}
+
+#[test]
+fn results_use_the_hmf_parameter_names() {
+    let input = input();
+    let result = design(&input).unwrap();
+    let report = DesignReport::new(&input, &result, 11, Vec::new());
+    for spec in PARAM_SPECS.iter().filter(|spec| spec.formula.is_some()) {
+        assert!(
+            report.results.contains_key(spec.name),
+            "falta `{}`",
+            spec.name
+        );
+    }
+    assert_eq!(report.results["d2"].value, result.d2.si);
+    assert_eq!(report.results["d2"].unit, "m");
+    assert_eq!(report.volute_sections.len(), result.volute.sections.len());
+    assert_eq!(report.curve.len(), 11);
+}
+
+#[test]
+fn round_trips_through_json() {
+    let report = report();
+    assert!(!report.diagnostics.is_empty());
+    let text = serde_json::to_string_pretty(&report).unwrap();
+    let back: DesignReport = serde_json::from_str(&text).unwrap();
+    assert_eq!(back, report);
+}
+
+#[test]
+fn readers_ignore_fields_added_later() {
+    let mut value = serde_json::to_value(report()).unwrap();
+    value["campo_futuro"] = serde_json::json!({"value": 1.0, "unit": "m"});
+    let back: DesignReport = serde_json::from_value(value).unwrap();
+    assert_eq!(back.version, REPORT_VERSION);
+}

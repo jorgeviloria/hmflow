@@ -7,6 +7,7 @@ license.workspace = true
 authors.workspace = true
 
 [dependencies]
+hm-core = { path = "../crates/hm-core" }
 hm-formula = { path = "../crates/hm-formula" }
 hm-units = { path = "../crates/hm-units" }
 serde = { workspace = true }

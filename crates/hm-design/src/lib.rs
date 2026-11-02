@@ -8,6 +8,12 @@
 
 use std::collections::BTreeMap;
 
+mod report;
+
+pub use report::{
+    DesignReport, Measure, REPORT_FORMAT, REPORT_VERSION, ReportPoint, ReportSection,
+};
+
 use hm_core::{Diagnostic, Diagnostics};
 use hm_formula::{FormulaError, Registry};
 use hm_units::{Dimension, Quantity, Unit, UnitError, parse_unit};

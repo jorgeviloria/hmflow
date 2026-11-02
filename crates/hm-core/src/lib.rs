@@ -2,6 +2,10 @@
 
 use serde::{Deserialize, Serialize};
 
+pub mod codes;
+
+pub use codes::{CODES, CodeInfo, CodeStatus, code_info};
+
 /// Gravedad de un diagnóstico.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -13,7 +17,7 @@ pub enum Severity {
 }
 
 /// Un mensaje con código estable, origen y sugerencia.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Diagnostic {
     pub severity: Severity,
     pub code: String,
@@ -23,10 +27,18 @@ pub struct Diagnostic {
 }
 
 impl Diagnostic {
+    /// Crea un diagnóstico. En compilación de depuración comprueba que el
+    /// código está en [`CODES`], activo y con la misma severidad.
     pub fn new(severity: Severity, code: impl Into<String>, message: impl Into<String>) -> Self {
+        let code = code.into();
+        debug_assert!(
+            code_info(&code)
+                .is_some_and(|info| info.status == CodeStatus::Active && info.severity == severity),
+            "código {code} no registrado, retirado o con otra severidad en hm_core::codes"
+        );
         Self {
             severity,
-            code: code.into(),
+            code,
             message: message.into(),
             hint: None,
         }
@@ -115,11 +127,25 @@ mod tests {
     #[test]
     fn errors_are_detected() {
         let mut d = Diagnostics::new();
-        d.push(Diagnostic::warning("HM-001", "aviso"));
+        d.push(Diagnostic::warning("HM-DES-001", "aviso"));
         assert!(!d.has_errors());
-        d.push(Diagnostic::error("HM-002", "error"));
+        d.push(Diagnostic::error("HM-PROJ-007", "error"));
         assert!(d.has_errors());
         assert_eq!(d.len(), 2);
+    }
+
+    #[test]
+    #[should_panic(expected = "no registrado")]
+    #[cfg(debug_assertions)]
+    fn unregistered_codes_are_rejected_in_debug() {
+        let _ = Diagnostic::warning("HM-XXX-999", "inventado");
+    }
+
+    #[test]
+    #[should_panic(expected = "otra severidad")]
+    #[cfg(debug_assertions)]
+    fn severity_must_match_the_registry() {
+        let _ = Diagnostic::error("HM-DES-001", "debería ser aviso");
     }
 
     #[test]

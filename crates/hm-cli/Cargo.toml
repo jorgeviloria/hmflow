@@ -17,3 +17,4 @@ hm-design = { path = "../hm-design" }
 hm-formula = { path = "../hm-formula" }
 hm-project = { path = "../hm-project" }
 hm-units = { path = "../hm-units" }
+serde_json = { workspace = true }

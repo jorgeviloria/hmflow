@@ -4,6 +4,7 @@ use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 use std::process::{Command, ExitCode};
 
+use hm_core::{CODES, CodeStatus, Severity, code_info};
 use hm_units::{Quantity, parse_quantity, parse_unit};
 use serde::Deserialize;
 
@@ -16,9 +17,10 @@ fn main() -> ExitCode {
         "provenance" => provenance(),
         "licences" => licences(),
         "assets" => assets(),
+        "codes" => codes(std::env::args().nth(2).as_deref() == Some("--write")),
         other => {
             eprintln!("tarea desconocida: {other}");
-            eprintln!("tareas: ci, cases, provenance, licences, assets");
+            eprintln!("tareas: ci, cases, provenance, licences, assets, codes [--write]");
             ExitCode::FAILURE
         }
     }
@@ -34,6 +36,9 @@ fn bool_to_code(ok: bool) -> ExitCode {
 
 fn ci() -> ExitCode {
     if !cases() {
+        return ExitCode::FAILURE;
+    }
+    if codes(false) != ExitCode::SUCCESS {
         return ExitCode::FAILURE;
     }
 
@@ -323,4 +328,168 @@ fn walk(directory: &Path, out: &mut Vec<PathBuf>) -> std::io::Result<()> {
         }
     }
     Ok(())
+}
+
+/// Ruta del catálogo de diagnósticos generado desde `hm_core::CODES`.
+const DIAGNOSTICS_DOC: &str = "docs/diagnostics.md";
+
+/// Comprueba el registro de códigos de diagnóstico:
+///
+/// - todo código citado en el código o en la documentación está registrado;
+/// - todo código activo se emite en algún `src/`;
+/// - ningún código retirado se emite;
+/// - `docs/diagnostics.md` coincide con el registro (`--write` lo regenera).
+fn codes(write: bool) -> ExitCode {
+    let mut ok = true;
+    let mut emitted: BTreeMap<String, Vec<PathBuf>> = BTreeMap::new();
+    let mut cited: BTreeMap<String, Vec<PathBuf>> = BTreeMap::new();
+
+    let mut files = Vec::new();
+    for root in ["crates", "docs", "xtask/src"] {
+        if let Err(error) = walk(Path::new(root), &mut files) {
+            eprintln!("no se pudo recorrer {root}: {error}");
+            return ExitCode::FAILURE;
+        }
+    }
+    files.push(PathBuf::from("README.md"));
+
+    for path in files {
+        let extension = path.extension().and_then(|e| e.to_str());
+        if !matches!(extension, Some("rs" | "md" | "toml")) || path == Path::new(DIAGNOSTICS_DOC) {
+            continue;
+        }
+        let Ok(text) = std::fs::read_to_string(&path) else {
+            continue;
+        };
+        let in_src = path.components().any(|part| part.as_os_str() == "src")
+            && path.starts_with("crates")
+            && !path.ends_with("codes.rs");
+        // `HM-XXX-` queda reservado para códigos inventados en tests.
+        for code in find_codes(&text)
+            .into_iter()
+            .filter(|code| !code.starts_with("HM-XXX-"))
+        {
+            cited.entry(code.clone()).or_default().push(path.clone());
+            if in_src && extension == Some("rs") {
+                emitted.entry(code).or_default().push(path.clone());
+            }
+        }
+    }
+
+    for (code, paths) in &cited {
+        match code_info(code) {
+            None => {
+                eprintln!(
+                    "{code}: no está en hm_core::CODES (citado en {})",
+                    paths[0].display()
+                );
+                ok = false;
+            }
+            Some(info) if info.status == CodeStatus::Retired && emitted.contains_key(code) => {
+                eprintln!("{code}: está retirado y se sigue emitiendo");
+                ok = false;
+            }
+            Some(_) => {}
+        }
+    }
+    for info in CODES {
+        if info.status == CodeStatus::Active && !emitted.contains_key(info.code) {
+            eprintln!(
+                "{}: activo en el registro pero no se emite en ningún src/",
+                info.code
+            );
+            ok = false;
+        }
+    }
+
+    let expected = diagnostics_markdown();
+    let current = std::fs::read_to_string(DIAGNOSTICS_DOC).unwrap_or_default();
+    if current != expected {
+        if write {
+            if let Err(error) = std::fs::write(DIAGNOSTICS_DOC, &expected) {
+                eprintln!("no se pudo escribir {DIAGNOSTICS_DOC}: {error}");
+                return ExitCode::FAILURE;
+            }
+            println!("escrito {DIAGNOSTICS_DOC}");
+        } else {
+            eprintln!(
+                "{DIAGNOSTICS_DOC} no coincide con hm_core::CODES; ejecuta `cargo xtask codes --write`"
+            );
+            ok = false;
+        }
+    }
+
+    if ok {
+        println!("codes: {} códigos registrados", CODES.len());
+        ExitCode::SUCCESS
+    } else {
+        ExitCode::FAILURE
+    }
+}
+
+/// Códigos `HM-XXX-NNN` de un texto.
+fn find_codes(text: &str) -> Vec<String> {
+    let bytes = text.as_bytes();
+    let mut found = Vec::new();
+    let mut index = 0;
+    while let Some(offset) = text[index..].find("HM-") {
+        let start = index + offset;
+        let mut cursor = start + 3;
+        let letters = cursor;
+        while cursor < bytes.len() && bytes[cursor].is_ascii_uppercase() {
+            cursor += 1;
+        }
+        let valid_prefix = cursor > letters && cursor < bytes.len() && bytes[cursor] == b'-';
+        if valid_prefix {
+            let digits = cursor + 1;
+            let end = digits + 3;
+            if end <= bytes.len()
+                && bytes[digits..end].iter().all(u8::is_ascii_digit)
+                && bytes.get(end).is_none_or(|b| !b.is_ascii_digit())
+            {
+                found.push(text[start..end].to_string());
+            }
+        }
+        index = start + 3;
+    }
+    found
+}
+
+fn diagnostics_markdown() -> String {
+    let mut out = String::from(
+        "# Códigos de diagnóstico\n\n\
+         Generado desde `hm_core::CODES` con `cargo xtask codes --write`; no se edita a mano.\n\n\
+         Un código tiene un solo significado y una sola severidad, y no se reutiliza nunca.\n\
+         Ver `docs/adr/0003-versionado.md`.\n\n\
+         | Código | Severidad | Estado | Significado |\n\
+         |---|---|---|---|\n",
+    );
+    for info in CODES {
+        let severity = match info.severity {
+            Severity::Info => "info",
+            Severity::Warning => "aviso",
+            Severity::Error => "error",
+            Severity::Blocking => "bloqueante",
+        };
+        let status = match info.status {
+            CodeStatus::Active => "activo",
+            CodeStatus::Retired => "retirado",
+        };
+        out.push_str(&format!(
+            "| `{}` | {severity} | {status} | {} |\n",
+            info.code, info.summary
+        ));
+    }
+    out
+}
+
+#[cfg(test)]
+mod tests {
+    use super::find_codes;
+
+    #[test]
+    fn finds_well_formed_codes_only() {
+        let text = "a HM-DES-007, b `HM-PROJ-025`; HM-DES-12 HM-des-001 HM-DES-0071 HM--001";
+        assert_eq!(find_codes(text), ["HM-DES-007", "HM-PROJ-025"]);
+    }
 }

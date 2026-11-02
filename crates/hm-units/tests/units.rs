@@ -95,6 +95,26 @@ fn adding_celsius_and_kelvin_is_allowed() {
 }
 
 #[test]
+fn subtracting_kelvin_from_celsius_keeps_celsius() {
+    let difference = parse_quantity("20 degC")
+        .unwrap()
+        .sub(&parse_quantity("10 K").unwrap())
+        .unwrap();
+    assert_eq!(difference.unit.symbol, "degC");
+    assert!((difference.value() - 10.0).abs() < 1e-9);
+}
+
+#[test]
+fn subtracting_celsius_from_kelvin_is_a_kelvin_delta() {
+    let difference = parse_quantity("10 K")
+        .unwrap()
+        .sub(&parse_quantity("20 degC").unwrap())
+        .unwrap();
+    assert_eq!(difference.unit.symbol, "K");
+    assert!((difference.value() + 283.15).abs() < 1e-9);
+}
+
+#[test]
 fn non_finite_is_not_physical() {
     let value = Quantity::from_si(f64::NAN, Unit::dimensionless());
     assert_eq!(value.ensure_physical(), Err(UnitError::NonFinite));

@@ -55,7 +55,12 @@ impl Quantity {
 
     pub fn sub(&self, other: &Self) -> Result<Self, UnitError> {
         self.require_same(other)?;
-        let unit = if self.unit.offset != 0.0 || other.unit.offset != 0.0 {
+        // Dos temperaturas absolutas (°C, °F) dan un intervalo en kelvin.
+        // Una absoluta menos un intervalo (K, sin desplazamiento) conserva
+        // la unidad de la izquierda: 20 °C − 10 K = 10 °C.
+        let unit = if self.unit.offset != 0.0 && other.unit.offset == 0.0 {
+            self.unit.clone()
+        } else if self.unit.offset != 0.0 || other.unit.offset != 0.0 {
             Unit::new("K", Dimension::TEMPERATURE, 1.0)
         } else {
             self.unit.clone()

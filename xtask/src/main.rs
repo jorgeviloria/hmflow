@@ -360,6 +360,10 @@ fn codes(write: bool) -> ExitCode {
 
     let mut files = Vec::new();
     for root in ["crates", "docs", "xtask/src"] {
+        // `docs/` es local (no está en git): en un clon nuevo no existe.
+        if !Path::new(root).exists() {
+            continue;
+        }
         if let Err(error) = walk(Path::new(root), &mut files) {
             eprintln!("no se pudo recorrer {root}: {error}");
             return ExitCode::FAILURE;
@@ -418,7 +422,12 @@ fn codes(write: bool) -> ExitCode {
 
     let expected = diagnostics_markdown();
     let current = std::fs::read_to_string(DIAGNOSTICS_DOC).unwrap_or_default();
-    if current != expected {
+    // Sin `docs/` (clon nuevo) no hay catálogo que comparar, salvo que se pida
+    // escribirlo.
+    let docs_present = Path::new(DIAGNOSTICS_DOC)
+        .parent()
+        .is_some_and(Path::exists);
+    if current != expected && (docs_present || write) {
         if write {
             if let Err(error) = std::fs::write(DIAGNOSTICS_DOC, &expected) {
                 eprintln!("no se pudo escribir {DIAGNOSTICS_DOC}: {error}");

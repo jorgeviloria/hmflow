@@ -8,3 +8,6 @@
 
 # Proyectos locales de trabajo
 *.local.hmf
+
+# Documentación del proyecto: solo local, no se sube.
+/docs/

@@ -126,8 +126,10 @@ fn existing_case_is_consistent() {
     );
     close(result.npshr_design.value(), 5.14, 0.1);
     close(result.shutoff_head.value(), 53.65, 0.1);
-    // H0/Hd = 1,19: por debajo del 1,2 de Gülich, informativo.
-    assert_eq!(codes(&result), ["HM-DES-017", "HM-DES-012"]);
+    // H0/Hd = 1,19: por debajo del 1,2 de Gülich, informativo. Desde la v0.5
+    // la pendiente de la tangente (§4.3.5) es mayor de lo que admite ese H0 y
+    // la curva tiene un máximo a caudal parcial (HM-DES-031).
+    assert_eq!(codes(&result), ["HM-DES-017", "HM-DES-031", "HM-DES-012"]);
 }
 
 #[test]
@@ -587,4 +589,49 @@ fn loss_estimates_follow_gulich() {
         1e-12,
     );
     close(result.mechanical_eta_estimate, 0.98561, 1e-4);
+}
+
+#[test]
+fn curve_follows_the_registered_formula() {
+    // curve_head es la fórmula design.curve_head_ratio con h0 = H0/Hd y la
+    // pendiente de la tangente.
+    use hm_formula::Registry;
+    use std::collections::BTreeMap;
+    let input = input("120 m3/h", "45 m", "2900 rpm");
+    let result = design(&input).unwrap();
+    let registry = Registry::all();
+    for ratio in [0.0, 0.3, 0.7, 1.0, 1.3] {
+        let inputs: BTreeMap<String, hm_units::Quantity> = [
+            ("h0", result.shutoff_head.si / input.h.si),
+            ("slope", result.head_slope),
+            ("q", ratio),
+        ]
+        .into_iter()
+        .map(|(name, value)| {
+            (
+                name.to_string(),
+                parse_quantity(&value.to_string()).unwrap(),
+            )
+        })
+        .collect();
+        let expected = registry
+            .evaluate("design.curve_head_ratio", &inputs)
+            .unwrap()
+            .value();
+        close(
+            hm_design::curve_head(&input, &result, ratio) / input.h.si,
+            expected,
+            1e-12,
+        );
+    }
+    close(
+        hm_design::curve_head(&input, &result, 0.0),
+        result.shutoff_head.si,
+        1e-9,
+    );
+    close(
+        hm_design::curve_head(&input, &result, 1.0),
+        input.h.si,
+        1e-9,
+    );
 }

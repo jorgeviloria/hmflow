@@ -26,13 +26,13 @@ fn pack_is_audit_clean() {
 }
 
 #[test]
-fn pack_has_sixty_one_formulas() {
-    assert_eq!(Registry::from_toml(END_SUCTION_V01_PACK).unwrap().len(), 61);
+fn pack_has_sixty_four_formulas() {
+    assert_eq!(Registry::from_toml(END_SUCTION_V01_PACK).unwrap().len(), 64);
 }
 
 #[test]
 fn all_merges_both_packs() {
-    assert_eq!(Registry::all().len(), 71);
+    assert_eq!(Registry::all().len(), 74);
 }
 
 #[test]
@@ -910,4 +910,42 @@ fn bearing_seal_loss() {
         910.0,
         1e-6,
     );
+}
+
+#[test]
+fn zero_head_flow_ratio() {
+    // q0 = γ·tan β2/φ con γ = 0,82, β2 = 19,3° y φ = 0,0785
+    close(
+        evaluate(
+            "design.zero_head_flow_ratio",
+            &[("slip", "0.82"), ("beta2", "19.3 deg"), ("phi", "0.0785")],
+        ),
+        0.82 * 19.3_f64.to_radians().tan() / 0.0785,
+        1e-9,
+    );
+}
+
+#[test]
+fn design_head_slope() {
+    // Tangente a la recta de (q0, 0) a (1, 1): −1/(q0 − 1)
+    close(
+        evaluate("design.design_head_slope", &[("q0", "3.5")]),
+        -0.4,
+        1e-12,
+    );
+}
+
+#[test]
+fn curve_head_ratio() {
+    // h(q) = h0 + (2(1 − h0) − S)q + (S − (1 − h0))q²: pasa por h0, por 1 en q = 1
+    // y su pendiente en q = 1 es S.
+    let h = |q: &str| {
+        evaluate(
+            "design.curve_head_ratio",
+            &[("h0", "1.12"), ("slope", "-0.4"), ("q", q)],
+        )
+    };
+    close(h("0"), 1.12, 1e-12);
+    close(h("1"), 1.0, 1e-12);
+    close((h("1.000001") - h("0.999999")) / 2e-6, -0.4, 1e-6);
 }

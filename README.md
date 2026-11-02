@@ -3,7 +3,7 @@
 Suite open source de diseño de bombas centrífugas, escrita en Rust.
 
 > Estado: **Parte 0 — cimientos** y primer motor de diseño end-suction. El
-> repositorio compila, hay 71 fórmulas auditadas (40 piloto, 31 con referencia
+> repositorio compila, hay 74 fórmulas auditadas (43 piloto, 31 con referencia
 > de ejemplo resuelto; sin validación de banco) y `design` genera geometría,
 > voluta, pérdidas y curvas preliminares. Todavía no hay CAD ni interfaz
 > gráfica.

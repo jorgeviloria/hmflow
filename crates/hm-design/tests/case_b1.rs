@@ -10,7 +10,10 @@
 //! banda simétrica, porque lo que se juzga es la exactitud del modelo y no la
 //! aceptación de una bomba.
 
-use hm_design::{DesignInput, curve_head, default_mechanical_efficiency, design};
+use hm_design::{
+    DesignInput, DesignOptions, curve_head, default_mechanical_efficiency, design,
+    design_with_options,
+};
 use hm_units::parse_quantity;
 
 /// Punto de máximo rendimiento del catálogo.
@@ -70,6 +73,54 @@ fn b1_impeller_diameter_matches_catalog() {
         "d2 {:.1} mm frente a {D2_MM} mm ({:+.1} %)",
         result.d2.si * 1000.0,
         100.0 * deviation
+    );
+}
+
+/// Geometría medida del rodete real de B1 (docs/validation/matrix.md): 6
+/// álabes y b2 ≈ 17 mm, que con el φ del motor es φ = 0,0785. β2 lo resuelve
+/// Euler.
+fn real_impeller() -> DesignOptions {
+    DesignOptions {
+        blade_count: Some(6),
+        phi: Some(0.0785),
+        ..DesignOptions::default()
+    }
+}
+
+/// Mayor desviación relativa de la curva frente al catálogo.
+fn worst_head_deviation(options: &DesignOptions) -> f64 {
+    let input = input();
+    let result = design_with_options(&input, options).unwrap();
+    CATALOG_HQ
+        .iter()
+        .map(|&(q_gpm, h_catalog)| {
+            (curve_head(&input, &result, q_gpm / Q_DESIGN_GPM) / h_catalog - 1.0).abs()
+        })
+        .fold(0.0, f64::max)
+}
+
+#[test]
+fn b1_real_impeller_curve_inside_grade_2b() {
+    let worst = worst_head_deviation(&real_impeller());
+    assert!(
+        worst <= GRADE_2B_HEAD,
+        "desviación máxima {:.1} %",
+        100.0 * worst
+    );
+}
+
+#[test]
+fn b1_curve_tells_the_impellers_apart() {
+    // Desde end_suction_v0.5 la pendiente de H(Q) sale de la geometría
+    // (Gülich §4.3.5): el rodete real se acerca más a su catálogo que el
+    // rodete por defecto del motor.
+    let real = worst_head_deviation(&real_impeller());
+    let default = worst_head_deviation(&DesignOptions::default());
+    assert!(
+        real < default,
+        "rodete real {:.1} % frente a {:.1} % del rodete por defecto",
+        100.0 * real,
+        100.0 * default
     );
 }
 

@@ -439,9 +439,11 @@ fn run(cli: Cli) -> Result<ExitCode, Box<dyn std::error::Error>> {
                 result.torque_max.value()
             );
             println!(
-                "  NPSHr_d = {:.2} m   H0 = {:.2} m",
+                "  NPSHr_d = {:.2} m   H0 = {:.2} m   Hth = 0 en {:.2}·Qd   pendiente H/Hd en Qd {:.3}",
                 result.npshr_design.value(),
-                result.shutoff_head.value()
+                result.shutoff_head.value(),
+                result.zero_head_flow_ratio,
+                result.head_slope
             );
             println!(
                 "  Voluta: R3 = {:.4} m   B3 = {:.4} m   C3 = {:.2} m/s",
@@ -826,7 +828,11 @@ fn recalc(file: &std::path::Path, reselect: bool) -> Result<ExitCode, Box<dyn st
 
     // Hasta end_suction_v0.3, ηm incluía el rozamiento de discos; desde la
     // v0.4 va aparte, así que el ηm guardado ya no significa lo mismo.
-    let old_eta_m = if migrated_from.is_some() {
+    let lumped_eta_m = matches!(
+        migrated_from.as_deref(),
+        Some("end_suction_v0.1" | "end_suction_v0.2" | "end_suction_v0.3")
+    );
+    let old_eta_m = if lumped_eta_m {
         project
             .params
             .remove("eta_m")
@@ -1928,6 +1934,30 @@ mod tests {
     }
 
     #[test]
+    fn recalc_from_v04_keeps_the_mechanical_efficiency() {
+        // En la v0.4 ηm ya no incluía los discos: migrar a la v0.5 no lo toca.
+        let path = std::env::temp_dir().join(format!(
+            "hmflow-v04-{}-{:?}.hmf",
+            std::process::id(),
+            std::thread::current().id()
+        ));
+        let mut project = designed_project();
+        project.design.method = "end_suction_v0.4".to_string();
+        project
+            .params
+            .insert("eta_m".to_string(), manual("0.975".to_string()));
+        project.save(&path).unwrap();
+
+        recalc(&path, false).unwrap();
+        let project = Project::load(&path).unwrap();
+        std::fs::remove_file(&path).unwrap();
+
+        assert_eq!(project.design.method, METHOD);
+        let (input, _) = design_inputs(&project).unwrap();
+        assert!((input.eta_m - 0.975).abs() < 1e-12, "eta_m {}", input.eta_m);
+    }
+
+    #[test]
     fn report_of_a_designed_project_matches_its_stored_values() {
         let path = std::env::temp_dir().join(format!(
             "hmflow-report-{}-{:?}.hmf",
@@ -1967,14 +1997,14 @@ mod tests {
     }
 
     /// Guarda de versionado: el `.hmf` de referencia se escribió con
-    /// `end_suction_v0.4`. Si el motor cambia sus resultados sin cambiar
+    /// `end_suction_v0.5`. Si el motor cambia sus resultados sin cambiar
     /// `METHOD`, sus valores `auto` dejan de cuadrar y este test falla. La
     /// salida correcta es subir `METHOD`, añadir el anterior a
     /// `LEGACY_METHODS` y regenerar el archivo con `design`.
     #[test]
     fn reference_project_of_the_current_method_audits_clean() {
         let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
-            .join("../hm-project/tests/fixtures/end_suction_v0.4.hmf");
+            .join("../hm-project/tests/fixtures/end_suction_v0.5.hmf");
         let project = Project::load(&path).unwrap();
         assert_eq!(
             project.design.method, METHOD,

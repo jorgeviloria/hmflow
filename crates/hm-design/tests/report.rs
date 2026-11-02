@@ -63,6 +63,8 @@ fn every_value_is_coherent_si() {
         ("disk_friction_ratio", &hydraulics.disk_friction_ratio),
         ("statistical_eta_h", &hydraulics.statistical_eta_h),
         ("loss_eta", &hydraulics.loss_eta),
+        ("zero_head_flow_ratio", &hydraulics.zero_head_flow_ratio),
+        ("head_slope", &hydraulics.head_slope),
     ]);
     let mech = report
         .mechanics

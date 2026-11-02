@@ -1320,3 +1320,67 @@ value = "P*margin"
 
 [formula.notes]
 assumptions = "margin = 1,25 hasta 22 kW, 1,15 de 22 a 55 kW y 1,10 por encima (API 610). El motor es la potencia normalizada de IEC 60072-1 inmediatamente mayor."
+
+[[formula]]
+id = "design.zero_head_flow_ratio"
+version = 1
+validation = "pilot"
+module = "design"
+title = "Caudal de altura teórica nula frente al de diseño"
+source = "Gülich 2020, tabla 3.2, ec. (3.2.7), p. 152, y §4.3.5, p. 194"
+units = "1"
+range = "1 .. 30"
+test = "crates/hm-formula/tests/end_suction.rs::zero_head_flow_ratio"
+
+[formula.inputs]
+slip = "1"
+beta2 = "deg"
+phi = "1"
+
+[formula.expr]
+value = "slip*tan(beta2)/phi"
+
+[formula.notes]
+assumptions = "Hth = u2·c2u/g con c2u = u2(γ − φ·q/tan β2B) y cm2 proporcional al caudal (ηv constante): Hth se anula en q0 = γ·tan β2B/φ. Sin prerrotación a la entrada (c1u = 0) y con el γ del punto de diseño."
+
+[[formula]]
+id = "design.design_head_slope"
+version = 1
+validation = "pilot"
+module = "design"
+title = "Pendiente adimensional de H(Q) en el punto de diseño"
+source = "Gülich 2020, §4.3.5, p. 194"
+units = "1"
+range = "-10 .. 0"
+test = "crates/hm-formula/tests/end_suction.rs::design_head_slope"
+
+[formula.inputs]
+q0 = "1"
+
+[formula.expr]
+value = "-1/(q0 - 1)"
+
+[formula.notes]
+assumptions = "Observación empírica de Gülich: en el punto óptimo la curva Q-H es tangente a la recta que pasa por Q(Hth = 0) y (Qopt, Hopt). En variables H/Hd y Q/Qd la pendiente es −1/(q0 − 1)."
+
+[[formula]]
+id = "design.curve_head_ratio"
+version = 1
+validation = "pilot"
+module = "design"
+title = "Altura de la curva frente a la de diseño"
+source = "Gülich 2020, §4.3.5, p. 194 (H0 de la ec. 3.28 y tangente en el óptimo)"
+units = "1"
+range = "0 .. 2"
+test = "crates/hm-formula/tests/end_suction.rs::curve_head_ratio"
+
+[formula.inputs]
+h0 = "1"
+slope = "1"
+q = "1"
+
+[formula.expr]
+value = "h0 + (2*(1 - h0) - slope)*q + (slope - (1 - h0))*q^2"
+
+[formula.notes]
+assumptions = "Parábola en q = Q/Qd que vale h0 = H0/Hd en q = 0, 1 en el punto de diseño y tiene allí la pendiente de la tangente. Gülich deja la interpolación entre Q = 0 y la zona sin recirculación «según la experiencia»; la parábola es la forma del motor. Puede tener un máximo con q > 0: curva inestable."

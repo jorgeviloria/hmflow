@@ -299,6 +299,11 @@ pub const CODES: &[CodeInfo] = &[
         Warning,
         "El motor necesario supera la serie normalizada de IEC 60072-1.",
     ),
+    active(
+        "HM-DES-031",
+        Info,
+        "La curva H(Q) tiene su máximo por encima de caudal cero: inestable por debajo.",
+    ),
 ];
 
 /// Busca un código en el registro.

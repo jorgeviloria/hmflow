@@ -136,6 +136,12 @@ pub struct DesignResult {
     pub loss_eta: f64,
     pub slip: f64,
     pub cu2: Quantity,
+    /// Caudal en que la altura teórica se anula, en fracción de Qd
+    /// (Gülich ec. 3.2.7).
+    pub zero_head_flow_ratio: f64,
+    /// Pendiente de H/Hd frente a Q/Qd en el punto de diseño: la tangente a la
+    /// recta que pasa por Q(Hth = 0) (Gülich §4.3.5).
+    pub head_slope: f64,
     pub volute: VoluteResult,
     pub diagnostics: Diagnostics,
 }
@@ -188,10 +194,15 @@ pub struct ParamSpec {
 ///   margen de Gülich (§6.3.3 y tabla 6.2), H0 de Gülich (3.28).
 /// - v0.3: la transición del NPSHr a la subida brusca sale de la geometría
 ///   (Gülich ec. 6.17–6.20) en vez de suponerla en el caudal de diseño.
-pub const METHOD: &str = "end_suction_v0.4";
+pub const METHOD: &str = "end_suction_v0.5";
 
 /// Métodos anteriores que `recalc` sabe migrar a [`METHOD`].
-pub const LEGACY_METHODS: &[&str] = &["end_suction_v0.1", "end_suction_v0.2", "end_suction_v0.3"];
+pub const LEGACY_METHODS: &[&str] = &[
+    "end_suction_v0.1",
+    "end_suction_v0.2",
+    "end_suction_v0.3",
+    "end_suction_v0.4",
+];
 
 /// Parámetros que genera o consume el método [`METHOD`].
 pub const PARAM_SPECS: &[ParamSpec] = &[
@@ -780,10 +791,26 @@ pub fn design_with_options(
             ("slip", quantity(slip, one.clone())),
             ("u2", u2.clone()),
             ("cm2", cm2.clone()),
-            ("beta2", beta2),
+            ("beta2", beta2.clone()),
         ],
     )?;
     let cu2 = with_unit(cu2, &ms);
+    let zero_head_flow_ratio = evaluate(
+        &registry,
+        "design.zero_head_flow_ratio",
+        &[
+            ("slip", quantity(slip, one.clone())),
+            ("beta2", beta2),
+            ("phi", quantity(selection.phi, one.clone())),
+        ],
+    )?
+    .value();
+    let head_slope = evaluate(
+        &registry,
+        "design.design_head_slope",
+        &[("q0", quantity(zero_head_flow_ratio, one.clone()))],
+    )?
+    .value();
 
     let k3 = quantity(k3_value, one.clone());
     let volute_width_factor = quantity(volute_width_value, one.clone());
@@ -1155,6 +1182,8 @@ pub fn design_with_options(
         loss_eta,
         slip,
         cu2,
+        zero_head_flow_ratio,
+        head_slope,
         volute,
         diagnostics: Diagnostics::new(),
     };
@@ -1299,12 +1328,36 @@ const DISK_F_GEO: f64 = 1.22;
 /// Deceleración mínima `w2/w1` (criterio de de Haller; Gülich 2020, p. 413).
 pub const DE_HALLER_MIN: f64 = 0.7;
 
-/// Altura de la curva preliminar en `ratio` veces el caudal de diseño, m:
-/// parábola de H0 al punto de diseño.
+/// Altura de la curva preliminar en `ratio` veces el caudal de diseño, m.
+///
+/// Desde `end_suction_v0.5`: parábola que vale H0 a caudal cero (Gülich ec.
+/// 3.28), Hd en el punto de diseño y tiene allí la pendiente de la tangente a
+/// la recta que pasa por Q(Hth = 0) (Gülich §4.3.5). La pendiente depende de
+/// la geometría (β2, Z por el deslizamiento y b2 por φ). Es la fórmula
+/// `design.curve_head_ratio`.
 pub fn curve_head(input: &DesignInput, result: &DesignResult, ratio: f64) -> f64 {
-    let h_design = input.h.si;
-    let shutoff_ratio = result.shutoff_head.si / h_design;
-    h_design * (shutoff_ratio - (shutoff_ratio - 1.0) * ratio.powi(2))
+    let (a, b) = curve_head_coefficients(input, result);
+    let h0 = result.shutoff_head.si / input.h.si;
+    input.h.si * (h0 + a * ratio + b * ratio * ratio)
+}
+
+/// Coeficientes lineal y cuadrático de H/Hd en función de Q/Qd.
+fn curve_head_coefficients(input: &DesignInput, result: &DesignResult) -> (f64, f64) {
+    let h0 = result.shutoff_head.si / input.h.si;
+    let slope = result.head_slope;
+    (2.0 * (1.0 - h0) - slope, slope - (1.0 - h0))
+}
+
+/// Caudal, en fracción de Qd, donde la curva H(Q) tiene su máximo, si está
+/// por encima de caudal cero y por debajo del de diseño: por debajo de él la
+/// curva es inestable.
+pub fn curve_head_peak(input: &DesignInput, result: &DesignResult) -> Option<f64> {
+    let (a, b) = curve_head_coefficients(input, result);
+    if b >= 0.0 {
+        return None;
+    }
+    let peak = -a / (2.0 * b);
+    (peak > 0.0 && peak < 1.0).then_some(peak)
 }
 
 /// Curva preliminar de prestaciones entre 0.3 y 1.3 veces el caudal de diseño.
@@ -1492,6 +1545,24 @@ fn diagnostics_for(result: &DesignResult, input: &DesignInput) -> Diagnostics {
                 ),
             )
             .with_hint("Si hace falta una curva más estable, reduce ψ o estrecha la voluta."),
+        );
+    }
+
+    if let Some(peak) = curve_head_peak(input, result) {
+        diagnostics.push(
+            Diagnostic::info(
+                "HM-DES-031",
+                format!(
+                    "la curva H(Q) tiene su máximo en {peak:.2}·Qd ({:.1} m), por encima de H0 \
+                     = {:.1} m: es inestable por debajo de ese caudal",
+                    curve_head(input, result, peak),
+                    result.shutoff_head.si
+                ),
+            )
+            .with_hint(
+                "La pendiente en el punto (Gülich §4.3.5) es mayor que la que admite H0: \
+                 sube β2 o estrecha b2 para aplanarla, o reduce ψ para subir H0.",
+            ),
         );
     }
 

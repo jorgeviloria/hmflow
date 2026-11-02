@@ -1,13 +1,13 @@
 schema = 2
 
 [project]
-name = "referencia-v0.4"
+name = "referencia-v0.5"
 
 [design]
 pump_type = "end_suction"
 stages = 1
 standard = "ISO 2858"
-method = "end_suction_v0.4"
+method = "end_suction_v0.5"
 
 [operating]
 Q = "120 m3/h"

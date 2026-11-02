@@ -638,3 +638,39 @@ fn curve_follows_the_registered_formula() {
         1e-9,
     );
 }
+
+#[test]
+fn seal_leakage_follows_the_ring_geometry() {
+    // Gülich tabla 3.7: más diámetro de anillo (ojo mayor) o más holgura,
+    // más fuga y menos ηv.
+    let input = input("120 m3/h", "45 m", "2900 rpm");
+    let base = design(&input).unwrap();
+    assert!((0.9..1.0).contains(&base.seal_eta_v), "{}", base.seal_eta_v);
+    close(
+        base.seal_eta_v,
+        1.0 / (1.0 + base.seal_leakage_ratio),
+        1e-12,
+    );
+
+    let wider_eye = design_with_options(
+        &input,
+        &DesignOptions {
+            j: Some(1.2),
+            ..DesignOptions::default()
+        },
+    )
+    .unwrap();
+    assert!(wider_eye.seal_eta_v < base.seal_eta_v);
+
+    let worn = design_with_options(
+        &input,
+        &DesignOptions {
+            seal_clearance: Some(1.0e-3),
+            ..DesignOptions::default()
+        },
+    )
+    .unwrap();
+    assert!(worn.seal_eta_v < base.seal_eta_v - 0.01);
+    // Es un contraste: el η del método no cambia.
+    close(worn.eta, base.eta, 1e-12);
+}

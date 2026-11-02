@@ -134,6 +134,12 @@ pub struct DesignResult {
     /// `leakage_eta_v`, el `eta_m` de la entrada y `disk_friction_ratio`.
     /// Desde `end_suction_v0.4` es igual a `eta`.
     pub loss_eta: f64,
+    /// Fuga por el anillo delantero frente al caudal, Qsp/Q, calculada con la
+    /// geometría del anillo (Gülich tabla 3.7). Contraste.
+    pub seal_leakage_ratio: f64,
+    /// ηv con esa fuga (Gülich ec. 3.10.4, sin agujeros de equilibrio).
+    /// Contraste: el método sigue con `leakage_eta_v`.
+    pub seal_eta_v: f64,
     pub slip: f64,
     pub cu2: Quantity,
     /// Caudal en que la altura teórica se anula, en fracción de Qd
@@ -470,6 +476,9 @@ pub struct DesignOptions {
     pub k3: Option<f64>,
     pub volute_width_factor: Option<f64>,
     pub k_eff: Option<f64>,
+    /// Holgura diametral del anillo de desgaste delantero, m. Sin dato, la de
+    /// Gülich ec. (3.12). Solo entra en el contraste de fugas `seal_eta_v`.
+    pub seal_clearance: Option<f64>,
 }
 
 /// Intervalo de búsqueda de β2, en grados.
@@ -972,6 +981,14 @@ pub fn design_with_options(
     )?
     .value();
 
+    let (seal_leakage_ratio, seal_eta_v) = seal_leakage(
+        &registry,
+        input,
+        d1.si,
+        d2.si,
+        u2.si,
+        options.seal_clearance,
+    )?;
     // end_suction_v0.4: el η del método es el del análisis de pérdidas.
     let eta = loss_eta;
 
@@ -1187,6 +1204,8 @@ pub fn design_with_options(
         disk_friction_ratio,
         statistical_eta_h,
         loss_eta,
+        seal_leakage_ratio,
+        seal_eta_v,
         slip,
         cu2,
         zero_head_flow_ratio,
@@ -1332,6 +1351,129 @@ const DISK_K0: f64 = 0.5;
 /// Pérdidas de todas las superficies del rodete frente a las de las caras
 /// planas de las tapas (Gülich 2020, tabla 3.10, rodetes radiales típicos).
 const DISK_F_GEO: f64 = 1.22;
+
+/// Grado de reacción para la presión estática a la salida del rodete con
+/// nq < 40 (Gülich 2020, ec. 3.7.1 y p. 155).
+const SEAL_REACTION: f64 = 0.75;
+
+/// Longitud del anillo de desgaste frente a su diámetro: Gülich 2020, p. 155,
+/// da 0,1..0,14; se toma el centro.
+const SEAL_LENGTH_RATIO: f64 = 0.12;
+
+/// Pérdida de entrada y salida de la holgura (Gülich 2020, ec. 3.7.8: 1..1,2).
+const SEAL_ZETA: f64 = 1.1;
+
+/// Rugosidad equivalente de un anillo mecanizado, m (el ejemplo de Gülich 2020,
+/// p. 155: 4 µm).
+const SEAL_ROUGHNESS: f64 = 4.0e-6;
+
+/// Fuga por el anillo delantero (Gülich 2020, tabla 3.7): devuelve Qsp/Q y
+/// el ηv que le corresponde. El anillo está en el ojo (dsp = d1); la holgura
+/// diametral es la dada o la de la ec. (3.12). λ depende de cax, así que se
+/// itera.
+fn seal_leakage(
+    registry: &Registry,
+    input: &DesignInput,
+    d1: f64,
+    d2: f64,
+    u2: f64,
+    clearance: Option<f64>,
+) -> Result<(f64, f64), DesignError> {
+    let one = Unit::dimensionless();
+    let m = unit("m")?;
+    let ms = unit("m/s")?;
+    let m2s = unit("m2/s")?;
+    let g = Quantity::from_si(9.806_65, unit("m/s2")?);
+    let metres = |value: f64| Quantity::from_si(value, m.clone());
+    let diametral = match clearance {
+        Some(value) => value,
+        None => {
+            evaluate(
+                registry,
+                "mech.seal_clearance",
+                &[("dsp", metres(d1)), ("d_ref", metres(0.1))],
+            )?
+            .si
+        }
+    };
+    let s = 0.5 * diametral;
+    let length = SEAL_LENGTH_RATIO * d1;
+    let nu = Quantity::from_si(DISK_NU, m2s.clone());
+    let k = evaluate(
+        registry,
+        "design.seal_rotation_factor",
+        &[
+            ("u2", Quantity::from_si(u2, ms.clone())),
+            ("d2", metres(d2)),
+            ("nu", nu.clone()),
+            ("s", metres(s)),
+            ("dsp", metres(d1)),
+            ("L", metres(length)),
+        ],
+    )?;
+    let dh = evaluate(
+        registry,
+        "design.seal_pressure_difference",
+        &[
+            ("RG", quantity(SEAL_REACTION, one.clone())),
+            ("H", input.h.clone()),
+            ("k", k),
+            ("u2", Quantity::from_si(u2, ms.clone())),
+            ("g", g.clone()),
+            ("dsp", metres(d1)),
+            ("d2", metres(d2)),
+        ],
+    )?;
+    let usp = Quantity::from_si(
+        0.5 * d1 * 2.0 * std::f64::consts::PI * input.n.si,
+        ms.clone(),
+    );
+    let mut lambda = 0.04;
+    let mut cax = 0.0;
+    for _ in 0..30 {
+        cax = evaluate(
+            registry,
+            "design.seal_axial_velocity",
+            &[
+                ("g", g.clone()),
+                ("dH", dh.clone()),
+                ("zeta", quantity(SEAL_ZETA, one.clone())),
+                ("lambda", quantity(lambda, one.clone())),
+                ("L", metres(length)),
+                ("s", metres(s)),
+            ],
+        )?
+        .si;
+        lambda = evaluate(
+            registry,
+            "design.seal_friction_coefficient",
+            &[
+                ("s", metres(s)),
+                ("cax", Quantity::from_si(cax, ms.clone())),
+                ("nu", nu.clone()),
+                ("eps", metres(SEAL_ROUGHNESS)),
+                ("usp", usp.clone()),
+            ],
+        )?
+        .value();
+    }
+    let qsp = evaluate(
+        registry,
+        "design.seal_leakage_flow",
+        &[
+            ("dsp", metres(d1)),
+            ("s", metres(s)),
+            ("cax", Quantity::from_si(cax, ms)),
+        ],
+    )?;
+    let eta_v = evaluate(
+        registry,
+        "design.seal_volumetric_efficiency",
+        &[("Q", input.q.clone()), ("Qsp", qsp.clone())],
+    )?
+    .value();
+    Ok((qsp.si / input.q.si, eta_v))
+}
 
 /// Deceleración mínima `w2/w1` (criterio de de Haller; Gülich 2020, p. 413).
 pub const DE_HALLER_MIN: f64 = 0.7;

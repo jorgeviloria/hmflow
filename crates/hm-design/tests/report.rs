@@ -65,6 +65,8 @@ fn every_value_is_coherent_si() {
         ("loss_eta", &hydraulics.loss_eta),
         ("zero_head_flow_ratio", &hydraulics.zero_head_flow_ratio),
         ("head_slope", &hydraulics.head_slope),
+        ("seal_leakage_ratio", &hydraulics.seal_leakage_ratio),
+        ("seal_eta_v", &hydraulics.seal_eta_v),
     ]);
     let mech = report
         .mechanics

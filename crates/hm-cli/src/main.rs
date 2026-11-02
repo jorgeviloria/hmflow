@@ -472,8 +472,13 @@ fn run(cli: Cli) -> Result<ExitCode, Box<dyn std::error::Error>> {
                 result.recirculation_onset
             );
             println!(
-                "  Contraste Gülich: ηv por fugas {:.3} (motor {:.3})   ηm {:.3} (motor {:.3})",
-                result.leakage_eta_v, result.eta_v, result.mechanical_eta_estimate, input.eta_m
+                "  Contraste Gülich: ηv por fugas {:.3} (motor {:.3})   ηv anillo delantero {:.3} (Qsp/Q {:.3})   ηm {:.3} (motor {:.3})",
+                result.leakage_eta_v,
+                result.eta_v,
+                result.seal_eta_v,
+                result.seal_leakage_ratio,
+                result.mechanical_eta_estimate,
+                input.eta_m
             );
             println!(
                 "  Pérdidas Gülich: discos PRR/Pu {:.3}   ηh estadístico {:.3} (dimensionado {:.3})   ηv fugas {:.3}   ηm {:.3}   → η {:.3}",
@@ -1218,6 +1223,8 @@ fn design_options(project: &Project) -> Result<DesignOptions, Box<dyn std::error
         k3: param_f64(project, "k3", "1")?,
         volute_width_factor: param_f64(project, "volute_c", "1")?,
         k_eff: param_f64(project, "k_eff", "1")?,
+        // La holgura medida entrará como parámetro cuando se adopte.
+        seal_clearance: None,
     })
 }
 

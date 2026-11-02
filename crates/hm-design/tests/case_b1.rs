@@ -230,3 +230,17 @@ fn b1_npsh3_shape_follows_catalog() {
     }
     assert!(failures.is_empty(), "{}", failures.join("\n"));
 }
+
+#[test]
+fn b1_seal_leakage_tells_the_impellers_apart() {
+    // Anillo delantero en el ojo (Gülich tabla 3.7): el ojo real, más pequeño,
+    // fuga menos que el grande por defecto.
+    let real = design_with_options(&input(), &real_impeller()).unwrap();
+    let default = design(&input()).unwrap();
+    assert!(
+        real.seal_eta_v > default.seal_eta_v,
+        "real {:.4}, por defecto {:.4}",
+        real.seal_eta_v,
+        default.seal_eta_v
+    );
+}

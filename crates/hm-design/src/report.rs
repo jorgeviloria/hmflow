@@ -160,6 +160,8 @@ pub struct ReportHydraulics {
     pub loss_eta: Measure,
     pub zero_head_flow_ratio: Measure,
     pub head_slope: Measure,
+    pub seal_leakage_ratio: Measure,
+    pub seal_eta_v: Measure,
 }
 
 /// Informe completo de un diseño.
@@ -292,6 +294,8 @@ impl DesignReport {
                 loss_eta: Measure::new(result.loss_eta, "1"),
                 zero_head_flow_ratio: Measure::new(result.zero_head_flow_ratio, "1"),
                 head_slope: Measure::new(result.head_slope, "1"),
+                seal_leakage_ratio: Measure::new(result.seal_leakage_ratio, "1"),
+                seal_eta_v: Measure::new(result.seal_eta_v, "1"),
             }),
             viscous: None,
             geometry: None,

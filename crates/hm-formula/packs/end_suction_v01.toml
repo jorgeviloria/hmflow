@@ -1408,3 +1408,146 @@ value = "(lambda_c*c1m^2 + lambda_w*(c1m^2 + u1^2))/(2*g)"
 
 [formula.notes]
 assumptions = "NPSH3 = λc·c1m²/2g + λw·w1²/2g con w1² = c1m² + u1² (entrada sin prerrotación) en el diámetro exterior del borde de ataque. λc = 1,1 con entrada axial; λw = 0,1..0,3 para entrada sin choque, y el motor toma 0,2. Depende del ojo: d1 fija u1 y el área fija c1m."
+
+[[formula]]
+id = "design.seal_rotation_factor"
+version = 1
+validation = "pilot"
+module = "design"
+title = "Factor de rotación del fluido delante del anillo de desgaste"
+source = "Gülich 2020, tabla 3.7, ec. (3.7.2) y (3.7.3), p. 157"
+units = "1"
+range = "0.2 .. 0.9"
+test = "crates/hm-formula/tests/end_suction.rs::seal_rotation_factor"
+
+[formula.inputs]
+u2 = "m/s"
+d2 = "m"
+nu = "m2/s"
+s = "m"
+dsp = "m"
+L = "m"
+
+[formula.expr]
+value = "0.9*((u2*d2/(2*nu))^0.3*s*dsp/d2^2*sqrt(s/L))^0.087"
+
+[formula.notes]
+assumptions = "Fuga radial hacia dentro (anillo delantero): k = 0,9·ysp^0,087 con ysp = Re_u2^0,3·s·dsp/d2²·√(s/Lsp) y Re_u2 = u2·r2/ν. s es la holgura radial."
+
+[[formula]]
+id = "design.seal_pressure_difference"
+version = 1
+validation = "pilot"
+module = "design"
+title = "Altura que empuja la fuga por el anillo delantero"
+source = "Gülich 2020, tabla 3.7, ec. (3.7.1) y (3.7.3), p. 157"
+units = "m"
+range = "0 .. 1000"
+test = "crates/hm-formula/tests/end_suction.rs::seal_pressure_difference"
+
+[formula.inputs]
+RG = "1"
+H = "m"
+k = "1"
+u2 = "m/s"
+g = "m/s2"
+dsp = "m"
+d2 = "m"
+
+[formula.expr]
+value = "RG*H - k^2*u2^2/(2*g)*(1 - dsp^2/d2^2)"
+
+[formula.notes]
+assumptions = "Hp = RG·H con RG ≈ 0,75 para nq < 40 (ec. 3.7.1 y p. 155); la rotación del fluido en la cámara lateral baja la presión hasta el anillo en k²·u2²/2g·(1 − dsp²/d2²)."
+
+[[formula]]
+id = "design.seal_friction_coefficient"
+version = 1
+validation = "pilot"
+module = "design"
+title = "Coeficiente de rozamiento en la holgura del anillo"
+source = "Gülich 2020, tabla 3.7, ec. (3.7.9), (3.7.11), (3.7.12) y (3.7.13), p. 157"
+units = "1"
+range = "0.001 .. 1"
+test = "crates/hm-formula/tests/end_suction.rs::seal_friction_coefficient"
+
+[formula.inputs]
+s = "m"
+cax = "m/s"
+nu = "m2/s"
+eps = "m"
+usp = "m/s"
+
+[formula.expr]
+value = "max(0.31/(log10(0.135*eps/s + 6.5/(2*s*cax/nu)))^2, 96/(2*s*cax/nu))*(1 + 0.19*(usp/cax)^2)^0.375"
+
+[formula.notes]
+assumptions = "λ0 = máx(λ turbulento con A = 0,135·ε/s; 96/Re laminar sin excentricidad), Re = 2·s·cax/ν, y la rotación por Re_u/Re = usp/cax con el exponente turbulento. Junta lisa sin ranuras."
+
+[[formula]]
+id = "design.seal_axial_velocity"
+version = 1
+validation = "pilot"
+module = "design"
+title = "Velocidad axial en la holgura del anillo"
+source = "Gülich 2020, tabla 3.7, ec. (3.7.6) y (3.7.8), p. 157"
+units = "m/s"
+range = "0 .. 200"
+test = "crates/hm-formula/tests/end_suction.rs::seal_axial_velocity"
+
+[formula.inputs]
+g = "m/s2"
+dH = "m"
+zeta = "1"
+lambda = "1"
+L = "m"
+s = "m"
+
+[formula.expr]
+value = "sqrt(2*g*dH/(zeta + lambda*L/(2*s)))"
+
+[formula.notes]
+assumptions = "Junta de una sola cámara: ζEA = 1..1,2 de pérdida de entrada y salida, y el motor toma 1,1. λ depende de cax: el motor itera."
+
+[[formula]]
+id = "design.seal_leakage_flow"
+version = 1
+validation = "pilot"
+module = "design"
+title = "Caudal de fuga por el anillo delantero"
+source = "Gülich 2020, tabla 3.7, ec. (3.7.7), p. 157"
+units = "m3/s"
+range = "0 .. 10"
+test = "crates/hm-formula/tests/end_suction.rs::seal_leakage_flow"
+
+[formula.inputs]
+dsp = "m"
+s = "m"
+cax = "m/s"
+
+[formula.expr]
+value = "pi*dsp*s*cax"
+
+[formula.notes]
+assumptions = "Qsp = π·dsp·s·cax."
+
+[[formula]]
+id = "design.seal_volumetric_efficiency"
+version = 1
+validation = "pilot"
+module = "design"
+title = "Rendimiento volumétrico por la fuga del anillo delantero"
+source = "Gülich 2020, tabla 3.10, ec. (3.10.4), p. 164"
+units = "1"
+range = "0.5 .. 1"
+test = "crates/hm-formula/tests/end_suction.rs::seal_volumetric_efficiency"
+
+[formula.inputs]
+Q = "m3/s"
+Qsp = "m3/s"
+
+[formula.expr]
+value = "Q/(Q + Qsp)"
+
+[formula.notes]
+assumptions = "Solo el anillo delantero (QE = 0): sin agujeros de equilibrio ni segundo anillo."

@@ -26,13 +26,13 @@ fn pack_is_audit_clean() {
 }
 
 #[test]
-fn pack_has_sixty_five_formulas() {
-    assert_eq!(Registry::from_toml(END_SUCTION_V01_PACK).unwrap().len(), 65);
+fn pack_has_seventy_one_formulas() {
+    assert_eq!(Registry::from_toml(END_SUCTION_V01_PACK).unwrap().len(), 71);
 }
 
 #[test]
 fn all_merges_both_packs() {
-    assert_eq!(Registry::all().len(), 75);
+    assert_eq!(Registry::all().len(), 81);
 }
 
 #[test]
@@ -966,5 +966,111 @@ fn npsh3_inlet() {
         ),
         (1.1 * 5.5_f64.powi(2) + 0.2 * (5.5_f64.powi(2) + 13.0_f64.powi(2))) / (2.0 * 9.80665),
         1e-9,
+    );
+}
+
+#[test]
+fn seal_rotation_factor() {
+    // k = 0,9·y^0,087, y = Re_u2^0,3·s·dsp/d2²·√(s/L), Re_u2 = u2·r2/ν
+    close(
+        evaluate(
+            "design.seal_rotation_factor",
+            &[
+                ("u2", "39 m/s"),
+                ("d2", "0.425 m"),
+                ("nu", "1e-6 m2/s"),
+                ("s", "0.25 mm"),
+                ("dsp", "0.141 m"),
+                ("L", "17 mm"),
+            ],
+        ),
+        0.539_961,
+        1e-5,
+    );
+}
+
+#[test]
+fn seal_pressure_difference() {
+    // RG·H − k²·u2²/2g·(1 − dsp²/d2²)
+    close(
+        evaluate(
+            "design.seal_pressure_difference",
+            &[
+                ("RG", "0.75"),
+                ("H", "83 m"),
+                ("k", "0.54"),
+                ("u2", "39 m/s"),
+                ("g", "9.80665 m/s2"),
+                ("dsp", "0.141 m"),
+                ("d2", "0.425 m"),
+            ],
+        ),
+        42.125_598,
+        1e-5,
+    );
+}
+
+#[test]
+fn seal_friction_coefficient() {
+    // max(λtur, λlam)·(1 + 0,19·(usp/cax)²)^0,375 con A = 0,135·ε/s
+    close(
+        evaluate(
+            "design.seal_friction_coefficient",
+            &[
+                ("s", "0.25 mm"),
+                ("cax", "16 m/s"),
+                ("nu", "1e-6 m2/s"),
+                ("eps", "0.004 mm"),
+                ("usp", "13 m/s"),
+            ],
+        ),
+        0.050_750,
+        1e-5,
+    );
+}
+
+#[test]
+fn seal_axial_velocity() {
+    // √(2g·ΔH/(ζ + λ·L/2s))
+    close(
+        evaluate(
+            "design.seal_axial_velocity",
+            &[
+                ("g", "9.80665 m/s2"),
+                ("dH", "42 m"),
+                ("zeta", "1.1"),
+                ("lambda", "0.05"),
+                ("L", "17 mm"),
+                ("s", "0.25 mm"),
+            ],
+        ),
+        17.152_245,
+        1e-5,
+    );
+}
+
+#[test]
+fn seal_leakage_flow() {
+    // π·dsp·s·cax
+    close(
+        evaluate(
+            "design.seal_leakage_flow",
+            &[("dsp", "0.141 m"), ("s", "0.25 mm"), ("cax", "16.8 m/s")],
+        ),
+        0.001_860_45,
+        1e-8,
+    );
+}
+
+#[test]
+fn seal_volumetric_efficiency() {
+    // Q/(Q + Qsp)
+    close(
+        evaluate(
+            "design.seal_volumetric_efficiency",
+            &[("Q", "0.0669 m3/s"), ("Qsp", "0.0018 m3/s")],
+        ),
+        0.973_799,
+        1e-5,
     );
 }

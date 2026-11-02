@@ -10,6 +10,28 @@ use crate::error::FormulaError;
 use crate::eval::{eval, infer};
 use crate::parser::parse;
 
+/// Nivel de validación declarado por una fórmula.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum Validation {
+    /// Fuente y test analítico; sin contraste externo.
+    Pilot,
+    /// Contrastada con un ejemplo resuelto publicado.
+    Reference,
+    /// Contrastada con un ensayo de banco publicado.
+    Bench,
+}
+
+impl fmt::Display for Validation {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Pilot => write!(f, "piloto"),
+            Self::Reference => write!(f, "referencia"),
+            Self::Bench => write!(f, "banco"),
+        }
+    }
+}
+
 /// Un pack de fórmulas en TOML.
 #[derive(Debug, Clone, Deserialize)]
 pub struct Pack {
@@ -21,6 +43,7 @@ pub struct Pack {
 pub struct FormulaSpec {
     pub id: String,
     pub version: u32,
+    pub validation: Validation,
     pub module: String,
     pub title: String,
     pub source: String,
@@ -153,15 +176,22 @@ pub struct Registry {
 
 impl Registry {
     pub fn from_toml(text: &str) -> Result<Self, FormulaError> {
-        let pack: Pack =
-            toml::from_str(text).map_err(|error| FormulaError::Pack(error.to_string()))?;
+        Self::from_packs(&[text])
+    }
+
+    /// Carga y fusiona varios packs, rechazando ids duplicados.
+    pub fn from_packs(texts: &[&str]) -> Result<Self, FormulaError> {
         let mut specs = BTreeMap::new();
 
-        for spec in pack.formula {
-            if specs.contains_key(&spec.id) {
-                return Err(FormulaError::Pack(format!("id duplicado: {}", spec.id)));
+        for text in texts {
+            let pack: Pack =
+                toml::from_str(text).map_err(|error| FormulaError::Pack(error.to_string()))?;
+            for spec in pack.formula {
+                if specs.contains_key(&spec.id) {
+                    return Err(FormulaError::Pack(format!("id duplicado: {}", spec.id)));
+                }
+                specs.insert(spec.id.clone(), spec);
             }
-            specs.insert(spec.id.clone(), spec);
         }
 
         Ok(Self { specs })
@@ -169,6 +199,12 @@ impl Registry {
 
     pub fn builtin() -> Self {
         Self::from_toml(crate::BUILTIN_PACK).expect("el pack integrado debe ser válido")
+    }
+
+    /// Catálogo completo: pack piloto y pack de diseño end-suction.
+    pub fn all() -> Self {
+        Self::from_packs(&[crate::BUILTIN_PACK, crate::END_SUCTION_V01_PACK])
+            .expect("los packs integrados deben ser válidos")
     }
 
     pub fn get(&self, id: &str) -> Option<&FormulaSpec> {
@@ -185,6 +221,23 @@ impl Registry {
 
     pub fn is_empty(&self) -> bool {
         self.specs.is_empty()
+    }
+
+    /// Número de fórmulas piloto, de referencia y validadas de banco.
+    pub fn validation_counts(&self) -> (usize, usize, usize) {
+        let mut pilot = 0;
+        let mut reference = 0;
+        let mut bench = 0;
+
+        for spec in self.specs.values() {
+            match spec.validation {
+                Validation::Pilot => pilot += 1,
+                Validation::Reference => reference += 1,
+                Validation::Bench => bench += 1,
+            }
+        }
+
+        (pilot, reference, bench)
     }
 
     pub fn evaluate(

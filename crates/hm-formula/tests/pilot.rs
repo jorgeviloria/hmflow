@@ -1,6 +1,6 @@
 use std::collections::BTreeMap;
 
-use hm_formula::Registry;
+use hm_formula::{Registry, Validation};
 use hm_units::{Quantity, parse_quantity};
 
 fn evaluate(id: &str, inputs: &[(&str, &str)]) -> f64 {
@@ -29,6 +29,17 @@ fn pack_is_audit_clean() {
 #[test]
 fn pack_has_ten_formulas() {
     assert_eq!(Registry::builtin().len(), 10);
+}
+
+#[test]
+fn pack_validation_levels() {
+    let registry = Registry::builtin();
+    assert!(
+        registry
+            .iter()
+            .all(|formula| formula.validation != Validation::Bench)
+    );
+    assert_eq!(registry.validation_counts(), (4, 6, 0));
 }
 
 #[test]

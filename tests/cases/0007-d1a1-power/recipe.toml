@@ -1,0 +1,9 @@
+id = "0007-d1a1-power"
+title = "D1.A1 potencia hidráulica"
+formula = "perf.hydraulic_power"
+source = "Srinivasan 2017, Rotodynamic Pumps, 2nd ed., Diseño D1.A1, pp. 415-431; derivado de P_in=2.666 kW y eficiencia 0.813"
+
+[inputs]
+rho = "998.2 kg/m3"
+Q = "0.016 m3/s"
+H = "13.8 m"

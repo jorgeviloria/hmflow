@@ -5,6 +5,7 @@ members = [
     "crates/hm-units",
     "crates/hm-math",
     "crates/hm-formula",
+    "crates/hm-design",
     "crates/hm-project",
     "crates/hm-cli",
     "xtask",

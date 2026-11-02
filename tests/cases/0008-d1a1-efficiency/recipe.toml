@@ -1,0 +1,8 @@
+id = "0008-d1a1-efficiency"
+title = "D1.A1 eficiencia total"
+formula = "perf.efficiency"
+source = "Srinivasan 2017, Rotodynamic Pumps, 2nd ed., Diseño D1.A1, pp. 415-431"
+
+[inputs]
+P_hyd = "2167.5 W"
+P_shaft = "2666 W"

@@ -2,8 +2,10 @@
 
 Suite open source de diseño de bombas centrífugas, escrita en Rust.
 
-> Estado: **Parte 0 — cimientos**. El repositorio compila, el motor de fórmulas
-> funciona y hay 10 fórmulas auditadas. Todavía no hay CAD ni interfaz gráfica.
+> Estado: **Parte 0 — cimientos** y primer motor de diseño end-suction. El
+> repositorio compila, hay 23 fórmulas auditadas (4 piloto, 19 con referencia
+> de ejemplo resuelto; sin validación de banco) y `design` genera una geometría
+> preliminar. Todavía no hay CAD ni interfaz gráfica.
 
 ## Qué es
 
@@ -15,6 +17,8 @@ doble aspiración y barrel. Solo bombas centrífugas.
 
 ## Qué no es todavía
 
+- No hay validación de banco todavía: es lo que cierra la Parte 0.
+- No hay curvas H(Q) ni NPSHr todavía.
 - No hay interfaz gráfica (llega en la Parte 1).
 - No hay geometría CAD (llega en la Parte 2).
 - No hay CFD.
@@ -36,8 +40,11 @@ Requiere Rust 1.95 o superior.
 # Crear un proyecto
 cargo run -p hmflow-cli -- new bomba-demo
 
+# Diseñar una bomba end-suction
+cargo run -p hmflow-cli -- design --q "120 m3/h" --h "45 m" --n "2900 rpm" --out bomba.hmf
+
 # Validarlo
-cargo run -p hmflow-cli -- check bomba-demo.hmf
+cargo run -p hmflow-cli -- check bomba.hmf
 
 # Ver las fórmulas disponibles
 cargo run -p hmflow-cli -- formulas
@@ -54,6 +61,7 @@ cargo run -p hmflow-cli -- eval "Q/(pi*d2*b2)" --var "Q=120 m3/h" --var "d2=0.3 
 | `hm-units` | Dimensiones, unidades, cantidades |
 | `hm-math` | Interpolación, raíces, utilidades |
 | `hm-formula` | AST, parser, análisis dimensional, evaluación, packs |
+| `hm-design` | Diseño preliminar end-suction OH1/OH2 |
 | `hm-project` | Formato `.hmf`, parámetros, validación |
 | `hmflow-cli` | CLI |
 | `xtask` | Puertas de calidad |

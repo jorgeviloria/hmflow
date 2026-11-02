@@ -1,0 +1,179 @@
+use std::collections::BTreeMap;
+
+use hm_formula::{END_SUCTION_V01_PACK, Registry};
+use hm_units::{Quantity, parse_quantity};
+
+fn evaluate(id: &str, inputs: &[(&str, &str)]) -> f64 {
+    let registry = Registry::from_toml(END_SUCTION_V01_PACK).unwrap();
+    let map: BTreeMap<String, Quantity> = inputs
+        .iter()
+        .map(|(name, value)| (name.to_string(), parse_quantity(value).unwrap()))
+        .collect();
+    registry.evaluate(id, &map).unwrap().value()
+}
+
+fn close(actual: f64, expected: f64, tolerance: f64) {
+    assert!(
+        (actual - expected).abs() <= tolerance,
+        "actual {actual}, esperado {expected}, tolerancia {tolerance}"
+    );
+}
+
+#[test]
+fn pack_is_audit_clean() {
+    let issues = Registry::from_toml(END_SUCTION_V01_PACK).unwrap().audit();
+    assert!(issues.is_empty(), "problemas de auditoría: {issues:?}");
+}
+
+#[test]
+fn pack_has_thirteen_formulas() {
+    assert_eq!(Registry::from_toml(END_SUCTION_V01_PACK).unwrap().len(), 13);
+}
+
+#[test]
+fn all_merges_both_packs() {
+    assert_eq!(Registry::all().len(), 23);
+}
+
+#[test]
+fn hydraulic_efficiency() {
+    close(
+        evaluate("design.hydraulic_efficiency", &[("Dn", "93.2")]),
+        0.870,
+        0.002,
+    );
+}
+
+#[test]
+fn volumetric_efficiency() {
+    close(
+        evaluate("design.volumetric_efficiency", &[("nq", "31.7997")]),
+        0.9722,
+        0.002,
+    );
+}
+
+#[test]
+fn overall_efficiency() {
+    close(
+        evaluate(
+            "design.overall_efficiency",
+            &[("eta_h", "0.870"), ("eta_v", "0.9722"), ("eta_m", "0.96")],
+        ),
+        0.8120,
+        0.003,
+    );
+}
+
+#[test]
+fn u2() {
+    close(
+        evaluate("design.u2", &[("H", "13.8 m"), ("psi", "0.87")]),
+        17.64,
+        0.01,
+    );
+}
+
+#[test]
+fn d2() {
+    close(
+        evaluate(
+            "design.d2",
+            &[("H", "13.8 m"), ("n", "1800 rpm"), ("psi", "0.87")],
+        ),
+        0.1872,
+        0.001,
+    );
+}
+
+#[test]
+fn qth() {
+    close(
+        evaluate("design.qth", &[("Q", "0.016 m3/s"), ("eta_v", "0.9722")]),
+        0.01646,
+        0.0001,
+    );
+}
+
+#[test]
+fn cm2() {
+    close(
+        evaluate("design.cm2", &[("phi", "0.13"), ("u2", "17.64 m/s")]),
+        2.293,
+        0.01,
+    );
+}
+
+#[test]
+fn b2() {
+    close(
+        evaluate(
+            "design.b2",
+            &[
+                ("Qth", "0.01646 m3/s"),
+                ("D2", "0.1872 m"),
+                ("cm2", "2.293 m/s"),
+            ],
+        ),
+        0.0122,
+        0.0002,
+    );
+}
+
+#[test]
+fn d0() {
+    close(
+        evaluate("design.d0", &[("Qth", "0.01646 m3/s"), ("c0", "3.6 m/s")]),
+        0.0763,
+        0.001,
+    );
+}
+
+#[test]
+fn d1() {
+    close(
+        evaluate("design.d1", &[("D0", "0.0763 m"), ("J", "1.03")]),
+        0.0786,
+        0.001,
+    );
+}
+
+#[test]
+fn b1() {
+    close(
+        evaluate(
+            "design.b1",
+            &[
+                ("Qth", "0.01646 m3/s"),
+                ("D1", "0.0786 m"),
+                ("cm0", "2.25 m/s"),
+            ],
+        ),
+        0.0296,
+        0.0005,
+    );
+}
+
+#[test]
+fn shaft_power() {
+    close(
+        evaluate(
+            "design.shaft_power",
+            &[("P_hyd", "2167.5 W"), ("eta", "0.813")],
+        ),
+        2666.0,
+        5.0,
+    );
+}
+
+#[test]
+fn max_power() {
+    close(
+        evaluate(
+            "design.max_power",
+            &[("P_shaft", "2666 W"), ("margin", "1.1")],
+        ),
+        2932.6,
+        5.0,
+    );
+}

@@ -66,11 +66,15 @@ fn ci() -> ExitCode {
 }
 
 fn provenance() -> ExitCode {
-    let registry = hm_formula::Registry::builtin();
+    let registry = hm_formula::Registry::all();
     let issues = registry.audit();
 
     if issues.is_empty() {
-        println!("provenance: {} fórmulas auditadas", registry.len());
+        let (pilot, reference, bench) = registry.validation_counts();
+        println!(
+            "provenance: {} fórmulas auditadas ({pilot} piloto, {reference} referencia, {bench} banco)",
+            registry.len()
+        );
         ExitCode::SUCCESS
     } else {
         for issue in &issues {
@@ -189,7 +193,7 @@ fn cases() -> bool {
         .unwrap_or_default();
     entries.sort();
 
-    let registry = hm_formula::Registry::builtin();
+    let registry = hm_formula::Registry::all();
     let mut ok = true;
     let mut total = 0;
 

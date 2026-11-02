@@ -1,0 +1,9 @@
+id = "0005-d1a1-meridional"
+title = "D1.A1 velocidad meridional (Qth)"
+formula = "impeller.meridional_velocity"
+source = "Srinivasan 2017, Rotodynamic Pumps, 2nd ed., Diseño D1.A1, pp. 415-431; Qth=0.0165 m3/s"
+
+[inputs]
+Q = "0.0165 m3/s"
+d2 = "0.1871 m"
+b2 = "0.0122 m"

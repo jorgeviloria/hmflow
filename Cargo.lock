@@ -124,6 +124,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "hm-design"
+version = "0.0.1"
+dependencies = [
+ "hm-core",
+ "hm-formula",
+ "hm-units",
+ "thiserror",
+]
+
+[[package]]
 name = "hm-formula"
 version = "0.0.1"
 dependencies = [
@@ -165,6 +175,7 @@ version = "0.0.1"
 dependencies = [
  "clap",
  "hm-core",
+ "hm-design",
  "hm-formula",
  "hm-project",
  "hm-units",

@@ -1,0 +1,280 @@
+# Pack de diseño preliminar para bombas end-suction OH1/OH2.
+#
+# Las fórmulas reproducen el ejemplo resuelto D1.A1 de Srinivasan 2017
+# con las selecciones documentadas en hm-design. Las unidades se escriben
+# con el parser de hm-units.
+
+[[formula]]
+id = "design.hydraulic_efficiency"
+version = 1
+validation = "reference"
+module = "design"
+title = "Eficiencia hidráulica"
+source = "Srinivasan 2017, Diseño D1.A1, p. 415"
+units = "1"
+range = "0.5 .. 1"
+test = "crates/hm-formula/tests/end_suction.rs::hydraulic_efficiency"
+
+[formula.inputs]
+Dn = "1"
+
+[formula.expr]
+value = "1 - 0.42/(log10(Dn) - 0.172)^2"
+
+[formula.notes]
+assumptions = "Dn es el diámetro específico en mm como número adimensional: Dn = A*1000*(Q/n_rpm)^(1/3), con A entre 4.0 y 4.5."
+
+[[formula]]
+id = "design.volumetric_efficiency"
+version = 1
+validation = "reference"
+module = "design"
+title = "Eficiencia volumétrica"
+source = "Srinivasan 2017, Diseño D1.A1, p. 415"
+units = "1"
+range = "0.8 .. 1"
+test = "crates/hm-formula/tests/end_suction.rs::volumetric_efficiency"
+
+[formula.inputs]
+nq = "1"
+
+[formula.expr]
+value = "1/(1 + 0.68*exp(ln(3.65*nq)*(-2/3)))"
+
+[formula.notes]
+assumptions = "nq es la velocidad específica europea, sin el factor 3.65; el 3.65 convierte a ns."
+
+[[formula]]
+id = "design.overall_efficiency"
+version = 1
+validation = "reference"
+module = "design"
+title = "Eficiencia total"
+source = "Srinivasan 2017, Diseño D1.A1, p. 415"
+units = "1"
+range = "0.3 .. 1"
+test = "crates/hm-formula/tests/end_suction.rs::overall_efficiency"
+
+[formula.inputs]
+eta_h = "1"
+eta_v = "1"
+eta_m = "1"
+
+[formula.expr]
+value = "eta_h*eta_v*eta_m"
+
+[formula.notes]
+assumptions = "Producto de eficiencias hidráulica, volumétrica y mecánica."
+
+[[formula]]
+id = "design.u2"
+version = 1
+validation = "reference"
+module = "design"
+title = "Velocidad periférica de diseño"
+source = "Srinivasan 2017, Diseño D1.A1, p. 415; Gülich 2020, cap. 3"
+units = "m/s"
+range = "0 .. 200"
+test = "crates/hm-formula/tests/end_suction.rs::u2"
+
+[formula.inputs]
+H = "m"
+psi = "1"
+
+[formula.expr]
+value = "sqrt(2*g*H/psi)"
+
+[formula.notes]
+assumptions = "psi = 2gH/u2^2. Con psi=0.87 reproduce u2=17.64 m/s del ejemplo D1.A1."
+
+[[formula]]
+id = "design.d2"
+version = 1
+validation = "reference"
+module = "design"
+title = "Diámetro exterior del impulsor"
+source = "Srinivasan 2017, Diseño D1.A1, p. 415"
+units = "m"
+range = "0 .. 2"
+test = "crates/hm-formula/tests/end_suction.rs::d2"
+
+[formula.inputs]
+H = "m"
+n = "1/s"
+psi = "1"
+
+[formula.expr]
+value = "sqrt(2*g*H/psi)/(pi*n)"
+
+[formula.notes]
+assumptions = "D2 = u2/(pi*n) con n en 1/s; equivale a 60*u2/(pi*n_rpm). Con H=13.8 m, n=1800 rpm y psi=0.87 da 0.1872 m."
+
+[[formula]]
+id = "design.qth"
+version = 1
+validation = "reference"
+module = "design"
+title = "Caudal teórico"
+source = "Srinivasan 2017, Diseño D1.A1, p. 415"
+units = "m3/s"
+range = "0 .. 100"
+test = "crates/hm-formula/tests/end_suction.rs::qth"
+
+[formula.inputs]
+Q = "m3/s"
+eta_v = "1"
+
+[formula.expr]
+value = "Q/eta_v"
+
+[formula.notes]
+assumptions = "Incluye la fuga por la holgura de desgaste; Qth = Q/eta_v."
+
+[[formula]]
+id = "design.cm2"
+version = 1
+validation = "reference"
+module = "design"
+title = "Velocidad meridional de salida"
+source = "Srinivasan 2017, Diseño D1.A1, p. 415"
+units = "m/s"
+range = "0 .. 30"
+test = "crates/hm-formula/tests/end_suction.rs::cm2"
+
+[formula.inputs]
+phi = "1"
+u2 = "m/s"
+
+[formula.expr]
+value = "phi*u2"
+
+[formula.notes]
+assumptions = "phi = cm2/u2. Con phi=0.13 y u2=17.64 m/s da 2.29 m/s."
+
+[[formula]]
+id = "design.b2"
+version = 1
+validation = "reference"
+module = "design"
+title = "Ancho de salida del impulsor"
+source = "Srinivasan 2017, Diseño D1.A1, p. 415"
+units = "m"
+range = "0 .. 1"
+test = "crates/hm-formula/tests/end_suction.rs::b2"
+
+[formula.inputs]
+Qth = "m3/s"
+D2 = "m"
+cm2 = "m/s"
+
+[formula.expr]
+value = "Qth/(pi*D2*cm2)"
+
+[formula.notes]
+assumptions = "Continuidad en la salida, sin bloqueo de álabes. Con Qth=0.0165 m3/s, D2=0.1872 m y cm2=2.29 m/s da 0.0122 m."
+
+[[formula]]
+id = "design.d0"
+version = 1
+validation = "reference"
+module = "design"
+title = "Diámetro de ojo"
+source = "Srinivasan 2017, Diseño D1.A1, p. 415"
+units = "m"
+range = "0 .. 2"
+test = "crates/hm-formula/tests/end_suction.rs::d0"
+
+[formula.inputs]
+Qth = "m3/s"
+c0 = "m/s"
+
+[formula.expr]
+value = "sqrt(4*Qth/(pi*c0))"
+
+[formula.notes]
+assumptions = "c0 es la velocidad en el ojo. Con c0=3.6 m/s da D0=0.0764 m."
+
+[[formula]]
+id = "design.d1"
+version = 1
+validation = "reference"
+module = "design"
+title = "Diámetro de entrada del álabe"
+source = "Srinivasan 2017, Diseño D1.A1, p. 415"
+units = "m"
+range = "0 .. 2"
+test = "crates/hm-formula/tests/end_suction.rs::d1"
+
+[formula.inputs]
+D0 = "m"
+J = "1"
+
+[formula.expr]
+value = "J*D0"
+
+[formula.notes]
+assumptions = "J=1.03 en D1.A1."
+
+[[formula]]
+id = "design.b1"
+version = 1
+validation = "reference"
+module = "design"
+title = "Ancho de entrada del álabe"
+source = "Srinivasan 2017, Diseño D1.A1, p. 415"
+units = "m"
+range = "0 .. 1"
+test = "crates/hm-formula/tests/end_suction.rs::b1"
+
+[formula.inputs]
+Qth = "m3/s"
+D1 = "m"
+cm0 = "m/s"
+
+[formula.expr]
+value = "Qth/(pi*D1*cm0)"
+
+[formula.notes]
+assumptions = "cm0=2.25 m/s en D1.A1; reproduce B1=0.0296 m."
+
+[[formula]]
+id = "design.shaft_power"
+version = 1
+validation = "reference"
+module = "design"
+title = "Potencia en el eje"
+source = "Srinivasan 2017, Diseño D1.A1, p. 415"
+units = "W"
+range = "0 .. 100000000"
+test = "crates/hm-formula/tests/end_suction.rs::shaft_power"
+
+[formula.inputs]
+P_hyd = "W"
+eta = "1"
+
+[formula.expr]
+value = "P_hyd/eta"
+
+[formula.notes]
+assumptions = "Potencia hidráulica dividida por la eficiencia total."
+
+[[formula]]
+id = "design.max_power"
+version = 1
+validation = "reference"
+module = "design"
+title = "Potencia máxima de diseño"
+source = "Srinivasan 2017, Diseño D1.A1, p. 415"
+units = "W"
+range = "0 .. 100000000"
+test = "crates/hm-formula/tests/end_suction.rs::max_power"
+
+[formula.inputs]
+P_shaft = "W"
+margin = "1"
+
+[formula.expr]
+value = "P_shaft*margin"
+
+[formula.notes]
+assumptions = "Margen 1.1 sobre la potencia en el eje, como en D1.A1 (2.93 kW frente a 2.666 kW)."

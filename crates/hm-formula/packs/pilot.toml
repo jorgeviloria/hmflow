@@ -6,6 +6,7 @@
 [[formula]]
 id = "impeller.head_euler"
 version = 1
+validation = "pilot"
 module = "impeller"
 title = "Altura teórica de Euler"
 source = "Euler; Gülich 2020, cap. 3"
@@ -28,6 +29,7 @@ assumptions = "Flujo sin pérdidas, número infinito de álabes y componente mer
 [[formula]]
 id = "impeller.peripheral_speed"
 version = 1
+validation = "reference"
 module = "impeller"
 title = "Velocidad periférica"
 source = "Cinemática de turbomáquinas; Gülich 2020, cap. 2"
@@ -48,6 +50,7 @@ assumptions = "n es frecuencia de giro en revoluciones por segundo."
 [[formula]]
 id = "impeller.flow_coefficient"
 version = 1
+validation = "pilot"
 module = "impeller"
 title = "Coeficiente de caudal"
 source = "Gülich 2020, cap. 3"
@@ -68,6 +71,7 @@ assumptions = "Definición φ = cm2/u2 con la componente meridional a la salida.
 [[formula]]
 id = "impeller.head_coefficient"
 version = 1
+validation = "pilot"
 module = "impeller"
 title = "Coeficiente de altura"
 source = "Gülich 2020, cap. 3"
@@ -88,6 +92,7 @@ assumptions = "Definición ψ = 2gH/u2^2."
 [[formula]]
 id = "impeller.meridional_velocity"
 version = 1
+validation = "reference"
 module = "impeller"
 title = "Velocidad meridional a la salida"
 source = "Continuidad; Gülich 2020, cap. 3"
@@ -109,6 +114,7 @@ assumptions = "Área de salida sin bloqueo de álabes ni espesor."
 [[formula]]
 id = "similarity.nq"
 version = 1
+validation = "reference"
 module = "similarity"
 title = "Velocidad específica nq"
 source = "Gülich 2020, cap. 1; convención europea"
@@ -130,6 +136,7 @@ assumptions = "nq = n[min^-1] * sqrt(Q[m3/s]) / H[m]^0.75. La función nq aplica
 [[formula]]
 id = "perf.hydraulic_power"
 version = 1
+validation = "reference"
 module = "perf"
 title = "Potencia hidráulica"
 source = "Definición de potencia hidráulica; Gülich 2020, cap. 1"
@@ -151,6 +158,7 @@ assumptions = "Fluido incompresible y altura manométrica total."
 [[formula]]
 id = "perf.efficiency"
 version = 1
+validation = "reference"
 module = "perf"
 title = "Eficiencia total"
 source = "Definición de eficiencia; ISO 9906"
@@ -171,6 +179,7 @@ assumptions = "P_shaft medida en el eje, no en la borna del motor."
 [[formula]]
 id = "npsh.npsha"
 version = 1
+validation = "pilot"
 module = "npsh"
 title = "NPSH disponible"
 source = "Gülich 2020, cap. 6; ISO 9906"
@@ -194,6 +203,7 @@ assumptions = "p_s es la presión absoluta en el depósito de succión; hf son l
 [[formula]]
 id = "mech.shaft_torque"
 version = 1
+validation = "reference"
 module = "mech"
 title = "Par en el eje"
 source = "Potencia y velocidad angular; Gülich 2020, cap. 1"

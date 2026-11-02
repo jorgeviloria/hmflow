@@ -4,20 +4,44 @@
 //! evalúa iced. Ejecutar con:
 //! `cargo run --manifest-path crates/hm-ui/Cargo.toml`.
 
-use hm_core::Diagnostic;
-use hm_design::{CurvePoint, DesignInput, DesignResult, design, performance_curve};
+use hm_core::{Diagnostic, Severity};
+use hm_design::{CurvePoint, DesignInput, DesignResult, VoluteSection, design, performance_curve};
 use hm_formula::Registry;
 use hm_units::parse_quantity;
 use iced::widget::canvas;
 use iced::widget::canvas::{Path, Stroke};
-use iced::widget::{button, column, container, row, scrollable, text, text_input};
-use iced::{Color, Element, Length, Point, Rectangle, Renderer, Theme, mouse};
+use iced::widget::{Space, button, column, container, row, scrollable, table, text, text_input};
+use iced::{
+    Alignment, Background, Border, Color, Element, Length, Point, Rectangle, Renderer, Theme, mouse,
+};
 
 fn main() -> iced::Result {
     iced::application(App::default, update, view)
         .title("HidroMac Flow")
-        .window_size(iced::Size::new(1200.0, 800.0))
+        .window_size(iced::Size::new(1280.0, 820.0))
+        .theme(hmf_theme())
         .run()
+}
+
+fn hmf_theme() -> Theme {
+    Theme::custom(
+        "HMF",
+        iced::theme::Palette {
+            background: Color::from_rgb(0.043, 0.055, 0.067),
+            text: Color::from_rgb(0.87, 0.90, 0.92),
+            primary: Color::from_rgb(0.18, 0.55, 0.73),
+            success: Color::from_rgb(0.24, 0.72, 0.50),
+            warning: Color::from_rgb(0.90, 0.65, 0.25),
+            danger: Color::from_rgb(0.85, 0.32, 0.32),
+        },
+    )
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Tab {
+    Diseno,
+    Curvas,
+    Voluta,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -66,6 +90,7 @@ struct App {
     diagnostics: Vec<Diagnostic>,
     error: Option<String>,
     selected: Selected,
+    tab: Tab,
     registry: Registry,
 }
 
@@ -83,6 +108,7 @@ impl Default for App {
             diagnostics: Vec::new(),
             error: None,
             selected: Selected::D2,
+            tab: Tab::Diseno,
             registry: Registry::all(),
         }
     }
@@ -97,6 +123,7 @@ enum Message {
     Eta(String),
     Npsha(String),
     Select(Selected),
+    Tab(Tab),
     Design,
 }
 
@@ -109,6 +136,7 @@ fn update(app: &mut App, message: Message) {
         Message::Eta(value) => app.eta_m = value,
         Message::Npsha(value) => app.npsha = value,
         Message::Select(selected) => app.selected = selected,
+        Message::Tab(tab) => app.tab = tab,
         Message::Design => app.run_design(),
     }
 }
@@ -155,21 +183,56 @@ impl App {
 }
 
 fn view(app: &App) -> Element<'_, Message> {
-    let header = column![
-        text("HidroMac Flow").size(26),
-        text("Diseño preliminar end-suction OH1/OH2").size(13),
+    let body = row![machine_map(app), workbench(app), inspector(app)]
+        .spacing(10)
+        .height(Length::Fill);
+
+    container(column![top_bar(app), body, ledger(app)].spacing(10))
+        .padding(12)
+        .width(Length::Fill)
+        .height(Length::Fill)
+        .style(root_style)
+        .into()
+}
+
+fn top_bar(app: &App) -> Element<'_, Message> {
+    let (status, color) = status(app);
+    let left = column![
+        text("HIDROMAC FLOW").size(20),
+        text("Diseño preliminar · end-suction OH1/OH2")
+            .size(11)
+            .color(muted()),
     ]
     .spacing(2);
 
-    let body = row![machine_map(app), workbench(app), inspector(app)]
-        .spacing(12)
-        .height(Length::Fill);
+    container(
+        row![
+            left,
+            Space::new().width(Length::Fill),
+            text(status).size(12).color(color),
+        ]
+        .align_y(Alignment::Center),
+    )
+    .padding(12)
+    .width(Length::Fill)
+    .style(top_bar_style)
+    .into()
+}
 
-    container(column![header, body, ledger(app)].spacing(12))
-        .padding(16)
-        .width(Length::Fill)
-        .height(Length::Fill)
-        .into()
+fn status(app: &App) -> (&'static str, Color) {
+    if app.error.is_some() || app.diagnostics.iter().any(Diagnostic::is_error) {
+        ("ERROR", danger())
+    } else if app
+        .diagnostics
+        .iter()
+        .any(|diagnostic| diagnostic.severity == Severity::Warning)
+    {
+        ("REVISAR", warning())
+    } else if app.result.is_some() {
+        ("VÁLIDO", success())
+    } else {
+        ("LISTO", muted())
+    }
 }
 
 fn panel<'a>(content: impl Into<Element<'a, Message>>, width: Length) -> Element<'a, Message> {
@@ -177,112 +240,291 @@ fn panel<'a>(content: impl Into<Element<'a, Message>>, width: Length) -> Element
         .padding(14)
         .width(width)
         .height(Length::Fill)
-        .style(container::bordered_box)
+        .style(panel_style)
         .into()
 }
 
-fn machine_map(_app: &App) -> Element<'_, Message> {
-    let mut parts = column![text("Máquina").size(18), text("Etapa 1").size(12)].spacing(8);
-    for part in ["Impulsor", "Voluta", "Sello", "Cojinetes"] {
-        parts = parts.push(text(format!("· {part}")).size(14));
-    }
-    parts = parts.push(
-        text("Mapa 3D pendiente")
-            .size(12)
-            .color(Color::from_rgb(0.6, 0.6, 0.6)),
-    );
+fn section<'a>(title: &'a str, content: impl Into<Element<'a, Message>>) -> Element<'a, Message> {
+    column![text(title).size(11).color(muted()), content.into(),]
+        .spacing(6)
+        .into()
+}
 
-    panel(scrollable(parts), Length::Fixed(210.0))
+fn machine_map(app: &App) -> Element<'_, Message> {
+    let active = if app.result.is_some() {
+        success()
+    } else {
+        muted()
+    };
+    let mut parts = column![
+        text("MÁQUINA").size(11).color(muted()),
+        text("Etapa 1").size(17),
+    ]
+    .spacing(10);
+
+    for part in ["Impulsor", "Voluta", "Sello", "Cojinetes"] {
+        parts = parts.push(row![text("●").size(10).color(active), text(part).size(13),].spacing(6));
+    }
+
+    parts = parts.push(text("Mapa geométrico pendiente").size(11).color(muted()));
+
+    panel(scrollable(parts), Length::Fixed(200.0))
 }
 
 fn workbench(app: &App) -> Element<'_, Message> {
+    let tabs = row![
+        tab_button("Diseño", Tab::Diseno, app.tab),
+        tab_button("Curvas", Tab::Curvas, app.tab),
+        tab_button("Voluta", Tab::Voluta, app.tab),
+    ]
+    .spacing(4);
+
+    let header = row![
+        text("BANCO DE TRABAJO").size(11).color(muted()),
+        Space::new().width(Length::Fill),
+        tabs,
+    ]
+    .align_y(Alignment::Center);
+
+    let content = match app.tab {
+        Tab::Diseno => diseno_content(app),
+        Tab::Curvas => curvas_content(app),
+        Tab::Voluta => voluta_content(app),
+    };
+
+    panel(
+        column![header, scrollable(content).height(Length::Fill)].spacing(12),
+        Length::Fill,
+    )
+}
+
+fn tab_button(label: &str, tab: Tab, current: Tab) -> Element<'_, Message> {
+    let style: fn(&Theme, button::Status) -> button::Style = if tab == current {
+        button::primary
+    } else {
+        button::text
+    };
+
+    button(text(label).size(12))
+        .on_press(Message::Tab(tab))
+        .style(style)
+        .into()
+}
+
+fn diseno_content(app: &App) -> Element<'_, Message> {
     let inputs = column![
-        text("Punto de diseño").size(14),
         row![
             field("Q", &app.q, Message::Q),
             field("H", &app.h, Message::H),
             field("n", &app.n, Message::N),
         ]
-        .spacing(12),
+        .spacing(10),
         row![
             field("ρ", &app.rho, Message::Rho),
             field("ηm", &app.eta_m, Message::Eta),
             field("NPSHa", &app.npsha, Message::Npsha),
         ]
-        .spacing(12),
-        button("Diseñar").on_press(Message::Design),
+        .spacing(10),
+        button(text("Diseñar").size(13))
+            .on_press(Message::Design)
+            .style(button::primary),
     ]
-    .spacing(12);
+    .spacing(10);
 
-    let mut content = column![text("Banco de trabajo").size(18), inputs].spacing(12);
+    let mut content = column![section("Punto de diseño", inputs)].spacing(14);
 
     if let Some(error) = &app.error {
-        content =
-            content.push(text(format!("Error: {error}")).color(Color::from_rgb(1.0, 0.4, 0.4)));
+        content = content.push(section(
+            "Error",
+            text(error.clone()).size(13).color(danger()),
+        ));
     }
 
     if let Some(result) = &app.result {
-        content = content.push(results(result));
-        content = content.push(parameters(app));
-        if !app.curve.is_empty() {
-            content = content.push(text("Curvas").size(14));
-            content = content.push(
-                canvas(CurvePlot {
-                    points: app.curve.clone(),
-                })
-                .width(Length::Fill)
-                .height(Length::Fixed(280.0)),
-            );
-        }
+        content = content.push(section("Resultado", results(result)));
+        content = content.push(section("Parámetros", parameters(app)));
     }
 
-    panel(scrollable(content), Length::Fill)
+    content.into()
+}
+
+fn curvas_content(app: &App) -> Element<'_, Message> {
+    if app.result.is_none() || app.curve.is_empty() {
+        return placeholder("Diseña para ver las curvas.");
+    }
+
+    let plot = canvas(CurvePlot {
+        points: app.curve.clone(),
+    })
+    .width(Length::Fill)
+    .height(Length::Fixed(420.0));
+
+    column![
+        section("H(Q) y NPSHr(Q)", plot),
+        section("Puntos", curve_table(app)),
+    ]
+    .spacing(14)
+    .into()
+}
+
+fn voluta_content(app: &App) -> Element<'_, Message> {
+    let Some(result) = &app.result else {
+        return placeholder("Diseña para ver la voluta.");
+    };
+
+    let summary = text(format!(
+        "R3 = {:.1} mm   B3 = {:.1} mm   C3 = {:.2} m/s   A360 = {:.6} m²   D360 = {:.1} mm   R4 = {:.1} mm",
+        result.volute.base_radius.value() * 1000.0,
+        result.volute.width.value() * 1000.0,
+        result.volute.inlet_velocity.value(),
+        result.volute.throat_area.value(),
+        result.volute.throat_diameter.value() * 1000.0,
+        result.volute.outer_radius.value() * 1000.0,
+    ))
+    .size(13);
+
+    column![
+        section("Geometría de garganta", summary),
+        section("Secciones", volute_table(result)),
+    ]
+    .spacing(14)
+    .into()
+}
+
+fn placeholder(message: &str) -> Element<'_, Message> {
+    container(text(message).size(13).color(muted()))
+        .padding(20)
+        .into()
+}
+
+fn curve_table(app: &App) -> Element<'_, Message> {
+    table::table(
+        [
+            table::column(
+                text("Q m³/h").size(11).color(muted()),
+                |point: CurvePoint| text(format!("{:.1}", point.q.value())).size(12),
+            ),
+            table::column(text("H m").size(11).color(muted()), |point: CurvePoint| {
+                text(format!("{:.2}", point.h.value())).size(12)
+            }),
+            table::column(text("η").size(11).color(muted()), |point: CurvePoint| {
+                text(format!("{:.3}", point.eta)).size(12)
+            }),
+            table::column(text("P kW").size(11).color(muted()), |point: CurvePoint| {
+                text(format!("{:.2}", point.p_shaft.value())).size(12)
+            }),
+            table::column(
+                text("NPSHr m").size(11).color(muted()),
+                |point: CurvePoint| text(format!("{:.2}", point.npshr.value())).size(12),
+            ),
+        ],
+        app.curve.clone(),
+    )
+    .width(Length::Fill)
+    .padding(6.0)
+    .into()
+}
+
+fn volute_table(result: &DesignResult) -> Element<'_, Message> {
+    table::table(
+        [
+            table::column(
+                text("θ °").size(11).color(muted()),
+                |section: VoluteSection| text(format!("{:.0}", section.angle_deg)).size(12),
+            ),
+            table::column(
+                text("A m²").size(11).color(muted()),
+                |section: VoluteSection| text(format!("{:.5}", section.area.value())).size(12),
+            ),
+            table::column(
+                text("D mm").size(11).color(muted()),
+                |section: VoluteSection| {
+                    text(format!("{:.1}", section.diameter.value() * 1000.0)).size(12)
+                },
+            ),
+            table::column(
+                text("R ext mm").size(11).color(muted()),
+                |section: VoluteSection| {
+                    text(format!("{:.1}", section.outer_radius.value() * 1000.0)).size(12)
+                },
+            ),
+        ],
+        result.volute.sections.clone(),
+    )
+    .width(Length::Fill)
+    .padding(6.0)
+    .into()
 }
 
 fn inspector(app: &App) -> Element<'_, Message> {
-    let mut content = column![text("Inspector").size(18)].spacing(8);
+    let mut content = column![text("INSPECTOR").size(11).color(muted())].spacing(10);
 
     if let Some(result) = &app.result {
         let (title, value, formula) = selected_info(app, result);
-        content = content.push(text(title).size(13).color(Color::from_rgb(0.7, 0.75, 0.8)));
-        content = content.push(text(value).size(22));
+        content = content.push(text(title).size(12).color(muted()));
+        content = content.push(text(value).size(24));
+        content = content.push(
+            text(if formula.is_some() {
+                "Calculado · auto"
+            } else {
+                "Entrada / selección"
+            })
+            .size(11)
+            .color(muted()),
+        );
 
         if let Some(formula) = formula
             && let Some(spec) = app.registry.get(formula)
         {
-            content = content.push(text(format!("Fórmula: {}", spec.title)).size(13));
-            content = content.push(text(format!("Fuente: {}", spec.source)).size(12));
-            content = content.push(text(format!("Rango: {}", spec.range)).size(12));
+            content = content.push(section("Fórmula", text(spec.title.clone()).size(13)));
+            content = content.push(section(
+                "Fuente",
+                text(spec.source.clone()).size(12).color(muted()),
+            ));
+            content = content.push(section(
+                "Rango",
+                text(spec.range.clone()).size(12).color(muted()),
+            ));
             if let Some(notes) = &spec.notes
                 && let Some(assumptions) = &notes.assumptions
             {
-                content = content.push(text(assumptions.clone()).size(12));
+                content = content.push(section(
+                    "Supuestos",
+                    text(assumptions.clone()).size(12).color(muted()),
+                ));
             }
         }
     } else {
         content = content.push(text("Diseña para inspeccionar un parámetro."));
     }
 
-    panel(scrollable(content), Length::Fixed(310.0))
+    panel(scrollable(content), Length::Fixed(320.0))
 }
 
 fn ledger(app: &App) -> Element<'_, Message> {
-    let mut content = column![text("Ledger").size(16)].spacing(4);
+    let header = row![
+        text("LEDGER").size(11).color(muted()),
+        Space::new().width(Length::Fill),
+        text(format!("{} avisos", app.diagnostics.len()))
+            .size(11)
+            .color(muted()),
+    ]
+    .align_y(Alignment::Center);
+
+    let mut content = column![header].spacing(6);
 
     if app.diagnostics.is_empty() {
-        content = content.push(text("Sin cambios ni avisos.").size(12));
+        content = content.push(text("Sin cambios ni avisos.").size(12).color(muted()));
     } else {
         for diagnostic in &app.diagnostics {
-            content = content.push(text(format!(
-                "[{:?}] {}: {}",
-                diagnostic.severity, diagnostic.code, diagnostic.message
-            )));
+            let color = diagnostic_color(diagnostic.severity);
+            content = content.push(
+                text(format!("{}  {}", diagnostic.code, diagnostic.message))
+                    .size(12)
+                    .color(color),
+            );
             if let Some(hint) = &diagnostic.hint {
-                content = content.push(
-                    text(format!("  {hint}"))
-                        .size(11)
-                        .color(Color::from_rgb(0.65, 0.65, 0.65)),
-                );
+                content = content.push(text(format!("  {hint}")).size(11).color(muted()));
             }
         }
     }
@@ -290,20 +532,76 @@ fn ledger(app: &App) -> Element<'_, Message> {
     container(scrollable(content))
         .padding(12)
         .width(Length::Fill)
-        .height(Length::Fixed(150.0))
-        .style(container::bordered_box)
+        .height(Length::Fixed(160.0))
+        .style(panel_style)
         .into()
 }
 
+fn diagnostic_color(severity: Severity) -> Color {
+    match severity {
+        Severity::Error | Severity::Blocking => danger(),
+        Severity::Warning => warning(),
+        Severity::Info => Color::from_rgb(0.55, 0.72, 0.85),
+    }
+}
+
+fn muted() -> Color {
+    Color::from_rgb(0.56, 0.63, 0.69)
+}
+
+fn success() -> Color {
+    Color::from_rgb(0.24, 0.72, 0.50)
+}
+
+fn warning() -> Color {
+    Color::from_rgb(0.90, 0.65, 0.25)
+}
+
+fn danger() -> Color {
+    Color::from_rgb(0.85, 0.32, 0.32)
+}
+
+fn root_style(theme: &Theme) -> container::Style {
+    container::Style {
+        background: Some(Background::Color(theme.palette().background)),
+        ..Default::default()
+    }
+}
+
+fn top_bar_style(_theme: &Theme) -> container::Style {
+    container::Style {
+        background: Some(Background::Color(Color::from_rgb(0.06, 0.08, 0.095))),
+        border: Border {
+            color: Color::from_rgb(0.13, 0.17, 0.20),
+            width: 1.0,
+            radius: 8.0.into(),
+        },
+        ..Default::default()
+    }
+}
+
+fn panel_style(_theme: &Theme) -> container::Style {
+    container::Style {
+        background: Some(Background::Color(Color::from_rgb(0.072, 0.088, 0.103))),
+        border: Border {
+            color: Color::from_rgb(0.13, 0.17, 0.20),
+            width: 1.0,
+            radius: 8.0.into(),
+        },
+        ..Default::default()
+    }
+}
+
 fn metric_button(label: &str, selected: Selected, current: Selected) -> Element<'_, Message> {
-    let label = if selected == current {
-        format!("▸ {label}")
+    let style: fn(&Theme, button::Status) -> button::Style = if selected == current {
+        button::primary
     } else {
-        label.to_string()
+        button::text
     };
 
-    button(text(label).size(12))
+    button(text(label).size(11))
         .on_press(Message::Select(selected))
+        .style(style)
         .into()
 }
 
@@ -518,8 +816,8 @@ fn field<'a>(
     on_input: impl Fn(String) -> Message + 'a,
 ) -> Element<'a, Message> {
     column![
-        text(label).size(12),
-        text_input("", value).on_input(on_input),
+        text(label).size(10).color(muted()),
+        text_input("", value).on_input(on_input).size(13).padding(8),
     ]
     .spacing(4)
     .width(Length::FillPortion(1))

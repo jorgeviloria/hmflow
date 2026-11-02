@@ -1,0 +1,9 @@
+id = "0010-d1b-nq"
+title = "D1.B velocidad específica por etapa (nq ≈ 20)"
+formula = "similarity.nq"
+source = "Srinivasan 2017, Rotodynamic Pumps, 2nd ed., Diseño D1.B (bomba multietapa, por etapa), pp. 435-438; ns = 73,2 con ns = 3,65 nq"
+
+[inputs]
+n = "7500 rpm"
+Q = "100 m3/h"
+H = "247 m"

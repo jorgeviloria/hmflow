@@ -1,0 +1,8 @@
+id = "0012-d1b-u1"
+title = "D1.B velocidad periférica a la entrada"
+formula = "impeller.peripheral_speed"
+source = "Srinivasan 2017, Rotodynamic Pumps, 2nd ed., Diseño D1.B (bomba multietapa, por etapa), pp. 435-438; u1 = π D1 n/60 = 43,2 m/s"
+
+[inputs]
+d2 = "0.110 m"
+n = "7500 rpm"

@@ -1,0 +1,7 @@
+id = "0011-d1b-volumetric"
+title = "D1.B rendimiento volumétrico por fórmula"
+formula = "design.volumetric_efficiency"
+source = "Srinivasan 2017, Rotodynamic Pumps, 2nd ed., Diseño D1.B (bomba multietapa, por etapa), pp. 435-438; ηv = 1/(1 + 0,68 ns^(−2/3)) = 0,96 con ns = 74 (el libro adopta después 0,90 por temperatura)"
+
+[inputs]
+nq = "20.27"

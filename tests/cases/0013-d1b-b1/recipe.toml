@@ -1,0 +1,9 @@
+id = "0013-d1b-b1"
+title = "D1.B anchura de entrada"
+formula = "design.b1"
+source = "Srinivasan 2017, Rotodynamic Pumps, 2nd ed., Diseño D1.B (bomba multietapa, por etapa), pp. 435-438; b1 = Qth/(π D1 C0) = 12,8 mm"
+
+[inputs]
+Qth = "0.03062 m3/s"
+D1 = "0.110 m"
+cm0 = "6.86 m/s"

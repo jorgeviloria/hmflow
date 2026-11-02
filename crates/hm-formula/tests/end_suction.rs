@@ -26,13 +26,13 @@ fn pack_is_audit_clean() {
 }
 
 #[test]
-fn pack_has_twenty_two_formulas() {
-    assert_eq!(Registry::from_toml(END_SUCTION_V01_PACK).unwrap().len(), 22);
+fn pack_has_twenty_six_formulas() {
+    assert_eq!(Registry::from_toml(END_SUCTION_V01_PACK).unwrap().len(), 26);
 }
 
 #[test]
 fn all_merges_both_packs() {
-    assert_eq!(Registry::all().len(), 32);
+    assert_eq!(Registry::all().len(), 36);
 }
 
 #[test]
@@ -292,5 +292,52 @@ fn mechanical_loss() {
         ),
         106.8,
         0.5,
+    );
+}
+
+#[test]
+fn specific_diameter() {
+    close(
+        evaluate(
+            "design.specific_diameter",
+            &[
+                ("A", "4.5"),
+                ("Q", "0.016 m3/s"),
+                ("n", "1800 rpm"),
+                ("mm", "0.001 m"),
+            ],
+        ),
+        93.24,
+        0.1,
+    );
+}
+
+#[test]
+fn thoma_sigma() {
+    close(
+        evaluate("design.thoma_sigma", &[("nq", "31.7997")]),
+        0.12094,
+        1e-4,
+    );
+}
+
+#[test]
+fn npshr_design() {
+    close(
+        evaluate(
+            "design.npshr_design",
+            &[("sigma", "0.12094"), ("H", "13.8 m")],
+        ),
+        1.669,
+        0.01,
+    );
+}
+
+#[test]
+fn shutoff_head() {
+    close(
+        evaluate("design.shutoff_head", &[("nq", "31.7997"), ("H", "13.8 m")]),
+        19.0,
+        0.02,
     );
 }

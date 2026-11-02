@@ -20,4 +20,10 @@ pub enum UnitError {
 
     #[error("el resultado no es una magnitud física: {0}")]
     NonPhysical(String),
+
+    #[error("el resultado no es finito")]
+    NonFinite,
+
+    #[error("operación no válida con temperaturas absolutas")]
+    InvalidTemperatureOperation,
 }

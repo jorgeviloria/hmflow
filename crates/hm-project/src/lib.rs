@@ -7,7 +7,7 @@ use std::path::Path;
 use hm_core::{Diagnostic, Diagnostics};
 use hm_formula::Registry;
 use hm_formula::parse as parse_expression;
-use hm_units::parse_quantity;
+use hm_units::{parse_quantity, parse_unit};
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
@@ -31,6 +31,7 @@ pub enum ProjectError {
 
 /// Proyecto completo.
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct Project {
     pub schema: u32,
     pub project: ProjectMeta,
@@ -41,6 +42,7 @@ pub struct Project {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct ProjectMeta {
     pub name: String,
     #[serde(default, skip_serializing_if = "String::is_empty")]
@@ -48,6 +50,7 @@ pub struct ProjectMeta {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct Design {
     pub pump_type: PumpType,
     #[serde(default = "default_stages")]
@@ -87,6 +90,15 @@ impl PumpType {
             Self::Barrel => "barrel",
         }
     }
+
+    /// Norma dimensional por defecto. Solo end-suction tiene una asignada;
+    /// el resto la declara el usuario.
+    pub fn default_standard(self) -> &'static str {
+        match self {
+            Self::EndSuction => "ISO 2858",
+            Self::Inline | Self::RingSection | Self::SplitCase | Self::Barrel => "",
+        }
+    }
 }
 
 impl fmt::Display for PumpType {
@@ -96,6 +108,7 @@ impl fmt::Display for PumpType {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct Operating {
     #[serde(rename = "Q")]
     pub q: String,
@@ -117,6 +130,8 @@ pub struct Operating {
 pub enum Param {
     Auto {
         formula: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        value: Option<String>,
     },
     Manual {
         value: String,
@@ -147,7 +162,7 @@ impl Project {
             design: Design {
                 pump_type,
                 stages: 1,
-                standard: "ISO 2858".to_string(),
+                standard: pump_type.default_standard().to_string(),
             },
             operating: Operating {
                 q: "120 m3/h".to_string(),
@@ -198,9 +213,37 @@ impl Project {
             return diagnostics;
         }
 
-        check_quantity(&mut diagnostics, "HM-PROJ-002", "Q", &self.operating.q);
-        check_quantity(&mut diagnostics, "HM-PROJ-003", "H", &self.operating.h);
-        check_quantity(&mut diagnostics, "HM-PROJ-004", "n", &self.operating.n);
+        if self.design.stages == 0 {
+            diagnostics.push(
+                Diagnostic::error("HM-PROJ-007", "el número de etapas debe ser al menos 1")
+                    .with_hint("Un proyecto sin etapas no se puede calcular."),
+            );
+        }
+
+        check_quantity(
+            &mut diagnostics,
+            "HM-PROJ-002",
+            "Q",
+            &self.operating.q,
+            "m3/s",
+            true,
+        );
+        check_quantity(
+            &mut diagnostics,
+            "HM-PROJ-003",
+            "H",
+            &self.operating.h,
+            "m",
+            true,
+        );
+        check_quantity(
+            &mut diagnostics,
+            "HM-PROJ-004",
+            "n",
+            &self.operating.n,
+            "1/s",
+            true,
+        );
 
         if !self.operating.npsha.trim().is_empty() {
             check_quantity(
@@ -208,6 +251,8 @@ impl Project {
                 "HM-PROJ-005",
                 "NPSHa",
                 &self.operating.npsha,
+                "m",
+                false,
             );
         }
 
@@ -217,12 +262,14 @@ impl Project {
                 "HM-PROJ-006",
                 "temperatura",
                 &self.operating.temperature,
+                "K",
+                false,
             );
         }
 
         for (name, param) in &self.params {
             match param {
-                Param::Auto { formula } => {
+                Param::Auto { formula, value } => {
                     if registry.get(formula).is_none() {
                         diagnostics.push(
                             Diagnostic::error(
@@ -231,6 +278,31 @@ impl Project {
                             )
                             .with_hint("Revisa el id o actualiza el pack de fórmulas."),
                         );
+                    }
+                    if let Some(value) = value {
+                        match parse_quantity(value) {
+                            Ok(quantity) => {
+                                if let Some(spec) = registry.get(formula)
+                                    && let Ok(unit) = parse_unit(&spec.units)
+                                    && quantity.dim() != unit.dim
+                                {
+                                    diagnostics.push(Diagnostic::error(
+                                        "HM-PROJ-012",
+                                        format!(
+                                            "`{name}` no tiene la unidad de {formula}: {value}"
+                                        ),
+                                    ));
+                                }
+                            }
+                            Err(error) => {
+                                diagnostics.push(Diagnostic::error(
+                                    "HM-PROJ-012",
+                                    format!(
+                                        "`{name}` tiene un valor calculado inválido: {value} ({error})"
+                                    ),
+                                ));
+                            }
+                        }
                     }
                 }
                 Param::Manual { value } | Param::Locked { value } => {
@@ -273,11 +345,44 @@ impl Project {
     }
 }
 
-fn check_quantity(diagnostics: &mut Diagnostics, code: &str, label: &str, text: &str) {
-    if let Err(error) = parse_quantity(text) {
-        diagnostics.push(Diagnostic::error(
-            code,
-            format!("`{label}` no se puede interpretar: {text} ({error})"),
-        ));
+fn check_quantity(
+    diagnostics: &mut Diagnostics,
+    code: &str,
+    label: &str,
+    text: &str,
+    expected_unit: &str,
+    positive: bool,
+) {
+    let expected = match parse_unit(expected_unit) {
+        Ok(unit) => unit,
+        Err(error) => {
+            diagnostics.push(Diagnostic::error(
+                code,
+                format!("unidad esperada inválida para `{label}`: {error}"),
+            ));
+            return;
+        }
+    };
+
+    match parse_quantity(text) {
+        Ok(quantity) => {
+            if quantity.dim() != expected.dim {
+                diagnostics.push(Diagnostic::error(
+                    code,
+                    format!("`{label}` debe ser {expected_unit}: {text}"),
+                ));
+            } else if positive && quantity.si <= 0.0 {
+                diagnostics.push(Diagnostic::error(
+                    code,
+                    format!("`{label}` debe ser positivo: {text}"),
+                ));
+            }
+        }
+        Err(error) => {
+            diagnostics.push(Diagnostic::error(
+                code,
+                format!("`{label}` no se puede interpretar: {text} ({error})"),
+            ));
+        }
     }
 }

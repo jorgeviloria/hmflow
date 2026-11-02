@@ -37,7 +37,13 @@ where
     F: FnMut(f64) -> f64,
 {
     let mut fa = f(a);
+    if fa == 0.0 {
+        return Ok(a);
+    }
     let fb = f(b);
+    if fb == 0.0 {
+        return Ok(b);
+    }
 
     if fa * fb > 0.0 {
         return Err(MathError::NoBracket);
@@ -115,6 +121,18 @@ mod tests {
     fn bisect_square_root_of_two() {
         let root = bisect(|x| x * x - 2.0, 0.0, 2.0, 1e-12, 200).unwrap();
         assert!((root - std::f64::consts::SQRT_2).abs() < 1e-9);
+    }
+
+    #[test]
+    fn bisect_finds_root_at_left_endpoint() {
+        let root = bisect(|x| x, 0.0, 1.0, 1e-12, 100).unwrap();
+        assert_eq!(root, 0.0);
+    }
+
+    #[test]
+    fn bisect_finds_root_at_right_endpoint() {
+        let root = bisect(|x| x - 1.0, 0.0, 1.0, 1e-12, 100).unwrap();
+        assert_eq!(root, 1.0);
     }
 
     #[test]

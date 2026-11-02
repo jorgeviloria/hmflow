@@ -30,6 +30,9 @@ enum Command {
         /// Tipo de bomba: end_suction, inline, ring_section, split_case, barrel.
         #[arg(long, default_value = "end_suction")]
         kind: String,
+        /// Norma aplicable; por defecto ISO 2858 solo para end-suction.
+        #[arg(long)]
+        standard: Option<String>,
     },
     /// Valida un proyecto.
     Check {
@@ -63,6 +66,12 @@ enum Command {
         /// Densidad del fluido, por ejemplo "998.2 kg/m3".
         #[arg(long, default_value = "998.2 kg/m3")]
         rho: String,
+        /// Fluido; por defecto se deduce de la densidad.
+        #[arg(long)]
+        fluid: Option<String>,
+        /// Temperatura del fluido.
+        #[arg(long, default_value = "20 degC")]
+        temperature: String,
         /// Eficiencia mecánica entre 0 y 1.
         #[arg(long, default_value_t = 0.96)]
         eta_m: f64,
@@ -100,7 +109,11 @@ fn main() -> ExitCode {
 
 fn run(cli: Cli) -> Result<ExitCode, Box<dyn std::error::Error>> {
     match cli.command {
-        Command::New { name, kind } => {
+        Command::New {
+            name,
+            kind,
+            standard,
+        } => {
             if name.contains('/') || name.contains('\\') {
                 return Err("el nombre no puede contener separadores de ruta".into());
             }
@@ -113,7 +126,10 @@ fn run(cli: Cli) -> Result<ExitCode, Box<dyn std::error::Error>> {
                 return Err(format!("ya existe {}", path.display()).into());
             }
 
-            let project = Project::new(&name, pump_type);
+            let mut project = Project::new(&name, pump_type);
+            if let Some(standard) = standard {
+                project.design.standard = standard;
+            }
             project.save(&path)?;
             println!("creado {}", path.display());
             Ok(ExitCode::SUCCESS)
@@ -122,11 +138,31 @@ fn run(cli: Cli) -> Result<ExitCode, Box<dyn std::error::Error>> {
         Command::Check { file } => {
             let project = Project::load(&file)?;
             let diagnostics = project.validate(&Registry::all());
-
-            if diagnostics.is_empty() {
-                println!("{}: sin diagnósticos", file.display());
+            let design_diagnostics = if diagnostics.has_errors() {
+                None
             } else {
-                for diagnostic in diagnostics.iter() {
+                match recompute_design_diagnostics(&project) {
+                    Ok(value) => value,
+                    Err(error) => {
+                        eprintln!("no se pudo recalcular el diseño: {error}");
+                        None
+                    }
+                }
+            };
+
+            let mut printed = false;
+            for diagnostic in diagnostics.iter() {
+                println!(
+                    "[{:?}] {}: {}",
+                    diagnostic.severity, diagnostic.code, diagnostic.message
+                );
+                if let Some(hint) = &diagnostic.hint {
+                    println!("        sugerencia: {hint}");
+                }
+                printed = true;
+            }
+            if let Some(design_diagnostics) = &design_diagnostics {
+                for diagnostic in design_diagnostics.iter() {
                     println!(
                         "[{:?}] {}: {}",
                         diagnostic.severity, diagnostic.code, diagnostic.message
@@ -134,7 +170,11 @@ fn run(cli: Cli) -> Result<ExitCode, Box<dyn std::error::Error>> {
                     if let Some(hint) = &diagnostic.hint {
                         println!("        sugerencia: {hint}");
                     }
+                    printed = true;
                 }
+            }
+            if !printed {
+                println!("{}: sin diagnósticos", file.display());
             }
 
             if diagnostics.has_errors() {
@@ -196,6 +236,8 @@ fn run(cli: Cli) -> Result<ExitCode, Box<dyn std::error::Error>> {
             h,
             n,
             rho,
+            fluid,
+            temperature,
             eta_m,
             npsha,
             out,
@@ -209,6 +251,7 @@ fn run(cli: Cli) -> Result<ExitCode, Box<dyn std::error::Error>> {
             }
 
             let npsha_text = npsha.clone();
+            let rho_text = rho.clone();
             let input = DesignInput {
                 q: parse_quantity(&q)?,
                 h: parse_quantity(&h)?,
@@ -321,10 +364,20 @@ fn run(cli: Cli) -> Result<ExitCode, Box<dyn std::error::Error>> {
             project.operating.q = q;
             project.operating.h = h;
             project.operating.n = n;
-            project.operating.fluid = "water".to_string();
+            project.operating.fluid = fluid.unwrap_or_else(|| {
+                if (input.rho.si - 998.2).abs() < 10.0 {
+                    "water".to_string()
+                } else {
+                    "custom".to_string()
+                }
+            });
+            project.operating.temperature = temperature;
             project.operating.npsha = npsha_text.unwrap_or_default();
 
             let mut params = BTreeMap::new();
+            params.insert("rho".to_string(), manual(rho_text));
+            params.insert("eta_m".to_string(), manual(eta_m.to_string()));
+            params.insert("mm".to_string(), manual("0.001 m".to_string()));
             params.insert("psi".to_string(), manual(result.selection.psi.to_string()));
             params.insert("phi".to_string(), manual(result.selection.phi.to_string()));
             params.insert(
@@ -349,25 +402,131 @@ fn run(cli: Cli) -> Result<ExitCode, Box<dyn std::error::Error>> {
                 "margin".to_string(),
                 manual(result.selection.margin.to_string()),
             );
-            params.insert("nq".to_string(), auto("similarity.nq"));
-            params.insert("d0".to_string(), auto("design.d0"));
-            params.insert("d1".to_string(), auto("design.d1"));
-            params.insert("b1".to_string(), auto("design.b1"));
-            params.insert("u2".to_string(), auto("design.u2"));
-            params.insert("d2".to_string(), auto("design.d2"));
-            params.insert("qth".to_string(), auto("design.qth"));
-            params.insert("cm2".to_string(), auto("design.cm2"));
-            params.insert("b2".to_string(), auto("design.b2"));
-            params.insert("eta_h".to_string(), auto("design.hydraulic_efficiency"));
-            params.insert("eta_v".to_string(), auto("design.volumetric_efficiency"));
-            params.insert("eta".to_string(), auto("design.overall_efficiency"));
-            params.insert("p_hyd".to_string(), auto("perf.hydraulic_power"));
-            params.insert("p_shaft".to_string(), auto("design.shaft_power"));
-            params.insert("torque".to_string(), auto("mech.shaft_torque"));
-            params.insert("p_max".to_string(), auto("design.max_power"));
-            params.insert("p_hyd_loss".to_string(), auto("design.hydraulic_loss"));
-            params.insert("p_vol_loss".to_string(), auto("design.volumetric_loss"));
-            params.insert("p_mech_loss".to_string(), auto("design.mechanical_loss"));
+            params.insert(
+                "nq".to_string(),
+                auto("similarity.nq", format!("{:.6}", result.nq)),
+            );
+            params.insert(
+                "dn".to_string(),
+                auto(
+                    "design.specific_diameter",
+                    format!("{:.4}", result.specific_diameter_mm),
+                ),
+            );
+            params.insert(
+                "sigma".to_string(),
+                auto("design.thoma_sigma", format!("{:.6}", result.sigma)),
+            );
+            params.insert(
+                "d0".to_string(),
+                auto("design.d0", format!("{} m", result.d0.value())),
+            );
+            params.insert(
+                "d1".to_string(),
+                auto("design.d1", format!("{} m", result.d1.value())),
+            );
+            params.insert(
+                "b1".to_string(),
+                auto("design.b1", format!("{} m", result.b1.value())),
+            );
+            params.insert(
+                "u2".to_string(),
+                auto("design.u2", format!("{} m/s", result.u2.value())),
+            );
+            params.insert(
+                "d2".to_string(),
+                auto("design.d2", format!("{} m", result.d2.value())),
+            );
+            params.insert(
+                "qth".to_string(),
+                auto("design.qth", format!("{} m3/s", result.qth.value())),
+            );
+            params.insert(
+                "cm2".to_string(),
+                auto("design.cm2", format!("{} m/s", result.cm2.value())),
+            );
+            params.insert(
+                "b2".to_string(),
+                auto("design.b2", format!("{} m", result.b2.value())),
+            );
+            params.insert(
+                "eta_h".to_string(),
+                auto(
+                    "design.hydraulic_efficiency",
+                    format!("{:.6}", result.eta_h),
+                ),
+            );
+            params.insert(
+                "eta_v".to_string(),
+                auto(
+                    "design.volumetric_efficiency",
+                    format!("{:.6}", result.eta_v),
+                ),
+            );
+            params.insert(
+                "eta".to_string(),
+                auto("design.overall_efficiency", format!("{:.6}", result.eta)),
+            );
+            params.insert(
+                "p_hyd".to_string(),
+                auto(
+                    "perf.hydraulic_power",
+                    format!("{} W", result.p_hyd.value()),
+                ),
+            );
+            params.insert(
+                "p_shaft".to_string(),
+                auto(
+                    "design.shaft_power",
+                    format!("{} W", result.p_shaft.value()),
+                ),
+            );
+            params.insert(
+                "torque".to_string(),
+                auto(
+                    "mech.shaft_torque",
+                    format!("{} N*m", result.torque.value()),
+                ),
+            );
+            params.insert(
+                "p_max".to_string(),
+                auto("design.max_power", format!("{} W", result.p_max.value())),
+            );
+            params.insert(
+                "p_hyd_loss".to_string(),
+                auto(
+                    "design.hydraulic_loss",
+                    format!("{} W", result.p_hyd_loss.value()),
+                ),
+            );
+            params.insert(
+                "p_vol_loss".to_string(),
+                auto(
+                    "design.volumetric_loss",
+                    format!("{} W", result.p_vol_loss.value()),
+                ),
+            );
+            params.insert(
+                "p_mech_loss".to_string(),
+                auto(
+                    "design.mechanical_loss",
+                    format!("{} W", result.p_mech_loss.value()),
+                ),
+            );
+            params.insert(
+                "npshr_d".to_string(),
+                auto(
+                    "design.npshr_design",
+                    format!("{} m", result.npshr_design.value()),
+                ),
+            );
+            params.insert(
+                "h0".to_string(),
+                auto(
+                    "design.shutoff_head",
+                    format!("{} m", result.shutoff_head.value()),
+                ),
+            );
             params.insert("k3".to_string(), manual("1.04".to_string()));
             params.insert("volute_c".to_string(), manual("0.05".to_string()));
             params.insert("k_eff".to_string(), manual("1.1".to_string()));
@@ -376,12 +535,48 @@ fn run(cli: Cli) -> Result<ExitCode, Box<dyn std::error::Error>> {
                 "cu2".to_string(),
                 manual(format!("{} m/s", result.cu2.value())),
             );
-            params.insert("r3".to_string(), auto("design.volute_base_radius"));
-            params.insert("b3".to_string(), auto("design.volute_width"));
-            params.insert("c3".to_string(), auto("design.volute_inlet_velocity"));
-            params.insert("a360".to_string(), auto("design.volute_throat_area"));
-            params.insert("d360".to_string(), auto("design.volute_throat_diameter"));
-            params.insert("r4".to_string(), auto("design.volute_outer_radius"));
+            params.insert(
+                "r3".to_string(),
+                auto(
+                    "design.volute_base_radius",
+                    format!("{} m", result.volute.base_radius.value()),
+                ),
+            );
+            params.insert(
+                "b3".to_string(),
+                auto(
+                    "design.volute_width",
+                    format!("{} m", result.volute.width.value()),
+                ),
+            );
+            params.insert(
+                "c3".to_string(),
+                auto(
+                    "design.volute_inlet_velocity",
+                    format!("{} m/s", result.volute.inlet_velocity.value()),
+                ),
+            );
+            params.insert(
+                "a360".to_string(),
+                auto(
+                    "design.volute_throat_area",
+                    format!("{} m2", result.volute.throat_area.value()),
+                ),
+            );
+            params.insert(
+                "d360".to_string(),
+                auto(
+                    "design.volute_throat_diameter",
+                    format!("{} m", result.volute.throat_diameter.value()),
+                ),
+            );
+            params.insert(
+                "r4".to_string(),
+                auto(
+                    "design.volute_outer_radius",
+                    format!("{} m", result.volute.outer_radius.value()),
+                ),
+            );
             project.params = params;
 
             let diagnostics = project.validate(&Registry::all());
@@ -433,12 +628,64 @@ fn run(cli: Cli) -> Result<ExitCode, Box<dyn std::error::Error>> {
     }
 }
 
+fn recompute_design_diagnostics(
+    project: &Project,
+) -> Result<Option<hm_core::Diagnostics>, Box<dyn std::error::Error>> {
+    if project.design.pump_type != PumpType::EndSuction {
+        return Ok(None);
+    }
+
+    let q = parse_quantity(&project.operating.q)?;
+    let h = parse_quantity(&project.operating.h)?;
+    let n = parse_quantity(&project.operating.n)?;
+    let rho = project
+        .params
+        .get("rho")
+        .and_then(param_value)
+        .map(parse_quantity)
+        .transpose()?
+        .unwrap_or(parse_quantity("998.2 kg/m3")?);
+    let eta_m = project
+        .params
+        .get("eta_m")
+        .and_then(param_value)
+        .map(parse_quantity)
+        .transpose()?
+        .map(|value| value.si)
+        .unwrap_or(0.96);
+    let npsha = if project.operating.npsha.trim().is_empty() {
+        None
+    } else {
+        Some(parse_quantity(&project.operating.npsha)?)
+    };
+
+    let input = DesignInput {
+        q,
+        h,
+        n,
+        rho,
+        eta_m,
+        npsha,
+    };
+
+    Ok(Some(design(&input)?.diagnostics))
+}
+
+fn param_value(param: &Param) -> Option<&str> {
+    match param {
+        Param::Manual { value } | Param::Locked { value } => Some(value),
+        Param::Auto { value, .. } => value.as_deref(),
+        Param::Override { .. } => None,
+    }
+}
+
 fn manual(value: String) -> Param {
     Param::Manual { value }
 }
 
-fn auto(formula: &str) -> Param {
+fn auto(formula: &str, value: String) -> Param {
     Param::Auto {
         formula: formula.to_string(),
+        value: Some(value),
     }
 }

@@ -62,6 +62,12 @@ pub fn infer(expr: &Expr, env: &BTreeMap<String, Dimension>) -> Result<Dimension
 
 /// Evalúa una expresión con un entorno de cantidades.
 pub fn eval(expr: &Expr, env: &BTreeMap<String, Quantity>) -> Result<Quantity, FormulaError> {
+    let value = eval_inner(expr, env)?;
+    value.ensure_finite()?;
+    Ok(value)
+}
+
+fn eval_inner(expr: &Expr, env: &BTreeMap<String, Quantity>) -> Result<Quantity, FormulaError> {
     match expr {
         Expr::Number(value) => Ok(Quantity::new(*value, Unit::dimensionless())),
         Expr::Var(name) => env
@@ -332,6 +338,20 @@ mod tests {
         let result = eval(&expr, &values).unwrap();
         assert!((result.si - 3.0).abs() < 1e-12);
         assert_eq!(result.dim(), Dimension::LENGTH);
+    }
+
+    #[test]
+    fn sqrt_of_negative_is_rejected() {
+        let expr = parse("sqrt(a)").unwrap();
+        let values = env(&[("a", "-1 m2")]);
+        assert!(eval(&expr, &values).is_err());
+    }
+
+    #[test]
+    fn ln_of_zero_is_rejected() {
+        let expr = parse("ln(a)").unwrap();
+        let values = env(&[("a", "0")]);
+        assert!(eval(&expr, &values).is_err());
     }
 
     #[test]

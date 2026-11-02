@@ -48,13 +48,30 @@ fn endpoints_span_the_design_range() {
 }
 
 #[test]
-fn head_falls_and_npshr_rises() {
+fn head_falls_with_flow() {
     let input = input();
     let result = design(&input).unwrap();
     let curve = performance_curve(&input, &result, 11);
 
     for pair in curve.windows(2) {
         assert!(pair[0].h.si > pair[1].h.si);
+    }
+}
+
+#[test]
+fn npshr_is_minimum_at_design() {
+    let input = input();
+    let result = design(&input).unwrap();
+    let curve = performance_curve(&input, &result, 11);
+    let design_point = curve[7].npshr.si;
+
+    assert!(curve[0].npshr.si > design_point);
+    assert!(curve[10].npshr.si > design_point);
+
+    for pair in curve[..=7].windows(2) {
+        assert!(pair[0].npshr.si > pair[1].npshr.si);
+    }
+    for pair in curve[7..].windows(2) {
         assert!(pair[0].npshr.si < pair[1].npshr.si);
     }
 }

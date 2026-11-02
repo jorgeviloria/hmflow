@@ -471,3 +471,88 @@ value = "P_hyd/(eta_h*eta_v)*(1/eta_m - 1)"
 
 [formula.notes]
 assumptions = "Incluye cojinetes, cierre y fricción de disco agrupados en eta_m."
+
+[[formula]]
+id = "design.specific_diameter"
+version = 1
+validation = "reference"
+module = "design"
+title = "Diámetro específico"
+source = "Srinivasan 2017, D1.A1, p. 415"
+units = "1"
+range = "20 .. 500"
+test = "crates/hm-formula/tests/end_suction.rs::specific_diameter"
+
+[formula.inputs]
+A = "1"
+Q = "m3/s"
+n = "1/s"
+mm = "m"
+
+[formula.expr]
+value = "A*(Q/(60*n))^(1/3)/mm"
+
+[formula.notes]
+assumptions = "Devuelve Dn en mm como número adimensional; mm=0.001 m. En D1.A1 da 93,2."
+
+[[formula]]
+id = "design.thoma_sigma"
+version = 1
+validation = "reference"
+module = "design"
+title = "Coeficiente de Thoma"
+source = "Thoma; Gülich 2020, cap. 6"
+units = "1"
+range = "0 .. 1"
+test = "crates/hm-formula/tests/end_suction.rs::thoma_sigma"
+
+[formula.inputs]
+nq = "1"
+
+[formula.expr]
+value = "0.0012*nq^(4/3)"
+
+[formula.notes]
+assumptions = "Correlación preliminar σ = 0.0012 nq^(4/3); pendiente de contraste."
+
+[[formula]]
+id = "design.npshr_design"
+version = 1
+validation = "reference"
+module = "design"
+title = "NPSH requerido en el punto de diseño"
+source = "Thoma; Gülich 2020, cap. 6"
+units = "m"
+range = "0 .. 100"
+test = "crates/hm-formula/tests/end_suction.rs::npshr_design"
+
+[formula.inputs]
+sigma = "1"
+H = "m"
+
+[formula.expr]
+value = "sigma*H"
+
+[formula.notes]
+assumptions = "NPSHr = σH. En D1.A1 da 1,67 m."
+
+[[formula]]
+id = "design.shutoff_head"
+version = 1
+validation = "reference"
+module = "design"
+title = "Altura a caudal cero"
+source = "Srinivasan 2017, D1.A1; Gülich 2020, cap. 3"
+units = "m"
+range = "0 .. 5000"
+test = "crates/hm-formula/tests/end_suction.rs::shutoff_head"
+
+[formula.inputs]
+nq = "1"
+H = "m"
+
+[formula.expr]
+value = "H*(1.25 + 0.004*nq)"
+
+[formula.notes]
+assumptions = "Relación preliminar H0/Hd = 1.25 + 0.004 nq; en D1.A1 da 19,0 m."

@@ -82,6 +82,19 @@ fn loss_breakdown_closes() {
 }
 
 #[test]
+fn npsh_margin_checks_the_whole_curve() {
+    let mut input = input("120 m3/h", "45 m", "2900 rpm");
+    input.npsha = Some(parse_quantity("8 m").unwrap());
+    let result = design(&input).unwrap();
+    assert!(
+        result
+            .diagnostics
+            .iter()
+            .any(|diagnostic| diagnostic.code == "HM-DES-007")
+    );
+}
+
+#[test]
 fn npsh_margin_is_checked() {
     let mut input = input("0.016 m3/s", "13.8 m", "1800 rpm");
     input.npsha = Some(parse_quantity("1 m").unwrap());
@@ -101,6 +114,16 @@ fn npsh_margin_is_checked() {
             .iter()
             .any(|diagnostic| diagnostic.code == "HM-DES-006")
     );
+}
+
+#[test]
+fn eta_m_bounds_are_exclusive() {
+    let mut input = input("0.016 m3/s", "13.8 m", "1800 rpm");
+    input.eta_m = 0.0;
+    assert!(design(&input).is_err());
+
+    input.eta_m = 1.0;
+    assert!(design(&input).is_err());
 }
 
 #[test]

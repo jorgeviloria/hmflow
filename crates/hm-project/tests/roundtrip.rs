@@ -38,15 +38,113 @@ fn invalid_flow_is_reported() {
 }
 
 #[test]
+fn wrong_dimensions_are_reported() {
+    let mut project = Project::new("demo", PumpType::EndSuction);
+    project.operating.q = "120 s".to_string();
+    project.operating.h = "45 kg".to_string();
+    project.operating.n = "2900 m".to_string();
+
+    let diagnostics = project.validate(&Registry::builtin());
+    assert!(diagnostics.has_errors());
+    assert_eq!(diagnostics.into_vec().len(), 3);
+}
+
+#[test]
+fn negative_flow_is_reported() {
+    let mut project = Project::new("demo", PumpType::EndSuction);
+    project.operating.q = "-120 m3/h".to_string();
+
+    let diagnostics = project.validate(&Registry::builtin());
+    assert!(diagnostics.has_errors());
+}
+
+#[test]
+fn zero_stages_is_reported() {
+    let mut project = Project::new("demo", PumpType::EndSuction);
+    project.design.stages = 0;
+
+    let diagnostics = project.validate(&Registry::builtin());
+    assert!(diagnostics.has_errors());
+}
+
+#[test]
+fn unknown_fields_are_rejected() {
+    let text = r#"
+schema = 1
+
+[project]
+name = "demo"
+
+[design]
+pump_type = "end_suction"
+stages = 1
+
+[operating]
+Q = "120 m3/h"
+H = "45 m"
+n = "2900 rpm"
+flow_rate = "120 m3/h"
+"#;
+    assert!(Project::from_toml(text).is_err());
+
+    let text = r#"
+schema = 1
+flow_rate = "120 m3/h"
+
+[project]
+name = "demo"
+
+[design]
+pump_type = "end_suction"
+stages = 1
+
+[operating]
+Q = "120 m3/h"
+H = "45 m"
+n = "2900 rpm"
+"#;
+    assert!(Project::from_toml(text).is_err());
+}
+
+#[test]
+fn default_standard_depends_on_type() {
+    assert_eq!(
+        Project::new("demo", PumpType::EndSuction).design.standard,
+        "ISO 2858"
+    );
+    assert!(
+        Project::new("demo", PumpType::Barrel)
+            .design
+            .standard
+            .is_empty()
+    );
+}
+
+#[test]
 fn unknown_formula_is_reported() {
     let mut project = Project::new("demo", PumpType::EndSuction);
     project.params.insert(
         "d2".to_string(),
         Param::Auto {
             formula: "no.existe".to_string(),
+            value: None,
         },
     );
     let diagnostics = project.validate(&Registry::builtin());
+    assert!(diagnostics.has_errors());
+}
+
+#[test]
+fn auto_value_with_wrong_unit_is_reported() {
+    let mut project = Project::new("demo", PumpType::EndSuction);
+    project.params.insert(
+        "d2".to_string(),
+        Param::Auto {
+            formula: "design.d2".to_string(),
+            value: Some("1 s".to_string()),
+        },
+    );
+    let diagnostics = project.validate(&Registry::all());
     assert!(diagnostics.has_errors());
 }
 
@@ -57,6 +155,7 @@ fn known_formula_is_accepted() {
         "H".to_string(),
         Param::Auto {
             formula: "impeller.head_euler".to_string(),
+            value: None,
         },
     );
     let diagnostics = project.validate(&Registry::builtin());

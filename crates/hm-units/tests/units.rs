@@ -1,4 +1,4 @@
-use hm_units::{Dimension, Unit, parse_quantity, parse_unit};
+use hm_units::{Dimension, Quantity, Unit, UnitError, parse_quantity, parse_unit};
 
 #[test]
 fn adding_compatible_units_keeps_left_unit() {
@@ -63,6 +63,41 @@ fn division_by_zero_fails() {
     let a = parse_quantity("1 m").unwrap();
     let b = parse_quantity("0 m").unwrap();
     assert!(a.div(&b).is_err());
+}
+
+#[test]
+fn subtracting_celsius_gives_kelvin_delta() {
+    let a = parse_quantity("20 degC").unwrap();
+    let b = parse_quantity("10 degC").unwrap();
+    let difference = a.sub(&b).unwrap();
+
+    assert_eq!(difference.dim(), Dimension::TEMPERATURE);
+    assert_eq!(difference.unit.symbol, "K");
+    assert!((difference.value() - 10.0).abs() < 1e-9);
+}
+
+#[test]
+fn adding_absolute_temperatures_fails() {
+    let a = parse_quantity("20 degC").unwrap();
+    let b = parse_quantity("10 degC").unwrap();
+    assert!(matches!(
+        a.add(&b),
+        Err(UnitError::InvalidTemperatureOperation)
+    ));
+}
+
+#[test]
+fn adding_celsius_and_kelvin_is_allowed() {
+    let a = parse_quantity("20 degC").unwrap();
+    let b = parse_quantity("10 K").unwrap();
+    let sum = a.add(&b).unwrap();
+    assert!((sum.value() - 30.0).abs() < 1e-9);
+}
+
+#[test]
+fn non_finite_is_not_physical() {
+    let value = Quantity::from_si(f64::NAN, Unit::dimensionless());
+    assert_eq!(value.ensure_physical(), Err(UnitError::NonFinite));
 }
 
 #[test]

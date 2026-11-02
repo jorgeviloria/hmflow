@@ -44,6 +44,9 @@ impl Quantity {
 
     pub fn add(&self, other: &Self) -> Result<Self, UnitError> {
         self.require_same(other)?;
+        if self.unit.offset != 0.0 && other.unit.offset != 0.0 {
+            return Err(UnitError::InvalidTemperatureOperation);
+        }
         Ok(Self {
             si: self.si + other.si,
             unit: self.unit.clone(),
@@ -52,9 +55,14 @@ impl Quantity {
 
     pub fn sub(&self, other: &Self) -> Result<Self, UnitError> {
         self.require_same(other)?;
+        let unit = if self.unit.offset != 0.0 || other.unit.offset != 0.0 {
+            Unit::new("K", Dimension::TEMPERATURE, 1.0)
+        } else {
+            self.unit.clone()
+        };
         Ok(Self {
             si: self.si - other.si,
-            unit: self.unit.clone(),
+            unit,
         })
     }
 
@@ -121,7 +129,16 @@ impl Quantity {
         Ok(Self::from_si(self.si, unit.clone()))
     }
 
+    pub fn ensure_finite(&self) -> Result<(), UnitError> {
+        if self.si.is_finite() {
+            Ok(())
+        } else {
+            Err(UnitError::NonFinite)
+        }
+    }
+
     pub fn ensure_physical(&self) -> Result<(), UnitError> {
+        self.ensure_finite()?;
         if self.dim().is_integral() {
             Ok(())
         } else {

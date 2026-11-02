@@ -55,6 +55,7 @@ pub struct DesignSelection {
 pub struct DesignResult {
     pub nq: f64,
     pub specific_diameter_mm: f64,
+    pub sigma: f64,
     pub selection: DesignSelection,
     pub d0: Quantity,
     pub d1: Quantity,
@@ -150,8 +151,17 @@ pub fn design(input: &DesignInput) -> Result<DesignResult, DesignError> {
         margin: 1.1,
     };
 
-    let n_rpm = input.n.si * 60.0;
-    let specific_diameter_mm = selection.a * 1000.0 * (input.q.si / n_rpm).cbrt();
+    let specific_diameter_mm = evaluate(
+        &registry,
+        "design.specific_diameter",
+        &[
+            ("A", quantity(selection.a, one.clone())),
+            ("Q", input.q.clone()),
+            ("n", input.n.clone()),
+            ("mm", Quantity::from_si(0.001, m.clone())),
+        ],
+    )?
+    .value();
 
     let eta_h = evaluate(
         &registry,
@@ -392,14 +402,30 @@ pub fn design(input: &DesignInput) -> Result<DesignResult, DesignError> {
         &[("P", p_max.clone()), ("n", input.n.clone())],
     )?;
 
-    let sigma = 0.0012 * nq.powf(4.0 / 3.0);
-    let npshr_design = Quantity::from_si(sigma * input.h.si, m.clone());
-    let shutoff_ratio = 1.25 + 0.004 * nq;
-    let shutoff_head = Quantity::from_si(shutoff_ratio * input.h.si, m.clone());
+    let sigma = evaluate(
+        &registry,
+        "design.thoma_sigma",
+        &[("nq", quantity(nq, one.clone()))],
+    )?
+    .value();
+    let npshr_design = evaluate(
+        &registry,
+        "design.npshr_design",
+        &[
+            ("sigma", quantity(sigma, one.clone())),
+            ("H", input.h.clone()),
+        ],
+    )?;
+    let shutoff_head = evaluate(
+        &registry,
+        "design.shutoff_head",
+        &[("nq", quantity(nq, one.clone())), ("H", input.h.clone())],
+    )?;
 
     let mut result = DesignResult {
         nq,
         specific_diameter_mm,
+        sigma,
         selection,
         d0: with_unit(d0, &m),
         d1: with_unit(d1, &m),
@@ -468,7 +494,11 @@ pub fn performance_curve(
             };
         let eta = eta.max(1e-4);
         let p_shaft = rho * g * q * h / eta;
-        let npshr = npshr_design * ratio.powi(2);
+        let npshr = if ratio >= 1.0 {
+            npshr_design * ratio.powi(2)
+        } else {
+            npshr_design * (1.0 + 1.5 * (1.0 - ratio).powi(2))
+        };
 
         curve.push(CurvePoint {
             q: Quantity::from_si(q, m3h.clone()),
@@ -540,19 +570,33 @@ fn diagnostics_for(result: &DesignResult, input: &DesignInput) -> Diagnostics {
     }
 
     if let Some(npsha) = &input.npsha {
-        let margin = npsha.si - result.npshr_design.si;
-        if margin < 0.5 {
+        let curve = performance_curve(input, result, 11);
+        let (worst_margin, worst_flow) =
+            curve
+                .iter()
+                .fold((f64::INFINITY, 0.0), |(margin, flow), point| {
+                    let candidate = npsha.si - point.npshr.si;
+                    if candidate < margin {
+                        (candidate, point.q.value())
+                    } else {
+                        (margin, flow)
+                    }
+                });
+
+        if worst_margin < 0.5 {
             diagnostics.push(
                 Diagnostic::warning(
                     "HM-DES-007",
-                    format!("NPSHa - NPSHr = {margin:.2} m; el margen preliminar es 0.5 m"),
+                    format!(
+                        "margen NPSHa - NPSHr mínimo = {worst_margin:.2} m a Q = {worst_flow:.0} m3/h; el mínimo preliminar es 0.5 m"
+                    ),
                 )
                 .with_hint("Aumenta el NPSHa o reduce la velocidad de giro."),
             );
         } else {
             diagnostics.push(Diagnostic::info(
                 "HM-DES-006",
-                format!("NPSHa - NPSHr = {margin:.2} m"),
+                format!("margen NPSHa - NPSHr mínimo = {worst_margin:.2} m"),
             ));
         }
     }
@@ -596,9 +640,9 @@ fn validate_input(input: &DesignInput) -> Result<(), DesignError> {
         }
     }
 
-    if !input.eta_m.is_finite() || !(0.0..1.0).contains(&input.eta_m) {
+    if !input.eta_m.is_finite() || input.eta_m <= 0.0 || input.eta_m >= 1.0 {
         return Err(DesignError::Input(
-            "la eficiencia mecánica debe estar entre 0 y 1".to_string(),
+            "la eficiencia mecánica debe ser mayor que 0 y menor que 1".to_string(),
         ));
     }
 

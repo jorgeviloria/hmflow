@@ -265,16 +265,133 @@ fn sample_quantities_parse() {
     assert!((q.value() - 120.0).abs() < 1e-9);
 }
 
-/// Un `.hmf` escrito por `design` con el método end_suction_v0.2 debe seguir
-/// cargando y validando mientras el esquema sea el 1. Si cambia el esquema,
-/// hace falta una migración, no editar este archivo.
+/// Un `.hmf` de esquema 1 escrito por `design` con el método
+/// end_suction_v0.2. No se edita: es la prueba de la migración 1 → 2.
 #[test]
-fn schema_1_fixture_still_loads_and_validates() {
+fn schema_1_fixture_migrates_and_validates() {
     let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
         .join("tests/fixtures/end_suction_v0.2.hmf");
+    let text = std::fs::read_to_string(&path).unwrap();
+    assert!(
+        text.starts_with("schema = 1\n"),
+        "el archivo debe seguir en esquema 1"
+    );
     let project = Project::load(&path).unwrap();
-    assert_eq!(project.schema, 1);
+    assert_eq!(project.schema, hm_project::SCHEMA_VERSION);
+    assert!(project.suction.is_none());
+    assert!(project.operating.viscosity.is_empty());
     assert_eq!(project.design.method, "end_suction_v0.2");
     let diagnostics = project.validate(&Registry::all());
     assert!(!diagnostics.has_errors());
+}
+
+fn codes(project: &Project) -> Vec<String> {
+    project
+        .validate(&Registry::all())
+        .iter()
+        .map(|diagnostic| diagnostic.code.clone())
+        .collect()
+}
+
+fn with_suction(pressure: &str, height: &str, losses: &str, vapor: &str) -> Project {
+    let mut project = Project::new("demo", PumpType::EndSuction);
+    project.suction = Some(hm_project::Suction {
+        pressure: pressure.to_string(),
+        height: height.to_string(),
+        losses: losses.to_string(),
+        vapor_pressure: vapor.to_string(),
+    });
+    project
+}
+
+#[test]
+fn unknown_schema_is_not_migrated() {
+    let mut project = Project::new("demo", PumpType::EndSuction);
+    project.schema = 3;
+    let text = project.to_toml().unwrap();
+    let project = Project::from_toml(&text).unwrap();
+    assert_eq!(project.schema, 3);
+    assert_eq!(codes(&project), ["HM-PROJ-001"]);
+}
+
+#[test]
+fn suction_and_viscosity_round_trip() {
+    let mut project = with_suction("1 atm", "-2 m", "0.5 m", "");
+    project.operating.viscosity = "30 cSt".to_string();
+    let text = project.to_toml().unwrap();
+    assert!(text.contains("[suction]"), "{text}");
+    let back = Project::from_toml(&text).unwrap();
+    let suction = back.suction.unwrap();
+    assert_eq!(suction.pressure, "1 atm");
+    assert_eq!(suction.height, "-2 m");
+    assert_eq!(back.operating.viscosity, "30 cSt");
+}
+
+#[test]
+fn valid_suction_and_viscosity_pass() {
+    let mut project = with_suction("101325 Pa", "-3 m", "", "");
+    project.operating.viscosity = "1.2 cP".to_string();
+    assert!(codes(&project).is_empty(), "{:?}", codes(&project));
+}
+
+#[test]
+fn bad_suction_fields_are_reported() {
+    for project in [
+        with_suction("0 Pa", "", "", ""),
+        with_suction("1 atm", "2 kg", "", ""),
+        with_suction("1 atm", "", "-1 m", ""),
+        with_suction("1 atm", "", "", "-5 Pa"),
+        with_suction("una atmósfera", "", "", ""),
+    ] {
+        assert_eq!(codes(&project), ["HM-PROJ-027"]);
+    }
+}
+
+#[test]
+fn npsha_and_suction_at_once_is_reported() {
+    let mut project = with_suction("1 atm", "", "", "");
+    project.operating.npsha = "8 m".to_string();
+    assert_eq!(codes(&project), ["HM-PROJ-028"]);
+}
+
+#[test]
+fn other_fluids_need_a_vapor_pressure() {
+    let mut project = with_suction("1 atm", "", "", "");
+    project.operating.fluid = "glycol".to_string();
+    assert_eq!(codes(&project), ["HM-PROJ-029"]);
+    project.suction.as_mut().unwrap().vapor_pressure = "1.5 kPa".to_string();
+    assert!(codes(&project).is_empty());
+}
+
+#[test]
+fn bad_viscosity_is_reported() {
+    for text in ["30 m", "-1 cSt", "mucha"] {
+        let mut project = Project::new("demo", PumpType::EndSuction);
+        project.operating.viscosity = text.to_string();
+        assert_eq!(codes(&project), ["HM-PROJ-026"], "{text}");
+    }
+}
+
+#[test]
+fn unknown_suction_fields_are_rejected() {
+    let text = r#"
+schema = 2
+
+[project]
+name = "demo"
+
+[design]
+pump_type = "end_suction"
+
+[operating]
+Q = "120 m3/h"
+H = "45 m"
+n = "2900 rpm"
+
+[suction]
+pressure = "1 atm"
+depth = "3 m"
+"#;
+    let error = Project::from_toml(text).unwrap_err().to_string();
+    assert!(error.contains("depth"), "{error}");
 }

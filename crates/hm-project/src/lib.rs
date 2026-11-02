@@ -12,7 +12,13 @@ use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
 /// Versión del esquema del proyecto.
-pub const SCHEMA_VERSION: u32 = 1;
+///
+/// - 1: proyecto, diseño, punto de operación y parámetros.
+/// - 2: añade `viscosity` en `[operating]` y la sección opcional `[suction]`.
+pub const SCHEMA_VERSION: u32 = 2;
+
+/// Esquemas anteriores que se migran al cargar.
+pub const MIGRATABLE_SCHEMAS: &[u32] = &[1];
 
 #[derive(Debug, Error)]
 pub enum ProjectError {
@@ -37,8 +43,31 @@ pub struct Project {
     pub project: ProjectMeta,
     pub design: Design,
     pub operating: Operating,
+    /// Instalación de aspiración para calcular el NPSHa (esquema 2).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub suction: Option<Suction>,
     #[serde(default)]
     pub params: BTreeMap<String, Param>,
+}
+
+/// Instalación de aspiración: NPSHa = (p − pv)/(ρg) + z − hf
+/// (fórmula `npsh.npsha`).
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct Suction {
+    /// Presión absoluta sobre la superficie del líquido aspirado.
+    pub pressure: String,
+    /// Altura del nivel del líquido sobre el eje de la bomba; negativa si
+    /// la bomba aspira desde abajo. Vacía equivale a 0 m.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub height: String,
+    /// Pérdidas de carga en la línea de aspiración. Vacía equivale a 0 m.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub losses: String,
+    /// Presión de vapor del fluido. Vacía: la del agua a la temperatura del
+    /// proyecto (IAPWS-IF97); obligatoria si el fluido no es agua.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub vapor_pressure: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -124,6 +153,10 @@ pub struct Operating {
     pub temperature: String,
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub npsha: String,
+    /// Viscosidad cinemática (m2/s, cSt) o dinámica (Pa*s, cP) del fluido.
+    /// Vacía: la del agua a la temperatura del proyecto si el fluido es agua.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub viscosity: String,
 }
 
 /// Modo de un parámetro de diseño.
@@ -176,15 +209,29 @@ impl Project {
                 // El NPSHa depende de la instalación; no se inventa. Sin él,
                 // el diseño avisa de que no evaluó la cavitación.
                 npsha: String::new(),
+                viscosity: String::new(),
             },
+            suction: None,
             params: BTreeMap::new(),
         }
+    }
+
+    /// Lleva un proyecto de un esquema anterior al actual.
+    ///
+    /// 1 → 2: el esquema 2 solo añade campos opcionales, así que basta con
+    /// cambiar el número. Un esquema desconocido se deja como está y lo
+    /// señala `validate` con `HM-PROJ-001`.
+    fn migrated(mut self) -> Self {
+        if MIGRATABLE_SCHEMAS.contains(&self.schema) {
+            self.schema = SCHEMA_VERSION;
+        }
+        self
     }
 
     pub fn load(path: &Path) -> Result<Self, ProjectError> {
         let text = std::fs::read_to_string(path)?;
         let project: Project = toml::from_str(&text)?;
-        Ok(project)
+        Ok(project.migrated())
     }
 
     pub fn save(&self, path: &Path) -> Result<(), ProjectError> {
@@ -197,7 +244,8 @@ impl Project {
     }
 
     pub fn from_toml(text: &str) -> Result<Self, ProjectError> {
-        Ok(toml::from_str(text)?)
+        let project: Project = toml::from_str(text)?;
+        Ok(project.migrated())
     }
 
     /// Comprueba el proyecto y devuelve diagnósticos.
@@ -294,6 +342,37 @@ impl Project {
             );
         }
 
+        if !self.operating.viscosity.trim().is_empty() {
+            check_viscosity(&mut diagnostics, &self.operating.viscosity);
+        }
+
+        if let Some(suction) = &self.suction {
+            check_suction(&mut diagnostics, suction);
+            if !self.operating.npsha.trim().is_empty() {
+                diagnostics.push(
+                    Diagnostic::error(
+                        "HM-PROJ-028",
+                        "el NPSHa está en [operating] y también se calcula con [suction]",
+                    )
+                    .with_hint("Deja solo uno de los dos."),
+                );
+            }
+            let water = self.operating.fluid.is_empty()
+                || self.operating.fluid.eq_ignore_ascii_case("water");
+            if !water && suction.vapor_pressure.trim().is_empty() {
+                diagnostics.push(
+                    Diagnostic::error(
+                        "HM-PROJ-029",
+                        format!(
+                            "el fluido es `{}` y [suction] no indica vapor_pressure",
+                            self.operating.fluid
+                        ),
+                    )
+                    .with_hint("Solo se conoce la presión de vapor del agua."),
+                );
+            }
+        }
+
         for (name, param) in &self.params {
             match param {
                 Param::Auto { formula, value } => {
@@ -369,6 +448,77 @@ impl Project {
         }
 
         diagnostics
+    }
+}
+
+/// Viscosidad cinemática (m2/s) o dinámica (Pa*s), positiva.
+fn check_viscosity(diagnostics: &mut Diagnostics, text: &str) {
+    let problem = match parse_quantity(text) {
+        Ok(quantity) => {
+            let kinematic = parse_unit("m2/s").map(|unit| unit.dim);
+            let dynamic = parse_unit("Pa*s").map(|unit| unit.dim);
+            let dimension_ok = kinematic.is_ok_and(|dim| dim == quantity.dim())
+                || dynamic.is_ok_and(|dim| dim == quantity.dim());
+            if !dimension_ok {
+                Some(format!("debe ser m2/s (cSt) o Pa*s (cP): {text}"))
+            } else if !quantity.si.is_finite() || quantity.si <= 0.0 {
+                Some(format!("debe ser positiva: {text}"))
+            } else {
+                None
+            }
+        }
+        Err(error) => Some(format!("no se puede interpretar: {text} ({error})")),
+    };
+    if let Some(problem) = problem {
+        diagnostics.push(Diagnostic::error(
+            "HM-PROJ-026",
+            format!("`viscosity` {problem}"),
+        ));
+    }
+}
+
+/// Campos de `[suction]`: presión positiva, altura cualquiera, pérdidas y
+/// presión de vapor no negativas.
+fn check_suction(diagnostics: &mut Diagnostics, suction: &Suction) {
+    let fields = [
+        ("pressure", suction.pressure.as_str(), "Pa", Some(true)),
+        ("height", suction.height.as_str(), "m", None),
+        ("losses", suction.losses.as_str(), "m", Some(false)),
+        (
+            "vapor_pressure",
+            suction.vapor_pressure.as_str(),
+            "Pa",
+            Some(false),
+        ),
+    ];
+    for (name, text, unit, sign) in fields {
+        if text.trim().is_empty() && name != "pressure" {
+            continue;
+        }
+        let problem = match (parse_quantity(text), parse_unit(unit)) {
+            (Ok(quantity), Ok(expected)) => {
+                if quantity.dim() != expected.dim {
+                    Some(format!("debe ser {unit}"))
+                } else if !quantity.si.is_finite() {
+                    Some("debe ser finito".to_string())
+                } else {
+                    match sign {
+                        Some(true) if quantity.si <= 0.0 => Some("debe ser positivo".to_string()),
+                        Some(false) if quantity.si < 0.0 => {
+                            Some("no puede ser negativo".to_string())
+                        }
+                        _ => None,
+                    }
+                }
+            }
+            (Err(error), _) | (_, Err(error)) => Some(format!("no se puede interpretar ({error})")),
+        };
+        if let Some(problem) = problem {
+            diagnostics.push(Diagnostic::error(
+                "HM-PROJ-027",
+                format!("[suction] `{name}` {problem}: {text}"),
+            ));
+        }
     }
 }
 

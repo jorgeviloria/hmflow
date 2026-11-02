@@ -144,6 +144,26 @@ pub const CODES: &[CodeInfo] = &[
         Error,
         "Proyecto de un método anterior: hay que migrarlo con recalc.",
     ),
+    active(
+        "HM-PROJ-026",
+        Error,
+        "Viscosidad ilegible, con dimensión incorrecta o no positiva.",
+    ),
+    active(
+        "HM-PROJ-027",
+        Error,
+        "Dato de [suction] ilegible, con dimensión incorrecta o fuera de rango.",
+    ),
+    active(
+        "HM-PROJ-028",
+        Error,
+        "NPSHa dado a la vez en [operating] y en [suction].",
+    ),
+    active(
+        "HM-PROJ-029",
+        Error,
+        "Falta la presión de vapor de [suction] para un fluido que no es agua.",
+    ),
     // Diseño
     active(
         "HM-DES-001",

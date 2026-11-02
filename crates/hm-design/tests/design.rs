@@ -1,6 +1,6 @@
 use hm_design::{
-    DesignInput, DesignOptions, PARAM_SPECS, design, design_with_options, designed_si, param_spec,
-    stored_si_matches, water_density,
+    DesignInput, DesignOptions, PARAM_SPECS, design, design_with_options, designed_si,
+    gulich_b2_star, param_spec, required_npsha, stored_si_matches, water_density,
 };
 use hm_units::parse_quantity;
 
@@ -60,7 +60,8 @@ fn d1a1_reference() {
     close(result.torque.value(), 14.12, 0.05);
     close(result.torque_max.value(), 15.53, 0.05);
     close(result.npshr_design.value(), 1.67, 0.05);
-    close(result.shutoff_head.value(), 19.0, 0.1);
+    // Gülich (3.28) da 18,0 m; la fig. D1.A2 de Srinivasan, ≈19 m (−5 %).
+    close(result.shutoff_head.value(), 18.03, 0.05);
     assert_only_missing_npsha(&result);
 }
 
@@ -78,7 +79,7 @@ fn existing_case_is_consistent() {
     close(result.p_shaft.value(), 17990.0, 50.0);
     close(result.torque.value(), 59.25, 0.2);
     close(result.npshr_design.value(), 5.14, 0.1);
-    close(result.shutoff_head.value(), 61.7, 0.2);
+    close(result.shutoff_head.value(), 59.0, 0.1);
     assert_only_missing_npsha(&result);
 }
 
@@ -127,9 +128,10 @@ fn loss_breakdown_closes() {
 }
 
 #[test]
-fn sample_duty_with_ten_metres_of_npsha_has_no_npsh_findings() {
+fn sample_duty_with_fifteen_metres_of_npsha_has_no_npsh_findings() {
+    // En 1,3 Qd: NPSH3 = 5,14·1,3³ = 11,29 m y la tabla 6.2 pide 14,1 m.
     let mut input = input("120 m3/h", "45 m", "2900 rpm");
-    input.npsha = Some(parse_quantity("10 m").unwrap());
+    input.npsha = Some(parse_quantity("15 m").unwrap());
     let result = design(&input).unwrap();
     assert!(!result.diagnostics.has_errors());
     assert!(has(&result, "HM-DES-006"));
@@ -158,9 +160,10 @@ fn has(result: &hm_design::DesignResult, code: &str) -> bool {
 
 #[test]
 fn npsh_margin_is_enforced_inside_the_preferred_region() {
-    // NPSHr_d = 5,14 m; en 1,2 Qd sube a 1,44·5,14 = 7,40 m.
+    // En 1,2 Qd: NPSH3 = 5,14·1,2³ = 8,88 m; la tabla 6.2 pide
+    // max(1,25·8,88; 8,88 + 0,6; 8,88 + 1,09) = 11,10 m.
     let mut input = input("120 m3/h", "45 m", "2900 rpm");
-    input.npsha = Some(parse_quantity("7.5 m").unwrap());
+    input.npsha = Some(parse_quantity("11 m").unwrap());
     let result = design(&input).unwrap();
     assert!(has(&result, "HM-DES-007"));
     assert!(result.diagnostics.has_errors());
@@ -168,9 +171,9 @@ fn npsh_margin_is_enforced_inside_the_preferred_region() {
 
 #[test]
 fn npsh_shortfall_outside_the_preferred_region_only_warns() {
-    // 8 m cubre la región 0,7..1,2 Qd pero no 0,3 Qd (8,9 m de NPSHr).
+    // 12 m cubre la región 0,7..1,2 Qd (11,10 m) pero no 1,3 Qd (14,1 m).
     let mut input = input("120 m3/h", "45 m", "2900 rpm");
-    input.npsha = Some(parse_quantity("8 m").unwrap());
+    input.npsha = Some(parse_quantity("12 m").unwrap());
     let result = design(&input).unwrap();
     assert!(!result.diagnostics.has_errors());
     assert!(has(&result, "HM-DES-006"));
@@ -312,4 +315,77 @@ fn water_density_follows_kell() {
     assert!(water_density(273.15 - 1.0).is_none());
     assert!(water_density(273.15 + 151.0).is_none());
     assert!(water_density(f64::NAN).is_none());
+}
+
+#[test]
+fn required_npsha_follows_gulich_table_6_2() {
+    // u1 < 10 m/s: max(1,25·NPSH3; NPSH3 + 0,6 m).
+    close(required_npsha(2.0, 7.4, 1.0), 2.6, 1e-12);
+    close(required_npsha(4.0, 7.4, 1.0), 5.0, 1e-12);
+
+    // 10..50 m/s: NPSH3 + FR·{0,05 + 2(u1/100)³}·u1²/2g, con el mínimo.
+    let u1: f64 = 30.0;
+    let term = (0.05 + 2.0 * 0.3f64.powi(3)) * u1.powi(2) / (2.0 * 9.80665);
+    close(required_npsha(2.0, u1, 1.0), 2.0 + term, 1e-12);
+    close(required_npsha(2.0, u1, 1.2), 2.0 + 1.2 * term, 1e-12);
+    // Con NPSH3 grande domina el mínimo de 1,25·NPSH3.
+    close(required_npsha(20.0, u1, 1.0), 25.0, 1e-12);
+
+    // Por encima de 50 m/s solo el mínimo.
+    close(required_npsha(10.0, 60.0, 1.0), 12.5, 1e-12);
+}
+
+#[test]
+fn b2_star_reference_follows_gulich_7_1() {
+    close(gulich_b2_star(31.8), 0.0925, 1e-4);
+    close(gulich_b2_star(100.0), 0.2083, 1e-4);
+}
+
+#[test]
+fn high_nq_widths_are_no_longer_flagged() {
+    // Antes HM-DES-003 marcaba todo b2/d2 > 0,15; con nq = 62 la media de
+    // Gülich ya es 0,151.
+    let input = input("500 m3/h", "45 m", "2900 rpm");
+    let result = design(&input).unwrap();
+    assert!(result.nq > 60.0);
+    assert!(!has(&result, "HM-DES-003"), "{:?}", result.diagnostics);
+}
+
+#[test]
+fn wide_blade_angles_inside_gulich_range_are_accepted() {
+    let input = input("120 m3/h", "45 m", "2900 rpm");
+    let result = design_with_options(
+        &input,
+        &DesignOptions {
+            beta2_rad: Some(40f64.to_radians()),
+            ..DesignOptions::default()
+        },
+    )
+    .unwrap();
+    assert!(!has(&result, "HM-DES-004"));
+}
+
+#[test]
+fn de_haller_ratio_is_reported() {
+    let input = input("120 m3/h", "45 m", "2900 rpm");
+    let result = design(&input).unwrap();
+    let ratio = result.w2.si / result.w1.si;
+    assert!(ratio > 0.7, "w2/w1 = {ratio}");
+    assert!(!has(&result, "HM-DES-014"));
+
+    // Un caudal de entrada grande con φ bajo decelera de más.
+    let slow = design_with_options(
+        &input,
+        &DesignOptions {
+            phi: Some(0.03),
+            c0: Some(9.0),
+            cm0: Some(9.0),
+            ..DesignOptions::default()
+        },
+    )
+    .unwrap();
+    // w2 ≈ 7,1 m/s y w1 ≈ 14,1 m/s: w2/w1 ≈ 0,5.
+    let ratio = slow.w2.si / slow.w1.si;
+    assert!(ratio < 0.6, "w2/w1 = {ratio}");
+    assert!(has(&slow, "HM-DES-014"));
 }

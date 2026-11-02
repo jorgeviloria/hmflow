@@ -538,24 +538,24 @@ assumptions = "NPSHr = σH con σ de design.thoma_sigma. Para D1.A1 da 1,67 m, p
 
 [[formula]]
 id = "design.shutoff_head"
-version = 1
-validation = "reference"
+version = 2
+validation = "pilot"
 module = "design"
 title = "Altura a caudal cero"
-source = "Srinivasan 2017, D1.A1; Gülich 2020, cap. 3"
+source = "Gülich 2020, ec. (3.28), p. 131"
 units = "m"
 range = "0 .. 5000"
 test = "crates/hm-formula/tests/end_suction.rs::shutoff_head"
 
 [formula.inputs]
 nq = "1"
-H = "m"
+u2 = "m/s"
 
 [formula.expr]
-value = "H*(1.25 + 0.004*nq)"
+value = "1.25*exp(-0.3*nq/100)*u2^2/(2*g)"
 
 [formula.notes]
-assumptions = "Relación preliminar H0/Hd = 1.25 + 0.004 nq; en D1.A1 da 19,0 m."
+assumptions = "Coeficiente de presión a caudal cero de bombas de voluta, ψo = 1,25 exp(−0,3 nq/100), y H0 = ψo u2²/2g. En D1.A1 da 18,0 m frente a ≈19 m de la Fig. D1.A2 de Srinivasan (−5 %)."
 
 [[formula]]
 id = "design.slip_factor"

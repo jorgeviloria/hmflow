@@ -78,6 +78,12 @@ pub struct DesignResult {
     pub torque_max: Quantity,
     pub npshr_design: Quantity,
     pub shutoff_head: Quantity,
+    /// Velocidad periférica en el diámetro de entrada D1.
+    pub u1: Quantity,
+    /// Velocidad relativa a la entrada, en D1: `w1 = √(cm0² + u1²)`.
+    pub w1: Quantity,
+    /// Velocidad relativa a la salida: `w2 = √(cm2² + (u2 − cu2)²)`.
+    pub w2: Quantity,
     pub slip: f64,
     pub cu2: Quantity,
     pub volute: VoluteResult,
@@ -762,8 +768,15 @@ pub fn design_with_options(
     let shutoff_head = evaluate(
         &registry,
         "design.shutoff_head",
-        &[("nq", quantity(nq, one.clone())), ("H", input.h.clone())],
+        &[("nq", quantity(nq, one.clone())), ("u2", u2.clone())],
     )?;
+    let u1 = evaluate(
+        &registry,
+        "impeller.peripheral_speed",
+        &[("d2", d1.clone()), ("n", input.n.clone())],
+    )?;
+    let w1 = Quantity::from_si(selection.cm0.hypot(u1.si), ms.clone());
+    let w2 = Quantity::from_si(cm2.si.hypot(u2.si - cu2.si), ms.clone());
 
     let mut result = DesignResult {
         nq,
@@ -790,7 +803,10 @@ pub fn design_with_options(
         torque: with_unit(torque, &nm),
         torque_max: with_unit(torque_max, &nm),
         npshr_design,
-        shutoff_head,
+        shutoff_head: with_unit(shutoff_head, &m),
+        u1: with_unit(u1, &ms),
+        w1,
+        w2,
         slip,
         cu2,
         volute,
@@ -808,27 +824,93 @@ pub const PREFERRED_OPERATING_REGION: (f64, f64) = (0.7, 1.2);
 /// Extremos de la curva preliminar, en fracción del caudal de diseño.
 pub const CURVE_RANGE: (f64, f64) = (0.3, 1.3);
 
-/// Margen mínimo preliminar NPSHa − NPSHr, en metros.
-pub const NPSH_MARGIN_M: f64 = 0.5;
+/// Coeficiente de la velocidad absoluta en `NPSH3 = λc·c1m²/2g + λw·w1²/2g`
+/// para entrada axial (Gülich 2020, ec. (6.10)–(6.11), p. 337).
+pub const NPSH_LAMBDA_C: f64 = 1.1;
 
-/// Subida del NPSHr a caudal parcial: `NPSHr = NPSHr_d·(1 + k·(1 − Q/Qd)²)`.
-///
-/// Coeficiente fenomenológico sin fuente ni calibración. Solo representa la
-/// tendencia (el NPSHr vuelve a subir por recirculación a caudal parcial);
-/// el valor real depende del rodete y se debe medir.
-pub const PART_LOAD_NPSH_RISE: f64 = 1.5;
+/// Coeficiente de la velocidad relativa para NPSH3 con entrada sin choque.
+/// Gülich 2020, tabla D6.3, p. 338, da 0,1..0,3; se toma el valor central.
+pub const NPSH_LAMBDA_W: f64 = 0.2;
+
+/// Exponente de `λw ∝ (tan β1)^0,57` fuera del punto de diseño
+/// (Gülich 2020, ec. (6.21), p. 343). Sin prerrotación, tan β1 ∝ Q.
+pub const NPSH_LAMBDA_W_EXPONENT: f64 = 0.57;
+
+/// Exponente de `NPSH3 ∝ Q^x` por encima del caudal de entrada sin choque.
+/// Gülich 2020, ec. (6.22), p. 343, da x = 2..3; se toma 3, el extremo
+/// conservador.
+pub const NPSH_OVERLOAD_EXPONENT: f64 = 3.0;
+
+/// NPSH3 por velocidades de entrada para la fracción `ratio = Q/Qd`, sin la
+/// constante 1/2g (solo se usa como cociente).
+fn npsh3_velocity_shape(result: &DesignResult, ratio: f64) -> f64 {
+    let c1m = result.selection.cm0 * ratio;
+    let u1 = result.u1.si;
+    let lambda_w = NPSH_LAMBDA_W * ratio.powf(NPSH_LAMBDA_W_EXPONENT);
+    NPSH_LAMBDA_C * c1m.powi(2) + lambda_w * (c1m.powi(2) + u1.powi(2))
+}
 
 /// NPSHr relativo al de diseño para una fracción `ratio = Q/Qd`.
 ///
-/// Por encima del caudal de diseño crece con `(Q/Qd)²`; por debajo usa
-/// [`PART_LOAD_NPSH_RISE`].
-pub fn npshr_ratio(ratio: f64) -> f64 {
+/// Se supone entrada sin choque en el punto de diseño, así que el caudal de
+/// transición de Gülich, Qsa, es Qd:
+///
+/// - Por debajo, la forma de `NPSH3 = λc·c1m²/2g + λw·w1²/2g` con
+///   `c1m ∝ Q`, `w1² = c1m² + u1²` y `λw ∝ (Q/Qd)^0,57` (ec. (6.10) y
+///   (6.21)). El NPSH3 baja al reducir el caudal, como en la fig. 6.23 para
+///   nq bajos y medios.
+/// - Por encima, `(Q/Qd)^3` (ec. (6.22)).
+///
+/// El nivel lo fija `npshr_design`; aquí solo se da la forma.
+pub fn npshr_ratio(result: &DesignResult, ratio: f64) -> f64 {
     if ratio >= 1.0 {
-        ratio.powi(2)
+        ratio.powf(NPSH_OVERLOAD_EXPONENT)
     } else {
-        1.0 + PART_LOAD_NPSH_RISE * (1.0 - ratio).powi(2)
+        npsh3_velocity_shape(result, ratio) / npsh3_velocity_shape(result, 1.0)
     }
 }
+
+/// NPSH disponible necesario según Gülich 2020, tabla 6.2, p. 379.
+///
+/// - Siempre: `NPSHA ≥ max(1,25·NPSH3; NPSH3 + 0,6 m)`.
+/// - Con 10 ≤ u1 ≤ 50 m/s (agua): `σA ≥ σ3 + FR·FF·{0,05 + 2(u1/100)³}`, con
+///   `σ = 2g·NPSH/u1²` (ec. (6.5)), FF = 1 (agua) y FR = 1 entre 0,8 y
+///   1,1 Qd o 1,2 fuera (caudal parcial o Q > QSF).
+///
+/// Por encima de 50 m/s la tabla pide experiencia o datos de cavidad; se
+/// aplica solo el mínimo y `npsh_diagnostics` lo avisa.
+pub fn required_npsha(npsh3: f64, u1: f64, ratio: f64) -> f64 {
+    let minimum = (1.25 * npsh3).max(npsh3 + 0.6);
+    if !(10.0..=50.0).contains(&u1) {
+        return minimum;
+    }
+    let risk = if ratio > 0.8 && ratio < 1.1 { 1.0 } else { 1.2 };
+    let fluid = 1.0;
+    let g = 9.806_65;
+    let extra = risk * fluid * (0.05 + 2.0 * (u1 / 100.0).powi(3)) * u1.powi(2) / (2.0 * g);
+    (npsh3 + extra).max(minimum)
+}
+
+/// Media de la anchura relativa de salida `b2* = b2/d2` de Gülich 2020,
+/// ec. (7.1), p. 412.
+pub fn gulich_b2_star(nq: f64) -> f64 {
+    let x = nq / 100.0;
+    0.017 + 0.262 * x - 0.08 * x.powi(2) + 0.0093 * x.powi(3)
+}
+
+/// Intervalo admitido para `b2*/b2*(ec. 7.1)`.
+///
+/// La fig. 7.2 de Gülich muestra una banda de unos ±20 % alrededor de la
+/// media, leída a ojo. D1.A1, un diseño publicado, queda un 30 % por debajo,
+/// así que se usa un intervalo más ancho para no marcar diseños válidos.
+pub const B2_STAR_BAND: (f64, f64) = (0.6, 1.4);
+
+/// Intervalo habitual del ángulo de salida del álabe, en grados
+/// (Gülich 2020, p. 412).
+pub const BETA2_RANGE_DEG: (f64, f64) = (15.0, 45.0);
+
+/// Deceleración mínima `w2/w1` (criterio de de Haller; Gülich 2020, p. 413).
+pub const DE_HALLER_MIN: f64 = 0.7;
 
 /// Curva preliminar de prestaciones entre 0.3 y 1.3 veces el caudal de diseño.
 ///
@@ -867,7 +949,7 @@ pub fn performance_curve(
             };
         let eta = eta.max(1e-4);
         let p_shaft = rho * g * q * h / eta;
-        let npshr = npshr_design * npshr_ratio(ratio);
+        let npshr = npshr_design * npshr_ratio(result, ratio);
 
         curve.push(CurvePoint {
             q: Quantity::from_si(q, m3h.clone()),
@@ -959,24 +1041,49 @@ fn diagnostics_for(result: &DesignResult, input: &DesignInput) -> Diagnostics {
     }
 
     let width_ratio = result.b2.si / result.d2.si;
-    if !(0.02..=0.15).contains(&width_ratio) {
+    let reference_width = gulich_b2_star(result.nq);
+    let (low, high) = B2_STAR_BAND;
+    if !(low * reference_width..=high * reference_width).contains(&width_ratio) {
         diagnostics.push(
             Diagnostic::warning(
                 "HM-DES-003",
-                format!("B2/D2 = {width_ratio:.3} fuera del rango preliminar 0.02..0.15"),
+                format!(
+                    "B2/D2 = {width_ratio:.3} lejos de la media de Gülich para nq = {:.1} \
+                     ({reference_width:.3}; se admite {:.3}..{:.3})",
+                    result.nq,
+                    low * reference_width,
+                    high * reference_width
+                ),
             )
-            .with_hint("Revisa el coeficiente de caudal y el diámetro exterior."),
+            .with_hint(
+                "Revisa el coeficiente de caudal y el diámetro exterior (Gülich 2020, ec. 7.1).",
+            ),
         );
     }
 
-    if !(15.0..=35.0).contains(&result.selection.beta2_deg) {
+    let (beta_low, beta_high) = BETA2_RANGE_DEG;
+    if !(beta_low..=beta_high).contains(&result.selection.beta2_deg) {
         diagnostics.push(Diagnostic::warning(
             "HM-DES-004",
             format!(
-                "β2 = {:.1}° fuera del rango preliminar 15..35°",
+                "β2 = {:.1}° fuera del rango habitual {beta_low}..{beta_high}° (Gülich 2020, p. 412)",
                 result.selection.beta2_deg
             ),
         ));
+    }
+
+    let deceleration = result.w2.si / result.w1.si;
+    if deceleration < DE_HALLER_MIN {
+        diagnostics.push(
+            Diagnostic::warning(
+                "HM-DES-014",
+                format!(
+                    "w2/w1 = {deceleration:.2} por debajo de {DE_HALLER_MIN} (criterio de de Haller): \
+                     riesgo de desprendimiento en el rodete"
+                ),
+            )
+            .with_hint("Reduce la deceleración: revisa β2, el diámetro de entrada o el coeficiente de caudal."),
+        );
     }
 
     if !(4..=12).contains(&result.selection.blade_count) {
@@ -1013,26 +1120,26 @@ fn diagnostics_for(result: &DesignResult, input: &DesignInput) -> Diagnostics {
     diagnostics
 }
 
-/// Peor margen NPSHa − NPSHr entre dos fracciones del caudal de diseño.
+/// Peor margen `NPSHa − NPSHA necesario` entre dos fracciones del caudal de
+/// diseño.
 ///
-/// Devuelve el margen en metros y el caudal en m3/h donde ocurre.
+/// Devuelve el margen en metros, el caudal en m3/h y el NPSHA necesario.
 fn worst_npsh_margin(
     npsha: f64,
-    npshr_design: f64,
+    result: &DesignResult,
     q_design: f64,
     from: f64,
     to: f64,
-) -> (f64, f64) {
+) -> (f64, f64, f64) {
     const STEPS: usize = 100;
     (0..=STEPS)
         .map(|index| from + (to - from) * index as f64 / STEPS as f64)
         .map(|ratio| {
-            (
-                npsha - npshr_design * npshr_ratio(ratio),
-                q_design * ratio * 3600.0,
-            )
+            let npsh3 = result.npshr_design.si * npshr_ratio(result, ratio);
+            let required = required_npsha(npsh3, result.u1.si, ratio);
+            (npsha - required, q_design * ratio * 3600.0, required)
         })
-        .fold((f64::INFINITY, 0.0), |worst, candidate| {
+        .fold((f64::INFINITY, 0.0, 0.0), |worst, candidate| {
             if candidate.0 < worst.0 {
                 candidate
             } else {
@@ -1047,18 +1154,31 @@ fn npsh_diagnostics(
     result: &DesignResult,
     input: &DesignInput,
 ) {
-    let npshr_design = result.npshr_design.si;
     let q_design = input.q.si;
     let (por_low, por_high) = PREFERRED_OPERATING_REGION;
 
-    let (margin, flow) = worst_npsh_margin(npsha, npshr_design, q_design, por_low, por_high);
-    if margin < NPSH_MARGIN_M {
+    if result.u1.si > 50.0 {
+        diagnostics.push(
+            Diagnostic::warning(
+                "HM-DES-015",
+                format!(
+                    "u1 = {:.1} m/s supera 50 m/s: la tabla 6.2 de Gülich pide experiencia o \
+                     datos de cavidad; solo se aplicó el margen mínimo",
+                    result.u1.si
+                ),
+            )
+            .with_hint("Contrasta el NPSHA con datos del rodete o de una bomba semejante."),
+        );
+    }
+
+    let (margin, flow, required) = worst_npsh_margin(npsha, result, q_design, por_low, por_high);
+    if margin < 0.0 {
         diagnostics.push(
             Diagnostic::error(
                 "HM-DES-007",
                 format!(
-                    "margen NPSHa - NPSHr = {margin:.2} m a Q = {flow:.0} m3/h dentro de la región \
-                     preferente ({por_low}..{por_high} Qd); el mínimo preliminar es {NPSH_MARGIN_M} m"
+                    "NPSHa = {npsha:.2} m no llega al necesario {required:.2} m a Q = {flow:.0} m3/h \
+                     dentro de la región preferente ({por_low}..{por_high} Qd; Gülich 2020, tabla 6.2)"
                 ),
             )
             .with_hint("Aumenta el NPSHa o reduce la velocidad de giro."),
@@ -1068,27 +1188,25 @@ fn npsh_diagnostics(
     diagnostics.push(Diagnostic::info(
         "HM-DES-006",
         format!(
-            "margen NPSHa - NPSHr mínimo en la región preferente ({por_low}..{por_high} Qd) = {margin:.2} m"
+            "NPSHa supera el necesario (Gülich 2020, tabla 6.2) en al menos {margin:.2} m \
+             en la región preferente ({por_low}..{por_high} Qd)"
         ),
     ));
 
     let (low, high) = CURVE_RANGE;
-    let below = worst_npsh_margin(npsha, npshr_design, q_design, low, por_low);
-    let above = worst_npsh_margin(npsha, npshr_design, q_design, por_high, high);
-    let (margin, flow) = if below.0 <= above.0 { below } else { above };
-    if margin < NPSH_MARGIN_M {
+    let below = worst_npsh_margin(npsha, result, q_design, low, por_low);
+    let above = worst_npsh_margin(npsha, result, q_design, por_high, high);
+    let (margin, flow, required) = if below.0 <= above.0 { below } else { above };
+    if margin < 0.0 {
         diagnostics.push(
             Diagnostic::warning(
                 "HM-DES-011",
                 format!(
-                    "fuera de la región preferente el margen NPSHa - NPSHr baja a {margin:.2} m \
+                    "fuera de la región preferente el NPSHa no llega al necesario {required:.2} m \
                      a Q = {flow:.0} m3/h"
                 ),
             )
-            .with_hint(
-                "El NPSHr a caudal parcial usa un modelo sin calibrar; evita operar ahí o \
-                 confirma el NPSHr con el fabricante.",
-            ),
+            .with_hint("Evita operar ahí o confirma el NPSHr con el fabricante."),
         );
     }
 }

@@ -59,21 +59,21 @@ fn head_falls_with_flow() {
 }
 
 #[test]
-fn npshr_is_minimum_at_design() {
+fn npshr_rises_with_flow() {
+    // Gülich 2020, fig. 6.23: con nq bajos y medios el NPSH3 baja de forma
+    // continua al reducir el caudal y sube con fuerza por encima del diseño.
     let input = input();
     let result = design(&input).unwrap();
     let curve = performance_curve(&input, &result, 11);
     let design_point = curve[7].npshr.si;
 
-    assert!(curve[0].npshr.si > design_point);
-    assert!(curve[10].npshr.si > design_point);
-
-    for pair in curve[..=7].windows(2) {
-        assert!(pair[0].npshr.si > pair[1].npshr.si);
-    }
-    for pair in curve[7..].windows(2) {
+    for pair in curve.windows(2) {
         assert!(pair[0].npshr.si < pair[1].npshr.si);
     }
+    let low = curve[0].npshr.si / design_point;
+    assert!((0.3..0.8).contains(&low), "NPSHr(0,3 Qd)/NPSHr_d = {low}");
+    // Por encima del diseño, (Q/Qd)^3.
+    close(curve[10].npshr.si / design_point, 1.3f64.powi(3), 1e-9);
 }
 
 #[test]

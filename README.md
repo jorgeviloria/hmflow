@@ -3,7 +3,7 @@
 Suite open source de diseño de bombas centrífugas, escrita en Rust.
 
 > Estado: **Parte 0 — cimientos** y primer motor de diseño end-suction. El
-> repositorio compila, hay 38 fórmulas auditadas (6 piloto, 32 con referencia
+> repositorio compila, hay 38 fórmulas auditadas (9 piloto, 29 con referencia
 > de ejemplo resuelto; sin validación de banco) y `design` genera geometría,
 > voluta, pérdidas y curvas preliminares. Todavía no hay CAD ni interfaz
 > gráfica.
@@ -44,10 +44,10 @@ cargo run -p hmflow-cli -- new bomba-demo
 
 # Diseñar una bomba end-suction con curvas. Sin --npsha no se evalúa la
 # cavitación; con él, el margen se exige en la región preferente (0,7–1,2 Qd)
-cargo run -p hmflow-cli -- design --q "120 m3/h" --h "45 m" --n "2900 rpm" --npsha "10 m" --out bomba.hmf --curves
+cargo run -p hmflow-cli -- design --q "120 m3/h" --h "45 m" --n "2900 rpm" --npsha "15 m" --out bomba.hmf --curves
 
 # Agua caliente: sin --rho se usa la densidad del agua a esa temperatura
-cargo run -p hmflow-cli -- design --temperature "80 degC" --npsha "12 m" --out caliente.hmf
+cargo run -p hmflow-cli -- design --temperature "80 degC" --npsha "15 m" --out caliente.hmf
 
 # Validarlo: dimensiones, signos, campos desconocidos, esquema del método y avisos
 cargo run -p hmflow-cli -- check bomba.hmf

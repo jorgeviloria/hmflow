@@ -336,9 +336,13 @@ fn npshr_design() {
 #[test]
 fn shutoff_head() {
     close(
-        evaluate("design.shutoff_head", &[("nq", "31.7997"), ("H", "13.8 m")]),
-        19.0,
-        0.02,
+        // ψo = 1,25·e^(−0,0954) = 1,1363; H0 = ψo·17,64²/(2·9,80665)
+        evaluate(
+            "design.shutoff_head",
+            &[("nq", "31.7997"), ("u2", "17.64 m/s")],
+        ),
+        18.03,
+        0.01,
     );
 }
 

@@ -1507,7 +1507,7 @@ mod tests {
         let result = sample_design();
         let mut project = Project::new("demo", PumpType::EndSuction);
         project.design.method = "end_suction_v0.1".to_string();
-        project.operating.npsha = "10 m".to_string();
+        project.operating.npsha = "15 m".to_string();
         let defaults = ManualDefaults {
             rho: "998.2 kg/m3".to_string(),
             eta_m: "0.96".to_string(),
@@ -1644,7 +1644,7 @@ mod tests {
     fn moved_duty_project() -> Project {
         let mut project = designed_project();
         project.operating.q = "250 m3/h".to_string();
-        project.operating.npsha = "15 m".to_string();
+        project.operating.npsha = "25 m".to_string();
         project
     }
 

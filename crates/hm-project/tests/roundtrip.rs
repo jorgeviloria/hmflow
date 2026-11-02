@@ -171,10 +171,12 @@ n = "2900 rpm"
 }
 
 #[test]
-fn default_npsha_clears_the_sample_curve() {
-    assert_eq!(
-        Project::new("demo", PumpType::EndSuction).operating.npsha,
-        "10 m"
+fn new_project_does_not_invent_npsha() {
+    assert!(
+        Project::new("demo", PumpType::EndSuction)
+            .operating
+            .npsha
+            .is_empty()
     );
 }
 

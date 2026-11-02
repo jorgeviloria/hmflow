@@ -556,3 +556,47 @@ value = "H*(1.25 + 0.004*nq)"
 
 [formula.notes]
 assumptions = "Relación preliminar H0/Hd = 1.25 + 0.004 nq; en D1.A1 da 19,0 m."
+
+[[formula]]
+id = "design.slip_factor"
+version = 1
+validation = "pilot"
+module = "design"
+title = "Factor de deslizamiento de Wiesner"
+source = "Wiesner 1967, J. Eng. Power 89(4); Gülich 2020, cap. 3"
+units = "1"
+range = "0 .. 1"
+test = "crates/hm-formula/tests/end_suction.rs::slip_factor"
+
+[formula.inputs]
+beta2 = "deg"
+Z = "1"
+
+[formula.expr]
+value = "1 - sqrt(sin(beta2))/Z^0.7"
+
+[formula.notes]
+assumptions = "σ = 1 − √(sen β2)/Z^0,7, sin corrección por solidez del rodete. Con β2=23,5° y Z=7 da 0,838."
+
+[[formula]]
+id = "design.cu2"
+version = 1
+validation = "pilot"
+module = "design"
+title = "Componente tangencial a la salida del rodete"
+source = "Triángulo de velocidades de Euler con deslizamiento; Gülich 2020, cap. 3"
+units = "m/s"
+range = "-100 .. 100"
+test = "crates/hm-formula/tests/end_suction.rs::cu2"
+
+[formula.inputs]
+slip = "1"
+u2 = "m/s"
+cm2 = "m/s"
+beta2 = "deg"
+
+[formula.expr]
+value = "slip*(u2 - cm2/tan(beta2))"
+
+[formula.notes]
+assumptions = "cu2 = σ (u2 − cm2/tan β2). El deslizamiento se aplica a toda la componente, como en el motor v0.1."

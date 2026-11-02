@@ -26,13 +26,13 @@ fn pack_is_audit_clean() {
 }
 
 #[test]
-fn pack_has_twenty_six_formulas() {
-    assert_eq!(Registry::from_toml(END_SUCTION_V01_PACK).unwrap().len(), 26);
+fn pack_has_twenty_eight_formulas() {
+    assert_eq!(Registry::from_toml(END_SUCTION_V01_PACK).unwrap().len(), 28);
 }
 
 #[test]
 fn all_merges_both_packs() {
-    assert_eq!(Registry::all().len(), 36);
+    assert_eq!(Registry::all().len(), 38);
 }
 
 #[test]
@@ -339,5 +339,33 @@ fn shutoff_head() {
         evaluate("design.shutoff_head", &[("nq", "31.7997"), ("H", "13.8 m")]),
         19.0,
         0.02,
+    );
+}
+
+#[test]
+fn slip_factor() {
+    // 1 − √(sen 23,5°)/7^0,7
+    close(
+        evaluate("design.slip_factor", &[("beta2", "23.5 deg"), ("Z", "7")]),
+        0.83827,
+        1e-4,
+    );
+}
+
+#[test]
+fn cu2() {
+    // 0,8 · (30 − 4/tan 30°) = 0,8 · (30 − 6,9282)
+    close(
+        evaluate(
+            "design.cu2",
+            &[
+                ("slip", "0.8"),
+                ("u2", "30 m/s"),
+                ("cm2", "4 m/s"),
+                ("beta2", "30 deg"),
+            ],
+        ),
+        18.4574,
+        1e-3,
     );
 }

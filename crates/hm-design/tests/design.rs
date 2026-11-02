@@ -22,6 +22,16 @@ fn close(actual: f64, expected: f64, tolerance: f64) {
     );
 }
 
+/// Sin NPSHa, el único diagnóstico admitido es el aviso de que no se evaluó.
+fn assert_only_missing_npsha(result: &hm_design::DesignResult) {
+    let codes: Vec<&str> = result
+        .diagnostics
+        .iter()
+        .map(|diagnostic| diagnostic.code.as_str())
+        .collect();
+    assert_eq!(codes, ["HM-DES-012"]);
+}
+
 #[test]
 fn d1a1_reference() {
     let result = design(&input("0.016 m3/s", "13.8 m", "1800 rpm")).unwrap();
@@ -51,7 +61,7 @@ fn d1a1_reference() {
     close(result.torque_max.value(), 15.53, 0.05);
     close(result.npshr_design.value(), 1.67, 0.05);
     close(result.shutoff_head.value(), 19.0, 0.1);
-    assert!(result.diagnostics.is_empty());
+    assert_only_missing_npsha(&result);
 }
 
 #[test]
@@ -69,7 +79,7 @@ fn existing_case_is_consistent() {
     close(result.torque.value(), 59.25, 0.2);
     close(result.npshr_design.value(), 5.14, 0.1);
     close(result.shutoff_head.value(), 61.7, 0.2);
-    assert!(result.diagnostics.is_empty());
+    assert_only_missing_npsha(&result);
 }
 
 #[test]
@@ -117,14 +127,13 @@ fn loss_breakdown_closes() {
 }
 
 #[test]
-fn sample_duty_with_ten_metres_of_npsha_has_no_errors() {
+fn sample_duty_with_ten_metres_of_npsha_has_no_npsh_findings() {
     let mut input = input("120 m3/h", "45 m", "2900 rpm");
     input.npsha = Some(parse_quantity("10 m").unwrap());
     let result = design(&input).unwrap();
-    assert!(
-        !result.diagnostics.has_errors(),
-        "el NPSHa de plantilla no cubre la curva"
-    );
+    assert!(!result.diagnostics.has_errors());
+    assert!(has(&result, "HM-DES-006"));
+    assert!(!has(&result, "HM-DES-011"));
 }
 
 #[test]
@@ -140,17 +149,32 @@ fn stored_snapshot_tolerates_rounding_only() {
     assert!(designed_si(&result, "psi").is_none());
 }
 
+fn has(result: &hm_design::DesignResult, code: &str) -> bool {
+    result
+        .diagnostics
+        .iter()
+        .any(|diagnostic| diagnostic.code == code)
+}
+
 #[test]
-fn npsh_margin_checks_the_whole_curve() {
+fn npsh_margin_is_enforced_inside_the_preferred_region() {
+    // NPSHr_d = 5,14 m; en 1,2 Qd sube a 1,44·5,14 = 7,40 m.
+    let mut input = input("120 m3/h", "45 m", "2900 rpm");
+    input.npsha = Some(parse_quantity("7.5 m").unwrap());
+    let result = design(&input).unwrap();
+    assert!(has(&result, "HM-DES-007"));
+    assert!(result.diagnostics.has_errors());
+}
+
+#[test]
+fn npsh_shortfall_outside_the_preferred_region_only_warns() {
+    // 8 m cubre la región 0,7..1,2 Qd pero no 0,3 Qd (8,9 m de NPSHr).
     let mut input = input("120 m3/h", "45 m", "2900 rpm");
     input.npsha = Some(parse_quantity("8 m").unwrap());
     let result = design(&input).unwrap();
-    assert!(
-        result
-            .diagnostics
-            .iter()
-            .any(|diagnostic| diagnostic.code == "HM-DES-007")
-    );
+    assert!(!result.diagnostics.has_errors());
+    assert!(has(&result, "HM-DES-006"));
+    assert!(has(&result, "HM-DES-011"));
 }
 
 #[test]
@@ -167,12 +191,90 @@ fn npsh_margin_is_checked() {
 
     input.npsha = Some(parse_quantity("6 m").unwrap());
     let result = design(&input).unwrap();
-    assert!(
-        result
-            .diagnostics
-            .iter()
-            .any(|diagnostic| diagnostic.code == "HM-DES-006")
-    );
+    assert!(has(&result, "HM-DES-006"));
+    assert!(!has(&result, "HM-DES-011"));
+}
+
+#[test]
+fn missing_npsha_is_reported() {
+    let result = design(&input("120 m3/h", "45 m", "2900 rpm")).unwrap();
+    assert!(has(&result, "HM-DES-012"));
+    assert!(!has(&result, "HM-DES-006"));
+    assert!(!has(&result, "HM-DES-007"));
+}
+
+#[test]
+fn blade_angle_and_count_change_slip_and_cu2() {
+    let input = input("120 m3/h", "45 m", "2900 rpm");
+    let base = design(&input).unwrap();
+
+    let steeper = design_with_options(
+        &input,
+        &DesignOptions {
+            beta2_rad: Some(35f64.to_radians()),
+            ..DesignOptions::default()
+        },
+    )
+    .unwrap();
+    assert!(steeper.slip < base.slip);
+    assert!((steeper.cu2.si - base.cu2.si).abs() > 0.1);
+
+    let fewer = design_with_options(
+        &input,
+        &DesignOptions {
+            blade_count: Some(4),
+            ..DesignOptions::default()
+        },
+    )
+    .unwrap();
+    assert!(fewer.slip < base.slip);
+    assert_eq!(designed_si(&fewer, "slip"), Some(fewer.slip));
+    assert_eq!(designed_si(&fewer, "cu2"), Some(fewer.cu2.si));
+}
+
+#[test]
+fn selections_outside_their_domain_are_rejected() {
+    let input = input("120 m3/h", "45 m", "2900 rpm");
+    let cases = [
+        DesignOptions {
+            psi: Some(-1.0),
+            ..DesignOptions::default()
+        },
+        DesignOptions {
+            phi: Some(0.0),
+            ..DesignOptions::default()
+        },
+        DesignOptions {
+            beta2_rad: Some(90f64.to_radians()),
+            ..DesignOptions::default()
+        },
+        DesignOptions {
+            blade_count: Some(0),
+            ..DesignOptions::default()
+        },
+        DesignOptions {
+            margin: Some(0.5),
+            ..DesignOptions::default()
+        },
+        DesignOptions {
+            k3: Some(1.0),
+            ..DesignOptions::default()
+        },
+        DesignOptions {
+            k_eff: Some(0.0),
+            ..DesignOptions::default()
+        },
+        DesignOptions {
+            j: Some(f64::NAN),
+            ..DesignOptions::default()
+        },
+    ];
+    for options in cases {
+        assert!(
+            design_with_options(&input, &options).is_err(),
+            "se aceptó {options:?}"
+        );
+    }
 }
 
 #[test]

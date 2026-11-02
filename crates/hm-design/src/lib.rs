@@ -203,12 +203,12 @@ pub const PARAM_SPECS: &[ParamSpec] = &[
     ParamSpec {
         name: "slip",
         unit: "1",
-        formula: None,
+        formula: Some("design.slip_factor"),
     },
     ParamSpec {
         name: "cu2",
         unit: "m/s",
-        formula: None,
+        formula: Some("design.cu2"),
     },
     ParamSpec {
         name: "nq",
@@ -362,6 +362,15 @@ pub fn param_spec(name: &str) -> Option<&'static ParamSpec> {
     PARAM_SPECS.iter().find(|spec| spec.name == name)
 }
 
+/// Radio base de la voluta por defecto, `R3 = k3·D2/2` (Srinivasan 2017, ec. 5.7).
+pub const DEFAULT_K3: f64 = 1.04;
+
+/// Factor de anchura de la voluta por defecto, `B3 = B2 + c·D2` (Srinivasan 2017, ec. 5.8).
+pub const DEFAULT_VOLUTE_C: f64 = 0.05;
+
+/// Factor de diámetro efectivo de la garganta por defecto (Srinivasan 2017, D2.2).
+pub const DEFAULT_K_EFF: f64 = 1.1;
+
 /// Selecciones que se pueden fijar desde el proyecto.
 #[derive(Debug, Clone, Default)]
 pub struct DesignOptions {
@@ -377,8 +386,6 @@ pub struct DesignOptions {
     pub k3: Option<f64>,
     pub volute_width_factor: Option<f64>,
     pub k_eff: Option<f64>,
-    pub slip: Option<f64>,
-    pub cu2: Option<f64>,
 }
 
 /// Calcula un diseño preliminar end-suction.
@@ -427,6 +434,10 @@ pub fn design_with_options(
         j: options.j.unwrap_or(1.03),
         margin: options.margin.unwrap_or(1.1),
     };
+    let k3_value = options.k3.unwrap_or(DEFAULT_K3);
+    let volute_width_value = options.volute_width_factor.unwrap_or(DEFAULT_VOLUTE_C);
+    let k_eff_value = options.k_eff.unwrap_or(DEFAULT_K_EFF);
+    validate_selection(&selection, k3_value, volute_width_value, k_eff_value)?;
 
     let specific_diameter_mm = evaluate(
         &registry,
@@ -552,20 +563,31 @@ pub fn design_with_options(
         ],
     )?;
 
-    let beta2_rad = options
-        .beta2_rad
-        .unwrap_or_else(|| selection.beta2_deg.to_radians());
-    let slip = options
-        .slip
-        .unwrap_or_else(|| 1.0 - beta2_rad.sin().sqrt() / (selection.blade_count as f64).powf(0.7));
-    let cu2_si = options
-        .cu2
-        .unwrap_or_else(|| slip * (u2.si - cm2.si / beta2_rad.tan()));
-    let cu2 = Quantity::from_si(cu2_si, ms.clone());
+    let beta2 = Quantity::from_si(selection.beta2_deg.to_radians(), unit("deg")?);
+    let slip = evaluate(
+        &registry,
+        "design.slip_factor",
+        &[
+            ("beta2", beta2.clone()),
+            ("Z", quantity(selection.blade_count as f64, one.clone())),
+        ],
+    )?
+    .value();
+    let cu2 = evaluate(
+        &registry,
+        "design.cu2",
+        &[
+            ("slip", quantity(slip, one.clone())),
+            ("u2", u2.clone()),
+            ("cm2", cm2.clone()),
+            ("beta2", beta2),
+        ],
+    )?;
+    let cu2 = with_unit(cu2, &ms);
 
-    let k3 = quantity(options.k3.unwrap_or(1.04), one.clone());
-    let volute_width_factor = quantity(options.volute_width_factor.unwrap_or(0.05), one.clone());
-    let k_eff = quantity(options.k_eff.unwrap_or(1.1), one.clone());
+    let k3 = quantity(k3_value, one.clone());
+    let volute_width_factor = quantity(volute_width_value, one.clone());
+    let k_eff = quantity(k_eff_value, one.clone());
 
     let r3 = evaluate(
         &registry,
@@ -741,6 +763,35 @@ pub fn design_with_options(
     Ok(result)
 }
 
+/// Región de operación preferente de API 610: del 70 % al 120 % del caudal
+/// de diseño. El margen de NPSH se exige dentro de ella.
+pub const PREFERRED_OPERATING_REGION: (f64, f64) = (0.7, 1.2);
+
+/// Extremos de la curva preliminar, en fracción del caudal de diseño.
+pub const CURVE_RANGE: (f64, f64) = (0.3, 1.3);
+
+/// Margen mínimo preliminar NPSHa − NPSHr, en metros.
+pub const NPSH_MARGIN_M: f64 = 0.5;
+
+/// Subida del NPSHr a caudal parcial: `NPSHr = NPSHr_d·(1 + k·(1 − Q/Qd)²)`.
+///
+/// Coeficiente fenomenológico sin fuente ni calibración. Solo representa la
+/// tendencia (el NPSHr vuelve a subir por recirculación a caudal parcial);
+/// el valor real depende del rodete y se debe medir.
+pub const PART_LOAD_NPSH_RISE: f64 = 1.5;
+
+/// NPSHr relativo al de diseño para una fracción `ratio = Q/Qd`.
+///
+/// Por encima del caudal de diseño crece con `(Q/Qd)²`; por debajo usa
+/// [`PART_LOAD_NPSH_RISE`].
+pub fn npshr_ratio(ratio: f64) -> f64 {
+    if ratio >= 1.0 {
+        ratio.powi(2)
+    } else {
+        1.0 + PART_LOAD_NPSH_RISE * (1.0 - ratio).powi(2)
+    }
+}
+
 /// Curva preliminar de prestaciones entre 0.3 y 1.3 veces el caudal de diseño.
 ///
 /// Es un modelo fenomenológico anclado en el punto de diseño, no un modelo de
@@ -766,7 +817,8 @@ pub fn performance_curve(
     let mut curve = Vec::with_capacity(count);
 
     for index in 0..count {
-        let ratio = 0.3 + (1.3 - 0.3) * index as f64 / (count - 1) as f64;
+        let ratio =
+            CURVE_RANGE.0 + (CURVE_RANGE.1 - CURVE_RANGE.0) * index as f64 / (count - 1) as f64;
         let q = q_design * ratio;
         let h = h_design * (shutoff_ratio - (shutoff_ratio - 1.0) * ratio.powi(2));
         let eta = eta_design
@@ -777,11 +829,7 @@ pub fn performance_curve(
             };
         let eta = eta.max(1e-4);
         let p_shaft = rho * g * q * h / eta;
-        let npshr = if ratio >= 1.0 {
-            npshr_design * ratio.powi(2)
-        } else {
-            npshr_design * (1.0 + 1.5 * (1.0 - ratio).powi(2))
-        };
+        let npshr = npshr_design * npshr_ratio(ratio);
 
         curve.push(CurvePoint {
             q: Quantity::from_si(q, m3h.clone()),
@@ -822,6 +870,8 @@ pub fn designed_si(result: &DesignResult, name: &str) -> Option<f64> {
         "p_vol_loss" => result.p_vol_loss.si,
         "p_mech_loss" => result.p_mech_loss.si,
         "torque" => result.torque.si,
+        "slip" => result.slip,
+        "cu2" => result.cu2.si,
         "npshr_d" => result.npshr_design.si,
         "h0" => result.shutoff_head.si,
         "r3" => result.volute.base_radius.si,
@@ -901,36 +951,15 @@ fn diagnostics_for(result: &DesignResult, input: &DesignInput) -> Diagnostics {
         ));
     }
 
-    if let Some(npsha) = &input.npsha {
-        let curve = performance_curve(input, result, 11);
-        let (worst_margin, worst_flow) =
-            curve
-                .iter()
-                .fold((f64::INFINITY, 0.0), |(margin, flow), point| {
-                    let candidate = npsha.si - point.npshr.si;
-                    if candidate < margin {
-                        (candidate, point.q.value())
-                    } else {
-                        (margin, flow)
-                    }
-                });
-
-        if worst_margin < 0.5 {
-            diagnostics.push(
-                Diagnostic::error(
-                    "HM-DES-007",
-                    format!(
-                        "margen NPSHa - NPSHr mínimo = {worst_margin:.2} m a Q = {worst_flow:.0} m3/h; el mínimo preliminar es 0.5 m"
-                    ),
-                )
-                .with_hint("Aumenta el NPSHa o reduce la velocidad de giro."),
-            );
-        } else {
-            diagnostics.push(Diagnostic::info(
-                "HM-DES-006",
-                format!("margen NPSHa - NPSHr mínimo = {worst_margin:.2} m"),
-            ));
-        }
+    match &input.npsha {
+        Some(npsha) => npsh_diagnostics(&mut diagnostics, npsha.si, result, input),
+        None => diagnostics.push(
+            Diagnostic::warning(
+                "HM-DES-012",
+                "NPSHa no indicado; no se evaluó el margen de cavitación",
+            )
+            .with_hint("Indica el NPSH disponible de la instalación (--npsha en design, npsha en [operating])."),
+        ),
     }
 
     if result.cu2.si <= 0.0 {
@@ -944,6 +973,148 @@ fn diagnostics_for(result: &DesignResult, input: &DesignInput) -> Diagnostics {
     }
 
     diagnostics
+}
+
+/// Peor margen NPSHa − NPSHr entre dos fracciones del caudal de diseño.
+///
+/// Devuelve el margen en metros y el caudal en m3/h donde ocurre.
+fn worst_npsh_margin(
+    npsha: f64,
+    npshr_design: f64,
+    q_design: f64,
+    from: f64,
+    to: f64,
+) -> (f64, f64) {
+    const STEPS: usize = 100;
+    (0..=STEPS)
+        .map(|index| from + (to - from) * index as f64 / STEPS as f64)
+        .map(|ratio| {
+            (
+                npsha - npshr_design * npshr_ratio(ratio),
+                q_design * ratio * 3600.0,
+            )
+        })
+        .fold((f64::INFINITY, 0.0), |worst, candidate| {
+            if candidate.0 < worst.0 {
+                candidate
+            } else {
+                worst
+            }
+        })
+}
+
+fn npsh_diagnostics(
+    diagnostics: &mut Diagnostics,
+    npsha: f64,
+    result: &DesignResult,
+    input: &DesignInput,
+) {
+    let npshr_design = result.npshr_design.si;
+    let q_design = input.q.si;
+    let (por_low, por_high) = PREFERRED_OPERATING_REGION;
+
+    let (margin, flow) = worst_npsh_margin(npsha, npshr_design, q_design, por_low, por_high);
+    if margin < NPSH_MARGIN_M {
+        diagnostics.push(
+            Diagnostic::error(
+                "HM-DES-007",
+                format!(
+                    "margen NPSHa - NPSHr = {margin:.2} m a Q = {flow:.0} m3/h dentro de la región \
+                     preferente ({por_low}..{por_high} Qd); el mínimo preliminar es {NPSH_MARGIN_M} m"
+                ),
+            )
+            .with_hint("Aumenta el NPSHa o reduce la velocidad de giro."),
+        );
+        return;
+    }
+    diagnostics.push(Diagnostic::info(
+        "HM-DES-006",
+        format!(
+            "margen NPSHa - NPSHr mínimo en la región preferente ({por_low}..{por_high} Qd) = {margin:.2} m"
+        ),
+    ));
+
+    let (low, high) = CURVE_RANGE;
+    let below = worst_npsh_margin(npsha, npshr_design, q_design, low, por_low);
+    let above = worst_npsh_margin(npsha, npshr_design, q_design, por_high, high);
+    let (margin, flow) = if below.0 <= above.0 { below } else { above };
+    if margin < NPSH_MARGIN_M {
+        diagnostics.push(
+            Diagnostic::warning(
+                "HM-DES-011",
+                format!(
+                    "fuera de la región preferente el margen NPSHa - NPSHr baja a {margin:.2} m \
+                     a Q = {flow:.0} m3/h"
+                ),
+            )
+            .with_hint(
+                "El NPSHr a caudal parcial usa un modelo sin calibrar; evita operar ahí o \
+                 confirma el NPSHr con el fabricante.",
+            ),
+        );
+    }
+}
+
+/// Rechaza selecciones fuera de su dominio físico.
+fn validate_selection(
+    selection: &DesignSelection,
+    k3: f64,
+    volute_width_factor: f64,
+    k_eff: f64,
+) -> Result<(), DesignError> {
+    let checks: [(&str, f64, bool, &str); 12] = [
+        ("psi", selection.psi, selection.psi > 0.0, "mayor que 0"),
+        ("phi", selection.phi, selection.phi > 0.0, "mayor que 0"),
+        (
+            "beta2",
+            selection.beta2_deg,
+            selection.beta2_deg > 0.0 && selection.beta2_deg < 90.0,
+            "entre 0 y 90 deg",
+        ),
+        (
+            "blade_count",
+            f64::from(selection.blade_count),
+            selection.blade_count >= 1,
+            "al menos 1",
+        ),
+        ("c0", selection.c0, selection.c0 > 0.0, "mayor que 0 m/s"),
+        ("cm0", selection.cm0, selection.cm0 > 0.0, "mayor que 0 m/s"),
+        ("A", selection.a, selection.a > 0.0, "mayor que 0"),
+        ("J", selection.j, selection.j > 0.0, "mayor que 0"),
+        (
+            "margin",
+            selection.margin,
+            selection.margin >= 1.0,
+            "al menos 1 (P_max no puede ser menor que P_eje)",
+        ),
+        (
+            "k3",
+            k3,
+            k3 > 1.0,
+            "mayor que 1 (la voluta empieza fuera del rodete)",
+        ),
+        (
+            "volute_c",
+            volute_width_factor,
+            volute_width_factor > 0.0,
+            "mayor que 0",
+        ),
+        (
+            "k_eff",
+            k_eff,
+            k_eff >= 1.0,
+            "al menos 1 (la sección no puede ser menor que el área de paso)",
+        ),
+    ];
+
+    for (name, value, valid, requirement) in checks {
+        if !value.is_finite() || !valid {
+            return Err(DesignError::Input(format!(
+                "`{name}` = {value} no es válido; debe ser {requirement}"
+            )));
+        }
+    }
+    Ok(())
 }
 
 fn validate_input(input: &DesignInput) -> Result<(), DesignError> {

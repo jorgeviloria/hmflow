@@ -7,8 +7,9 @@ use std::process::ExitCode;
 use clap::{Parser, Subcommand};
 use hm_core::{Diagnostic, Diagnostics};
 use hm_design::{
-    DesignInput, DesignOptions, DesignResult, PARAM_SPECS, design, design_with_options,
-    designed_si, param_spec, performance_curve, stored_si_matches,
+    DEFAULT_K_EFF, DEFAULT_K3, DEFAULT_VOLUTE_C, DesignInput, DesignOptions, DesignResult,
+    PARAM_SPECS, ParamSpec, design, design_with_options, designed_si, param_spec,
+    performance_curve, stored_si_matches,
 };
 use hm_formula::{Registry, eval, infer, parse};
 use hm_project::{Param, Project, PumpType};
@@ -40,6 +41,12 @@ enum Command {
     },
     /// Valida un proyecto.
     Check {
+        /// Ruta del archivo .hmf.
+        file: PathBuf,
+    },
+    /// Recalcula los parámetros automáticos de un proyecto end-suction a
+    /// partir de su punto de operación y sus selecciones manuales.
+    Recalc {
         /// Ruta del archivo .hmf.
         file: PathBuf,
     },
@@ -79,9 +86,10 @@ enum Command {
         /// Eficiencia mecánica, mayor que 0 y menor que 1.
         #[arg(long, default_value_t = 0.96)]
         eta_m: f64,
-        /// NPSH disponible, por ejemplo "10 m".
-        #[arg(long, default_value = "10 m")]
-        npsha: String,
+        /// NPSH disponible de la instalación, por ejemplo "10 m". Sin él no
+        /// se evalúa el margen de cavitación.
+        #[arg(long)]
+        npsha: Option<String>,
         /// Archivo de salida; por defecto <name>.hmf.
         #[arg(long)]
         out: Option<PathBuf>,
@@ -180,6 +188,8 @@ fn run(cli: Cli) -> Result<ExitCode, Box<dyn std::error::Error>> {
             }
         }
 
+        Command::Recalc { file } => recalc(&file),
+
         Command::Formulas => {
             let registry = Registry::all();
             println!("{:<32} {:<10} {:<8} TÍTULO", "ID", "UNIDAD", "VAL.");
@@ -254,7 +264,7 @@ fn run(cli: Cli) -> Result<ExitCode, Box<dyn std::error::Error>> {
                 n: parse_quantity(&n)?,
                 rho: parse_quantity(&rho)?,
                 eta_m,
-                npsha: Some(parse_quantity(&npsha)?),
+                npsha: npsha.as_deref().map(parse_quantity).transpose()?,
             };
 
             if !(2..=1000).contains(&curve_points) {
@@ -376,213 +386,14 @@ fn run(cli: Cli) -> Result<ExitCode, Box<dyn std::error::Error>> {
                 }
             });
             project.operating.temperature = temperature;
-            project.operating.npsha = npsha_text;
+            project.operating.npsha = npsha_text.unwrap_or_default();
             project.design.method = "end_suction_v0.1".to_string();
 
-            let mut params = BTreeMap::new();
-            params.insert("rho".to_string(), manual(rho_text));
-            params.insert("eta_m".to_string(), manual(eta_m.to_string()));
-            params.insert("mm".to_string(), manual("0.001 m".to_string()));
-            params.insert("psi".to_string(), manual(result.selection.psi.to_string()));
-            params.insert("phi".to_string(), manual(result.selection.phi.to_string()));
-            params.insert(
-                "beta2".to_string(),
-                manual(format!("{} deg", result.selection.beta2_deg)),
-            );
-            params.insert(
-                "blade_count".to_string(),
-                manual(result.selection.blade_count.to_string()),
-            );
-            params.insert(
-                "c0".to_string(),
-                manual(format!("{} m/s", result.selection.c0)),
-            );
-            params.insert(
-                "cm0".to_string(),
-                manual(format!("{} m/s", result.selection.cm0)),
-            );
-            params.insert("A".to_string(), manual(result.selection.a.to_string()));
-            params.insert("J".to_string(), manual(result.selection.j.to_string()));
-            params.insert(
-                "margin".to_string(),
-                manual(result.selection.margin.to_string()),
-            );
-            params.insert(
-                "nq".to_string(),
-                auto("similarity.nq", format!("{:.6}", result.nq)),
-            );
-            params.insert(
-                "dn".to_string(),
-                auto(
-                    "design.specific_diameter",
-                    format!("{:.4}", result.specific_diameter_mm),
-                ),
-            );
-            params.insert(
-                "sigma".to_string(),
-                auto("design.thoma_sigma", format!("{:.6}", result.sigma)),
-            );
-            params.insert(
-                "d0".to_string(),
-                auto("design.d0", format!("{} m", result.d0.value())),
-            );
-            params.insert(
-                "d1".to_string(),
-                auto("design.d1", format!("{} m", result.d1.value())),
-            );
-            params.insert(
-                "b1".to_string(),
-                auto("design.b1", format!("{} m", result.b1.value())),
-            );
-            params.insert(
-                "u2".to_string(),
-                auto("design.u2", format!("{} m/s", result.u2.value())),
-            );
-            params.insert(
-                "d2".to_string(),
-                auto("design.d2", format!("{} m", result.d2.value())),
-            );
-            params.insert(
-                "qth".to_string(),
-                auto("design.qth", format!("{} m3/s", result.qth.value())),
-            );
-            params.insert(
-                "cm2".to_string(),
-                auto("design.cm2", format!("{} m/s", result.cm2.value())),
-            );
-            params.insert(
-                "b2".to_string(),
-                auto("design.b2", format!("{} m", result.b2.value())),
-            );
-            params.insert(
-                "eta_h".to_string(),
-                auto(
-                    "design.hydraulic_efficiency",
-                    format!("{:.6}", result.eta_h),
-                ),
-            );
-            params.insert(
-                "eta_v".to_string(),
-                auto(
-                    "design.volumetric_efficiency",
-                    format!("{:.6}", result.eta_v),
-                ),
-            );
-            params.insert(
-                "eta".to_string(),
-                auto("design.overall_efficiency", format!("{:.6}", result.eta)),
-            );
-            params.insert(
-                "p_hyd".to_string(),
-                auto(
-                    "perf.hydraulic_power",
-                    format!("{} W", result.p_hyd.value()),
-                ),
-            );
-            params.insert(
-                "p_shaft".to_string(),
-                auto(
-                    "design.shaft_power",
-                    format!("{} W", result.p_shaft.value()),
-                ),
-            );
-            params.insert(
-                "torque".to_string(),
-                auto(
-                    "mech.shaft_torque",
-                    format!("{} N*m", result.torque.value()),
-                ),
-            );
-            params.insert(
-                "p_max".to_string(),
-                auto("design.max_power", format!("{} W", result.p_max.value())),
-            );
-            params.insert(
-                "p_hyd_loss".to_string(),
-                auto(
-                    "design.hydraulic_loss",
-                    format!("{} W", result.p_hyd_loss.value()),
-                ),
-            );
-            params.insert(
-                "p_vol_loss".to_string(),
-                auto(
-                    "design.volumetric_loss",
-                    format!("{} W", result.p_vol_loss.value()),
-                ),
-            );
-            params.insert(
-                "p_mech_loss".to_string(),
-                auto(
-                    "design.mechanical_loss",
-                    format!("{} W", result.p_mech_loss.value()),
-                ),
-            );
-            params.insert(
-                "npshr_d".to_string(),
-                auto(
-                    "design.npshr_design",
-                    format!("{} m", result.npshr_design.value()),
-                ),
-            );
-            params.insert(
-                "h0".to_string(),
-                auto(
-                    "design.shutoff_head",
-                    format!("{} m", result.shutoff_head.value()),
-                ),
-            );
-            params.insert("k3".to_string(), manual("1.04".to_string()));
-            params.insert("volute_c".to_string(), manual("0.05".to_string()));
-            params.insert("k_eff".to_string(), manual("1.1".to_string()));
-            params.insert("slip".to_string(), manual(result.slip.to_string()));
-            params.insert(
-                "cu2".to_string(),
-                manual(format!("{} m/s", result.cu2.value())),
-            );
-            params.insert(
-                "r3".to_string(),
-                auto(
-                    "design.volute_base_radius",
-                    format!("{} m", result.volute.base_radius.value()),
-                ),
-            );
-            params.insert(
-                "b3".to_string(),
-                auto(
-                    "design.volute_width",
-                    format!("{} m", result.volute.width.value()),
-                ),
-            );
-            params.insert(
-                "c3".to_string(),
-                auto(
-                    "design.volute_inlet_velocity",
-                    format!("{} m/s", result.volute.inlet_velocity.value()),
-                ),
-            );
-            params.insert(
-                "a360".to_string(),
-                auto(
-                    "design.volute_throat_area",
-                    format!("{} m2", result.volute.throat_area.value()),
-                ),
-            );
-            params.insert(
-                "d360".to_string(),
-                auto(
-                    "design.volute_throat_diameter",
-                    format!("{} m", result.volute.throat_diameter.value()),
-                ),
-            );
-            params.insert(
-                "r4".to_string(),
-                auto(
-                    "design.volute_outer_radius",
-                    format!("{} m", result.volute.outer_radius.value()),
-                ),
-            );
-            project.params = params;
+            let defaults = ManualDefaults {
+                rho: rho_text,
+                eta_m: eta_m.to_string(),
+            };
+            project.params = design_params(&result, None, &defaults)?.0;
 
             let diagnostics = project.validate(&Registry::all());
             if diagnostics.has_errors() {
@@ -633,13 +444,10 @@ fn run(cli: Cli) -> Result<ExitCode, Box<dyn std::error::Error>> {
     }
 }
 
-fn recompute_design_diagnostics(
+/// Entrada y selecciones del diseño tal como las guarda el proyecto.
+fn design_inputs(
     project: &Project,
-) -> Result<Option<hm_core::Diagnostics>, Box<dyn std::error::Error>> {
-    if project.design.pump_type != PumpType::EndSuction {
-        return Ok(None);
-    }
-
+) -> Result<(DesignInput, DesignOptions), Box<dyn std::error::Error>> {
     let q = parse_quantity(&project.operating.q)?;
     let h = parse_quantity(&project.operating.h)?;
     let n = parse_quantity(&project.operating.n)?;
@@ -655,20 +463,200 @@ fn recompute_design_diagnostics(
     };
     let options = design_options(project)?;
 
-    let input = DesignInput {
-        q,
-        h,
-        n,
-        rho,
-        eta_m,
-        npsha,
-    };
+    Ok((
+        DesignInput {
+            q,
+            h,
+            n,
+            rho,
+            eta_m,
+            npsha,
+        },
+        options,
+    ))
+}
 
+fn recompute_design_diagnostics(
+    project: &Project,
+) -> Result<Option<hm_core::Diagnostics>, Box<dyn std::error::Error>> {
+    if project.design.pump_type != PumpType::EndSuction {
+        return Ok(None);
+    }
+
+    let (input, options) = design_inputs(project)?;
     let result = design_with_options(&input, &options)?;
     let mut diagnostics = result.diagnostics.clone();
     add_fluid_temperature_diagnostics(project, &input, &mut diagnostics);
     compare_stored_autos(&result, project, &mut diagnostics);
     Ok(Some(diagnostics))
+}
+
+/// Recalcula los `auto` de un proyecto end-suction y lo reescribe.
+///
+/// Conserva los parámetros manuales y bloqueados; los que falten se rellenan
+/// con la selección del motor y se informa de cada uno.
+fn recalc(file: &std::path::Path) -> Result<ExitCode, Box<dyn std::error::Error>> {
+    let mut project = Project::load(file)?;
+
+    let diagnostics = project.validate(&Registry::all());
+    if diagnostics.has_errors() {
+        print_diagnostics(&diagnostics);
+        return Err("el proyecto tiene errores; no se recalculó".into());
+    }
+    if project.design.pump_type != PumpType::EndSuction {
+        return Err(format!(
+            "recalc solo admite end-suction; el proyecto es {}",
+            project.design.pump_type
+        )
+        .into());
+    }
+    if !project.design.method.is_empty() && project.design.method != "end_suction_v0.1" {
+        return Err(format!("método de diseño desconocido: {}", project.design.method).into());
+    }
+    if let Some(name) = project
+        .params
+        .keys()
+        .find(|name| param_spec(name).is_none())
+    {
+        return Err(
+            format!("parámetro desconocido: `{name}`; corrígelo antes de recalcular").into(),
+        );
+    }
+
+    let (input, options) = design_inputs(&project)?;
+    let result = design_with_options(&input, &options)?;
+    let mut diagnostics = result.diagnostics.clone();
+    add_fluid_temperature_diagnostics(&project, &input, &mut diagnostics);
+    print_diagnostics(&diagnostics);
+    if diagnostics.has_errors() {
+        return Err("el diseño tiene errores; no se escribió el proyecto".into());
+    }
+
+    let defaults = ManualDefaults {
+        rho: format!("{} kg/m3", input.rho.si),
+        eta_m: input.eta_m.to_string(),
+    };
+    let (params, filled) = design_params(&result, Some(&project.params), &defaults)?;
+    project.params = params;
+    project.design.method = "end_suction_v0.1".to_string();
+
+    let diagnostics = project.validate(&Registry::all());
+    if diagnostics.has_errors() {
+        print_diagnostics(&diagnostics);
+        return Err("el proyecto recalculado no valida; no se escribió".into());
+    }
+
+    project.save(file)?;
+    for name in &filled {
+        let value = project.params.get(name).and_then(param_value).unwrap_or("");
+        println!("  `{name}` no estaba en el proyecto; se usó {value}");
+    }
+    println!("recalculado {}", file.display());
+    Ok(ExitCode::SUCCESS)
+}
+
+fn print_diagnostics(diagnostics: &Diagnostics) {
+    for diagnostic in diagnostics.iter() {
+        println!(
+            "[{:?}] {}: {}",
+            diagnostic.severity, diagnostic.code, diagnostic.message
+        );
+        if let Some(hint) = &diagnostic.hint {
+            println!("        sugerencia: {hint}");
+        }
+    }
+}
+
+/// Texto de los parámetros manuales que no salen de la selección del motor.
+struct ManualDefaults {
+    rho: String,
+    eta_m: String,
+}
+
+/// Valor manual que usó el motor para `name`.
+fn default_manual_text(
+    name: &str,
+    result: &DesignResult,
+    defaults: &ManualDefaults,
+) -> Option<String> {
+    let selection = &result.selection;
+    Some(match name {
+        "rho" => defaults.rho.clone(),
+        "eta_m" => defaults.eta_m.clone(),
+        "mm" => "0.001 m".to_string(),
+        "psi" => selection.psi.to_string(),
+        "phi" => selection.phi.to_string(),
+        "beta2" => format!("{} deg", selection.beta2_deg),
+        "blade_count" => selection.blade_count.to_string(),
+        "c0" => format!("{} m/s", selection.c0),
+        "cm0" => format!("{} m/s", selection.cm0),
+        "A" => selection.a.to_string(),
+        "J" => selection.j.to_string(),
+        "margin" => selection.margin.to_string(),
+        "k3" => DEFAULT_K3.to_string(),
+        "volute_c" => DEFAULT_VOLUTE_C.to_string(),
+        "k_eff" => DEFAULT_K_EFF.to_string(),
+        _ => return None,
+    })
+}
+
+/// Valor calculado de un parámetro `auto`, en la unidad de su especificación.
+fn auto_text(
+    result: &DesignResult,
+    spec: &ParamSpec,
+) -> Result<String, Box<dyn std::error::Error>> {
+    let si = designed_si(result, spec.name)
+        .ok_or_else(|| format!("el diseño no calcula `{}`", spec.name))?;
+    if spec.unit == "1" {
+        return Ok(si.to_string());
+    }
+    let value = Quantity::from_si(si, parse_unit(spec.unit)?).value();
+    Ok(format!("{value} {}", spec.unit))
+}
+
+/// Parámetros generados y nombres de los manuales que se rellenaron.
+type GeneratedParams = (BTreeMap<String, Param>, Vec<String>);
+
+/// Parámetros del método end_suction_v0.1 para `result`.
+///
+/// Los `auto` se escriben siempre con el valor recalculado. Los manuales y
+/// bloqueados de `existing` se conservan; los que faltan se rellenan con el
+/// valor que usó el motor y se devuelven en la segunda lista.
+fn design_params(
+    result: &DesignResult,
+    existing: Option<&BTreeMap<String, Param>>,
+    defaults: &ManualDefaults,
+) -> Result<GeneratedParams, Box<dyn std::error::Error>> {
+    let mut params = BTreeMap::new();
+    let mut filled = Vec::new();
+
+    for spec in PARAM_SPECS {
+        let param = if let Some(formula) = spec.formula {
+            auto(formula, auto_text(result, spec)?)
+        } else {
+            match existing.and_then(|params| params.get(spec.name)) {
+                Some(param @ (Param::Manual { .. } | Param::Locked { .. })) => param.clone(),
+                Some(_) => {
+                    return Err(format!(
+                        "`{}` debe ser manual o locked para recalcular",
+                        spec.name
+                    )
+                    .into());
+                }
+                None => {
+                    let value = default_manual_text(spec.name, result, defaults)
+                        .ok_or_else(|| format!("sin valor por defecto para `{}`", spec.name))?;
+                    if existing.is_some() {
+                        filled.push(spec.name.to_string());
+                    }
+                    manual(value)
+                }
+            }
+        };
+        params.insert(spec.name.to_string(), param);
+    }
+
+    Ok((params, filled))
 }
 
 fn design_options(project: &Project) -> Result<DesignOptions, Box<dyn std::error::Error>> {
@@ -685,8 +673,6 @@ fn design_options(project: &Project) -> Result<DesignOptions, Box<dyn std::error
         k3: param_f64(project, "k3", "1")?,
         volute_width_factor: param_f64(project, "volute_c", "1")?,
         k_eff: param_f64(project, "k_eff", "1")?,
-        slip: param_f64(project, "slip", "1")?,
-        cu2: param_f64(project, "cu2", "m/s")?,
     })
 }
 
@@ -943,7 +929,7 @@ fn compare_stored_autos(result: &DesignResult, project: &Project, diagnostics: &
                         ),
                     )
                     .with_hint(
-                        "Vuelve a ejecutar el diseño para regenerar los parámetros automáticos.",
+                        "Ejecuta `hmflow-cli recalc <archivo>` para regenerar los parámetros automáticos.",
                     ),
                 );
             }
@@ -956,7 +942,7 @@ fn compare_stored_autos(result: &DesignResult, project: &Project, diagnostics: &
                         ),
                     )
                     .with_hint(
-                        "Vuelve a ejecutar el diseño para regenerar los parámetros automáticos.",
+                        "Ejecuta `hmflow-cli recalc <archivo>` para regenerar los parámetros automáticos.",
                     ),
                 );
             }
@@ -1226,5 +1212,142 @@ mod tests {
             "códigos: {:?}",
             codes(&diagnostics)
         );
+    }
+
+    /// Proyecto completo tal como lo escribe `design` para la duty de ejemplo.
+    fn designed_project() -> Project {
+        let result = sample_design();
+        let mut project = Project::new("demo", PumpType::EndSuction);
+        project.design.method = "end_suction_v0.1".to_string();
+        project.operating.npsha = "10 m".to_string();
+        let defaults = ManualDefaults {
+            rho: "998.2 kg/m3".to_string(),
+            eta_m: "0.96".to_string(),
+        };
+        project.params = design_params(&result, None, &defaults).unwrap().0;
+        project
+    }
+
+    fn recalculated(project: &Project) -> Project {
+        let (input, options) = design_inputs(project).unwrap();
+        let result = design_with_options(&input, &options).unwrap();
+        let defaults = ManualDefaults {
+            rho: "998.2 kg/m3".to_string(),
+            eta_m: "0.96".to_string(),
+        };
+        let mut project = project.clone();
+        project.params = design_params(&result, Some(&project.params), &defaults)
+            .unwrap()
+            .0;
+        project
+    }
+
+    #[test]
+    fn a_designed_project_passes_the_check() {
+        let diagnostics = design_audit(&designed_project());
+        assert!(
+            !diagnostics.has_errors(),
+            "códigos: {:?}",
+            codes(&diagnostics)
+        );
+    }
+
+    #[test]
+    fn slip_and_cu2_are_stored_as_auto() {
+        let project = designed_project();
+        for name in ["slip", "cu2"] {
+            assert!(
+                matches!(project.params.get(name), Some(Param::Auto { .. })),
+                "`{name}` debe ser auto"
+            );
+        }
+    }
+
+    #[test]
+    fn editing_beta2_or_blade_count_is_detected() {
+        for (name, value) in [("beta2", "35 deg"), ("blade_count", "4")] {
+            let mut project = designed_project();
+            project
+                .params
+                .insert(name.to_string(), manual(value.to_string()));
+            let diagnostics = design_audit(&project);
+            assert!(
+                codes(&diagnostics).contains(&"HM-PROJ-015"),
+                "editar `{name}` no se detectó: {:?}",
+                codes(&diagnostics)
+            );
+        }
+    }
+
+    #[test]
+    fn recalc_keeps_manual_edits_and_clears_the_check() {
+        let mut project = designed_project();
+        project
+            .params
+            .insert("beta2".to_string(), manual("30 deg".to_string()));
+        assert!(design_audit(&project).has_errors());
+
+        let project = recalculated(&project);
+        let diagnostics = design_audit(&project);
+        assert!(
+            !diagnostics.has_errors(),
+            "códigos: {:?}",
+            codes(&diagnostics)
+        );
+        assert_eq!(
+            project.params.get("beta2").and_then(param_value),
+            Some("30 deg")
+        );
+    }
+
+    #[test]
+    fn recalc_fills_missing_manual_parameters() {
+        let mut project = designed_project();
+        project.params.remove("k_eff");
+        let (input, options) = design_inputs(&project).unwrap();
+        let result = design_with_options(&input, &options).unwrap();
+        let defaults = ManualDefaults {
+            rho: "998.2 kg/m3".to_string(),
+            eta_m: "0.96".to_string(),
+        };
+        let (params, filled) = design_params(&result, Some(&project.params), &defaults).unwrap();
+        assert_eq!(filled, ["k_eff"]);
+        assert!(params.contains_key("k_eff"));
+    }
+
+    #[test]
+    fn recalc_does_not_replace_an_override() {
+        let mut project = designed_project();
+        project.params.insert(
+            "mm".to_string(),
+            Param::Override {
+                expr: "0.001".to_string(),
+                author: "test".to_string(),
+                date: "2026-11-02".to_string(),
+                reason: "prueba".to_string(),
+            },
+        );
+        let result = sample_design();
+        let defaults = ManualDefaults {
+            rho: "998.2 kg/m3".to_string(),
+            eta_m: "0.96".to_string(),
+        };
+        assert!(design_params(&result, Some(&project.params), &defaults).is_err());
+    }
+
+    #[test]
+    fn selections_outside_their_domain_fail_the_check() {
+        for (name, value) in [("margin", "0.5"), ("k_eff", "0"), ("k3", "1")] {
+            let mut project = designed_project();
+            project
+                .params
+                .insert(name.to_string(), manual(value.to_string()));
+            let diagnostics = design_audit(&project);
+            assert!(
+                codes(&diagnostics).contains(&"HM-PROJ-014"),
+                "`{name}` = {value} no se rechazó: {:?}",
+                codes(&diagnostics)
+            );
+        }
     }
 }

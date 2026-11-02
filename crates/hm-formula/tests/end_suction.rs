@@ -26,13 +26,13 @@ fn pack_is_audit_clean() {
 }
 
 #[test]
-fn pack_has_thirteen_formulas() {
-    assert_eq!(Registry::from_toml(END_SUCTION_V01_PACK).unwrap().len(), 13);
+fn pack_has_nineteen_formulas() {
+    assert_eq!(Registry::from_toml(END_SUCTION_V01_PACK).unwrap().len(), 19);
 }
 
 #[test]
 fn all_merges_both_packs() {
-    assert_eq!(Registry::all().len(), 23);
+    assert_eq!(Registry::all().len(), 29);
 }
 
 #[test]
@@ -175,5 +175,77 @@ fn max_power() {
         ),
         2932.6,
         5.0,
+    );
+}
+
+#[test]
+fn volute_base_radius() {
+    close(
+        evaluate(
+            "design.volute_base_radius",
+            &[("D2", "0.1871 m"), ("k3", "1.04")],
+        ),
+        0.097292,
+        1e-6,
+    );
+}
+
+#[test]
+fn volute_width() {
+    close(
+        evaluate(
+            "design.volute_width",
+            &[("B2", "0.0122 m"), ("D2", "0.1871 m"), ("c", "0.05")],
+        ),
+        0.021555,
+        1e-6,
+    );
+}
+
+#[test]
+fn volute_inlet_velocity() {
+    close(
+        evaluate(
+            "design.volute_inlet_velocity",
+            &[("cm2", "2.293 m/s"), ("cu2", "10.363 m/s")],
+        ),
+        10.613,
+        0.01,
+    );
+}
+
+#[test]
+fn volute_throat_area() {
+    close(
+        evaluate(
+            "design.volute_throat_area",
+            &[("Q", "0.016 m3/s"), ("C3", "10.613 m/s")],
+        ),
+        0.0015075,
+        1e-6,
+    );
+}
+
+#[test]
+fn volute_throat_diameter() {
+    close(
+        evaluate(
+            "design.volute_throat_diameter",
+            &[("A360", "0.0015075 m2"), ("k_eff", "1.1")],
+        ),
+        0.04819,
+        1e-4,
+    );
+}
+
+#[test]
+fn volute_outer_radius() {
+    close(
+        evaluate(
+            "design.volute_outer_radius",
+            &[("R3", "0.097292 m"), ("D360", "0.04819 m")],
+        ),
+        0.121387,
+        1e-5,
     );
 }

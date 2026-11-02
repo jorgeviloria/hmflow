@@ -74,7 +74,31 @@ pub struct DesignResult {
     pub torque_max: Quantity,
     pub npshr_design: Quantity,
     pub shutoff_head: Quantity,
+    pub slip: f64,
+    pub cu2: Quantity,
+    pub volute: VoluteResult,
     pub diagnostics: Diagnostics,
+}
+
+/// Sección circular de la voluta en un ángulo dado.
+#[derive(Debug, Clone)]
+pub struct VoluteSection {
+    pub angle_deg: f64,
+    pub area: Quantity,
+    pub diameter: Quantity,
+    pub outer_radius: Quantity,
+}
+
+/// Geometría preliminar de la voluta.
+#[derive(Debug, Clone)]
+pub struct VoluteResult {
+    pub base_radius: Quantity,
+    pub width: Quantity,
+    pub inlet_velocity: Quantity,
+    pub throat_area: Quantity,
+    pub throat_diameter: Quantity,
+    pub outer_radius: Quantity,
+    pub sections: Vec<VoluteSection>,
 }
 
 /// Punto de una curva preliminar de prestaciones.
@@ -208,6 +232,75 @@ pub fn design(input: &DesignInput) -> Result<DesignResult, DesignError> {
         ],
     )?;
 
+    let beta2_rad = selection.beta2_deg.to_radians();
+    let slip = 1.0 - beta2_rad.sin().sqrt() / (selection.blade_count as f64).powf(0.7);
+    let cu2_si = slip * (u2.si - cm2.si / beta2_rad.tan());
+    let cu2 = Quantity::from_si(cu2_si, ms.clone());
+
+    let k3 = quantity(1.04, one.clone());
+    let volute_width_factor = quantity(0.05, one.clone());
+    let k_eff = quantity(1.1, one.clone());
+
+    let r3 = evaluate(
+        &registry,
+        "design.volute_base_radius",
+        &[("D2", d2.clone()), ("k3", k3)],
+    )?;
+    let b3 = evaluate(
+        &registry,
+        "design.volute_width",
+        &[
+            ("B2", b2.clone()),
+            ("D2", d2.clone()),
+            ("c", volute_width_factor),
+        ],
+    )?;
+    let c3 = evaluate(
+        &registry,
+        "design.volute_inlet_velocity",
+        &[("cm2", cm2.clone()), ("cu2", cu2.clone())],
+    )?;
+    let a360 = evaluate(
+        &registry,
+        "design.volute_throat_area",
+        &[("Q", input.q.clone()), ("C3", c3.clone())],
+    )?;
+    let d360 = evaluate(
+        &registry,
+        "design.volute_throat_diameter",
+        &[("A360", a360.clone()), ("k_eff", k_eff)],
+    )?;
+    let r4 = evaluate(
+        &registry,
+        "design.volute_outer_radius",
+        &[("R3", r3.clone()), ("D360", d360.clone())],
+    )?;
+
+    let m2 = Unit::new("m2", Dimension::AREA, 1.0);
+    let mut sections = Vec::with_capacity(9);
+    for index in 0..=8 {
+        let angle_deg = 45.0 * index as f64;
+        let area_si = a360.si * angle_deg / 360.0;
+        let diameter_si = 1.1 * (4.0 * area_si / std::f64::consts::PI).sqrt();
+        let outer_si = r3.si + diameter_si / 2.0;
+        sections.push(VoluteSection {
+            angle_deg,
+            area: Quantity::from_si(area_si, m2.clone()),
+            diameter: Quantity::from_si(diameter_si, m.clone()),
+            outer_radius: Quantity::from_si(outer_si, m.clone()),
+        });
+    }
+
+    let volute = VoluteResult {
+        base_radius: with_unit(r3, &m),
+        width: with_unit(b3, &m),
+        inlet_velocity: with_unit(c3, &ms),
+        throat_area: with_unit(a360, &m2),
+        throat_diameter: with_unit(d360, &m),
+        outer_radius: with_unit(r4, &m),
+        sections,
+    };
+
     let d0 = evaluate(
         &registry,
         "design.d0",
@@ -293,6 +386,9 @@ pub fn design(input: &DesignInput) -> Result<DesignResult, DesignError> {
         torque_max: with_unit(torque_max, &nm),
         npshr_design,
         shutoff_head,
+        slip,
+        cu2,
+        volute,
         diagnostics: Diagnostics::new(),
     };
 
@@ -423,6 +519,16 @@ fn diagnostics_for(result: &DesignResult, input: &DesignInput) -> Diagnostics {
                 format!("NPSHa - NPSHr = {margin:.2} m"),
             ));
         }
+    }
+
+    if result.cu2.si <= 0.0 {
+        diagnostics.push(
+            Diagnostic::warning(
+                "HM-DES-008",
+                "la componente tangencial cu2 no es positiva; revisa β2 y el caudal",
+            )
+            .with_hint("El triángulo de velocidades no cierra para este punto de diseño."),
+        );
     }
 
     diagnostics

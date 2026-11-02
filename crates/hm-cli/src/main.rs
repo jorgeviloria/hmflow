@@ -262,6 +262,18 @@ fn run(cli: Cli) -> Result<ExitCode, Box<dyn std::error::Error>> {
                 result.npshr_design.value(),
                 result.shutoff_head.value()
             );
+            println!(
+                "  Voluta: R3 = {:.4} m   B3 = {:.4} m   C3 = {:.2} m/s",
+                result.volute.base_radius.value(),
+                result.volute.width.value(),
+                result.volute.inlet_velocity.value()
+            );
+            println!(
+                "  A360 = {:.6} m2   D360 = {:.4} m   R4 = {:.4} m",
+                result.volute.throat_area.value(),
+                result.volute.throat_diameter.value(),
+                result.volute.outer_radius.value()
+            );
 
             for diagnostic in result.diagnostics.iter() {
                 println!(
@@ -347,6 +359,20 @@ fn run(cli: Cli) -> Result<ExitCode, Box<dyn std::error::Error>> {
             params.insert("p_shaft".to_string(), auto("design.shaft_power"));
             params.insert("torque".to_string(), auto("mech.shaft_torque"));
             params.insert("p_max".to_string(), auto("design.max_power"));
+            params.insert("k3".to_string(), manual("1.04".to_string()));
+            params.insert("volute_c".to_string(), manual("0.05".to_string()));
+            params.insert("k_eff".to_string(), manual("1.1".to_string()));
+            params.insert("slip".to_string(), manual(result.slip.to_string()));
+            params.insert(
+                "cu2".to_string(),
+                manual(format!("{} m/s", result.cu2.value())),
+            );
+            params.insert("r3".to_string(), auto("design.volute_base_radius"));
+            params.insert("b3".to_string(), auto("design.volute_width"));
+            params.insert("c3".to_string(), auto("design.volute_inlet_velocity"));
+            params.insert("a360".to_string(), auto("design.volute_throat_area"));
+            params.insert("d360".to_string(), auto("design.volute_throat_diameter"));
+            params.insert("r4".to_string(), auto("design.volute_outer_radius"));
             project.params = params;
 
             let diagnostics = project.validate(&Registry::all());

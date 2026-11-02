@@ -278,3 +278,130 @@ value = "P_shaft*margin"
 
 [formula.notes]
 assumptions = "Margen 1.1 sobre la potencia en el eje, como en D1.A1 (2.93 kW frente a 2.666 kW)."
+
+[[formula]]
+id = "design.volute_base_radius"
+version = 1
+validation = "reference"
+module = "design"
+title = "Radio de la base de la voluta"
+source = "Srinivasan 2017, ec. 5.7, p. 146; D2.2, p. 450"
+units = "m"
+range = "0 .. 2"
+test = "crates/hm-formula/tests/end_suction.rs::volute_base_radius"
+
+[formula.inputs]
+D2 = "m"
+k3 = "1"
+
+[formula.expr]
+value = "k3*D2/2"
+
+[formula.notes]
+assumptions = "R3 = (1.03..1.05) R2; se usa k3=1.04. En D2.2, R3=0.099 m."
+
+[[formula]]
+id = "design.volute_width"
+version = 1
+validation = "reference"
+module = "design"
+title = "Ancho de la voluta"
+source = "Srinivasan 2017, ec. 5.8, p. 146; D2.2, p. 450"
+units = "m"
+range = "0 .. 1"
+test = "crates/hm-formula/tests/end_suction.rs::volute_width"
+
+[formula.inputs]
+B2 = "m"
+D2 = "m"
+c = "1"
+
+[formula.expr]
+value = "B2 + c*D2"
+
+[formula.notes]
+assumptions = "b3 = b2 + (0.04..0.05) D2; se usa c=0.05. En D2.2, B3=0.022 m."
+
+[[formula]]
+id = "design.volute_inlet_velocity"
+version = 1
+validation = "reference"
+module = "design"
+title = "Velocidad absoluta a la entrada de la voluta"
+source = "Srinivasan 2017, D2.2, p. 450"
+units = "m/s"
+range = "0 .. 100"
+test = "crates/hm-formula/tests/end_suction.rs::volute_inlet_velocity"
+
+[formula.inputs]
+cm2 = "m/s"
+cu2 = "m/s"
+
+[formula.expr]
+value = "sqrt(cm2^2 + cu2^2)"
+
+[formula.notes]
+assumptions = "C3 = sqrt(cm2^2 + cu2^2). En D2.2, C3=12.089 m/s con su triángulo de velocidades."
+
+[[formula]]
+id = "design.volute_throat_area"
+version = 1
+validation = "reference"
+module = "design"
+title = "Área de garganta de la voluta"
+source = "Srinivasan 2017, D2.2, p. 451"
+units = "m2"
+range = "0 .. 1"
+test = "crates/hm-formula/tests/end_suction.rs::volute_throat_area"
+
+[formula.inputs]
+Q = "m3/s"
+C3 = "m/s"
+
+[formula.expr]
+value = "Q/C3"
+
+[formula.notes]
+assumptions = "A360=Q/C3. En D2.2, A=0.0013 m2 con C3=12.089 m/s."
+
+[[formula]]
+id = "design.volute_throat_diameter"
+version = 1
+validation = "reference"
+module = "design"
+title = "Diámetro efectivo de garganta"
+source = "Srinivasan 2017, D2.2, p. 451"
+units = "m"
+range = "0 .. 1"
+test = "crates/hm-formula/tests/end_suction.rs::volute_throat_diameter"
+
+[formula.inputs]
+A360 = "m2"
+k_eff = "1"
+
+[formula.expr]
+value = "k_eff*sqrt(4*A360/pi)"
+
+[formula.notes]
+assumptions = "D_eff=1.1 D para compensar lengua y redondeo. En D2.2, D_eff=0.0452 m."
+
+[[formula]]
+id = "design.volute_outer_radius"
+version = 1
+validation = "reference"
+module = "design"
+title = "Radio exterior de la voluta"
+source = "Srinivasan 2017, D2.2, p. 451"
+units = "m"
+range = "0 .. 2"
+test = "crates/hm-formula/tests/end_suction.rs::volute_outer_radius"
+
+[formula.inputs]
+R3 = "m"
+D360 = "m"
+
+[formula.expr]
+value = "R3 + D360/2"
+
+[formula.notes]
+assumptions = "Radio exterior de la sección de garganta. En D2.2, R4=0.1216 m."

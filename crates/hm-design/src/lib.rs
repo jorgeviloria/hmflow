@@ -519,6 +519,10 @@ pub struct DesignOptions {
     /// ([`gulich_volumetric_efficiency`]). Entre 0 y 1, sin incluir los
     /// extremos. Dimensiona Qth, φ y b2 y entra en el análisis de pérdidas.
     pub eta_v: Option<f64>,
+    /// Número de lenguas de la voluta zLe: 1 en una voluta simple (por
+    /// defecto), 2 en una doble. Con un zLe par se evita un Z par (Gülich
+    /// p. 491).
+    pub volute_channels: Option<u32>,
     /// Rugosidad de arena equivalente del rodete, m (Gülich 3.10.5). Sin dato
     /// el rodete se trata como liso, que es lo que dejaba la v0.8. Multiplica
     /// el rozamiento de discos por fR (3.6.6).
@@ -574,14 +578,20 @@ pub const NO_MATCHING_FLOW_RATIO: f64 = 10.0;
 /// Intervalo de búsqueda de β2, en grados.
 const BETA2_SEARCH_DEG: (f64, f64) = (1.0, 89.0);
 
-/// Número de álabes del que parte la búsqueda, el de D1.A1. No es el de una
-/// bomba concreta: se mueve en [`BLADE_COUNT_SEARCH`] hasta que β2 cabe en
-/// 15..45°.
+/// Número de álabes con que empieza la búsqueda, el de D1.A1 y el mayor de los
+/// recomendados. No es el de una bomba concreta.
 const BLADE_COUNT_START: u32 = 7;
 
-/// Extremos de la búsqueda de Z. Fuera de 4..12 ya avisa HM-DES-005; aquí el
-/// intervalo es el que aún deja un álabe fundible.
-const BLADE_COUNT_SEARCH: (u32, u32) = (5, 9);
+/// Z recomendado por Gülich 2020, p. 408: de 5 a 7 álabes con 10 < nq < 120.
+const BLADE_COUNT_RECOMMENDED: (u32, u32) = (5, 7);
+
+/// Z que solo se prueba si con 5..7 β2 no cabe en 15..45°: «8 o más no se
+/// recomienda» por la estabilidad de la curva Q-H (p. 408). Pasar de 7 avisa
+/// con HM-DES-034; fuera de 4..12 avisa además HM-DES-005.
+const BLADE_COUNT_EXTENDED: (u32, u32) = (8, 9);
+
+/// Z máximo sin aviso HM-DES-034.
+const BLADE_COUNT_MAX_RECOMMENDED: u32 = BLADE_COUNT_RECOMMENDED.1;
 
 /// Holgura mínima entre el cubo y el diámetro del álabe a la entrada, m.
 const EYE_HUB_CLEARANCE: f64 = 0.005;
@@ -837,11 +847,17 @@ struct OutletRequest {
     d1: f64,
     blade_count: Option<u32>,
     beta2_rad: Option<f64>,
+    /// Lenguas de la voluta, zLe.
+    volute_channels: u32,
 }
 
 /// Z y β2. Con Z manual se resuelve solo β2. Con β2 manual, Z se queda en
-/// [`BLADE_COUNT_START`] salvo que también se haya fijado. Sin ninguno, Z
-/// baja o sube desde 7 dentro de 5..=9 hasta que β2 cae en 15..45°.
+/// [`BLADE_COUNT_START`] salvo que también se haya fijado. Sin ninguno, el libro
+/// fija Z antes que β2 (§7.2.1, pasos 5 y 10) y no da un criterio entre 5, 6 y
+/// 7: se prueba de 7 a 5 y luego 8 y 9, y se queda el primero cuyo β2 cabe en
+/// 15..45°. Con un número par de lenguas solo se prueban Z impares. Un Z cuyo
+/// β2 no alcanza la altura se salta; si ninguno cabe, el de β2 más cercano al
+/// rango (HM-DES-004), y si ninguno resuelve, el error del último.
 fn select_outlet(
     registry: &Registry,
     request: &OutletRequest,
@@ -886,29 +902,33 @@ fn select_outlet(
         return solve(BLADE_COUNT_START);
     }
 
-    let mut z = BLADE_COUNT_START;
-    for _ in 0..8 {
-        let outlet = match solve(z) {
-            Ok(outlet) => outlet,
-            // Con pocos álabes el deslizamiento no deja alcanzar la altura:
-            // se sigue subiendo y solo se falla cuando Z ya está en el tope.
-            Err(_) if z < BLADE_COUNT_SEARCH.1 => {
-                z += 1;
-                continue;
+    let allowed = |z: &u32| !request.volute_channels.is_multiple_of(2) || !z.is_multiple_of(2);
+    let candidates = (BLADE_COUNT_RECOMMENDED.0..=BLADE_COUNT_RECOMMENDED.1)
+        .rev()
+        .chain(BLADE_COUNT_EXTENDED.0..=BLADE_COUNT_EXTENDED.1)
+        .filter(allowed);
+    let (low, high) = BETA2_RANGE_DEG;
+    let mut nearest: Option<(f64, OutletGeometry)> = None;
+    let mut last_error = None;
+    for z in candidates {
+        match solve(z) {
+            Ok(outlet) if (low..=high).contains(&outlet.beta2_deg) => return Ok(outlet),
+            Ok(outlet) => {
+                let miss = (low - outlet.beta2_deg).max(outlet.beta2_deg - high);
+                if nearest.as_ref().is_none_or(|(best, _)| miss < *best) {
+                    nearest = Some((miss, outlet));
+                }
             }
-            Err(error) => return Err(error),
-        };
-        if outlet.beta2_deg < BETA2_RANGE_DEG.0 && z > BLADE_COUNT_SEARCH.0 {
-            z -= 1;
-            continue;
+            Err(error) => last_error = Some(error),
         }
-        if outlet.beta2_deg > BETA2_RANGE_DEG.1 && z < BLADE_COUNT_SEARCH.1 {
-            z += 1;
-            continue;
-        }
-        return Ok(outlet);
     }
-    solve(z)
+    match (nearest, last_error) {
+        (Some((_, outlet)), _) => Ok(outlet),
+        (None, Some(error)) => Err(error),
+        (None, None) => Err(DesignError::Input(
+            "no hay un número de álabes que resuelva la altura".to_string(),
+        )),
+    }
 }
 
 /// Mínimo de `f` en `[a, b]` por sección áurea. `f` se supone unimodal.
@@ -1120,6 +1140,15 @@ pub fn design_with_options(
     let k3_value = options.k3.unwrap_or(cutwater_min_ratio);
     let volute_width_value = options.volute_width_factor.unwrap_or(DEFAULT_VOLUTE_C);
     let k_eff_value = options.k_eff.unwrap_or(DEFAULT_K_EFF);
+    let volute_channels = match options.volute_channels {
+        Some(0) => {
+            return Err(DesignError::Input(
+                "`volute_channels` = 0 no es válido; debe ser al menos 1".to_string(),
+            ));
+        }
+        Some(value) => value,
+        None => 1,
+    };
     let volute_ratio_value = match options.volute_ratio {
         Some(value)
             if value.is_finite()
@@ -1426,6 +1455,7 @@ pub fn design_with_options(
             d1: d1.si,
             blade_count: options.blade_count,
             beta2_rad: options.beta2_rad,
+            volute_channels,
         },
     )
     .map_err(|error| match error {
@@ -2472,6 +2502,20 @@ fn diagnostics_for(result: &DesignResult, input: &DesignInput) -> Diagnostics {
                 ),
             )
             .with_hint("Reduce la deceleración: revisa β2, el diámetro de entrada o el coeficiente de caudal."),
+        );
+    }
+
+    if result.selection.blade_count > BLADE_COUNT_MAX_RECOMMENDED {
+        diagnostics.push(
+            Diagnostic::info(
+                "HM-DES-034",
+                format!(
+                    "Z = {}: Gülich no recomienda 8 o más álabes por la estabilidad de la curva \
+                     Q-H (p. 408)",
+                    result.selection.blade_count
+                ),
+            )
+            .with_hint("Con 5..7 álabes β2 se sale de 15..45°; revisa ψ, φ o el ojo."),
         );
     }
 

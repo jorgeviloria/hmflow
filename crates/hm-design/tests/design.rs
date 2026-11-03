@@ -1157,3 +1157,92 @@ fn invalid_impeller_roughness_is_rejected() {
         assert!(error.contains("impeller_roughness"), "{bad}: {error}");
     }
 }
+
+/// β2 que da Euler con un Z fijado a mano.
+fn beta2_with(input: &DesignInput, z: u32) -> f64 {
+    design_with_options(
+        input,
+        &DesignOptions {
+            blade_count: Some(z),
+            ..DesignOptions::default()
+        },
+    )
+    .unwrap()
+    .selection
+    .beta2_deg
+}
+
+#[test]
+fn blade_count_is_the_highest_of_five_to_seven_with_a_usual_outlet_angle() {
+    // Gülich p. 408: 5 a 7 álabes en 10 < nq < 120; p. 412: β2B de 15° a 45°.
+    // El libro fija Z antes que β2 y no da un criterio entre 5, 6 y 7: el
+    // motor prueba de 7 hacia abajo y se queda con el primero cuyo β2 cabe.
+    for (q, h, n) in [
+        ("120 m3/h", "45 m", "2900 rpm"),
+        ("500 m3/h", "60 m", "1450 rpm"),
+        ("800 m3/h", "20 m", "1450 rpm"),
+        ("1060 gpm", "83 m", "1750 rpm"),
+        ("80 m3/h", "160 m", "2900 rpm"),
+    ] {
+        let input = input(q, h, n);
+        let expected = (5..=7u32)
+            .rev()
+            .find(|&z| (15.0..=45.0).contains(&beta2_with(&input, z)))
+            .unwrap();
+        let result = design(&input).unwrap();
+        assert_eq!(result.selection.blade_count, expected, "{q}");
+        assert!(!has(&result, "HM-DES-034"), "{q}");
+    }
+}
+
+#[test]
+fn b1_keeps_five_blades() {
+    let result = design(&input("1060 gpm", "83 m", "1750 rpm")).unwrap();
+    assert_eq!(result.selection.blade_count, 5);
+    close(result.selection.beta2_deg, 15.7, 0.05);
+}
+
+#[test]
+fn more_than_seven_blades_are_reported() {
+    // nq ≈ 123: con 5..7 álabes β2 se sale de 15..45° y el motor amplía a 8 y
+    // 9; Gülich no recomienda 8 o más (estabilidad de la curva, p. 408).
+    let result = design(&input("1500 m3/h", "15 m", "1450 rpm")).unwrap();
+    assert!(result.selection.blade_count > 7);
+    assert!(has(&result, "HM-DES-034"));
+}
+
+#[test]
+fn two_volute_channels_get_an_odd_blade_count() {
+    // Con zLe = 2 (voluta doble) hay que evitar un Z par (Gülich p. 491).
+    for (q, h, n) in [
+        ("500 m3/h", "60 m", "1450 rpm"),
+        ("120 m3/h", "45 m", "2900 rpm"),
+        ("800 m3/h", "20 m", "1450 rpm"),
+        // Con zLe = 1 sale Z = 6; con zLe = 2 tiene que ser impar.
+        ("80 m3/h", "160 m", "2900 rpm"),
+    ] {
+        let result = design_with_options(
+            &input(q, h, n),
+            &DesignOptions {
+                volute_channels: Some(2),
+                ..DesignOptions::default()
+            },
+        )
+        .unwrap();
+        assert_eq!(result.selection.blade_count % 2, 1, "{q}");
+    }
+}
+
+#[test]
+fn zero_volute_channels_are_rejected() {
+    let error = design_with_options(
+        &input("120 m3/h", "45 m", "2900 rpm"),
+        &DesignOptions {
+            volute_channels: Some(0),
+            ..DesignOptions::default()
+        },
+    )
+    .unwrap_err()
+    .to_string();
+    assert!(error.contains("volute_channels"), "{error}");
+}

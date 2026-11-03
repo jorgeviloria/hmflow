@@ -1247,6 +1247,7 @@ fn design_options(project: &Project) -> Result<DesignOptions, Box<dyn std::error
         balance_holes: false,
         volute_ratio: None,
         impeller_roughness: None,
+        volute_channels: None,
     })
 }
 

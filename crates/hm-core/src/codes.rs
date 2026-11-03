@@ -314,6 +314,11 @@ pub const CODES: &[CodeInfo] = &[
         Warning,
         "El caudal está fuera del rango del ηh estadístico de Gülich (ec. 3.9.6): extrapolado.",
     ),
+    active(
+        "HM-DES-034",
+        Info,
+        "Más de 7 álabes: Gülich no recomienda 8 o más por la estabilidad de la curva Q-H.",
+    ),
 ];
 
 /// Busca un código en el registro.

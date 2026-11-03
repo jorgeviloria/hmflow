@@ -32,6 +32,8 @@ fn volute_follows_d2_2() {
         // k3 de Srinivasan (ec. 5.7, 1,03..1,05); por defecto el motor usa
         // el mínimo de Gülich (tabla 10.2), 1,11 en este caso.
         k3: Some(1.04),
+        // El ηv de Srinivasan (0,9722); el motor usa el de Gülich 3.5.10.
+        eta_v: Some(0.9722),
         ..DesignOptions::default()
     };
     let result = design_with_options(&input(), &options).unwrap();

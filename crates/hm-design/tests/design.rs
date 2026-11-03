@@ -21,6 +21,7 @@ fn input(q: &str, h: &str, n: &str) -> DesignInput {
     }
 }
 
+#[track_caller]
 fn close(actual: f64, expected: f64, tolerance: f64) {
     assert!(
         (actual - expected).abs() <= tolerance,
@@ -59,14 +60,15 @@ fn d1a1_reference() {
     close(result.eta_h, 0.8896, 0.001);
     close(result.eta_v, 0.9722, 0.002);
     // Desde end_suction_v0.4 η sale del análisis de pérdidas de Gülich; el
-    // libro da 0,813 con su cadena ηh·ηv·ηm. La diferencia (−0,4 % en
-    // potencia y par) es la del modelo, no la de la cadena de fórmulas.
-    close(result.eta, 0.812, 0.005);
+    // libro da 0,813 con su cadena ηh·ηv·ηm. Desde la v0.9 el ηv del libro
+    // (0,9722) también entra en el análisis de pérdidas: 0,806, −0,9 % en
+    // potencia y par frente al libro. Es la del modelo, no la de la cadena.
+    close(result.eta, 0.806, 0.005);
     close(result.p_hyd.value(), 2161.4, 5.0);
-    close(result.p_shaft.value(), 2661.8, 15.0);
-    close(result.p_max.value(), 2928.0, 20.0);
-    close(result.torque.value(), 14.12, 0.08);
-    close(result.torque_max.value(), 15.53, 0.1);
+    close(result.p_shaft.value(), 2683.0, 15.0);
+    close(result.p_max.value(), 2951.3, 20.0);
+    close(result.torque.value(), 14.23, 0.08);
+    close(result.torque_max.value(), 15.66, 0.1);
     // NPSH3 con cm0 = 2,25 m/s (la meridional del álabe), no con c0 = 3,6.
     // El libro no publica el NPSH de D1.A1.
     close(result.npshr_design.value(), 0.895, 0.01);
@@ -91,6 +93,8 @@ fn d1a1_selections() -> DesignOptions {
         c0: Some(3.6),
         cm0: Some(2.25),
         j: Some(1.03),
+        // El ηv de Srinivasan (0,9722). El motor usa el de Gülich 3.5.10.
+        eta_v: Some(0.9722),
         ..DesignOptions::default()
     }
 }
@@ -113,7 +117,7 @@ fn d1a1_duty_with_default_selections() {
     close(result.selection.psi, 0.9472, 1e-4);
     close(result.selection.phi, 0.1040, 1e-3);
     // v0.8: τ2 y d1/d2 entran en Euler. Con Z = 7, β2 queda en 20,1°.
-    close(result.selection.beta2_deg, 20.12, 0.05);
+    close(result.selection.beta2_deg, 19.91, 0.05);
     close(result.b2.si / result.d2.si, gulich_b2_star(result.nq), 1e-6);
     let euler_head = result.eta_h * result.u2.si * result.cu2.si / 9.80665;
     close(euler_head, input.h.si, 1e-6);
@@ -127,24 +131,24 @@ fn existing_case_is_consistent() {
     close(result.nq, 30.474, 0.05);
     close(result.selection.psi, 0.9569, 1e-4);
     // v0.8: Z = 7, τ2 en el triángulo de salida. β2 = 19,0°.
-    close(result.selection.beta2_deg, 19.04, 0.02);
+    close(result.selection.beta2_deg, 18.83, 0.02);
     close(result.d2.value(), 0.2000, 0.001);
     close(result.b2.value(), 0.01794, 0.0003);
     // Ojo que minimiza el NPSH3 con el cubo restado: d1 = 106 mm, b1 = 24 mm.
     close(result.d1.value(), 0.1057, 0.001);
     close(result.b1.value(), 0.0242, 0.001);
-    // end_suction_v0.4 (análisis de pérdidas): 0,843; v0.3 daba 0,816.
-    // Gülich ec. 3.9.1 da 0,812 ± 0,038 para este Q y nq.
-    close(result.eta, 0.843, 0.003);
+    // end_suction_v0.9 (análisis de pérdidas con el ηv de Gülich 3.5.10): 0,841;
+    // v0.8 daba 0,843 y v0.3 0,816. Gülich ec. 3.9.1 da 0,812 ± 0,038.
+    close(result.eta, 0.841, 0.003);
     close(result.p_hyd.value(), 14681.5, 5.0);
-    close(result.p_shaft.value(), 14681.5 / 0.8431616, 20.0);
+    close(result.p_shaft.value(), 14681.5 / 0.841437, 20.0);
     close(
         result.torque.value(),
-        14681.5 / 0.8431616 / (2.0 * std::f64::consts::PI * 2900.0 / 60.0),
+        14681.5 / 0.841437 / (2.0 * std::f64::consts::PI * 2900.0 / 60.0),
         0.1,
     );
     // v0.8: Gülich ec. 6.10 con el cm0 del ojo óptimo.
-    close(result.npshr_design.value(), 3.83, 0.02);
+    close(result.npshr_design.value(), 3.81, 0.02);
     close(result.shutoff_head.value(), 53.65, 0.1);
     // H0/Hd = 1,19: por debajo del 1,2 de Gülich, informativo. Desde la v0.5
     // la pendiente de la tangente (§4.3.5) es mayor de lo que admite ese H0 y
@@ -641,10 +645,11 @@ fn high_nq_transition_and_recirculation_are_reported() {
 fn loss_estimates_follow_gulich() {
     let input = input("120 m3/h", "45 m", "2900 rpm");
     let result = design(&input).unwrap();
-    // 1/(1 + 4,1·nq^−1,6) y 1 − 0,0045·(1/Q)^0,4·(1500/n)^0,3
+    // v0.9: ηv de Gülich 3.5.10; con nq ≥ 27, 1/(1 + 0,15·nq^−0,6). Y
+    // 1 − 0,0045·(1/Q)^0,4·(1500/n)^0,3 para ηm.
     close(
         result.leakage_eta_v,
-        1.0 / (1.0 + 4.1 * result.nq.powf(-1.6)),
+        1.0 / (1.0 + 0.15 * result.nq.powf(-0.6)),
         1e-12,
     );
     close(result.mechanical_eta_estimate, 0.98561, 1e-4);
@@ -844,5 +849,62 @@ fn non_positive_statistical_efficiency_is_named_in_the_error() {
         let text = design(&input(q, h, n)).unwrap_err().to_string();
         assert!(text.contains("ηh") && text.contains("0,005"), "{text}");
         assert!(!text.contains("eje"), "{text}");
+    }
+}
+
+#[test]
+fn one_volumetric_efficiency_for_sizing_and_losses() {
+    // end_suction_v0.9: el ηv que dimensiona Qth, φ y b2 es el mismo que entra
+    // en el análisis de pérdidas, el de Gülich 3.5.10 (nq < 27: 4,1/nq^1,6).
+    let q = input("1060 gpm", "83 m", "1750 rpm");
+    let result = design(&q).unwrap();
+    close(result.eta_v, result.leakage_eta_v, 1e-12);
+    close(result.eta_v, 0.95566, 1e-4);
+    close(result.qth.si, q.q.si / result.eta_v, 1e-9);
+}
+
+#[test]
+fn balance_holes_double_the_leakage_ratio() {
+    // zH = 2 con agujeros de equilibrio (Gülich 3.5.10): Qsp/Q se duplica.
+    let q = input("1060 gpm", "83 m", "1750 rpm");
+    let base = design(&q).unwrap();
+    let holes = design_with_options(
+        &q,
+        &DesignOptions {
+            balance_holes: true,
+            ..DesignOptions::default()
+        },
+    )
+    .unwrap();
+    let ratio = |eta_v: f64| 1.0 / eta_v - 1.0;
+    close(ratio(holes.eta_v), 2.0 * ratio(base.eta_v), 1e-9);
+    close(holes.eta_v, holes.leakage_eta_v, 1e-12);
+}
+
+#[test]
+fn explicit_volumetric_efficiency_replaces_the_estimate() {
+    let q = input("120 m3/h", "45 m", "2900 rpm");
+    let result = design_with_options(
+        &q,
+        &DesignOptions {
+            eta_v: Some(0.95),
+            ..DesignOptions::default()
+        },
+    )
+    .unwrap();
+    close(result.eta_v, 0.95, 1e-12);
+    close(result.leakage_eta_v, 0.95, 1e-12);
+    close(result.qth.si, q.q.si / 0.95, 1e-12);
+    for bad in [0.0, 1.0, 1.2, f64::NAN] {
+        let error = design_with_options(
+            &q,
+            &DesignOptions {
+                eta_v: Some(bad),
+                ..DesignOptions::default()
+            },
+        )
+        .unwrap_err()
+        .to_string();
+        assert!(error.contains("eta_v"), "{error}");
     }
 }

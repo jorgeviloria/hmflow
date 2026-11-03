@@ -933,6 +933,29 @@ value = "1/(1 + 4.1*nq^(-1.6))"
 assumptions = "Qsp/Qopt = 4,1/nq^1,6 sin detalle de los anillos, y ηvol = Q/(Q + Qsp) sin compensación axial (QE = 0) ni etapas (Qs3 = 0). Es una primera aproximación para contrastar ηv."
 
 [[formula]]
+id = "design.volumetric_efficiency_gulich"
+version = 1
+validation = "pilot"
+module = "design"
+title = "Rendimiento volumétrico por la fuga del anillo, Gülich 3.5.10"
+source = "Gülich 2020, tabla 3.5, ec. (3.5.9) y (3.5.10), p. 155"
+units = "1"
+range = "0.5 .. 1"
+test = "crates/hm-formula/tests/end_suction.rs::volumetric_efficiency_gulich"
+
+[formula.inputs]
+nq = "1"
+zH = "1"
+a = "1"
+m = "1"
+
+[formula.expr]
+value = "1/(1 + a*zH*exp(-m*ln(nq)))"
+
+[formula.notes]
+assumptions = "Qsp/Qopt = a·zH/nq^m y ηv = Q/(Q + Qsp) con QE = Qs3 = Qh = 0 (3.5.9). (a, m) = (4,1, 1,6) con nq < 27 y (0,15, 0,6) con nq ≥ 27; zH = 2 con agujeros de equilibrio y 1 sin ellos. Lo elige el motor, que pasa a y m. El exponente es variable, así que se escribe nq^−m como exp(−m·ln nq)."
+
+[[formula]]
 id = "design.mechanical_efficiency_estimate"
 version = 1
 validation = "pilot"

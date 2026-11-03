@@ -378,7 +378,7 @@ pub const PARAM_SPECS: &[ParamSpec] = &[
     ParamSpec {
         name: "eta_v",
         unit: "1",
-        formula: Some("design.volumetric_efficiency"),
+        formula: Some("design.volumetric_efficiency_gulich"),
     },
     ParamSpec {
         name: "eta",
@@ -496,11 +496,48 @@ pub struct DesignOptions {
     /// Holgura diametral del anillo de desgaste delantero, m. Sin dato, la de
     /// Gülich ec. (3.12). Solo entra en el contraste de fugas `seal_eta_v`.
     pub seal_clearance: Option<f64>,
+    /// Rendimiento volumétrico del rodete. Sin dato, el de Gülich 3.5.10
+    /// ([`gulich_volumetric_efficiency`]). Entre 0 y 1, sin incluir los
+    /// extremos. Dimensiona Qth, φ y b2 y entra en el análisis de pérdidas.
+    pub eta_v: Option<f64>,
+    /// El rodete tiene agujeros de equilibrio: la fuga de Gülich 3.5.10 se
+    /// duplica (zH = 2).
+    pub balance_holes: bool,
 }
 
 /// Caudales entre los que vale el ηh estadístico de Gülich (ec. 3.9.6,
 /// tabla 3.9), m³/s. Fuera de ahí el motor lo extrapola.
 pub const ETA_H_FLOW_RANGE: (f64, f64) = (0.005, 1.0);
+
+/// nq que separa los dos tramos de la fuga de Gülich 3.5.10.
+const LEAKAGE_NQ_SPLIT: f64 = 27.0;
+
+/// ηv de Gülich (ec. 3.5.9 y 3.5.10): `1/(1 + a·zH/nq^m)` con (a, m) =
+/// (4,1, 1,6) si nq < 27 y (0,15, 0,6) si no; `zH = 2` con agujeros de
+/// equilibrio. Es el único ηv del método desde la v0.9.
+pub fn gulich_volumetric_efficiency(nq: f64, balance_holes: bool) -> Result<f64, DesignError> {
+    let registry = Registry::all();
+    let one = Unit::dimensionless();
+    let (a, m) = if nq < LEAKAGE_NQ_SPLIT {
+        (4.1, 1.6)
+    } else {
+        (0.15, 0.6)
+    };
+    Ok(evaluate(
+        &registry,
+        "design.volumetric_efficiency_gulich",
+        &[
+            ("nq", quantity(nq, one.clone())),
+            (
+                "zH",
+                quantity(if balance_holes { 2.0 } else { 1.0 }, one.clone()),
+            ),
+            ("a", quantity(a, one.clone())),
+            ("m", quantity(m, one)),
+        ],
+    )?
+    .value())
+}
 
 /// Intervalo de búsqueda de β2, en grados.
 const BETA2_SEARCH_DEG: (f64, f64) = (1.0, 89.0);
@@ -538,17 +575,15 @@ const POWER_CURVE_POINTS: usize = 101;
 /// - φ: el que da la anchura relativa media de Gülich, ec. (7.1), con ese ψ y
 ///   el ηv de Srinivasan. Un φ constante por tramos no puede seguir esa curva,
 ///   porque b2* crece con nq² a φ fijo.
-fn base_selection(registry: &Registry, nq: f64) -> Result<DesignSelection, DesignError> {
+fn base_selection(
+    registry: &Registry,
+    nq: f64,
+    eta_v: f64,
+) -> Result<DesignSelection, DesignError> {
     let one = Unit::dimensionless();
     let psi = evaluate(
         registry,
         "design.head_coefficient",
-        &[("nq", quantity(nq, one.clone()))],
-    )?
-    .value();
-    let eta_v = evaluate(
-        registry,
-        "design.volumetric_efficiency",
         &[("nq", quantity(nq, one.clone()))],
     )?
     .value();
@@ -588,7 +623,8 @@ fn base_selection(registry: &Registry, nq: f64) -> Result<DesignSelection, Desig
 /// caudal, del cubo y del espesor, y salen de [`design`].
 pub fn table_selection(nq: f64, eta_h: f64) -> Result<DesignSelection, DesignError> {
     let registry = Registry::all();
-    let mut selection = base_selection(&registry, nq)?;
+    let eta_v = gulich_volumetric_efficiency(nq, false)?;
+    let mut selection = base_selection(&registry, nq, eta_v)?;
     selection.beta2_deg = euler_blade_angle(
         &registry,
         &EulerTarget {
@@ -1003,7 +1039,16 @@ pub fn design_with_options(
     )?
     .value();
 
-    let table = base_selection(&registry, nq)?;
+    let eta_v = match options.eta_v {
+        Some(value) if value.is_finite() && value > 0.0 && value < 1.0 => value,
+        Some(value) => {
+            return Err(DesignError::Input(format!(
+                "`eta_v` = {value} no es válido; debe estar entre 0 y 1 sin incluirlos"
+            )));
+        }
+        None => gulich_volumetric_efficiency(nq, options.balance_holes)?,
+    };
+    let table = base_selection(&registry, nq, eta_v)?;
     let manual_beta2 = options.beta2_rad.map(f64::to_degrees);
     let mut selection = DesignSelection {
         psi: options.psi.unwrap_or(table.psi),
@@ -1066,16 +1111,6 @@ pub fn design_with_options(
         )));
     }
 
-    // Dos ηv, a propósito. Este, el de Srinivasan, dimensiona φ, Qth y b2
-    // y es el que deja las medidas de D1.A1. El de Gülich entra solo en el
-    // análisis de pérdidas.
-    let eta_v = evaluate(
-        &registry,
-        "design.volumetric_efficiency",
-        &[("nq", quantity(nq, one.clone()))],
-    )?
-    .value();
-
     let p_hyd = evaluate(
         &registry,
         "perf.hydraulic_power",
@@ -1137,12 +1172,8 @@ pub fn design_with_options(
     // del ojo sale de este par (P·margen). Si la curva pide más potencia,
     // torque_max sube al final y la mecánica del eje usa ese par mayor; el
     // ojo no se redimensiona.
-    let leakage_eta_v = evaluate(
-        &registry,
-        "design.leakage_volumetric_efficiency",
-        &[("nq", quantity(nq, one.clone()))],
-    )?
-    .value();
+    // Un solo ηv (v0.9): el de Gülich 3.5.10 dimensiona y entra en las pérdidas.
+    let leakage_eta_v = eta_v;
     let mechanical_eta_estimate = evaluate(
         &registry,
         "design.mechanical_efficiency_estimate",

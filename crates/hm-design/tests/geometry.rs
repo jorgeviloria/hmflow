@@ -91,6 +91,8 @@ fn d1a1_blade_with_published_selections() {
         c0: Some(3.6),
         cm0: Some(2.25),
         j: Some(1.03),
+        // El ηv de Srinivasan (0,9722); el motor usa el de Gülich 3.5.10.
+        eta_v: Some(0.9722),
         ..DesignOptions::default()
     };
     let result = design_with_options(&input, &options).unwrap();

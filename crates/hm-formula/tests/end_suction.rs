@@ -26,13 +26,13 @@ fn pack_is_audit_clean() {
 }
 
 #[test]
-fn pack_has_seventy_one_formulas() {
-    assert_eq!(Registry::from_toml(END_SUCTION_V01_PACK).unwrap().len(), 71);
+fn pack_has_seventy_two_formulas() {
+    assert_eq!(Registry::from_toml(END_SUCTION_V01_PACK).unwrap().len(), 72);
 }
 
 #[test]
 fn all_merges_both_packs() {
-    assert_eq!(Registry::all().len(), 81);
+    assert_eq!(Registry::all().len(), 82);
 }
 
 #[test]
@@ -633,6 +633,22 @@ fn recirculation_onset() {
         0.51305,
         1e-4,
     );
+}
+
+#[test]
+fn volumetric_efficiency_gulich() {
+    // ηv = 1/(1 + a·zH/nq^m), Gülich 3.5.9 y 3.5.10; (a, m) = (4,1, 1,6) con
+    // nq < 27 y (0,15, 0,6) con nq ≥ 27; zH = 2 con agujeros de equilibrio.
+    let eta = |nq: &str, zh: &str, a: &str, m: &str| {
+        evaluate(
+            "design.volumetric_efficiency_gulich",
+            &[("nq", nq), ("zH", zh), ("a", a), ("m", m)],
+        )
+    };
+    close(eta("10", "1", "4.1", "1.6"), 0.90663, 1e-5);
+    close(eta("16.46", "1", "4.1", "1.6"), 0.95566, 1e-5);
+    close(eta("100", "1", "0.15", "0.6"), 0.99062, 1e-5);
+    close(eta("10", "2", "4.1", "1.6"), 0.82920, 1e-5);
 }
 
 #[test]

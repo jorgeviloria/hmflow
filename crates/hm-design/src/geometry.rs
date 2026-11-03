@@ -101,6 +101,19 @@ pub fn wrap_angle(points: &[(f64, f64)]) -> f64 {
         .sum()
 }
 
+/// Longitud de la línea media del álabe, m: suma de los tramos
+/// `√(Δr² + (r̄·Δθ)²)` con r̄ el radio medio de cada tramo.
+pub fn blade_length(points: &[BladePoint]) -> f64 {
+    points
+        .windows(2)
+        .map(|pair| {
+            let radial = pair[1].r - pair[0].r;
+            let mean_radius = 0.5 * (pair[0].r + pair[1].r);
+            radial.hypot(mean_radius * (pair[1].theta - pair[0].theta))
+        })
+        .sum()
+}
+
 /// Línea media de un álabe cilíndrico de r1 a r2 con β lineal en r y la
 /// anchura meridional b = Qth/(2π r cm) con cm lineal de cm1 a cm2.
 ///

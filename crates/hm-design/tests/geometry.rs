@@ -1,4 +1,4 @@
-use hm_design::geometry::{BLADE_STEPS, geometry, wrap_angle};
+use hm_design::geometry::{BLADE_STEPS, BladePoint, blade_length, geometry, wrap_angle};
 use hm_design::{DesignInput, DesignOptions, design, design_with_options};
 use hm_units::parse_quantity;
 
@@ -150,4 +150,42 @@ fn cutwater_defaults_to_gulich_and_warns_when_closer() {
     )
     .unwrap();
     assert!(codes(&close_tongue).contains(&"HM-DES-023".to_string()));
+}
+
+fn point(r: f64, theta: f64) -> BladePoint {
+    BladePoint {
+        r,
+        beta: 0.3,
+        theta,
+        width: 0.02,
+    }
+}
+
+#[test]
+fn blade_length_follows_the_camber_line() {
+    // Radial recto: de r = 0,1 a 0,2 sin envolvimiento mide 0,1 m.
+    close(
+        blade_length(&[point(0.1, 0.0), point(0.2, 0.0)]),
+        0.1,
+        1e-12,
+    );
+    // Arco a r = 0,2 con Δθ = 0,5 rad: r·Δθ = 0,1 m.
+    close(
+        blade_length(&[point(0.2, 0.0), point(0.2, 0.5)]),
+        0.1,
+        1e-12,
+    );
+    // Tramo con r medio 0,15: √(0,1² + (0,15·1)²) = 0,180278 m.
+    close(
+        blade_length(&[point(0.1, 0.0), point(0.2, 1.0)]),
+        0.180_278,
+        1e-6,
+    );
+    // Dos tramos suman; un solo punto no tiene longitud.
+    close(
+        blade_length(&[point(0.1, 0.0), point(0.2, 0.0), point(0.3, 0.0)]),
+        0.2,
+        1e-12,
+    );
+    close(blade_length(&[point(0.1, 0.0)]), 0.0, 0.0);
 }

@@ -324,6 +324,11 @@ pub const CODES: &[CodeInfo] = &[
         Info,
         "La deceleración w1q/w1m en la garganta del rodete queda fuera de 0,75..0,85.",
     ),
+    active(
+        "HM-DES-036",
+        Warning,
+        "La carga efectiva del álabe supera la admisible de Gülich (7.1.11) en más de un 15 %.",
+    ),
 ];
 
 /// Busca un código en el registro.

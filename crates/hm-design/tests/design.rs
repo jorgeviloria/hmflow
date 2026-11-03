@@ -1,8 +1,9 @@
+use hm_design::geometry::{BLADE_STEPS, blade_length, camber_line};
 use hm_design::{
-    DesignInput, DesignOptions, PARAM_SPECS, REFERENCE_WATER_NU, default_mechanical_efficiency,
-    design, design_with_options, designed_si, gulich_b2_star, inlet_throat_area,
-    inlet_throat_ratio, param_spec, required_npsha, seal_rotation_is_laminar, stored_si_matches,
-    water_density,
+    CYLINDRICAL_BLADE_MAX_NQ, DesignInput, DesignOptions, PARAM_SPECS, REFERENCE_WATER_NU,
+    blade_loading_allowable, default_mechanical_efficiency, design, design_with_options,
+    designed_si, gulich_b2_star, inlet_throat_area, inlet_throat_ratio, param_spec, required_npsha,
+    seal_rotation_is_laminar, stored_si_matches, water_density,
 };
 use hm_units::parse_quantity;
 
@@ -1301,4 +1302,58 @@ fn inlet_deceleration_warning_follows_the_band() {
         let inside = (0.75..=0.85).contains(&result.inlet_deceleration);
         assert_eq!(has(&result, "HM-DES-035"), !inside, "{q}");
     }
+}
+
+#[test]
+fn allowable_blade_loading_follows_nq() {
+    // Gülich 7.1.11: ξal = (40/nq)^0,77.
+    close(blade_loading_allowable(40.0), 1.0, 1e-12);
+    close(blade_loading_allowable(16.46), 1.981_23, 1e-5);
+}
+
+#[test]
+fn effective_blade_loading_follows_the_impeller() {
+    // Gülich 7.1.10: ξeff = 2π·ψ/(ηh·zLa·L*·(w1* + w2*)) con L* = L/d2 y
+    // w* = w/u2; L es la línea media del álabe. Con ξeff > 1,15·ξal avisa
+    // HM-DES-036.
+    for (q, h, n) in [
+        ("1060 gpm", "83 m", "1750 rpm"),
+        ("120 m3/h", "45 m", "2900 rpm"),
+        ("500 m3/h", "60 m", "1450 rpm"),
+        ("200 m3/h", "8 m", "1750 rpm"),
+    ] {
+        let result = design(&input(q, h, n)).unwrap();
+        let blade = camber_line(
+            (0.5 * result.d1.si, 0.5 * result.d2.si),
+            (result.beta1b, result.selection.beta2_deg.to_radians()),
+            (result.selection.cm0, result.cm2.si),
+            result.qth.si,
+            BLADE_STEPS,
+        );
+        let length = blade_length(&blade) / result.d2.si;
+        let velocities = (result.w1.si + result.w2.si) / result.u2.si;
+        let expected = 2.0 * std::f64::consts::PI * result.selection.psi
+            / (result.eta_h * f64::from(result.selection.blade_count) * length * velocities);
+        assert!(
+            result.blade_loading.is_finite() && result.blade_loading > 0.0,
+            "{q}"
+        );
+        close(result.blade_loading, expected, 1e-9 * expected);
+        // Con nq > 40 la línea media 2D es mucho más corta que el álabe 3D
+        // (HM-DES-024) y ξeff sale 2..3 veces el admisible sin que el diseño
+        // lo esté: el aviso se limita a nq ≤ 40.
+        let high = result.blade_loading > 1.15 * blade_loading_allowable(result.nq)
+            && result.nq <= CYLINDRICAL_BLADE_MAX_NQ;
+        assert_eq!(has(&result, "HM-DES-036"), high, "{q}");
+    }
+}
+
+#[test]
+fn b1_blade_loading_is_inside_the_band() {
+    // B1 (nq 16,5, 5 álabes) queda dentro de ξal ± 15 %: sin aviso.
+    let result = design(&input("1060 gpm", "83 m", "1750 rpm")).unwrap();
+    let allowable = blade_loading_allowable(result.nq);
+    let ratio = result.blade_loading / allowable;
+    assert!((0.85..=1.15).contains(&ratio), "ξeff/ξal = {ratio}");
+    assert!(!has(&result, "HM-DES-036"));
 }

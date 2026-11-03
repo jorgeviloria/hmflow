@@ -122,6 +122,12 @@ pub struct DesignResult {
     /// w1q/w1m en el punto de diseño (Gülich §7.2.1, paso 15): velocidad en la
     /// garganta del rodete frente a la relativa de entrada.
     pub inlet_deceleration: f64,
+    /// Carga efectiva del álabe ξeff = 2π·ψ/(ηh·zLa·L*·(w1* + w2*)), con
+    /// L* = L/d2 y w* = w/u2 (Gülich 2020, ec. 7.1.10). Se compara con
+    /// [`blade_loading_allowable`]. Con nq > 40 la línea media 2D es mucho más
+    /// corta que el álabe 3D y ξeff sale 2..3 veces el admisible: solo se avisa
+    /// (HM-DES-036) con nq ≤ [`CYLINDRICAL_BLADE_MAX_NQ`].
+    pub blade_loading: f64,
     /// Caudal de la bomba en que c3q = c2 en la garganta de la voluta, Qc
     /// (Gülich ec. 6.22a, con la meridional). Sin cruce vale
     /// [`NO_MATCHING_FLOW_RATIO`]·Qd.
@@ -718,6 +724,19 @@ const SEAL_TRANSITION_REYNOLDS: f64 = 2000.0;
 /// no 3.7.13. `re = 2·s·cax/ν` y `reu = 2·s·usp/ν`.
 pub fn seal_rotation_is_laminar(re: f64, reu: f64) -> bool {
     (re * re + 0.25 * reu * reu).sqrt() < SEAL_TRANSITION_REYNOLDS
+}
+
+/// nq de referencia de la carga admisible del álabe (Gülich 7.1.11).
+const BLADE_LOADING_REF_NQ: f64 = 40.0;
+
+/// Margen sobre la carga admisible a partir del cual se avisa: la banda de
+/// 7.1.11 es ±15 %.
+const BLADE_LOADING_MARGIN: f64 = 0.15;
+
+/// Carga admisible del álabe ξal = (40/nq)^0,77 (Gülich 2020, ec. 7.1.11,
+/// p. 407; banda ±15 %).
+pub fn blade_loading_allowable(nq: f64) -> f64 {
+    (BLADE_LOADING_REF_NQ / nq).powf(0.77)
 }
 
 /// Banda de w1q/w1m en el BEP con entrada axial (Gülich 2020, p. 415).
@@ -1737,6 +1756,18 @@ pub fn design_with_options(
         &[("nq", quantity(nq, one.clone()))],
     )?
     .value();
+    let blade = geometry::camber_line(
+        (0.5 * d1.si, 0.5 * d2.si),
+        (beta1b, selection.beta2_deg.to_radians()),
+        (selection.cm0, cm2.si),
+        qth.si,
+        geometry::BLADE_STEPS,
+    );
+    let blade_loading = 2.0 * std::f64::consts::PI * selection.psi
+        / (eta_h
+            * f64::from(selection.blade_count)
+            * (geometry::blade_length(&blade) / d2.si)
+            * ((w1.si + w2.si) / u2.si));
     let mut result = DesignResult {
         nq,
         specific_diameter_mm,
@@ -1772,6 +1803,7 @@ pub fn design_with_options(
         shockless_flow: with_unit(shockless_flow, &m3s),
         throat_flow: with_unit(throat_flow, &m3s),
         inlet_deceleration,
+        blade_loading,
         volute_matching_flow: with_unit(volute_matching_flow, &m3s),
         transition_ratio,
         recirculation_onset,
@@ -2548,6 +2580,28 @@ fn diagnostics_for(result: &DesignResult, input: &DesignInput) -> Diagnostics {
                 ),
             )
             .with_hint("Reduce la deceleración: revisa β2, el diámetro de entrada o el coeficiente de caudal."),
+        );
+    }
+
+    let loading_limit = (1.0 + BLADE_LOADING_MARGIN) * blade_loading_allowable(result.nq);
+    if result.nq <= CYLINDRICAL_BLADE_MAX_NQ && result.blade_loading > loading_limit {
+        diagnostics.push(
+            Diagnostic::warning(
+                "HM-DES-036",
+                format!(
+                    "carga del álabe ξeff = {:.2} por encima de {:.2}, la admisible ξal = {:.2} \
+                     más un {:.0} % (Gülich 2020, ec. 7.1.10–7.1.11): el álabe es corto para \
+                     su número",
+                    result.blade_loading,
+                    loading_limit,
+                    blade_loading_allowable(result.nq),
+                    100.0 * BLADE_LOADING_MARGIN
+                ),
+            )
+            .with_hint(
+                "Sube Z o alarga el álabe; Gülich recomienda quedar un 10 % por debajo de ξal \
+                 (p. 415).",
+            ),
         );
     }
 

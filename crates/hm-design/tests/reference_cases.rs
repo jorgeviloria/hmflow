@@ -40,7 +40,8 @@ const REFERENCES: &[Reference] = &[
         d1_mm: 110.0,
         // Otro método: c2u = 0,5 u2 y u2 = 75 m/s; el motor da ψ = 1,04.
         d2_band: (-0.11, -0.07),
-        d1_band: MATCH_D1,
+        // Ojo que minimiza el NPSH3 con el cubo restado: −28 % frente a 110 mm.
+        d1_band: (-0.30, -0.26),
     },
     Reference {
         name: "Gülich D7.5, multietapa",
@@ -52,9 +53,8 @@ const REFERENCES: &[Reference] = &[
         d2_mm: 217.0,
         d1_mm: 101.0,
         d2_band: MATCH_D2,
-        // Cubo de 48 mm y nss = 180 en el libro; el motor no modela el cubo
-        // y su c0 de tabla da un ojo mayor: +12 %.
-        d1_band: (0.09, 0.15),
+        // El ojo automático resta el cubo y d1 queda dentro del ±2 %.
+        d1_band: MATCH_D1,
     },
     Reference {
         name: "D1.A1 una etapa",
@@ -66,7 +66,9 @@ const REFERENCES: &[Reference] = &[
         d2_mm: 187.1,
         d1_mm: 78.7,
         d2_band: MATCH_D2,
-        d1_band: MATCH_D1,
+        // El ojo del libro es el publicado (c0 = 3,6 m/s). El automático
+        // minimiza el NPSH3 y sale un 20 % mayor.
+        d1_band: (0.18, 0.23),
     },
     Reference {
         name: "Gülich D7.5, una etapa nq 36",
@@ -78,7 +80,8 @@ const REFERENCES: &[Reference] = &[
         d2_mm: 281.0,
         d1_mm: 147.0,
         d2_band: MATCH_D2,
-        d1_band: MATCH_D1,
+        // Ojo que minimiza el NPSH3, con cubo: +5 % frente a 147 mm.
+        d1_band: (0.03, 0.08),
     },
     Reference {
         name: "Gülich D7.5, una etapa nq 100",
@@ -90,8 +93,8 @@ const REFERENCES: &[Reference] = &[
         d2_mm: 312.0,
         d1_mm: 229.0,
         d2_band: MATCH_D2,
-        // c0 = 4,5 m/s de tabla para nq ≥ 60 da un ojo demasiado grande.
-        d1_band: (0.20, 0.28),
+        // Ojo que minimiza el NPSH3, con cubo: +11 % frente a 229 mm.
+        d1_band: (0.09, 0.14),
     },
 ];
 
@@ -103,6 +106,7 @@ fn input(reference: &Reference) -> DesignInput {
         rho: parse_quantity("998.2 kg/m3").unwrap(),
         eta_m: 0.96,
         npsha: None,
+        nu: None,
     }
 }
 

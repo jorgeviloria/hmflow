@@ -13,7 +13,7 @@ use hm_design::{
     DEFAULT_K_EFF, DEFAULT_VOLUTE_C, DesignInput, DesignOptions, DesignReport, DesignResult,
     LEGACY_METHODS, METHOD, PARAM_SPECS, ParamSpec, WATER_DENSITY_RANGE_C,
     default_mechanical_efficiency, design, design_with_options, designed_si, param_spec,
-    performance_curve, stored_si_matches, table_selection, water_density,
+    performance_curve, stored_si_matches, water_density,
 };
 use hm_design::{ViscousCorrection, viscous_correction, viscous_diagnostics};
 use hm_formula::{Registry, eval, infer, parse};
@@ -58,7 +58,7 @@ enum Command {
         /// Ruta del archivo .hmf.
         file: PathBuf,
         /// Vuelve a calcular las selecciones que dependen de nq (psi y phi
-        /// según Gülich, beta2 por Euler, blade_count, c0 y cm0 de tabla),
+        /// según Gülich, beta2 por Euler, Z y el ojo: c0, cm0 y J),
         /// salvo las que estén en locked.
         #[arg(long)]
         reselect: bool,
@@ -385,6 +385,8 @@ fn run(cli: Cli) -> Result<ExitCode, Box<dyn std::error::Error>> {
                 Some(eta_m) => eta_m,
                 None => default_mechanical_efficiency(&q_quantity, &n_quantity)?,
             };
+            let viscosity_text = viscosity.unwrap_or_default();
+            let nu = kinematic_viscosity(&viscosity_text, &fluid, &temperature, rho_quantity.si)?;
             let input = DesignInput {
                 q: q_quantity,
                 h: parse_quantity(&h)?,
@@ -392,8 +394,8 @@ fn run(cli: Cli) -> Result<ExitCode, Box<dyn std::error::Error>> {
                 rho: rho_quantity,
                 eta_m,
                 npsha: npsha_quantity,
+                nu,
             };
-            let viscosity_text = viscosity.unwrap_or_default();
 
             if !(2..=1000).contains(&curve_points) {
                 return Err("--curve-points debe estar entre 2 y 1000".into());
@@ -689,6 +691,12 @@ fn design_inputs(
         None => Some(parse_quantity(&project.operating.npsha)?),
     };
     let options = design_options(project)?;
+    let nu = kinematic_viscosity(
+        &project.operating.viscosity,
+        &project.operating.fluid,
+        &project.operating.temperature,
+        rho.si,
+    )?;
 
     Ok((
         DesignInput {
@@ -698,6 +706,7 @@ fn design_inputs(
             rho,
             eta_m,
             npsha,
+            nu,
         },
         options,
     ))
@@ -726,38 +735,46 @@ fn recompute_design_diagnostics(
     Ok(Some(diagnostics))
 }
 
-/// Selecciones que el motor toma de sus tablas según `nq`.
-const NQ_SELECTIONS: [&str; 6] = ["psi", "phi", "beta2", "blade_count", "c0", "cm0"];
-
-/// Valor por defecto, en SI, de una selección que depende de `nq`.
+/// Selecciones que `recalc --reselect` vuelve a tomar del motor para el punto.
 ///
-/// β2 no se compara: no sale de una tabla, sino de Euler con ψ, φ y Z del
-/// proyecto. Si no cuadra con ellos, lo señala `HM-DES-019`.
-fn table_si(name: &str, nq: f64, eta_h: f64) -> Option<f64> {
-    let table = table_selection(nq, eta_h).ok()?;
+/// J entra porque el ojo automático lo fija junto con c0 y cm0. Si se deja
+/// el J de otro punto, el motor no minimiza el NPSH y c0 queda distinto.
+const NQ_SELECTIONS: [&str; 7] = ["psi", "phi", "beta2", "blade_count", "c0", "cm0", "J"];
+
+/// Valor, en SI, de la selección que el motor haría para este punto.
+///
+/// β2 no se compara: sale de Euler con el Z del proyecto. Si no cuadra con
+/// la altura, lo señala `HM-DES-019`.
+fn fresh_selection_si(result: &DesignResult, name: &str) -> Option<f64> {
     Some(match name {
-        "psi" => table.psi,
-        "phi" => table.phi,
-        "blade_count" => f64::from(table.blade_count),
-        "c0" => table.c0,
-        "cm0" => table.cm0,
+        "psi" => result.selection.psi,
+        "phi" => result.selection.phi,
+        "blade_count" => f64::from(result.selection.blade_count),
+        "c0" => result.selection.c0,
+        "cm0" => result.selection.cm0,
+        "J" => result.selection.j,
         _ => return None,
     })
 }
 
-/// Selecciones `manual` que ya no coinciden con la tabla para el `nq` actual.
-///
-/// `design` escribe como `manual` lo que eligió la tabla. Si después cambia
-/// el punto de operación, esos valores quedan de otro `nq`. Las `locked` son
-/// decisiones explícitas y no se señalan.
-fn stale_selections(project: &Project, nq: f64, eta_h: f64) -> Vec<&'static str> {
+/// Selecciones `manual` que ya no coinciden con lo que el motor elegiría
+/// para el punto actual, con el fluido del proyecto y sin otras selecciones
+/// manuales. Las `locked` son decisiones explícitas y no se señalan.
+fn stale_selections(project: &Project) -> Vec<&'static str> {
+    let Ok((input, _)) = design_inputs(project) else {
+        return Vec::new();
+    };
+    let Ok(fresh) = design(&input) else {
+        return Vec::new();
+    };
     NQ_SELECTIONS
         .into_iter()
         .filter(|name| {
             let Some(Param::Manual { value }) = project.params.get(*name) else {
                 return false;
             };
-            let (Ok(quantity), Some(expected)) = (parse_quantity(value), table_si(name, nq, eta_h))
+            let (Ok(quantity), Some(expected)) =
+                (parse_quantity(value), fresh_selection_si(&fresh, name))
             else {
                 return false;
             };
@@ -771,7 +788,7 @@ fn add_selection_diagnostics(
     result: &DesignResult,
     diagnostics: &mut Diagnostics,
 ) {
-    let stale = stale_selections(project, result.nq, result.eta_h);
+    let stale = stale_selections(project);
     if stale.is_empty() {
         return;
     }
@@ -784,14 +801,14 @@ fn add_selection_diagnostics(
         Diagnostic::warning(
             "HM-DES-013",
             format!(
-                "{names} no {} con la tabla para nq = {:.2}; puede venir de otro punto de operación",
+                "{names} no {} con la selección del motor para nq = {:.2}; puede venir de otro punto de operación",
                 if stale.len() == 1 { "coincide" } else { "coinciden" },
                 result.nq
             ),
         )
         .with_hint(
-            "Usa `hmflow-cli recalc --reselect <archivo>` para volver a la tabla, \
-             o márcalas como locked si son decisiones tuyas.",
+            "Usa `hmflow-cli recalc --reselect <archivo>` para volver a la selección \
+             del motor en este punto, o márcalas como locked si son decisiones tuyas.",
         ),
     );
 }
@@ -800,7 +817,7 @@ fn add_selection_diagnostics(
 ///
 /// Conserva los parámetros manuales y bloqueados; los que falten se rellenan
 /// con la selección del motor y se informa de cada uno. Con `reselect`, las
-/// selecciones `manual` que dependen de `nq` se vuelven a tomar de la tabla.
+/// selecciones `manual` que dependen del punto se vuelven a tomar del motor.
 fn recalc(file: &std::path::Path, reselect: bool) -> Result<ExitCode, Box<dyn std::error::Error>> {
     let mut project = Project::load(file)?;
 
@@ -1684,6 +1701,7 @@ mod tests {
             rho: parse_quantity("998.2 kg/m3").unwrap(),
             eta_m: 0.96,
             npsha: Some(parse_quantity("10 m").unwrap()),
+            nu: None,
         })
         .unwrap()
     }
@@ -2004,14 +2022,14 @@ mod tests {
     }
 
     /// Guarda de versionado: el `.hmf` de referencia se escribió con
-    /// `end_suction_v0.7`. Si el motor cambia sus resultados sin cambiar
+    /// `end_suction_v0.8`. Si el motor cambia sus resultados sin cambiar
     /// `METHOD`, sus valores `auto` dejan de cuadrar y este test falla. La
     /// salida correcta es subir `METHOD`, añadir el anterior a
     /// `LEGACY_METHODS` y regenerar el archivo con `design`.
     #[test]
     fn reference_project_of_the_current_method_audits_clean() {
         let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
-            .join("../hm-project/tests/fixtures/end_suction_v0.7.hmf");
+            .join("../hm-project/tests/fixtures/end_suction_v0.8.hmf");
         let project = Project::load(&path).unwrap();
         assert_eq!(
             project.design.method, METHOD,
@@ -2076,6 +2094,7 @@ mod tests {
             rho: parse_quantity("900 kg/m3").unwrap(),
             eta_m: 0.96,
             npsha: None,
+            nu: None,
         };
         let (diagnostics, correction) =
             viscosity_effect("oil", "20 degC", "", &input, &result).unwrap();
@@ -2099,12 +2118,16 @@ mod tests {
             vapor_pressure: String::new(),
         });
         project.operating.viscosity = "20 cSt".to_string();
+        // El proyecto se dimensionó con agua. ν entra en discos y anillo, así
+        // que los auto guardados ya no cuadran (HM-PROJ-015) hasta un recalc.
+        // Lo que no puede pasar es que el anillo deje el diseño sin resultado.
         let diagnostics = design_audit(&project);
         assert!(
-            !diagnostics.has_errors(),
+            !codes(&diagnostics).contains(&"HM-PROJ-014"),
             "códigos: {:?}",
             codes(&diagnostics)
         );
+        assert!(codes(&diagnostics).contains(&"HM-PROJ-015"));
 
         let path = std::env::temp_dir().join(format!(
             "hmflow-suction-{}-{:?}.hmf",
@@ -2204,6 +2227,7 @@ mod tests {
             rho: parse_quantity("998.2 kg/m3").unwrap(),
             eta_m: 0.96,
             npsha: Some(parse_quantity("10 m").unwrap()),
+            nu: None,
         })
         .unwrap();
 
@@ -2397,7 +2421,7 @@ mod tests {
                 .params
                 .insert(name.to_string(), Param::Locked { value });
         }
-        assert_eq!(stale_selections(&project, 44.0, 0.88), Vec::<&str>::new());
+        assert_eq!(stale_selections(&project), Vec::<&str>::new());
     }
 
     #[test]

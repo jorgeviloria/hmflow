@@ -147,6 +147,71 @@ fn evaluate(registry: &Registry, id: &str, pairs: &[(&str, Quantity)]) -> Result
     Ok(registry.evaluate(id, &inputs)?.si)
 }
 
+/// Espesor nominal del álabe, el relativo e* y el del borde de salida, m.
+///
+/// e = máx(e*·d2, 0,015·d2, 0,003 m) y el borde de salida es e/2
+/// (Gülich 2020, tabla 14.3). Lo comparten el triángulo de salida y esta
+/// mecánica, para que el bloqueo τ y el espesor informado no se separen.
+pub fn blade_thicknesses(
+    blade_count: u32,
+    u2: f64,
+    nq: f64,
+    d2: f64,
+) -> Result<(f64, f64, f64), DesignError> {
+    if blade_count == 0 || !u2.is_finite() || !nq.is_finite() || !d2.is_finite() || d2 <= 0.0 {
+        return Err(DesignError::Input(
+            "el espesor del álabe necesita Z, u2, nq y D2 válidos".to_string(),
+        ));
+    }
+    let registry = Registry::all();
+    let one = Unit::dimensionless();
+    let ratio = evaluate(
+        &registry,
+        "mech.blade_thickness_ratio",
+        &[
+            ("z", Quantity::from_si(f64::from(blade_count), one.clone())),
+            ("u2", Quantity::from_si(u2, parse_unit("m/s")?)),
+            ("u_ref", Quantity::from_si(100.0, parse_unit("m/s")?)),
+            ("nq", Quantity::from_si(nq, one)),
+        ],
+    )?;
+    let thickness = (ratio * d2)
+        .max(CAST_MIN_THICKNESS_RATIO * d2)
+        .max(CAST_MIN_THICKNESS);
+    Ok((ratio, thickness, thickness / 2.0))
+}
+
+/// Diámetro mínimo del eje por torsión y el del cubo, m.
+///
+/// El ojo automático usa el par de `P·margen`, antes de subir el par al
+/// máximo de la curva. [`mechanics`] vuelve a calcular el cubo con
+/// `torque_max`, que puede ser mayor.
+pub fn shaft_and_hub(torque: f64, shear: f64) -> Result<(f64, f64), DesignError> {
+    if !torque.is_finite() || torque <= 0.0 || !shear.is_finite() || shear <= 0.0 {
+        return Err(DesignError::Input(
+            "el eje necesita un par y una tensión admisible positivos".to_string(),
+        ));
+    }
+    let registry = Registry::all();
+    let ds = evaluate(
+        &registry,
+        "mech.shaft_min_diameter",
+        &[
+            ("T", Quantity::from_si(torque, parse_unit("N*m")?)),
+            ("tau", Quantity::from_si(shear, parse_unit("Pa")?)),
+        ],
+    )?;
+    let hub = evaluate(
+        &registry,
+        "mech.hub_diameter",
+        &[
+            ("ds", Quantity::from_si(ds, parse_unit("m")?)),
+            ("k_hub", Quantity::from_si(HUB_RATIO, Unit::dimensionless())),
+        ],
+    )?;
+    Ok((ds, hub))
+}
+
 /// Mecánica preliminar de `result` con la tensión admisible `shear_stress`
 /// en Pa.
 pub fn mechanics(
@@ -166,22 +231,7 @@ pub fn mechanics(
     let metres = |value: f64| Quantity::from_si(value, m.clone());
 
     let shaft_torque = result.torque_max.si;
-    let shaft_min_diameter = evaluate(
-        &registry,
-        "mech.shaft_min_diameter",
-        &[
-            ("T", result.torque_max.clone()),
-            ("tau", Quantity::from_si(shear_stress, parse_unit("Pa")?)),
-        ],
-    )?;
-    let hub_diameter = evaluate(
-        &registry,
-        "mech.hub_diameter",
-        &[
-            ("ds", metres(shaft_min_diameter)),
-            ("k_hub", pure(HUB_RATIO)),
-        ],
-    )?;
+    let (shaft_min_diameter, hub_diameter) = shaft_and_hub(shaft_torque, shear_stress)?;
 
     let nq = result.nq.clamp(RADIAL_NQ_RANGE.0, RADIAL_NQ_RANGE.1);
     let k0 = evaluate(
@@ -192,19 +242,8 @@ pub fn mechanics(
     let k_opt = RADIAL_DESIGN_COEFFICIENT;
 
     let d2 = result.d2.si;
-    let blade_thickness_ratio = evaluate(
-        &registry,
-        "mech.blade_thickness_ratio",
-        &[
-            ("z", pure(f64::from(result.selection.blade_count))),
-            ("u2", result.u2.clone()),
-            ("u_ref", Quantity::from_si(100.0, parse_unit("m/s")?)),
-            ("nq", pure(result.nq)),
-        ],
-    )?;
-    let blade_thickness = (blade_thickness_ratio * d2)
-        .max(CAST_MIN_THICKNESS_RATIO * d2)
-        .max(CAST_MIN_THICKNESS);
+    let (blade_thickness_ratio, blade_thickness, trailing_edge_thickness) =
+        blade_thicknesses(result.selection.blade_count, result.u2.si, result.nq, d2)?;
     let shroud_thickness = evaluate(
         &registry,
         "mech.shroud_thickness",
@@ -280,7 +319,7 @@ pub fn mechanics(
         radial_coefficient_design: k_opt,
         blade_thickness_ratio,
         blade_thickness,
-        trailing_edge_thickness: blade_thickness / 2.0,
+        trailing_edge_thickness,
         shroud_thickness,
         radial_width,
         radial_thrust_shutoff: radial(0.0)?,
@@ -303,7 +342,9 @@ pub fn mechanics_diagnostics(mechanics: &Mechanics, result: &DesignResult) -> Di
     let mut diagnostics = Diagnostics::new();
     let d0 = result.d0.si;
     let blockage = (mechanics.hub_diameter / d0).powi(2);
-    if blockage > HUB_EYE_BLOCKAGE {
+    // El ojo automático ya restó el cubo del área. El aviso es para el ojo
+    // de Srinivasan, que se calcula sin él.
+    if !result.eye_excludes_hub && blockage > HUB_EYE_BLOCKAGE {
         diagnostics.push(
             Diagnostic::warning(
                 "HM-DES-027",

@@ -559,11 +559,11 @@ assumptions = "Coeficiente de presión a caudal cero de bombas de voluta, ψo = 
 
 [[formula]]
 id = "design.slip_factor"
-version = 2
+version = 3
 validation = "pilot"
 module = "design"
 title = "Factor de deslizamiento"
-source = "Gülich 2020, tabla 3.2, ec. (3.2.6), p. 152 (Wiesner con f1 = 0,98)"
+source = "Gülich 2020, tabla 3.2, ec. (3.2.6) y (3.2.4), p. 152 (Wiesner con f1 = 0,98)"
 units = "1"
 range = "0 .. 1"
 test = "crates/hm-formula/tests/end_suction.rs::slip_factor"
@@ -571,16 +571,17 @@ test = "crates/hm-formula/tests/end_suction.rs::slip_factor"
 [formula.inputs]
 beta2 = "deg"
 Z = "1"
+eps = "1"
 
 [formula.expr]
-value = "0.98*(1 - sqrt(sin(beta2))/Z^0.7)"
+value = "0.98*(1 - sqrt(sin(beta2))/Z^0.7)*(1 - (max(eps - exp(-8.16*sin(beta2)/Z), 0)/max(1 - exp(-8.16*sin(beta2)/Z), 1e-9))^3)"
 
 [formula.notes]
-assumptions = "γ = f1 (1 − √(sen β2B)/z^0,7) kw con f1 = 0,98 (rodetes radiales) y kw = 1, válido si el diámetro medio de entrada d1m/d2 no supera εLim = exp(−8,16 sen β2B/z) (ec. 3.2.4)."
+assumptions = "γ = f1 (1 − √(sen β2B)/z^0,7) kw con f1 = 0,98 (rodetes radiales). kw = 1 si eps = d1/d2 no supera εLim = exp(−8,16 sen β2B/z); si lo supera, kw = 1 − ((eps − εLim)/(1 − εLim))^3. eps = 0 deja kw = 1."
 
 [[formula]]
 id = "design.cu2"
-version = 2
+version = 3
 validation = "pilot"
 module = "design"
 title = "Componente tangencial a la salida del rodete"
@@ -594,12 +595,13 @@ slip = "1"
 u2 = "m/s"
 cm2 = "m/s"
 beta2 = "deg"
+tau = "1"
 
 [formula.expr]
-value = "u2*slip - cm2/tan(beta2)"
+value = "u2*slip - tau*cm2/tan(beta2)"
 
 [formula.notes]
-assumptions = "c2u = u2 (γ − c2m τ2/(u2 tan β2B)) con τ2 = 1: el motor no conoce el espesor de álabe, así que no descuenta el bloqueo. El deslizamiento afecta solo a u2. Con la geometría publicada de D1.A1 da Hth = 16,6 m frente a 15,85 m del libro (+4,6 %)."
+assumptions = "c2u = u2 (γ − c2m·τ2/(u2 tan β2B)). τ2 ≥ 1 es el inverso de la fracción libre del paso (τ2 = 1 no descuenta espesor). cm2 es la meridional media, Qth/(π d2 b2); el bloqueo entra solo en el triángulo, no ensancha b2. El deslizamiento afecta solo a u2."
 
 [[formula]]
 id = "design.head_coefficient"
@@ -814,11 +816,11 @@ i1 = "deg"
 value = "atan(c1m/u1) + i1"
 
 [formula.notes]
-assumptions = "β1 = arctan(c1m/(u1 − c1u)) sin prerrotación (c1u = 0) y sin bloqueo por espesor de álabe (τ1 = 1); i1 = 0..4° para rodetes sin exigencia especial de cavitación."
+assumptions = "β1 = arctan(c1m/(u1 − c1u)) sin prerrotación (c1u = 0). El motor pasa c1m = τ1·cm0, la meridional local en el borde de ataque; i1 = 0..4° para rodetes sin exigencia especial de cavitación."
 
 [[formula]]
 id = "design.shockless_flow"
-version = 1
+version = 2
 validation = "pilot"
 module = "design"
 title = "Caudal de entrada sin choque"
@@ -833,12 +835,13 @@ b1 = "m"
 beta1b = "deg"
 u1 = "m/s"
 eta_v = "1"
+tau = "1"
 
 [formula.expr]
-value = "eta_v*pi*d1*b1*tan(beta1b)*u1"
+value = "eta_v*pi*d1*b1*tan(beta1b)*u1/tau"
 
 [formula.notes]
-assumptions = "QSF = fq A1 tan β1B u1a/(τ1 (1 + tan β1B/(τ1 tan α1))) con fq = 1, τ1 = 1 (sin espesor), α1 = 90° (sin prerrotación) y A1 = π d1 b1 por ser cilíndrico el borde de ataque del álabe 2D. Se multiplica por ηv para dar caudal de bomba."
+assumptions = "QSF = fq A1 tan β1B u1a/(τ1 (1 + tan β1B/(τ1 tan α1))) con fq = 1, α1 = 90° (sin prerrotación) y A1 = π d1 b1 por ser cilíndrico el borde de ataque del álabe 2D. τ1 ≥ 1 descuenta el espesor. Se multiplica por ηv para dar caudal de bomba. Con τ1 = 1 no hay bloqueo."
 
 [[formula]]
 id = "design.throat_flow"
@@ -865,7 +868,7 @@ assumptions = "QW = fq A1 u1m/√((A1/(zLa A1q))² − 1 + 1/tan α1) con α1 = 
 
 [[formula]]
 id = "design.volute_matching_flow"
-version = 1
+version = 2
 validation = "pilot"
 module = "design"
 title = "Caudal en que la voluta casa con el rodete"
@@ -881,12 +884,13 @@ slip = "1"
 A3q = "m2"
 eta_v = "1"
 beta2 = "deg"
+tau = "1"
 
 [formula.expr]
-value = "u2*A2*slip/(A2/A3q + 1/(eta_v*tan(beta2)))"
+value = "u2*A2*slip/(A2/A3q + tau/(eta_v*tan(beta2)))"
 
 [formula.notes]
-assumptions = "Qc = fq u2 A2 γ/(fq A2/(zLe A3q) + τ2/(ηv tan β2B)) con fq = 1, zLe = 1 (voluta simple) y τ2 = 1; es el caudal en que c2u = c3q."
+assumptions = "Qc = fq u2 A2 γ/(fq A2/(zLe A3q) + τ2/(ηv tan β2B)) con fq = 1 y zLe = 1 (voluta simple). τ2 ≥ 1 descuenta el espesor a la salida; τ2 = 1 no lo descuenta. Es el caudal en que c2u = c3q."
 
 [[formula]]
 id = "design.recirculation_onset"
@@ -1323,7 +1327,7 @@ assumptions = "margin = 1,25 hasta 22 kW, 1,15 de 22 a 55 kW y 1,10 por encima (
 
 [[formula]]
 id = "design.zero_head_flow_ratio"
-version = 1
+version = 2
 validation = "pilot"
 module = "design"
 title = "Caudal de altura teórica nula frente al de diseño"
@@ -1336,12 +1340,13 @@ test = "crates/hm-formula/tests/end_suction.rs::zero_head_flow_ratio"
 slip = "1"
 beta2 = "deg"
 phi = "1"
+tau = "1"
 
 [formula.expr]
-value = "slip*tan(beta2)/phi"
+value = "slip*tan(beta2)/(phi*tau)"
 
 [formula.notes]
-assumptions = "Hth = u2·c2u/g con c2u = u2(γ − φ·q/tan β2B) y cm2 proporcional al caudal (ηv constante): Hth se anula en q0 = γ·tan β2B/φ. Sin prerrotación a la entrada (c1u = 0) y con el γ del punto de diseño."
+assumptions = "Hth = u2·c2u/g con c2u = u2(γ − φ·q·τ2/tan β2B) y cm2 proporcional al caudal (ηv constante): Hth se anula en q0 = γ·tan β2B/(φ·τ2). Sin prerrotación a la entrada (c1u = 0) y con el γ y el τ2 del punto de diseño. τ2 = 1 no descuenta espesor."
 
 [[formula]]
 id = "design.design_head_slope"
@@ -1458,7 +1463,7 @@ d2 = "m"
 value = "RG*H - k^2*u2^2/(2*g)*(1 - dsp^2/d2^2)"
 
 [formula.notes]
-assumptions = "Hp = RG·H con RG ≈ 0,75 para nq < 40 (ec. 3.7.1 y p. 111); la rotación del fluido en la cámara lateral baja la presión hasta el anillo en k²·u2²/2g·(1 − dsp²/d2²)."
+assumptions = "Hp = RG·H. El motor pasa RG = (1 − cu2/(2·u2)), limitado a 0,2..0,95 (ec. 3.7.1: 1 − cu2/(2·u2) para entrada sin prerrotación). La constante 0,75 era el valor de nq < 40 en la p. 111. La rotación del fluido en la cámara lateral baja la presión hasta el anillo en k²·u2²/2g·(1 − dsp²/d2²)."
 
 [[formula]]
 id = "design.seal_friction_coefficient"

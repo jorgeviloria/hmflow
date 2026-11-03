@@ -17,6 +17,7 @@ fn input(q: &str, h: &str, n: &str) -> DesignInput {
         rho: parse_quantity("998.2 kg/m3").unwrap(),
         eta_m: 0.96,
         npsha: None,
+        nu: None,
     }
 }
 
@@ -67,28 +68,36 @@ fn camber_line_matches_the_design_ends() {
     for pair in blade.windows(2) {
         assert!(pair[1].theta > pair[0].theta);
     }
-    // β1B = arctan(cm0/u1) + 2°.
-    let expected = (result.selection.cm0 / result.u1.si).atan() + 2f64.to_radians();
-    close(geometry.impeller.beta1b, expected, 1e-9);
+    // β1B = arctan(τ1·cm0/u1) + 2°, con τ1 ≥ 1. El bloqueo lo sube.
+    let without_blockage = (result.selection.cm0 / result.u1.si).atan() + 2f64.to_radians();
+    assert!(
+        geometry.impeller.beta1b > without_blockage + 1.0e-3,
+        "β1B {:.3}° sin bloqueo {:.3}°",
+        geometry.impeller.beta1b.to_degrees(),
+        without_blockage.to_degrees()
+    );
 }
 
 #[test]
 fn d1a1_blade_with_published_selections() {
-    // Con las selecciones publicadas, β1B = 16,9° + 2° = 18,9° frente a los
-    // 25° del libro, que añade un bloqueo por espesor K1 = 1,5 que el motor
-    // no modela. El envolvimiento sale mayor que los 111° publicados.
+    // Con el ojo y Z publicados, τ1 lleva β1B a 23,2°. El libro escribe 25°
+    // con un bloqueo K1 = 1,5. El envolvimiento baja a 115°, frente a 111°.
     let input = input("0.016 m3/s", "13.8 m", "1800 rpm");
     let options = DesignOptions {
         psi: Some(0.87),
         phi: Some(0.13),
         beta2_rad: Some(23.5f64.to_radians()),
+        blade_count: Some(7),
+        c0: Some(3.6),
+        cm0: Some(2.25),
+        j: Some(1.03),
         ..DesignOptions::default()
     };
     let result = design_with_options(&input, &options).unwrap();
     let geometry = geometry(&input, &result).unwrap();
-    close(geometry.impeller.beta1b.to_degrees(), 18.9, 0.1);
+    close(geometry.impeller.beta1b.to_degrees(), 23.18, 0.1);
     let wrap = geometry.impeller.wrap_angle.to_degrees();
-    assert!((115.0..140.0).contains(&wrap), "envolvimiento {wrap}°");
+    close(wrap, 115.4, 1.0);
 }
 
 #[test]

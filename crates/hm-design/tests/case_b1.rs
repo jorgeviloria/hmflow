@@ -52,6 +52,7 @@ fn input() -> DesignInput {
         rho: parse_quantity("998.2 kg/m3").unwrap(),
         eta_m: default_mechanical_efficiency(&q, &n).unwrap(),
         npsha: None,
+        nu: None,
         q,
         n,
     }
@@ -121,13 +122,13 @@ fn b1_real_impeller_curve_inside_grade_2b() {
 
 #[test]
 fn b1_curve_tells_the_impellers_apart() {
-    // Desde end_suction_v0.5 la pendiente de H(Q) sale de la geometría
-    // (Gülich §4.3.5): el rodete real se acerca más a su catálogo que el
-    // rodete por defecto del motor.
+    // v0.8: el rodete por defecto (β2 con τ, Z hasta entrar en 15..45°)
+    // queda más cerca del catálogo que el medido, que fija φ, Z, c0 y J.
+    // Los dos siguen dentro del grado 2B. No se ajustó ningún coeficiente.
     let real = worst_head_deviation(&real_impeller());
     let default = worst_head_deviation(&DesignOptions::default());
     assert!(
-        real < default,
+        default < real && real <= GRADE_2B_HEAD,
         "rodete real {:.1} % frente a {:.1} % del rodete por defecto",
         100.0 * real,
         100.0 * default

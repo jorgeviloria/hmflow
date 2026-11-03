@@ -1,10 +1,10 @@
 //! Diseño preliminar de bombas centrífugas end-suction OH1/OH2.
 //!
-//! El motor reproduce el ejemplo resuelto D1.A1 de Srinivasan 2017. Las
-//! selecciones empíricas (psi, phi, beta2, número de álabes, velocidades de
-//! entrada) están documentadas y se aplican por rango de `nq`. El tramo
-//! 25–40 se ancla en D1.A1; los demás tramos son selecciones preliminares
-//! pendientes de contraste experimental.
+//! Con las selecciones publicadas, el motor reproduce el ejemplo D1.A1 de
+//! Srinivasan 2017. ψ y φ salen de Gülich. β2 cierra Euler con el bloqueo del
+//! álabe. El número de álabes se mueve desde 7 hasta que β2 queda entre 15°
+//! y 45°. El ojo, cuando no se fija a mano, minimiza el NPSH3 descontando el
+//! cubo.
 
 use std::collections::BTreeMap;
 
@@ -54,6 +54,11 @@ pub struct DesignInput {
     /// [`default_mechanical_efficiency`].
     pub eta_m: f64,
     pub npsha: Option<Quantity>,
+    /// Viscosidad cinemática del fluido, m²/s. `None`, no positiva o no
+    /// finita: agua a 20 °C ([`REFERENCE_WATER_NU`]). Entra en el rozamiento
+    /// de discos y en la fuga del anillo. La corrección viscosa de la curva
+    /// (tabla 13.1) sigue siendo un contraste y no redimensiona el rodete.
+    pub nu: Option<f64>,
 }
 
 /// Selecciones empíricas aplicadas por el motor.
@@ -149,6 +154,10 @@ pub struct DesignResult {
     /// recta que pasa por Q(Hth = 0) (Gülich §4.3.5).
     pub head_slope: f64,
     pub volute: VoluteResult,
+    /// El ojo automático descuenta el cubo: `d0` es el diámetro equivalente
+    /// del área libre. Con `c0`, `cm0` o `J` manuales, `d0` es el de
+    /// Srinivasan y el cubo no entra en el área.
+    pub eye_excludes_hub: bool,
     pub diagnostics: Diagnostics,
 }
 
@@ -200,7 +209,7 @@ pub struct ParamSpec {
 ///   margen de Gülich (§6.3.3 y tabla 6.2), H0 de Gülich (3.28).
 /// - v0.3: la transición del NPSHr a la subida brusca sale de la geometría
 ///   (Gülich ec. 6.17–6.20) en vez de suponerla en el caudal de diseño.
-pub const METHOD: &str = "end_suction_v0.7";
+pub const METHOD: &str = "end_suction_v0.8";
 
 /// Métodos anteriores que `recalc` sabe migrar a [`METHOD`].
 pub const LEGACY_METHODS: &[&str] = &[
@@ -210,6 +219,7 @@ pub const LEGACY_METHODS: &[&str] = &[
     "end_suction_v0.4",
     "end_suction_v0.5",
     "end_suction_v0.6",
+    "end_suction_v0.7",
 ];
 
 /// Parámetros que genera o consume el método [`METHOD`].
@@ -485,13 +495,39 @@ pub struct DesignOptions {
 /// Intervalo de búsqueda de β2, en grados.
 const BETA2_SEARCH_DEG: (f64, f64) = (1.0, 89.0);
 
-/// Selecciones que dependen solo de `nq`; β2 queda sin fijar (NaN).
+/// Número de álabes del que parte la búsqueda, el de D1.A1. No es el de una
+/// bomba concreta: se mueve en [`BLADE_COUNT_SEARCH`] hasta que β2 cabe en
+/// 15..45°.
+const BLADE_COUNT_START: u32 = 7;
+
+/// Extremos de la búsqueda de Z. Fuera de 4..12 ya avisa HM-DES-005; aquí el
+/// intervalo es el que aún deja un álabe fundible.
+const BLADE_COUNT_SEARCH: (u32, u32) = (5, 9);
+
+/// Holgura mínima entre el cubo y el diámetro del álabe a la entrada, m.
+const EYE_HUB_CLEARANCE: f64 = 0.005;
+
+/// Tope del ojo automático frente a D2, para que el álabe tenga desarrollo.
+const EYE_TO_IMPELLER: f64 = 0.85;
+
+/// Metal del paso por encima del cual τ se congela: 60 % del paso.
+const BLADE_BLOCKAGE_LIMIT: f64 = 0.6;
+
+/// J por defecto cuando se fijan las velocidades de entrada y no el diámetro
+/// del álabe. Es el de D1.A1 (Srinivasan 2017, p. 415), no una tabla de nq.
+const DEFAULT_EYE_RATIO: f64 = 1.03;
+
+/// Puntos con que se busca el máximo de potencia de la curva preliminar. El
+/// mismo recuento que usa la mecánica del motor.
+const POWER_CURVE_POINTS: usize = 101;
+
+/// Selecciones que dependen solo de `nq`. Z, c0 y cm0 no salen de aquí: el
+/// primero cierra β2 y los otros salen del ojo.
 ///
 /// - ψ: Gülich 2020, ec. (3.26) con fT = 1,0.
 /// - φ: el que da la anchura relativa media de Gülich, ec. (7.1), con ese ψ y
-///   el ηv del motor. Un φ constante por tramos no puede seguir esa curva,
+///   el ηv de Srinivasan. Un φ constante por tramos no puede seguir esa curva,
 ///   porque b2* crece con nq² a φ fijo.
-/// - Z, c0 y cm0: tablas por tramos de nq.
 fn base_selection(registry: &Registry, nq: f64) -> Result<DesignSelection, DesignError> {
     let one = Unit::dimensionless();
     let psi = evaluate(
@@ -527,55 +563,97 @@ fn base_selection(registry: &Registry, nq: f64) -> Result<DesignSelection, Desig
         psi,
         phi,
         beta2_deg: f64::NAN,
-        blade_count: blade_count(nq),
-        c0: inlet_velocity(nq),
-        cm0: inlet_meridional_velocity(nq),
+        blade_count: BLADE_COUNT_START,
+        c0: f64::NAN,
+        cm0: f64::NAN,
         a: 4.5,
-        j: 1.03,
+        j: DEFAULT_EYE_RATIO,
         margin: 1.1,
     })
 }
 
-/// Selecciones que el motor toma por defecto para `nq`, con β2 resuelto por
-/// Euler para el rendimiento hidráulico `eta_h`.
+/// ψ, φ y un β2 de Euler sin espesor ni relación de radios, para el `nq` dado.
+///
+/// Z, c0 y cm0 de este resultado no son la selección del motor: dependen del
+/// caudal, del cubo y del espesor, y salen de [`design`].
 pub fn table_selection(nq: f64, eta_h: f64) -> Result<DesignSelection, DesignError> {
     let registry = Registry::all();
     let mut selection = base_selection(&registry, nq)?;
     selection.beta2_deg = euler_blade_angle(
         &registry,
-        selection.psi,
-        selection.phi,
-        eta_h,
-        selection.blade_count,
+        &EulerTarget {
+            psi: selection.psi,
+            phi: selection.phi,
+            eta_h,
+            blade_count: BLADE_COUNT_START,
+            outlet_diameter: 0.0,
+            trailing_thickness: 0.0,
+            radius_ratio: 0.0,
+        },
     )?;
     Ok(selection)
+}
+
+/// Bloqueo de álabes τ ≥ 1.
+///
+/// τ = 1 / (1 − min(Z·e/(π·d·sen β), 0,6)). En la notación del pack, τ = 1
+/// es paso libre: la meridional local del triángulo es τ veces la media.
+pub fn blade_blockage(blade_count: u32, thickness: f64, diameter: f64, beta_rad: f64) -> f64 {
+    if blade_count == 0 || thickness <= 0.0 || diameter <= 0.0 {
+        return 1.0;
+    }
+    let sin_beta = beta_rad.sin().abs().max(1e-4);
+    let metal = f64::from(blade_count) * thickness / (std::f64::consts::PI * diameter * sin_beta);
+    1.0 / (1.0 - metal.min(BLADE_BLOCKAGE_LIMIT))
+}
+
+/// Viscosidad cinemática que usan discos y anillo, m²/s.
+fn fluid_nu(input: &DesignInput) -> f64 {
+    match input.nu {
+        Some(nu) if nu.is_finite() && nu > 0.0 => nu,
+        _ => REFERENCE_WATER_NU,
+    }
+}
+
+/// Datos de Euler para resolver β2. Diámetro o espesor nulos dejan τ2 = 1.
+struct EulerTarget {
+    psi: f64,
+    phi: f64,
+    eta_h: f64,
+    blade_count: u32,
+    outlet_diameter: f64,
+    /// Borde de salida, e/2, m.
+    trailing_thickness: f64,
+    /// d1/d2. Wiesner aplica kw cuando supera εLim.
+    radius_ratio: f64,
 }
 
 /// Ángulo de salida del álabe β2, en grados, que hace que el rodete dé la
 /// altura pedida (Gülich 2020, p. 412, paso 10).
 ///
-/// Resuelve `design.cu2(γ(β2, Z), u2, cm2, β2) = design.euler_cu2` en forma
-/// adimensional: con u2 = 1, cm2/u2 = φ y la altura que exige Euler,
-/// `c2u/u2 = gH/(ηh·u2²) = ψ/(2ηh)`.
-fn euler_blade_angle(
-    registry: &Registry,
-    psi: f64,
-    phi: f64,
-    eta_h: f64,
-    blade_count: u32,
-) -> Result<f64, DesignError> {
+/// Resuelve `design.cu2` con el deslizamiento de Wiesner (incluido kw si
+/// `radius_ratio` = d1/d2 supera εLim) igual a `ψ/(2ηh)`. `u2` = 1 y
+/// `cm2/u2` = φ.
+fn euler_blade_angle(registry: &Registry, target: &EulerTarget) -> Result<f64, DesignError> {
     let one = Unit::dimensionless();
     let ms = unit("m/s")?;
     let deg = unit("deg")?;
-    let target = psi / (2.0 * eta_h);
+    let needed = target.psi / (2.0 * target.eta_h);
     let cu2_over_u2 = |beta2_rad: f64| -> Result<f64, DesignError> {
         let beta2 = Quantity::from_si(beta2_rad, deg.clone());
+        let tau = blade_blockage(
+            target.blade_count,
+            target.trailing_thickness,
+            target.outlet_diameter,
+            beta2_rad,
+        );
         let slip = evaluate(
             registry,
             "design.slip_factor",
             &[
                 ("beta2", beta2.clone()),
-                ("Z", quantity(f64::from(blade_count), one.clone())),
+                ("Z", quantity(f64::from(target.blade_count), one.clone())),
+                ("eps", quantity(target.radius_ratio, one.clone())),
             ],
         )?;
         Ok(evaluate(
@@ -584,8 +662,9 @@ fn euler_blade_angle(
             &[
                 ("slip", slip),
                 ("u2", Quantity::from_si(1.0, ms.clone())),
-                ("cm2", Quantity::from_si(phi, ms.clone())),
+                ("cm2", Quantity::from_si(target.phi, ms.clone())),
                 ("beta2", beta2),
+                ("tau", quantity(tau, one.clone())),
             ],
         )?
         .si)
@@ -596,14 +675,17 @@ fn euler_blade_angle(
         BETA2_SEARCH_DEG.1.to_radians(),
     );
     let reachable = cu2_over_u2(high)?;
-    if reachable < target {
+    if reachable < needed {
         return Err(DesignError::Input(format!(
             "con ψ = {psi:.3}, φ = {phi:.3} y Z = {blade_count}, ningún β2 da la altura: \
-             hace falta cu2/u2 = {target:.3} y el máximo es {reachable:.3}; aumenta Z o reduce ψ"
+             hace falta cu2/u2 = {needed:.3} y el máximo es {reachable:.3}; aumenta Z o reduce ψ",
+            psi = target.psi,
+            phi = target.phi,
+            blade_count = target.blade_count,
         )));
     }
     let root = hm_math::bisect(
-        |beta2| cu2_over_u2(beta2).map_or(f64::NAN, |value| value - target),
+        |beta2| cu2_over_u2(beta2).map_or(f64::NAN, |value| value - needed),
         low,
         high,
         1e-10,
@@ -611,13 +693,225 @@ fn euler_blade_angle(
     )
     .map_err(|error| DesignError::Input(format!("β2 por Euler: {error}")))?;
 
-    let residual = cu2_over_u2(root)? - target;
+    let residual = cu2_over_u2(root)? - needed;
     if !residual.is_finite() || residual.abs() > 1e-6 {
         return Err(DesignError::Input(format!(
             "β2 por Euler no converge (residuo {residual:e})"
         )));
     }
     Ok(root.to_degrees())
+}
+
+struct OutletGeometry {
+    blade_count: u32,
+    beta2_deg: f64,
+    tau2: f64,
+    /// Espesor nominal del álabe, m. El borde de salida es la mitad.
+    thickness: f64,
+}
+
+/// Pedido de salida. `blade_count` y `beta2_rad` vacíos activan el recorrido.
+struct OutletRequest {
+    psi: f64,
+    phi: f64,
+    eta_h: f64,
+    nq: f64,
+    u2: f64,
+    d2: f64,
+    d1: f64,
+    blade_count: Option<u32>,
+    beta2_rad: Option<f64>,
+}
+
+/// Z y β2. Con Z manual se resuelve solo β2. Con β2 manual, Z se queda en
+/// [`BLADE_COUNT_START`] salvo que también se haya fijado. Sin ninguno, Z
+/// baja o sube desde 7 dentro de 5..=9 hasta que β2 cae en 15..45°.
+fn select_outlet(
+    registry: &Registry,
+    request: &OutletRequest,
+) -> Result<OutletGeometry, DesignError> {
+    let eps = if request.d2 > 0.0 {
+        (request.d1 / request.d2).clamp(0.0, 0.999)
+    } else {
+        0.0
+    };
+    let solve = |z: u32| -> Result<OutletGeometry, DesignError> {
+        let (_, thickness, trailing) =
+            mechanics::blade_thicknesses(z, request.u2, request.nq, request.d2)?;
+        let beta2_deg = if let Some(beta2_rad) = request.beta2_rad {
+            beta2_rad.to_degrees()
+        } else {
+            euler_blade_angle(
+                registry,
+                &EulerTarget {
+                    psi: request.psi,
+                    phi: request.phi,
+                    eta_h: request.eta_h,
+                    blade_count: z,
+                    outlet_diameter: request.d2,
+                    trailing_thickness: trailing,
+                    radius_ratio: eps,
+                },
+            )?
+        };
+        let tau2 = blade_blockage(z, trailing, request.d2, beta2_deg.to_radians());
+        Ok(OutletGeometry {
+            blade_count: z,
+            beta2_deg,
+            tau2,
+            thickness,
+        })
+    };
+
+    if let Some(z) = request.blade_count {
+        return solve(z);
+    }
+    if request.beta2_rad.is_some() {
+        return solve(BLADE_COUNT_START);
+    }
+
+    let mut z = BLADE_COUNT_START;
+    for _ in 0..8 {
+        let outlet = solve(z)?;
+        if outlet.beta2_deg < BETA2_RANGE_DEG.0 && z > BLADE_COUNT_SEARCH.0 {
+            z -= 1;
+            continue;
+        }
+        if outlet.beta2_deg > BETA2_RANGE_DEG.1 && z < BLADE_COUNT_SEARCH.1 {
+            z += 1;
+            continue;
+        }
+        return Ok(outlet);
+    }
+    solve(z)
+}
+
+/// Mínimo de `f` en `[a, b]` por sección áurea. `f` se supone unimodal.
+fn golden_section_min(mut f: impl FnMut(f64) -> f64, mut a: f64, mut b: f64) -> f64 {
+    let phi = (1.0 + 5.0_f64.sqrt()) / 2.0;
+    let mut c = b - (b - a) / phi;
+    let mut d = a + (b - a) / phi;
+    let mut fc = f(c);
+    let mut fd = f(d);
+    for _ in 0..64 {
+        if fc < fd {
+            b = d;
+            d = c;
+            fd = fc;
+            c = b - (b - a) / phi;
+            fc = f(c);
+        } else {
+            a = c;
+            c = d;
+            fc = fd;
+            d = a + (b - a) / phi;
+            fd = f(d);
+        }
+    }
+    if fc < fd { c } else { d }
+}
+
+/// Diámetro del álabe a la entrada que minimiza λc·c² + λw·(c² + u²), con el
+/// cubo restado del área. Devuelve `(d1, c1m, d0 equivalente)`.
+fn minimize_eye(qth: f64, n: f64, d2: f64, hub: f64) -> Result<(f64, f64, f64), DesignError> {
+    let low = hub + EYE_HUB_CLEARANCE;
+    let high = (EYE_TO_IMPELLER * d2).max(low + 1.0e-3);
+    if !high.is_finite() || !low.is_finite() || high <= low || hub >= d2 {
+        return Err(DesignError::Input(format!(
+            "el cubo ({:.1} mm) no cabe en el rodete (D2 = {:.1} mm)",
+            hub * 1000.0,
+            d2 * 1000.0
+        )));
+    }
+    let objective = |d1: f64| {
+        let free = d1 * d1 - hub * hub;
+        if free <= 1.0e-8 {
+            return f64::INFINITY;
+        }
+        let c = qth / (std::f64::consts::PI / 4.0 * free);
+        let u = std::f64::consts::PI * d1 * n;
+        NPSH_LAMBDA_C * c * c + NPSH_LAMBDA_W * (c * c + u * u)
+    };
+    let d1 = golden_section_min(objective, low, high);
+    let free = d1 * d1 - hub * hub;
+    if free <= 0.0 {
+        return Err(DesignError::Input(
+            "el ojo automático no deja área libre alrededor del cubo".to_string(),
+        ));
+    }
+    let c1m = qth / (std::f64::consts::PI / 4.0 * free);
+    Ok((d1, c1m, free.sqrt()))
+}
+
+/// c0 que minimiza el NPSH3 sin cubo, con el J dado. Forma cerrada
+/// c/u = √(λw / (2(λc+λw))).
+fn hubless_inlet_speed(qth: f64, n: f64, j: f64) -> Result<f64, DesignError> {
+    if j <= 0.0 || n <= 0.0 || qth <= 0.0 {
+        return Err(DesignError::Input(
+            "el ojo sin cubo necesita J, n y Qth positivos".to_string(),
+        ));
+    }
+    let k = (NPSH_LAMBDA_W / (2.0 * (NPSH_LAMBDA_C + NPSH_LAMBDA_W))).sqrt();
+    let d0 = (4.0 * qth / (k * std::f64::consts::PI.powi(2) * j * n)).cbrt();
+    Ok(qth / (std::f64::consts::PI / 4.0 * d0 * d0))
+}
+
+/// `(c0, cm0, J, el ojo descuenta el cubo)`.
+fn choose_inlet(
+    options: &DesignOptions,
+    qth: f64,
+    n: f64,
+    d2: f64,
+    hub: f64,
+) -> Result<(f64, f64, f64, bool), DesignError> {
+    if options.c0.is_none() && options.cm0.is_none() && options.j.is_none() {
+        let (d1, c1m, d0) = minimize_eye(qth, n, d2, hub)?;
+        return Ok((c1m, c1m, d1 / d0, true));
+    }
+    let c0 = match (options.c0, options.cm0) {
+        (Some(c0), _) => c0,
+        (None, Some(cm0)) => cm0,
+        (None, None) => hubless_inlet_speed(qth, n, options.j.unwrap_or(DEFAULT_EYE_RATIO))?,
+    };
+    let cm0 = options.cm0.unwrap_or(c0);
+    let j = options.j.unwrap_or(DEFAULT_EYE_RATIO);
+    Ok((c0, cm0, j, false))
+}
+
+/// β1B y τ1. β1B = arctan(τ1·cm0/u1) + i1, y τ1 depende de β1B.
+fn leading_edge(
+    registry: &Registry,
+    cm0: f64,
+    u1: f64,
+    d1: f64,
+    thickness: f64,
+    blade_count: u32,
+) -> Result<(f64, f64), DesignError> {
+    let deg = unit("deg")?;
+    let ms = unit("m/s")?;
+    let incidence = geometry::DEFAULT_INCIDENCE_DEG.to_radians();
+    let mut beta = (cm0 / u1.max(1.0e-9)).atan() + incidence;
+    let mut tau = blade_blockage(blade_count, thickness, d1, beta);
+    for _ in 0..20 {
+        let next = evaluate(
+            registry,
+            "design.blade_inlet_angle",
+            &[
+                ("c1m", Quantity::from_si(tau * cm0, ms.clone())),
+                ("u1", Quantity::from_si(u1, ms.clone())),
+                ("i1", Quantity::from_si(incidence, deg.clone())),
+            ],
+        )?
+        .si;
+        if (next - beta).abs() < 1.0e-10 {
+            beta = next;
+            break;
+        }
+        beta = next;
+        tau = blade_blockage(blade_count, thickness, d1, beta);
+    }
+    tau = blade_blockage(blade_count, thickness, d1, beta);
+    Ok((beta, tau))
 }
 
 /// Calcula un diseño preliminar end-suction.
@@ -674,12 +968,14 @@ pub fn design_with_options(
     let mut selection = DesignSelection {
         psi: options.psi.unwrap_or(table.psi),
         phi: options.phi.unwrap_or(table.phi),
-        // Valor provisional para validar el resto; si no es manual, se
-        // resuelve por Euler en cuanto se conoce ηh.
-        beta2_deg: manual_beta2.unwrap_or(45.0),
-        blade_count: options.blade_count.unwrap_or(table.blade_count),
-        c0: options.c0.unwrap_or(table.c0),
-        cm0: options.cm0.unwrap_or(table.cm0),
+        // Provisional, solo para rechazar un manual absurdo. El definitivo
+        // sale de select_outlet, con el espesor y d1/d2.
+        beta2_deg: manual_beta2.unwrap_or(20.0),
+        blade_count: options.blade_count.unwrap_or(BLADE_COUNT_START),
+        // Provisional. choose_inlet lo sustituye; aquí basta un positivo
+        // para que un c0 o cm0 manual no finito falle antes.
+        c0: options.c0.or(options.cm0).unwrap_or(3.0),
+        cm0: options.cm0.or(options.c0).unwrap_or(3.0),
         a: options.a.unwrap_or(table.a),
         j: options.j.unwrap_or(table.j),
         margin: options.margin.unwrap_or(table.margin),
@@ -719,16 +1015,9 @@ pub fn design_with_options(
     )?
     .value();
 
-    if manual_beta2.is_none() {
-        selection.beta2_deg = euler_blade_angle(
-            &registry,
-            selection.psi,
-            selection.phi,
-            eta_h,
-            selection.blade_count,
-        )?;
-    }
-
+    // Dos ηv, a propósito. Este, el de Srinivasan, dimensiona φ, Qth y b2
+    // y es el que deja las medidas de D1.A1. El de Gülich entra solo en el
+    // análisis de pérdidas.
     let eta_v = evaluate(
         &registry,
         "design.volumetric_efficiency",
@@ -793,13 +1082,192 @@ pub fn design_with_options(
         ],
     )?;
 
+    // Discos y potencia antes del ojo: no dependen de d1, β2 ni Z. El cubo
+    // del ojo sale de este par (P·margen). Si la curva pide más potencia,
+    // torque_max sube al final y la mecánica del eje usa ese par mayor; el
+    // ojo no se redimensiona.
+    let leakage_eta_v = evaluate(
+        &registry,
+        "design.leakage_volumetric_efficiency",
+        &[("nq", quantity(nq, one.clone()))],
+    )?
+    .value();
+    let mechanical_eta_estimate = evaluate(
+        &registry,
+        "design.mechanical_efficiency_estimate",
+        &[
+            ("Q", input.q.clone()),
+            ("n", input.n.clone()),
+            ("Q_ref", quantity(1.0, m3s.clone())),
+            ("n_ref", Quantity::from_si(1500.0 / 60.0, unit("1/s")?)),
+        ],
+    )?
+    .value();
+    let nu = Quantity::from_si(fluid_nu(input), unit("m2/s")?);
+    let disk_reynolds = evaluate(
+        &registry,
+        "design.disk_reynolds",
+        &[
+            ("n", input.n.clone()),
+            ("d2", d2.clone()),
+            ("nu", nu.clone()),
+        ],
+    )?;
+    let disk_friction_coefficient = evaluate(
+        &registry,
+        "design.disk_friction_coefficient",
+        &[
+            ("Re", disk_reynolds),
+            ("k0", quantity(DISK_K0, one.clone())),
+        ],
+    )?;
+    let disk_friction_ratio = evaluate(
+        &registry,
+        "design.disk_friction_ratio",
+        &[
+            ("k_rr", disk_friction_coefficient),
+            ("f_geo", quantity(DISK_F_GEO, one.clone())),
+            ("nq", quantity(nq, one.clone())),
+            ("psi", quantity(selection.psi, one.clone())),
+        ],
+    )?
+    .value();
+    let statistical_eta_h = eta_h;
+    let loss_eta = evaluate(
+        &registry,
+        "design.loss_efficiency",
+        &[
+            ("eta_h", quantity(statistical_eta_h, one.clone())),
+            ("eta_v", quantity(leakage_eta_v, one.clone())),
+            ("eta_m", quantity(input.eta_m, one.clone())),
+            ("disk_ratio", quantity(disk_friction_ratio, one.clone())),
+        ],
+    )?
+    .value();
+    let eta = loss_eta;
+    let p_hyd_loss = evaluate(
+        &registry,
+        "design.hydraulic_loss",
+        &[
+            ("P_hyd", p_hyd.clone()),
+            ("eta_h", quantity(statistical_eta_h, one.clone())),
+        ],
+    )?;
+    let p_vol_loss = evaluate(
+        &registry,
+        "design.volumetric_loss",
+        &[
+            ("P_hyd", p_hyd.clone()),
+            ("eta_h", quantity(statistical_eta_h, one.clone())),
+            ("eta_v", quantity(leakage_eta_v, one.clone())),
+        ],
+    )?;
+    let p_disk_loss = evaluate(
+        &registry,
+        "design.disk_friction_loss",
+        &[
+            ("P_hyd", p_hyd.clone()),
+            ("disk_ratio", quantity(disk_friction_ratio, one.clone())),
+        ],
+    )?;
+    let p_shaft = evaluate(
+        &registry,
+        "design.shaft_power",
+        &[
+            ("P_hyd", p_hyd.clone()),
+            ("eta", quantity(eta, one.clone())),
+        ],
+    )?;
+    let p_mech_loss = evaluate(
+        &registry,
+        "design.bearing_seal_loss",
+        &[
+            ("P_shaft", p_shaft.clone()),
+            ("eta_m", quantity(input.eta_m, one.clone())),
+        ],
+    )?;
+    let p_max = evaluate(
+        &registry,
+        "design.max_power",
+        &[
+            ("P_shaft", p_shaft.clone()),
+            ("margin", quantity(selection.margin, one.clone())),
+        ],
+    )?;
+    let torque = evaluate(
+        &registry,
+        "mech.shaft_torque",
+        &[("P", p_shaft.clone()), ("n", input.n.clone())],
+    )?;
+    let torque_max = evaluate(
+        &registry,
+        "mech.shaft_torque",
+        &[("P", p_max.clone()), ("n", input.n.clone())],
+    )?;
+
+    let (_, hub) = mechanics::shaft_and_hub(torque_max.si, mechanics::DEFAULT_SHAFT_SHEAR_STRESS)?;
+    let (c0, cm0, j, eye_excludes_hub) = choose_inlet(options, qth.si, input.n.si, d2.si, hub)?;
+    selection.c0 = c0;
+    selection.cm0 = cm0;
+    selection.j = j;
+
+    let d0 = evaluate(
+        &registry,
+        "design.d0",
+        &[
+            ("Qth", qth.clone()),
+            ("c0", quantity(selection.c0, ms.clone())),
+        ],
+    )?;
+    let d1 = evaluate(
+        &registry,
+        "design.d1",
+        &[
+            ("D0", d0.clone()),
+            ("J", quantity(selection.j, one.clone())),
+        ],
+    )?;
+    let b1 = evaluate(
+        &registry,
+        "design.b1",
+        &[
+            ("Qth", qth.clone()),
+            ("D1", d1.clone()),
+            ("cm0", quantity(selection.cm0, ms.clone())),
+        ],
+    )?;
+
+    let outlet = select_outlet(
+        &registry,
+        &OutletRequest {
+            psi: selection.psi,
+            phi: selection.phi,
+            eta_h,
+            nq,
+            u2: u2.si,
+            d2: d2.si,
+            d1: d1.si,
+            blade_count: options.blade_count,
+            beta2_rad: options.beta2_rad,
+        },
+    )?;
+    selection.blade_count = outlet.blade_count;
+    selection.beta2_deg = outlet.beta2_deg;
+    let tau2 = outlet.tau2;
+
     let beta2 = Quantity::from_si(selection.beta2_deg.to_radians(), unit("deg")?);
+    let radius_ratio = if d2.si > 0.0 {
+        (d1.si / d2.si).clamp(0.0, 0.999)
+    } else {
+        0.0
+    };
     let slip = evaluate(
         &registry,
         "design.slip_factor",
         &[
             ("beta2", beta2.clone()),
-            ("Z", quantity(selection.blade_count as f64, one.clone())),
+            ("Z", quantity(f64::from(selection.blade_count), one.clone())),
+            ("eps", quantity(radius_ratio, one.clone())),
         ],
     )?
     .value();
@@ -811,6 +1279,7 @@ pub fn design_with_options(
             ("u2", u2.clone()),
             ("cm2", cm2.clone()),
             ("beta2", beta2.clone()),
+            ("tau", quantity(tau2, one.clone())),
         ],
     )?;
     let cu2 = with_unit(cu2, &ms);
@@ -821,6 +1290,7 @@ pub fn design_with_options(
             ("slip", quantity(slip, one.clone())),
             ("beta2", beta2),
             ("phi", quantity(selection.phi, one.clone())),
+            ("tau", quantity(tau2, one.clone())),
         ],
     )?
     .value();
@@ -875,7 +1345,7 @@ pub fn design_with_options(
     for index in 0..=8 {
         let angle_deg = 45.0 * index as f64;
         let area_si = a360.si * angle_deg / 360.0;
-        let diameter_si = 1.1 * (4.0 * area_si / std::f64::consts::PI).sqrt();
+        let diameter_si = k_eff_value * (4.0 * area_si / std::f64::consts::PI).sqrt();
         let outer_si = r3.si + diameter_si / 2.0;
         sections.push(VoluteSection {
             angle_deg,
@@ -895,168 +1365,14 @@ pub fn design_with_options(
         sections,
     };
 
-    let d0 = evaluate(
-        &registry,
-        "design.d0",
-        &[
-            ("Qth", qth.clone()),
-            ("c0", quantity(selection.c0, ms.clone())),
-        ],
-    )?;
-
-    let d1 = evaluate(
-        &registry,
-        "design.d1",
-        &[
-            ("D0", d0.clone()),
-            ("J", quantity(selection.j, one.clone())),
-        ],
-    )?;
-
-    let b1 = evaluate(
-        &registry,
-        "design.b1",
-        &[
-            ("Qth", qth.clone()),
-            ("D1", d1.clone()),
-            ("cm0", quantity(selection.cm0, ms.clone())),
-        ],
-    )?;
-
-    let leakage_eta_v = evaluate(
-        &registry,
-        "design.leakage_volumetric_efficiency",
-        &[("nq", quantity(nq, one.clone()))],
-    )?
-    .value();
-    let mechanical_eta_estimate = evaluate(
-        &registry,
-        "design.mechanical_efficiency_estimate",
-        &[
-            ("Q", input.q.clone()),
-            ("n", input.n.clone()),
-            ("Q_ref", quantity(1.0, m3s.clone())),
-            ("n_ref", Quantity::from_si(1500.0 / 60.0, unit("1/s")?)),
-        ],
-    )?
-    .value();
-    let disk_reynolds = evaluate(
-        &registry,
-        "design.disk_reynolds",
-        &[
-            ("n", input.n.clone()),
-            ("d2", d2.clone()),
-            ("nu", Quantity::from_si(DISK_NU, unit("m2/s")?)),
-        ],
-    )?;
-    let disk_friction_coefficient = evaluate(
-        &registry,
-        "design.disk_friction_coefficient",
-        &[
-            ("Re", disk_reynolds),
-            ("k0", quantity(DISK_K0, one.clone())),
-        ],
-    )?;
-    let disk_friction_ratio = evaluate(
-        &registry,
-        "design.disk_friction_ratio",
-        &[
-            ("k_rr", disk_friction_coefficient),
-            ("f_geo", quantity(DISK_F_GEO, one.clone())),
-            ("nq", quantity(nq, one.clone())),
-            ("psi", quantity(selection.psi, one.clone())),
-        ],
-    )?
-    .value();
-    let statistical_eta_h = eta_h;
-    let loss_eta = evaluate(
-        &registry,
-        "design.loss_efficiency",
-        &[
-            ("eta_h", quantity(statistical_eta_h, one.clone())),
-            ("eta_v", quantity(leakage_eta_v, one.clone())),
-            ("eta_m", quantity(input.eta_m, one.clone())),
-            ("disk_ratio", quantity(disk_friction_ratio, one.clone())),
-        ],
-    )?
-    .value();
-
-    let (seal_leakage_ratio, seal_eta_v) = seal_leakage(
+    let (seal_leakage_ratio, seal_eta_v, seal_without_drive) = seal_leakage(
         &registry,
         input,
         d1.si,
         d2.si,
         u2.si,
+        cu2.si,
         options.seal_clearance,
-    )?;
-    // end_suction_v0.4: el η del método es el del análisis de pérdidas.
-    let eta = loss_eta;
-
-    let p_hyd_loss = evaluate(
-        &registry,
-        "design.hydraulic_loss",
-        &[
-            ("P_hyd", p_hyd.clone()),
-            ("eta_h", quantity(statistical_eta_h, one.clone())),
-        ],
-    )?;
-
-    let p_vol_loss = evaluate(
-        &registry,
-        "design.volumetric_loss",
-        &[
-            ("P_hyd", p_hyd.clone()),
-            ("eta_h", quantity(statistical_eta_h, one.clone())),
-            ("eta_v", quantity(leakage_eta_v, one.clone())),
-        ],
-    )?;
-
-    let p_disk_loss = evaluate(
-        &registry,
-        "design.disk_friction_loss",
-        &[
-            ("P_hyd", p_hyd.clone()),
-            ("disk_ratio", quantity(disk_friction_ratio, one.clone())),
-        ],
-    )?;
-
-    let p_shaft = evaluate(
-        &registry,
-        "design.shaft_power",
-        &[
-            ("P_hyd", p_hyd.clone()),
-            ("eta", quantity(eta, one.clone())),
-        ],
-    )?;
-
-    let p_mech_loss = evaluate(
-        &registry,
-        "design.bearing_seal_loss",
-        &[
-            ("P_shaft", p_shaft.clone()),
-            ("eta_m", quantity(input.eta_m, one.clone())),
-        ],
-    )?;
-
-    let p_max = evaluate(
-        &registry,
-        "design.max_power",
-        &[
-            ("P_shaft", p_shaft.clone()),
-            ("margin", quantity(selection.margin, one.clone())),
-        ],
-    )?;
-
-    let torque = evaluate(
-        &registry,
-        "mech.shaft_torque",
-        &[("P", p_shaft.clone()), ("n", input.n.clone())],
-    )?;
-
-    let torque_max = evaluate(
-        &registry,
-        "mech.shaft_torque",
-        &[("P", p_max.clone()), ("n", input.n.clone())],
     )?;
 
     let sigma = evaluate(
@@ -1076,14 +1392,13 @@ pub fn design_with_options(
         &[("d2", d1.clone()), ("n", input.n.clone())],
     )?;
     let w1 = Quantity::from_si(selection.cm0.hypot(u1.si), ms.clone());
-    // end_suction_v0.6: el NPSH3 del punto sale de las velocidades de entrada
-    // (Gülich ec. 6.10), no de σ·H: depende del ojo. c1m es la velocidad
-    // meridional en el ojo, Qth sobre su área: la c0 de la selección.
+    // NPSH3 del punto con la meridional del álabe, cm0 (Gülich ec. 6.10).
+    // En el ojo automático cm0 = c0. Si se fija c0 y no cm0, cm0 toma c0.
     let npshr_design = evaluate(
         &registry,
         "design.npsh3_inlet",
         &[
-            ("c1m", Quantity::from_si(selection.c0, ms.clone())),
+            ("c1m", Quantity::from_si(selection.cm0, ms.clone())),
             ("u1", u1.clone()),
             ("lambda_c", quantity(NPSH_LAMBDA_C, one.clone())),
             ("lambda_w", quantity(NPSH_LAMBDA_W, one.clone())),
@@ -1092,23 +1407,18 @@ pub fn design_with_options(
     )?;
     let w2 = Quantity::from_si(cm2.si.hypot(u2.si - cu2.si), ms.clone());
 
-    // Transición del NPSH3 (Gülich §6.3.3, ec. 6.17–6.20), sin espesor de
-    // álabe ni prerrotación y con el borde de ataque cilíndrico del álabe 2D.
+    // Transición del NPSH3 (Gülich §6.3.3, ec. 6.17–6.20). τ1 entra en β1B
+    // y en QSF. A1q no se reduce: con τ ≠ 1, QW deja de coincidir con QSF.
     let deg = unit("deg")?;
     let m2 = unit("m2")?;
-    let beta1b = evaluate(
+    let (beta1b, tau1) = leading_edge(
         &registry,
-        "design.blade_inlet_angle",
-        &[
-            ("c1m", quantity(selection.cm0, ms.clone())),
-            ("u1", u1.clone()),
-            (
-                "i1",
-                Quantity::from_si(geometry::DEFAULT_INCIDENCE_DEG.to_radians(), deg.clone()),
-            ),
-        ],
-    )?
-    .si;
+        selection.cm0,
+        u1.si,
+        d1.si,
+        outlet.thickness,
+        selection.blade_count,
+    )?;
     let beta1b_quantity = Quantity::from_si(beta1b, deg.clone());
     let eta_v_quantity = quantity(eta_v, one.clone());
     let shockless_flow = evaluate(
@@ -1120,6 +1430,7 @@ pub fn design_with_options(
             ("beta1b", beta1b_quantity.clone()),
             ("u1", u1.clone()),
             ("eta_v", eta_v_quantity.clone()),
+            ("tau", quantity(tau1, one.clone())),
         ],
     )?;
     let inlet_area = std::f64::consts::PI * d1.si * b1.si;
@@ -1152,6 +1463,7 @@ pub fn design_with_options(
                 "beta2",
                 Quantity::from_si(selection.beta2_deg.to_radians(), deg.clone()),
             ),
+            ("tau", quantity(tau2, one.clone())),
         ],
     )?;
     let pressure_side_flow = 0.5 * (shockless_flow.si + throat_flow.si);
@@ -1211,10 +1523,37 @@ pub fn design_with_options(
         zero_head_flow_ratio,
         head_slope,
         volute,
+        eye_excludes_hub,
         diagnostics: Diagnostics::new(),
     };
 
+    let curve_max = performance_curve(input, &result, POWER_CURVE_POINTS)
+        .iter()
+        .map(|point| point.p_shaft.si)
+        .fold(result.p_shaft.si, f64::max);
+    if curve_max > result.p_max.si {
+        result.p_max = Quantity::from_si(curve_max, w);
+        result.torque_max = evaluate(
+            &registry,
+            "mech.shaft_torque",
+            &[("P", result.p_max.clone()), ("n", input.n.clone())],
+        )?;
+    }
+
     result.diagnostics = diagnostics_for(&result, input);
+    if seal_without_drive {
+        result.diagnostics.push(
+            Diagnostic::info(
+                "HM-DES-032",
+                "la altura a través del anillo delantero no es positiva: la fuga de \
+                 contraste se tomó nula (Qsp = 0, ηv = 1)",
+            )
+            .with_hint(
+                "El grado de reacción cinemático y la rotación de la cámara lateral \
+                 no dejan ΔH. El ηv del método no cambia.",
+            ),
+        );
+    }
     Ok(result)
 }
 
@@ -1245,8 +1584,8 @@ pub const NPSH_OVERLOAD_EXPONENT: f64 = 3.0;
 /// NPSH3 por velocidades de entrada para la fracción `ratio = Q/Qd`, sin la
 /// constante 1/2g (solo se usa como cociente).
 fn npsh3_velocity_shape(result: &DesignResult, ratio: f64) -> f64 {
-    // La misma c1m que el NPSH3 del punto: la velocidad en el ojo (v0.6).
-    let c1m = result.selection.c0 * ratio;
+    // La misma c1m que el NPSH3 del punto: cm0 en el álabe.
+    let c1m = result.selection.cm0 * ratio;
     let u1 = result.u1.si;
     let lambda_w = NPSH_LAMBDA_W * ratio.powf(NPSH_LAMBDA_W_EXPONENT);
     NPSH_LAMBDA_C * c1m.powi(2) + lambda_w * (c1m.powi(2) + u1.powi(2))
@@ -1279,19 +1618,18 @@ pub fn npshr_ratio(result: &DesignResult, ratio: f64) -> f64 {
 ///
 /// - Siempre: `NPSHA ≥ max(1,25·NPSH3; NPSH3 + 0,6 m)`.
 /// - Con 10 ≤ u1 ≤ 50 m/s (agua): `σA ≥ σ3 + FR·FF·{0,05 + 2(u1/100)³}`, con
-///   `σ = 2g·NPSH/u1²` (ec. (6.5)), FF = 1 (agua) y FR = 1 entre 0,8 y
-///   1,0 Qd o 1,2 fuera (caudal parcial, o Q > QSF con QSF = Qd).
+///   `σ = 2g·NPSH/u1²` (ec. (6.5)) y FF = 1 (agua). FR = 1 solo si
+///   0,8 < q ≤ 1,1 y q ≤ qSF; si no, 1,2. q = 0,8 exacto se queda en 1,2.
 ///
-/// Por encima de 50 m/s la tabla pide experiencia o datos de cavidad; se
-/// aplica solo el mínimo y `npsh_diagnostics` lo avisa.
-pub fn required_npsha(npsh3: f64, u1: f64, ratio: f64) -> f64 {
+/// `shockless_ratio` es QSF/Qd. Por encima de 50 m/s la tabla pide
+/// experiencia o datos de cavidad; se aplica solo el mínimo y
+/// `npsh_diagnostics` lo avisa.
+pub fn required_npsha(npsh3: f64, u1: f64, ratio: f64, shockless_ratio: f64) -> f64 {
     let minimum = (1.25 * npsh3).max(npsh3 + 0.6);
     if !(10.0..=50.0).contains(&u1) {
         return minimum;
     }
-    // La tabla da FR = 1 entre 0,8 y 1,1 Qd y 1,2 con Q > QSF. Como se supone
-    // entrada sin choque en Qd (QSF = Qd), por encima de Qd manda 1,2.
-    let risk = if ratio > 0.8 && ratio <= 1.0 {
+    let risk = if ratio > 0.8 && ratio <= 1.1 && ratio <= shockless_ratio {
         1.0
     } else {
         1.2
@@ -1340,10 +1678,6 @@ pub const RECIRCULATION_SCATTER: f64 = 0.1;
 /// nq ≈ 40..60; se toma el extremo inferior).
 pub const CYLINDRICAL_BLADE_MAX_NQ: f64 = 40.0;
 
-/// Viscosidad cinemática para el rozamiento de discos, m²/s: agua a unos
-/// 20 °C. Entra como Re^0,2, así que su efecto es pequeño.
-const DISK_NU: f64 = 1.0e-6;
-
 /// Rotación del fluido en las cámaras laterales sin fuga y con cámaras
 /// abiertas (Gülich 2020, ec. 3.10.8 con rw = r2 y tax = 0).
 const DISK_K0: f64 = 0.5;
@@ -1351,10 +1685,6 @@ const DISK_K0: f64 = 0.5;
 /// Pérdidas de todas las superficies del rodete frente a las de las caras
 /// planas de las tapas (Gülich 2020, tabla 3.10, rodetes radiales típicos).
 const DISK_F_GEO: f64 = 1.22;
-
-/// Grado de reacción para la presión estática a la salida del rodete con
-/// nq < 40 (Gülich 2020, ec. 3.7.1 y p. 111).
-const SEAL_REACTION: f64 = 0.75;
 
 /// Longitud del anillo de desgaste frente a su diámetro: Gülich 2020, p. 111,
 /// da 0,1..0,14; se toma el centro.
@@ -1367,18 +1697,24 @@ const SEAL_ZETA: f64 = 1.1;
 /// p. 111: 4 µm).
 const SEAL_ROUGHNESS: f64 = 4.0e-6;
 
-/// Fuga por el anillo delantero (Gülich 2020, tabla 3.7): devuelve Qsp/Q y
-/// el ηv que le corresponde. El anillo está en el ojo (dsp = d1); la holgura
-/// diametral es la dada o la de la ec. (3.12). λ depende de cax, así que se
-/// itera.
+/// Fuga por el anillo delantero (Gülich 2020, tabla 3.7).
+///
+/// Devuelve `(Qsp/Q, ηv, sin altura motriz)`. El anillo está en el ojo
+/// (dsp = d1). RG es cinemático, `(1 − cu2/(2·u2))` entre 0,2 y 0,95, no
+/// la constante 0,75. λ se resuelve por bisección: cax(λ) y λ(cax) se
+/// cruzan, y la sustitución directa oscila cuando manda el régimen laminar.
+/// Se acepta cuando el cambio relativo baja de 1e-4 y entonces se recalcula
+/// cax con esa λ. Si ΔH ≤ 0 no hay fuga (Qsp = 0, ηv = 1) y el tercer valor
+/// es verdadero. Si no hay raíz, error.
 fn seal_leakage(
     registry: &Registry,
     input: &DesignInput,
     d1: f64,
     d2: f64,
     u2: f64,
+    cu2: f64,
     clearance: Option<f64>,
-) -> Result<(f64, f64), DesignError> {
+) -> Result<(f64, f64, bool), DesignError> {
     let one = Unit::dimensionless();
     let m = unit("m")?;
     let ms = unit("m/s")?;
@@ -1396,9 +1732,21 @@ fn seal_leakage(
             .si
         }
     };
+    if !diametral.is_finite() || diametral <= 0.0 || !d1.is_finite() || d1 <= 0.0 {
+        return Err(DesignError::Input(
+            "la holgura y el diámetro del anillo tienen que ser positivos".to_string(),
+        ));
+    }
     let s = 0.5 * diametral;
     let length = SEAL_LENGTH_RATIO * d1;
-    let nu = Quantity::from_si(DISK_NU, m2s.clone());
+    let nu = Quantity::from_si(fluid_nu(input), m2s.clone());
+    let reaction = if u2 > 0.0 && cu2.is_finite() {
+        (1.0 - cu2 / (2.0 * u2)).clamp(0.2, 0.95)
+    } else {
+        return Err(DesignError::Input(
+            "el grado de reacción del anillo necesita u2 positivo y cu2 finito".to_string(),
+        ));
+    };
     let k = evaluate(
         registry,
         "design.seal_rotation_factor",
@@ -1415,7 +1763,7 @@ fn seal_leakage(
         registry,
         "design.seal_pressure_difference",
         &[
-            ("RG", quantity(SEAL_REACTION, one.clone())),
+            ("RG", quantity(reaction, one.clone())),
             ("H", input.h.clone()),
             ("k", k),
             ("u2", Quantity::from_si(u2, ms.clone())),
@@ -1424,14 +1772,20 @@ fn seal_leakage(
             ("d2", metres(d2)),
         ],
     )?;
+    if !dh.si.is_finite() {
+        return Err(DesignError::Input(
+            "la altura a través del anillo no es finita".to_string(),
+        ));
+    }
+    if dh.si <= 0.0 {
+        return Ok((0.0, 1.0, true));
+    }
     let usp = Quantity::from_si(
         0.5 * d1 * 2.0 * std::f64::consts::PI * input.n.si,
         ms.clone(),
     );
-    let mut lambda = 0.04;
-    let mut cax = 0.0;
-    for _ in 0..30 {
-        cax = evaluate(
+    let axial = |lambda: f64| {
+        evaluate(
             registry,
             "design.seal_axial_velocity",
             &[
@@ -1442,9 +1796,16 @@ fn seal_leakage(
                 ("L", metres(length)),
                 ("s", metres(s)),
             ],
-        )?
-        .si;
-        lambda = evaluate(
+        )
+    };
+    let friction_at = |lambda: f64| -> Result<(f64, f64), DesignError> {
+        let cax = axial(lambda)?.si;
+        if !cax.is_finite() || cax <= 0.0 {
+            return Err(DesignError::Input(
+                "la velocidad en el anillo no es positiva".to_string(),
+            ));
+        }
+        let next = evaluate(
             registry,
             "design.seal_friction_coefficient",
             &[
@@ -1455,7 +1816,54 @@ fn seal_leakage(
                 ("usp", usp.clone()),
             ],
         )?
-        .value();
+        .si;
+        if !next.is_finite() || next <= 0.0 {
+            return Err(DesignError::Input(
+                "el coeficiente de rozamiento del anillo no es positivo".to_string(),
+            ));
+        }
+        Ok((cax, next))
+    };
+    // A λ chico la fricción queda por encima de λ; a λ grande la rama
+    // laminar crece como λ^0,875 y el residuo pasa a negativo.
+    let mut low = 1.0e-4;
+    let mut high = 0.2;
+    let mut low_gap = friction_at(low)?.1 - low;
+    let mut high_gap = friction_at(high)?.1 - high;
+    for _ in 0..24 {
+        if low_gap < 0.0 {
+            low *= 0.5;
+            low_gap = friction_at(low)?.1 - low;
+        } else if high_gap > 0.0 {
+            high *= 2.0;
+            high_gap = friction_at(high)?.1 - high;
+        } else {
+            break;
+        }
+    }
+    if low_gap < 0.0 || high_gap > 0.0 || !low_gap.is_finite() || !high_gap.is_finite() {
+        return Err(DesignError::Input(
+            "la fuga del anillo no converge".to_string(),
+        ));
+    }
+    let lambda = hm_math::bisect(
+        |lambda| friction_at(lambda).map_or(f64::NAN, |(_, next)| next - lambda),
+        low,
+        high,
+        1.0e-10,
+        80,
+    )
+    .map_err(|error| DesignError::Input(format!("la fuga del anillo no converge: {error}")))?;
+    let (cax, next) = friction_at(lambda)?;
+    if (next - lambda).abs() > 1.0e-4 * lambda.max(1.0e-12) {
+        return Err(DesignError::Input(
+            "la fuga del anillo no converge".to_string(),
+        ));
+    }
+    if !cax.is_finite() || cax <= 0.0 {
+        return Err(DesignError::Input(
+            "la velocidad en el anillo no es positiva".to_string(),
+        ));
     }
     let qsp = evaluate(
         registry,
@@ -1472,7 +1880,12 @@ fn seal_leakage(
         &[("Q", input.q.clone()), ("Qsp", qsp.clone())],
     )?
     .value();
-    Ok((qsp.si / input.q.si, eta_v))
+    if !qsp.si.is_finite() || !eta_v.is_finite() {
+        return Err(DesignError::Input(
+            "la fuga del anillo no es finita".to_string(),
+        ));
+    }
+    Ok((qsp.si / input.q.si, eta_v, false))
 }
 
 /// Deceleración mínima `w2/w1` (criterio de de Haller; Gülich 2020, p. 413).
@@ -1498,9 +1911,9 @@ fn curve_head_coefficients(input: &DesignInput, result: &DesignResult) -> (f64, 
     (2.0 * (1.0 - h0) - slope, slope - (1.0 - h0))
 }
 
-/// Caudal, en fracción de Qd, donde la curva H(Q) tiene su máximo, si está
-/// por encima de caudal cero y por debajo del de diseño: por debajo de él la
-/// curva es inestable.
+/// Caudal, en fracción de Qd, donde la parábola H(Q) tiene su máximo, si está
+/// entre caudal cero y el de diseño. H0 es estadístico y no ve Z ni β2: el
+/// máximo es una incompatibilidad de esa parábola.
 pub fn curve_head_peak(input: &DesignInput, result: &DesignResult) -> Option<f64> {
     let (a, b) = curve_head_coefficients(input, result);
     if b >= 0.0 {
@@ -1703,15 +2116,16 @@ fn diagnostics_for(result: &DesignResult, input: &DesignInput) -> Diagnostics {
             Diagnostic::info(
                 "HM-DES-031",
                 format!(
-                    "la curva H(Q) tiene su máximo en {peak:.2}·Qd ({:.1} m), por encima de H0 \
-                     = {:.1} m: es inestable por debajo de ese caudal",
+                    "la parábola H(Q) tiene un máximo en {peak:.2}·Qd ({:.1} m), por encima de H0 \
+                     = {:.1} m. H0 estadístico (ec. 3.28) no ve Z ni β2, así que no casa con la \
+                     pendiente de §4.3.5",
                     curve_head(input, result, peak),
                     result.shutoff_head.si
                 ),
             )
             .with_hint(
-                "La pendiente en el punto (Gülich §4.3.5) es mayor que la que admite H0: \
-                 sube β2 o estrecha b2 para aplanarla, o reduce ψ para subir H0.",
+                "Esto no demuestra por sí solo una bomba inestable: la parábola junta un H0 \
+                 estadístico con una pendiente geométrica.",
             ),
         );
     }
@@ -1864,7 +2278,8 @@ fn worst_npsh_margin(
         .map(|index| from + (to - from) * index as f64 / STEPS as f64)
         .map(|ratio| {
             let npsh3 = result.npshr_design.si * npshr_ratio(result, ratio);
-            let required = required_npsha(npsh3, result.u1.si, ratio);
+            let shockless = result.shockless_flow.si / q_design;
+            let required = required_npsha(npsh3, result.u1.si, ratio, shockless);
             (npsha - required, q_design * ratio * 3600.0, required)
         })
         .fold((f64::INFINITY, 0.0, 0.0), |worst, candidate| {
@@ -2068,43 +2483,4 @@ fn evaluate(
         .map(|(name, value)| ((*name).to_string(), value.clone()))
         .collect();
     Ok(registry.evaluate(id, &inputs)?)
-}
-
-/// Número de álabes.
-fn blade_count(nq: f64) -> u32 {
-    if nq < 25.0 {
-        8
-    } else if nq < 40.0 {
-        7
-    } else if nq < 60.0 {
-        6
-    } else {
-        5
-    }
-}
-
-/// Velocidad en el ojo, m/s.
-fn inlet_velocity(nq: f64) -> f64 {
-    if nq < 25.0 {
-        3.2
-    } else if nq < 40.0 {
-        3.6
-    } else if nq < 60.0 {
-        4.0
-    } else {
-        4.5
-    }
-}
-
-/// Velocidad meridional de entrada, m/s.
-fn inlet_meridional_velocity(nq: f64) -> f64 {
-    if nq < 25.0 {
-        2.0
-    } else if nq < 40.0 {
-        2.25
-    } else if nq < 60.0 {
-        2.5
-    } else {
-        2.8
-    }
 }

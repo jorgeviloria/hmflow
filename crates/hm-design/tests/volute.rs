@@ -9,6 +9,7 @@ fn input() -> DesignInput {
         rho: parse_quantity("998.2 kg/m3").unwrap(),
         eta_m: 0.96,
         npsha: None,
+        nu: None,
     }
 }
 
@@ -21,9 +22,9 @@ fn close(actual: f64, expected: f64, tolerance: f64) {
 
 #[test]
 fn volute_follows_d2_2() {
-    // Selecciones publicadas de D1.A1. Frente a D2.2: R3 −1,7 %, B3 −2,0 %,
-    // R4 +1,0 %; C3 −21 % y D360 +13 %, porque el libro toma C3 con Hth∞
-    // (sin deslizamiento) y el motor con el c2u de Gülich (3.2.7).
+    // Selecciones publicadas de D1.A1, con el ojo automático. Frente a D2.2
+    // el libro toma C3 con Hth∞ (sin deslizamiento). El motor usa el cu2 de
+    // Gülich con τ2 > 1, así que cu2, C3, A360 y D360 bajan respecto a τ = 1.
     let options = DesignOptions {
         psi: Some(0.87),
         phi: Some(0.13),
@@ -37,13 +38,33 @@ fn volute_follows_d2_2() {
     let volute = &result.volute;
 
     close(result.slip, 0.82151, 1e-4);
-    close(result.cu2.value(), 9.2165, 0.001);
+    close(result.cu2.value(), 8.9692, 0.001);
     close(volute.base_radius.value(), 0.097317, 0.0001);
     close(volute.width.value(), 0.021565, 0.0001);
-    close(volute.inlet_velocity.value(), 9.4974, 0.001);
-    close(volute.throat_area.value(), 0.0016847, 1e-6);
-    close(volute.throat_diameter.value(), 0.050945, 1e-4);
-    close(volute.outer_radius.value(), 0.12279, 1e-4);
+    close(volute.inlet_velocity.value(), 9.2577, 0.001);
+    close(volute.throat_area.value(), 0.001728, 1e-6);
+    close(volute.throat_diameter.value(), 0.05160, 1e-4);
+    close(volute.outer_radius.value(), 0.12312, 1e-4);
+}
+
+#[test]
+fn section_diameter_follows_k_eff() {
+    let result = design_with_options(
+        &input(),
+        &DesignOptions {
+            k_eff: Some(1.25),
+            ..DesignOptions::default()
+        },
+    )
+    .unwrap();
+    let section = &result.volute.sections[4];
+    let equivalent = (4.0 * section.area.si / std::f64::consts::PI).sqrt();
+    close(section.diameter.si / equivalent, 1.25, 1e-9);
+    close(
+        result.volute.sections[8].diameter.si,
+        result.volute.throat_diameter.si,
+        1e-12,
+    );
 }
 
 #[test]

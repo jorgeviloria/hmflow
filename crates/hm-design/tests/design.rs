@@ -17,6 +17,7 @@ fn input(q: &str, h: &str, n: &str) -> DesignInput {
         n,
         rho: parse_quantity("998.2 kg/m3").unwrap(),
         npsha: None,
+        nu: None,
     }
 }
 
@@ -66,20 +67,30 @@ fn d1a1_reference() {
     close(result.p_max.value(), 2928.0, 20.0);
     close(result.torque.value(), 14.12, 0.08);
     close(result.torque_max.value(), 15.53, 0.1);
-    // v0.6: Gülich ec. 6.10 con c0 y u1 del ojo; σ·H daba 1,67 m. El libro
-    // no publica el NPSH de D1.A1.
-    close(result.npshr_design.value(), 1.42, 0.05);
+    // NPSH3 con cm0 = 2,25 m/s (la meridional del álabe), no con c0 = 3,6.
+    // El libro no publica el NPSH de D1.A1.
+    close(result.npshr_design.value(), 0.895, 0.01);
     // Gülich (3.28) da 18,0 m; la fig. D1.A2 de Srinivasan, ≈19 m (−5 %).
     close(result.shutoff_head.value(), 18.03, 0.05);
-    // Con β2 = 23,5° y c2u de Gülich (3.2.7), Euler da +4,5 % de altura.
-    assert_eq!(codes(&result), ["HM-DES-019", "HM-DES-012"]);
+    // Con β2 = 23,5° y τ2 > 1, Euler da +4,0 % (14,35 m frente a 13,8).
+    // El τ2 aplana la pendiente de §4.3.5 y la parábola con H0 estadístico
+    // tiene un máximo a caudal parcial (HM-DES-031): es la parábola, no
+    // una inestabilidad medida.
+    assert_eq!(codes(&result), ["HM-DES-031", "HM-DES-019", "HM-DES-012"]);
 }
 
 fn d1a1_selections() -> DesignOptions {
+    // Ojo y Z publicados de D1.A1. Sin ellos el motor elige el ojo que
+    // minimiza el NPSH y un Z que mete β2 en 15..45°, y las medidas del
+    // libro dejan de salir.
     DesignOptions {
         psi: Some(0.87),
         phi: Some(0.13),
         beta2_rad: Some(23.5f64.to_radians()),
+        blade_count: Some(7),
+        c0: Some(3.6),
+        cm0: Some(2.25),
+        j: Some(1.03),
         ..DesignOptions::default()
     }
 }
@@ -101,8 +112,8 @@ fn d1a1_duty_with_default_selections() {
 
     close(result.selection.psi, 0.9472, 1e-4);
     close(result.selection.phi, 0.1040, 1e-3);
-    // v0.7: con el ηh de Gülich (0,890 frente a 0,870) Euler pide menos cu2.
-    close(result.selection.beta2_deg, 18.85, 0.1);
+    // v0.8: τ2 y d1/d2 entran en Euler. Con Z = 7, β2 queda en 20,1°.
+    close(result.selection.beta2_deg, 20.12, 0.05);
     close(result.b2.si / result.d2.si, gulich_b2_star(result.nq), 1e-6);
     let euler_head = result.eta_h * result.u2.si * result.cu2.si / 9.80665;
     close(euler_head, input.h.si, 1e-6);
@@ -115,12 +126,13 @@ fn existing_case_is_consistent() {
 
     close(result.nq, 30.474, 0.05);
     close(result.selection.psi, 0.9569, 1e-4);
-    // v0.7: ηh de Gülich 0,904 (Srinivasan daba 0,875): β2 baja de 19,08°.
-    close(result.selection.beta2_deg, 17.82, 0.02);
+    // v0.8: Z = 7, τ2 en el triángulo de salida. β2 = 19,0°.
+    close(result.selection.beta2_deg, 19.04, 0.02);
     close(result.d2.value(), 0.2000, 0.001);
     close(result.b2.value(), 0.01794, 0.0003);
-    close(result.d1.value(), 0.1135, 0.001);
-    close(result.b1.value(), 0.0428, 0.001);
+    // Ojo que minimiza el NPSH3 con el cubo restado: d1 = 106 mm, b1 = 24 mm.
+    close(result.d1.value(), 0.1057, 0.001);
+    close(result.b1.value(), 0.0242, 0.001);
     // end_suction_v0.4 (análisis de pérdidas): 0,843; v0.3 daba 0,816.
     // Gülich ec. 3.9.1 da 0,812 ± 0,038 para este Q y nq.
     close(result.eta, 0.843, 0.003);
@@ -131,13 +143,39 @@ fn existing_case_is_consistent() {
         14681.5 / 0.8431616 / (2.0 * std::f64::consts::PI * 2900.0 / 60.0),
         0.1,
     );
-    // v0.6: Gülich ec. 6.10 con el ojo; σ·H daba 5,14 m.
-    close(result.npshr_design.value(), 3.89, 0.05);
+    // v0.8: Gülich ec. 6.10 con el cm0 del ojo óptimo.
+    close(result.npshr_design.value(), 3.83, 0.02);
     close(result.shutoff_head.value(), 53.65, 0.1);
     // H0/Hd = 1,19: por debajo del 1,2 de Gülich, informativo. Desde la v0.5
     // la pendiente de la tangente (§4.3.5) es mayor de lo que admite ese H0 y
     // la curva tiene un máximo a caudal parcial (HM-DES-031).
     assert_eq!(codes(&result), ["HM-DES-017", "HM-DES-031", "HM-DES-012"]);
+}
+
+#[test]
+fn automatic_eye_minimizes_npsh_and_excludes_the_hub() {
+    let input = input("120 m3/h", "45 m", "2900 rpm");
+    let result = design(&input).unwrap();
+    assert!(result.eye_excludes_hub);
+    let hub_sq = result.d1.si.powi(2) - result.d0.si.powi(2);
+    assert!(
+        hub_sq > 0.0,
+        "d1 {:.4} d0 {:.4}",
+        result.d1.si,
+        result.d0.si
+    );
+    let hub = hub_sq.sqrt();
+    let qth = result.qth.si;
+    let n = input.n.si;
+    let npsh_shape = |d1: f64| {
+        let free = d1 * d1 - hub * hub;
+        let c = qth / (std::f64::consts::PI / 4.0 * free);
+        let u = std::f64::consts::PI * d1 * n;
+        1.1 * c * c + 0.2 * (c * c + u * u)
+    };
+    let at = npsh_shape(result.d1.si);
+    assert!(npsh_shape(result.d1.si * 0.98) > at);
+    assert!(npsh_shape(result.d1.si * 1.02) > at);
 }
 
 #[test]
@@ -400,23 +438,27 @@ fn water_density_follows_kell() {
 
 #[test]
 fn required_npsha_follows_gulich_table_6_2() {
-    // u1 < 10 m/s: max(1,25·NPSH3; NPSH3 + 0,6 m).
-    close(required_npsha(2.0, 7.4, 1.0), 2.6, 1e-12);
-    close(required_npsha(4.0, 7.4, 1.0), 5.0, 1e-12);
+    // u1 < 10 m/s: max(1,25·NPSH3; NPSH3 + 0,6 m). El cuarto argumento es qSF.
+    close(required_npsha(2.0, 7.4, 1.0, 1.0), 2.6, 1e-12);
+    close(required_npsha(4.0, 7.4, 1.0, 1.0), 5.0, 1e-12);
 
     // 10..50 m/s: NPSH3 + FR·{0,05 + 2(u1/100)³}·u1²/2g, con el mínimo.
     let u1: f64 = 30.0;
     let term = (0.05 + 2.0 * 0.3f64.powi(3)) * u1.powi(2) / (2.0 * 9.80665);
-    close(required_npsha(2.0, u1, 1.0), 2.0 + term, 1e-12);
-    close(required_npsha(2.0, u1, 1.2), 2.0 + 1.2 * term, 1e-12);
-    // Entre 1,0 y 1,1 Qd también 1,2: se supone QSF = Qd.
-    close(required_npsha(2.0, u1, 1.05), 2.0 + 1.2 * term, 1e-12);
-    close(required_npsha(2.0, u1, 0.9), 2.0 + term, 1e-12);
+    close(required_npsha(2.0, u1, 1.0, 1.0), 2.0 + term, 1e-12);
+    close(required_npsha(2.0, u1, 1.2, 1.2), 2.0 + 1.2 * term, 1e-12);
+    // 0,8 < q ≤ 1,1 y q ≤ qSF: FR = 1.
+    close(required_npsha(2.0, u1, 1.05, 1.05), 2.0 + term, 1e-12);
+    // q > qSF, aunque q esté entre 0,8 y 1,1: FR = 1,2.
+    close(required_npsha(2.0, u1, 1.05, 1.0), 2.0 + 1.2 * term, 1e-12);
+    close(required_npsha(2.0, u1, 0.9, 1.0), 2.0 + term, 1e-12);
+    // q = 0,8 exacto queda fuera del intervalo abierto.
+    close(required_npsha(2.0, u1, 0.8, 1.0), 2.0 + 1.2 * term, 1e-12);
     // Con NPSH3 grande domina el mínimo de 1,25·NPSH3.
-    close(required_npsha(20.0, u1, 1.0), 25.0, 1e-12);
+    close(required_npsha(20.0, u1, 1.0, 1.0), 25.0, 1e-12);
 
     // Por encima de 50 m/s solo el mínimo.
-    close(required_npsha(10.0, 60.0, 1.0), 12.5, 1e-12);
+    close(required_npsha(10.0, 60.0, 1.0, 1.0), 12.5, 1e-12);
 }
 
 #[test]
@@ -457,17 +499,18 @@ fn de_haller_ratio_is_reported() {
     assert!(ratio > 0.7, "w2/w1 = {ratio}");
     assert!(!has(&result, "HM-DES-014"));
 
-    // Un ojo muy grande (c0 = 1 m/s) sube u1 y con él w1.
+    // c0 = 2,2 m/s agranda el ojo y w2/w1 baja de 0,7. Más lento (c0 = 1 m/s)
+    // deja d1/d2 tan alto que el kw de Wiesner ya no alcanza la altura.
     let slow = design_with_options(
         &input,
         &DesignOptions {
-            c0: Some(1.0),
+            c0: Some(2.2),
             ..DesignOptions::default()
         },
     )
     .unwrap();
     let ratio = slow.w2.si / slow.w1.si;
-    assert!(ratio < 0.6, "w2/w1 = {ratio}");
+    assert!(ratio < 0.7, "w2/w1 = {ratio}");
     assert!(has(&slow, "HM-DES-014"));
 }
 
@@ -512,7 +555,9 @@ fn flat_head_rise_warns_below_nq_40() {
 
 #[test]
 fn inlet_speed_above_50_m_s_is_reported() {
-    let mut input = input("2000 m3/h", "200 m", "3000 rpm");
+    // A 2000 m3/h y 3000 rpm el ojo que minimiza el NPSH3 se queda en
+    // u1 ≈ 44 m/s. Hay que subir el caudal para pasar de 50 m/s.
+    let mut input = input("4000 m3/h", "200 m", "3000 rpm");
     input.npsha = Some(parse_quantity("100 m").unwrap());
     let result = design(&input).unwrap();
     assert!(result.u1.si > 50.0, "u1 = {}", result.u1.si);
@@ -559,10 +604,15 @@ fn transition_comes_from_the_geometry() {
     let input = input("120 m3/h", "45 m", "2900 rpm");
     let result = design(&input).unwrap();
     let qd = input.q.si;
-    close(result.shockless_flow.si / qd, 1.274, 0.005);
+    close(result.shockless_flow.si / qd, 1.119, 0.005);
     close(result.volute_matching_flow.si / qd, 0.989, 0.005);
-    // Sin espesor de álabe, QW = QSF.
-    close(result.throat_flow.si, result.shockless_flow.si, 1e-12);
+    // τ1 sube β1B y QSF divide por τ. QW usa sen β1B sin ese divisor.
+    assert!(
+        result.throat_flow.si > result.shockless_flow.si * 1.2,
+        "QW {:.3} QSF {:.3}",
+        result.throat_flow.si,
+        result.shockless_flow.si
+    );
     close(
         result.transition_ratio,
         result.volute_matching_flow.si / qd,
@@ -679,6 +729,36 @@ fn seal_leakage_follows_the_ring_geometry() {
     assert!(worn.seal_eta_v < base.seal_eta_v - 0.01);
     // Es un contraste: el η del método no cambia.
     close(worn.eta, base.eta, 1e-12);
+}
+
+#[test]
+fn viscous_ring_leakage_still_converges() {
+    // 20 cSt baja el Reynolds del anillo al régimen laminar. La sustitución
+    // directa de λ oscila; el diseño tiene que cerrar igual.
+    let water = input("120 m3/h", "45 m", "2900 rpm");
+    let sized = design(&water).unwrap();
+    let mut viscous = water;
+    viscous.nu = Some(20.0e-6);
+    let result = design_with_options(
+        &viscous,
+        &DesignOptions {
+            psi: Some(sized.selection.psi),
+            phi: Some(sized.selection.phi),
+            beta2_rad: Some(sized.selection.beta2_deg.to_radians()),
+            blade_count: Some(sized.selection.blade_count),
+            c0: Some(sized.selection.c0),
+            cm0: Some(sized.selection.cm0),
+            j: Some(sized.selection.j),
+            ..DesignOptions::default()
+        },
+    )
+    .unwrap();
+    assert!(
+        result.seal_eta_v.is_finite() && (0.0..=1.0).contains(&result.seal_eta_v),
+        "{}",
+        result.seal_eta_v
+    );
+    assert!(result.eta.is_finite() && result.eta > 0.0, "{}", result.eta);
 }
 
 #[test]

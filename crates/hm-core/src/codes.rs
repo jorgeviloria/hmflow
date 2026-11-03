@@ -220,7 +220,7 @@ pub const CODES: &[CodeInfo] = &[
     active(
         "HM-DES-013",
         Warning,
-        "Selecciones manuales que no corresponden al nq actual.",
+        "Selecciones manuales que no corresponden al punto de operación actual.",
     ),
     active(
         "HM-DES-014",
@@ -302,7 +302,12 @@ pub const CODES: &[CodeInfo] = &[
     active(
         "HM-DES-031",
         Info,
-        "La curva H(Q) tiene su máximo por encima de caudal cero: inestable por debajo.",
+        "La parábola H(Q) (H0 estadístico y pendiente geométrica) tiene un máximo a caudal parcial.",
+    ),
+    active(
+        "HM-DES-032",
+        Info,
+        "La altura a través del anillo delantero no empuja fuga.",
     ),
 ];
 

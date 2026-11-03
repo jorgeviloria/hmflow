@@ -348,17 +348,34 @@ fn shutoff_head() {
 
 #[test]
 fn slip_factor() {
-    // 0,98·(1 − √(sen 23,5°)/7^0,7)
+    // 0,98·(1 − √(sen 23,5°)/7^0,7). eps = 0 deja kw = 1.
     close(
-        evaluate("design.slip_factor", &[("beta2", "23.5 deg"), ("Z", "7")]),
+        evaluate(
+            "design.slip_factor",
+            &[("beta2", "23.5 deg"), ("Z", "7"), ("eps", "0")],
+        ),
         0.82151,
         1e-4,
     );
+    // εLim = exp(−8,16·sen 23,5°/7) ≈ 0,628. Con eps = 0,9, kw < 1.
+    let base = evaluate(
+        "design.slip_factor",
+        &[("beta2", "23.5 deg"), ("Z", "7"), ("eps", "0")],
+    );
+    let limited = evaluate(
+        "design.slip_factor",
+        &[("beta2", "23.5 deg"), ("Z", "7"), ("eps", "0.9")],
+    );
+    let sin_beta = 23.5_f64.to_radians().sin();
+    let eps_lim = (-8.16 * sin_beta / 7.0).exp();
+    let kw = 1.0 - ((0.9 - eps_lim) / (1.0 - eps_lim)).powi(3);
+    close(limited, base * kw, 1e-4);
+    assert!(limited < base);
 }
 
 #[test]
 fn cu2() {
-    // 30·0,8 − 4/tan 30° = 24 − 6,9282
+    // 30·0,8 − 4/tan 30° = 24 − 6,9282 con τ2 = 1.
     close(
         evaluate(
             "design.cu2",
@@ -367,9 +384,25 @@ fn cu2() {
                 ("u2", "30 m/s"),
                 ("cm2", "4 m/s"),
                 ("beta2", "30 deg"),
+                ("tau", "1"),
             ],
         ),
         17.0718,
+        1e-3,
+    );
+    // Con τ2 = 1,2 el bloqueo resta 1,2 veces la misma meridional local.
+    close(
+        evaluate(
+            "design.cu2",
+            &[
+                ("slip", "0.8"),
+                ("u2", "30 m/s"),
+                ("cm2", "4 m/s"),
+                ("beta2", "30 deg"),
+                ("tau", "1.2"),
+            ],
+        ),
+        24.0 - 1.2 * 4.0 / 30.0_f64.to_radians().tan(),
         1e-3,
     );
 }
@@ -528,6 +561,7 @@ fn shockless_flow() {
                 ("beta1b", "9.44 deg"),
                 ("u1", "17.23 m/s"),
                 ("eta_v", "0.9714"),
+                ("tau", "1"),
             ],
         ),
         0.042469,
@@ -569,6 +603,7 @@ fn volute_matching_flow() {
                 ("A3q", "0.001975 m2"),
                 ("eta_v", "0.9714"),
                 ("beta2", "19.08 deg"),
+                ("tau", "1"),
             ],
         ),
         0.032977,
@@ -914,11 +949,16 @@ fn bearing_seal_loss() {
 
 #[test]
 fn zero_head_flow_ratio() {
-    // q0 = γ·tan β2/φ con γ = 0,82, β2 = 19,3° y φ = 0,0785
+    // q0 = γ·tan β2/(φ·τ2) con γ = 0,82, β2 = 19,3°, φ = 0,0785 y τ2 = 1.
     close(
         evaluate(
             "design.zero_head_flow_ratio",
-            &[("slip", "0.82"), ("beta2", "19.3 deg"), ("phi", "0.0785")],
+            &[
+                ("slip", "0.82"),
+                ("beta2", "19.3 deg"),
+                ("phi", "0.0785"),
+                ("tau", "1"),
+            ],
         ),
         0.82 * 19.3_f64.to_radians().tan() / 0.0785,
         1e-9,

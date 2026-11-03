@@ -73,6 +73,7 @@ fn input() -> DesignInput {
         rho: parse_quantity("998.2 kg/m3").unwrap(),
         eta_m: 0.96,
         npsha: None,
+        nu: None,
     }
 }
 

@@ -152,6 +152,7 @@ pub fn parse(inputs: &Inputs) -> Result<(DesignInput, f64), FieldErrors> {
                     rho,
                     eta_m,
                     npsha,
+                    nu: water_kinematic_viscosity(kelvin),
                 },
                 kelvin,
             ))

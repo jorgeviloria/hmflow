@@ -345,6 +345,7 @@ fn rows(outcome: &Outcome) -> Vec<(&'static str, Vec<Row>)> {
 
     let mut mechanics = Vec::new();
     if let Some(mech) = &outcome.mechanics {
+        let double_volute = mech.volute_wrap_deg.is_some();
         let items: [(&'static str, &'static str, String, Option<&'static str>); 10] = [
             (
                 "mech.shaft",
@@ -378,13 +379,21 @@ fn rows(outcome: &Outcome) -> Vec<(&'static str, Vec<Row>)> {
             ),
             (
                 "mech.radial0",
-                "Empuje radial, válvula cerrada",
+                if double_volute {
+                    "Empuje radial, válvula cerrada (voluta doble)"
+                } else {
+                    "Empuje radial, válvula cerrada (voluta simple)"
+                },
                 format_si(mech.radial_thrust_shutoff, "N"),
                 Some("mech.radial_thrust"),
             ),
             (
                 "mech.radial1",
-                "Empuje radial, diseño",
+                if double_volute {
+                    "Empuje radial, diseño (voluta doble)"
+                } else {
+                    "Empuje radial, diseño (voluta simple)"
+                },
                 format_si(mech.radial_thrust_design, "N"),
                 Some("mech.radial_thrust"),
             ),

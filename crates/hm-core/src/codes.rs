@@ -330,6 +330,11 @@ pub const CODES: &[CodeInfo] = &[
         "Z par y número de lenguas de la voluta par: Gülich evita esa combinación (p. 491).",
     ),
     active(
+        "HM-DES-038",
+        Info,
+        "Voluta doble a medias: `volute_wrap_deg` y `volute_channels = 2` van juntos.",
+    ),
+    active(
         "HM-DES-036",
         Warning,
         "La carga efectiva del álabe supera la admisible de Gülich (7.1.11) en más de un 15 %.",

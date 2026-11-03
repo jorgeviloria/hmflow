@@ -2719,6 +2719,23 @@ fn diagnostics_for(
         );
     }
 
+    let two_tongues = options.volute_channels.unwrap_or(1) == 2;
+    if options.volute_wrap_deg.is_some() != two_tongues {
+        diagnostics.push(
+            Diagnostic::info(
+                "HM-DES-038",
+                if two_tongues {
+                    "volute_channels = 2 sin `volute_wrap_deg`: el empuje radial se calcula con \
+                     voluta simple"
+                } else {
+                    "`volute_wrap_deg` sin `volute_channels = 2`: el empuje radial se calcula con \
+                     voluta doble, pero las lenguas y la selección de Z son de voluta simple"
+                },
+            )
+            .with_hint("Una voluta doble lleva dos lenguas y su ángulo de envolvente (90..180°)."),
+        );
+    }
+
     if options.blade_count.is_some_and(|z| z.is_multiple_of(2))
         && options.volute_channels.is_some_and(|z| z.is_multiple_of(2))
     {

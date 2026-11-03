@@ -1314,6 +1314,28 @@ fn manual_blade_count_above_seven_does_not_blame_the_engine() {
 }
 
 #[test]
+fn double_volute_options_must_agree() {
+    // Una voluta doble tiene dos lenguas y un ángulo de envolvente: uno sin
+    // el otro es una combinación a medias (HM-DES-038).
+    let base = input("120 m3/h", "45 m", "2900 rpm");
+    let with = |wrap: Option<f64>, channels: Option<u32>| {
+        design_with_options(
+            &base,
+            &DesignOptions {
+                volute_wrap_deg: wrap,
+                volute_channels: channels,
+                ..DesignOptions::default()
+            },
+        )
+        .unwrap()
+    };
+    assert!(has(&with(Some(165.0), None), "HM-DES-038"));
+    assert!(has(&with(None, Some(2)), "HM-DES-038"));
+    assert!(!has(&with(Some(165.0), Some(2)), "HM-DES-038"));
+    assert!(!has(&with(None, None), "HM-DES-038"));
+}
+
+#[test]
 fn even_manual_blade_count_with_two_tongues_is_reported() {
     // Gülich p. 491: con zLe par se evita un Z par. El motor lo respeta al
     // elegir Z; con Z manual solo puede avisar (HM-DES-037).

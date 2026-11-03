@@ -1355,11 +1355,20 @@ fn design_options(project: &Project) -> Result<DesignOptions, Box<dyn std::error
         seal_clearance: None,
         // «0» significa sin dato: ηv estimado, rodete liso, voluta simple.
         eta_v: param_f64(project, "eta_v_fixed", "1")?.filter(|value| *value != 0.0),
-        balance_holes: param_f64(project, "balance_holes", "1")?.is_some_and(|value| value != 0.0),
-        volute_ratio: param_f64(project, "volute_ratio", "1")?,
+        balance_holes: match param_f64(project, "balance_holes", "1")? {
+            None => false,
+            Some(value) if value == 0.0 || value == 1.0 => value == 1.0,
+            Some(_) => return Err("`balance_holes` debe ser 0 o 1".into()),
+        },
+        volute_ratio: param_f64(project, "volute_ratio", "1")?.filter(|value| *value != 0.0),
         impeller_roughness: param_f64(project, "impeller_roughness", "m")?
             .filter(|value| *value != 0.0),
-        volute_channels: param_u32(project, "volute_channels")?,
+        // «0» = sin dato, como en las demás opciones numéricas.
+        volute_channels: if param_f64(project, "volute_channels", "1")? == Some(0.0) {
+            None
+        } else {
+            param_u32(project, "volute_channels")?
+        },
         volute_wrap_deg: param_f64(project, "volute_wrap_deg", "deg")?
             .filter(|value| *value != 0.0)
             .map(f64::to_degrees),
@@ -2089,6 +2098,25 @@ mod tests {
         assert!((result.volute.wrap_deg.unwrap() - 165.0).abs() < 1e-9);
         let c2 = result.volute.inlet_velocity.si;
         assert!((result.volute.throat_area.si - input.q.si / (0.85 * c2)).abs() < 1e-12);
+    }
+
+    #[test]
+    fn zero_means_no_data_for_every_option_and_balance_holes_is_strict() {
+        let mut project = designed_project();
+        for (name, value) in [("volute_ratio", "0"), ("volute_channels", "0")] {
+            project
+                .params
+                .insert(name.to_string(), manual(value.to_string()));
+        }
+        let (_, options) = design_inputs(&project).unwrap();
+        assert_eq!(options.volute_ratio, None);
+        assert_eq!(options.volute_channels, None);
+
+        project
+            .params
+            .insert("balance_holes".to_string(), manual("0.5".to_string()));
+        let error = design_inputs(&project).unwrap_err().to_string();
+        assert!(error.contains("balance_holes"), "{error}");
     }
 
     #[test]

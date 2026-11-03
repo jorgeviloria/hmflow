@@ -119,7 +119,9 @@ pub struct DesignResult {
     pub shockless_flow: Quantity,
     /// Caudal con w1 = w1q, QW (Gülich ec. 6.18).
     pub throat_flow: Quantity,
-    /// Caudal en que la voluta casa con el rodete, Qc (Gülich ec. 6.19).
+    /// Caudal de la bomba en que c3q = c2 en la garganta de la voluta, Qc
+    /// (Gülich ec. 6.22a, con la meridional). Sin cruce vale
+    /// [`NO_MATCHING_FLOW_RATIO`]·Qd.
     pub volute_matching_flow: Quantity,
     /// Qsa = min(Qc, (QSF + QW)/2), comienzo de la subida brusca del NPSH3
     /// (Gülich p. 342), como fracción del caudal de diseño.
@@ -538,6 +540,10 @@ pub fn gulich_volumetric_efficiency(nq: f64, balance_holes: bool) -> Result<f64,
     )?
     .value())
 }
+
+/// Qc/Qd que se informa cuando la voluta no cruza c3q = c2: finito, para que el
+/// informe lo escriba como número, y lejos del rango de la curva (hasta 1,3·Qd).
+pub const NO_MATCHING_FLOW_RATIO: f64 = 10.0;
 
 /// Intervalo de búsqueda de β2, en grados.
 const BETA2_SEARCH_DEG: (f64, f64) = (1.0, 89.0);
@@ -1542,25 +1548,36 @@ pub fn design_with_options(
             ("eta_v", eta_v_quantity.clone()),
         ],
     )?;
-    let volute_matching_flow = evaluate(
-        &registry,
-        "design.volute_matching_flow",
-        &[
-            ("u2", u2.clone()),
-            (
-                "A2",
-                Quantity::from_si(std::f64::consts::PI * d2.si * b2.si, m2.clone()),
-            ),
-            ("slip", quantity(slip, one.clone())),
-            ("A3q", Quantity::from_si(volute.throat_area.si, m2.clone())),
-            ("eta_v", eta_v_quantity),
-            (
-                "beta2",
-                Quantity::from_si(selection.beta2_deg.to_radians(), deg.clone()),
-            ),
-            ("tau", quantity(tau2, one.clone())),
-        ],
-    )?;
+    // Qc de Gülich 6.22a (con c2m): caudal del rodete en que c3q = c2. La
+    // garganta se dimensiona con c3q = c2, así que a caudal de diseño se
+    // cumple y Qc = Qd. `a = fq·A2·QLe/(zLe·A3q·QLa)` con fq = zLe = 1,
+    // QLe = Q (lo que pasa por la voluta) y QLa = Qth (lo que pasa por el
+    // rodete). QLa,c pasa al caudal de la bomba con QLe/QLa. Sin cruce
+    // (a² − 1 ≤ (τ2/tan β2B)²), la voluta no limita el NPSH y Qc se toma
+    // como `NO_MATCHING_FLOW_RATIO`·Qd.
+    let a2_outlet = std::f64::consts::PI * d2.si * b2.si;
+    let a_ratio = a2_outlet * input.q.si / (volute.throat_area.si * qth.si);
+    let blade_slope = tau2 / selection.beta2_deg.to_radians().tan();
+    let volute_matching_flow = if a_ratio * a_ratio - 1.0 > blade_slope * blade_slope {
+        let impeller_flow = evaluate(
+            &registry,
+            "design.volute_matching_flow_cm",
+            &[
+                ("u2", u2.clone()),
+                ("A2", Quantity::from_si(a2_outlet, m2.clone())),
+                ("slip", quantity(slip, one.clone())),
+                ("a", quantity(a_ratio, one.clone())),
+                ("tau", quantity(tau2, one.clone())),
+                (
+                    "beta2",
+                    Quantity::from_si(selection.beta2_deg.to_radians(), deg.clone()),
+                ),
+            ],
+        )?;
+        Quantity::from_si(impeller_flow.si * input.q.si / qth.si, m3s.clone())
+    } else {
+        Quantity::from_si(NO_MATCHING_FLOW_RATIO * input.q.si, m3s.clone())
+    };
     let pressure_side_flow = 0.5 * (shockless_flow.si + throat_flow.si);
     let transition_ratio = volute_matching_flow.si.min(pressure_side_flow) / input.q.si;
     let recirculation_onset = evaluate(

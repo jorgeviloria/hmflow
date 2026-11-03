@@ -604,12 +604,14 @@ fn unreachable_head_is_an_error() {
 #[test]
 fn transition_comes_from_the_geometry() {
     // Gülich ec. 6.17-6.20 con el diseño por defecto de 120 m3/h y 45 m:
-    // la voluta manda (Qc < QSF) y la subida empieza muy cerca de Qd.
+    // la voluta manda (Qc < QSF) y la subida empieza en Qd.
     let input = input("120 m3/h", "45 m", "2900 rpm");
     let result = design(&input).unwrap();
     let qd = input.q.si;
     close(result.shockless_flow.si / qd, 1.119, 0.005);
-    close(result.volute_matching_flow.si / qd, 0.989, 0.005);
+    // v0.9: Qc por 6.22a (con c2m); con la garganta de c3q = c2 es el de diseño.
+    // Con 6.19 salía 0,989·Qd.
+    close(result.volute_matching_flow.si / qd, 1.0, 1e-6);
     // v0.9: τ1 sube β1B y divide QSF; la garganta de QW también se cierra
     // con el espesor (A1·sen β1B/τ1), así que QW queda por debajo de QSF.
     assert!(
@@ -629,16 +631,18 @@ fn transition_comes_from_the_geometry() {
 }
 
 #[test]
-fn high_nq_transition_and_recirculation_are_reported() {
-    // nq ≈ 98: Qc = 0,93·Qd y recirculación desde 0,63·Qd (±0,1).
+fn high_nq_recirculation_is_reported() {
+    // nq ≈ 98: recirculación desde 0,63·Qd (±0,1). Con 6.22a el Qc de la
+    // voluta es el de diseño, así que no hay aviso de transición (con 6.19
+    // salía 0,93·Qd y HM-DES-025).
     let input = input("954 m3/h", "15 m", "1450 rpm");
     let result = design(&input).unwrap();
     assert!(
-        result.transition_ratio < 0.95,
+        result.transition_ratio >= 0.95,
         "{}",
         result.transition_ratio
     );
-    assert!(has(&result, "HM-DES-025"));
+    assert!(!has(&result, "HM-DES-025"));
     assert!(has(&result, "HM-DES-026"));
 }
 
@@ -933,4 +937,42 @@ fn throat_flow_is_below_shockless_flow_with_blockage() {
         result.throat_flow.si,
         result.shockless_flow.si
     );
+}
+
+#[test]
+fn volute_matching_flow_is_the_design_flow_with_the_cm_equation() {
+    // Gülich 6.22a (con c2m): la garganta se dimensiona con c3q = c2, así que
+    // el caudal en que c3q = c2 es el de diseño. Con 6.19 (sin c2m) salía
+    // 0,92·Qd en nq ≈ 87.
+    for (q, h, n) in [
+        ("1060 gpm", "83 m", "1750 rpm"),
+        ("500 m3/h", "60 m", "1450 rpm"),
+        ("200 m3/h", "8 m", "1750 rpm"),
+    ] {
+        let input = input(q, h, n);
+        let result = design(&input).unwrap();
+        close(result.volute_matching_flow.si / input.q.si, 1.0, 1e-6);
+    }
+}
+
+#[test]
+fn no_spurious_transition_warning_at_high_nq() {
+    let result = design(&input("200 m3/h", "8 m", "1750 rpm")).unwrap();
+    assert!(
+        result.transition_ratio >= 0.95,
+        "{}",
+        result.transition_ratio
+    );
+    assert!(!has(&result, "HM-DES-025"));
+}
+
+#[test]
+fn matching_flow_without_crossing_stays_finite() {
+    // nq ≈ 123: la voluta no cruza c3q = c2 (a² − 1 ≤ (τ2/tan β2B)²). Qc se
+    // toma como 10·Qd, finito para que el informe JSON lo escriba como número.
+    let input = input("1500 m3/h", "15 m", "1450 rpm");
+    let result = design(&input).unwrap();
+    assert!(result.volute_matching_flow.si.is_finite());
+    close(result.volute_matching_flow.si / input.q.si, 10.0, 1e-9);
+    assert!(result.transition_ratio < 10.0);
 }

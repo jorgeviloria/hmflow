@@ -26,13 +26,13 @@ fn pack_is_audit_clean() {
 }
 
 #[test]
-fn pack_has_seventy_two_formulas() {
-    assert_eq!(Registry::from_toml(END_SUCTION_V01_PACK).unwrap().len(), 72);
+fn pack_has_seventy_three_formulas() {
+    assert_eq!(Registry::from_toml(END_SUCTION_V01_PACK).unwrap().len(), 73);
 }
 
 #[test]
 fn all_merges_both_packs() {
-    assert_eq!(Registry::all().len(), 82);
+    assert_eq!(Registry::all().len(), 83);
 }
 
 #[test]
@@ -608,6 +608,27 @@ fn volute_matching_flow() {
         ),
         0.032977,
         1e-5,
+    );
+}
+
+#[test]
+fn volute_matching_flow_cm() {
+    // Gülich 6.22a: u2·A2·γ·(√(a² − 1) − τ/tan β2)/(a² − 1 − (τ/tan β2)²)
+    // con u2 = 30 m/s, A2 = 0,02 m², γ = 0,8, a = 2, τ = 1,05 y β2 = 20°.
+    close(
+        evaluate(
+            "design.volute_matching_flow_cm",
+            &[
+                ("u2", "30 m/s"),
+                ("A2", "0.02 m2"),
+                ("slip", "0.8"),
+                ("a", "2"),
+                ("tau", "1.05"),
+                ("beta2", "20 deg"),
+            ],
+        ),
+        0.103_966,
+        1e-6,
     );
 }
 

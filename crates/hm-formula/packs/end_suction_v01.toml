@@ -893,6 +893,31 @@ value = "u2*A2*slip/(A2/A3q + tau/(eta_v*tan(beta2)))"
 assumptions = "Qc = fq u2 A2 γ/(fq A2/(zLe A3q) + τ2/(ηv tan β2B)) con fq = 1 y zLe = 1 (voluta simple). τ2 ≥ 1 descuenta el espesor a la salida; τ2 = 1 no lo descuenta. Es el caudal en que c2u = c3q."
 
 [[formula]]
+id = "design.volute_matching_flow_cm"
+version = 1
+validation = "pilot"
+module = "design"
+title = "Caudal del rodete en que c3q = c2, con la meridional"
+source = "Gülich 2020, ec. (6.22a), p. 344"
+units = "m3/s"
+range = "0 .. 100"
+test = "crates/hm-formula/tests/end_suction.rs::volute_matching_flow_cm"
+
+[formula.inputs]
+u2 = "m/s"
+A2 = "m2"
+slip = "1"
+a = "1"
+tau = "1"
+beta2 = "deg"
+
+[formula.expr]
+value = "u2*A2*slip*(sqrt(a^2 - 1) - tau/tan(beta2))/(a^2 - 1 - (tau/tan(beta2))^2)"
+
+[formula.notes]
+assumptions = "QLa,c = u2 fq A2 γ (√(a² − 1) − τ2/tan β2B)/(a² − 1 − (τ2/tan β2B)²) con a = fq A2 QLe/(zLe A3q QLa). Es el caudal del rodete en que la velocidad en la garganta c3q iguala a c2 (incluye c2m, que 6.19 desprecia y que solo vale con nq bajo). Para pasarlo al caudal de la bomba se multiplica por QLe/QLa. Exige a² − 1 > (τ2/tan β2B)²; si no, no hay cruce."
+
+[[formula]]
 id = "design.recirculation_onset"
 version = 1
 validation = "pilot"

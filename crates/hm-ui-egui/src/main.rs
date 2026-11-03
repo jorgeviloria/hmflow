@@ -333,7 +333,7 @@ fn rows(outcome: &Outcome) -> Vec<(&'static str, Vec<Row>)> {
             key: "transition",
             label: "Subida NPSH3 Qsa/Qd",
             value: format!("{:.2}", result.transition_ratio),
-            formula: Some("design.volute_matching_flow"),
+            formula: Some("design.volute_matching_flow_cm"),
         },
         Row {
             key: "recirculation",

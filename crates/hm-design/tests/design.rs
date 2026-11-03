@@ -831,3 +831,18 @@ fn failed_euler_names_the_flow_range_of_the_efficiency() {
     let text = error.to_string();
     assert!(text.contains("0,005") && text.contains("ηh"), "{text}");
 }
+
+#[test]
+fn non_positive_statistical_efficiency_is_named_in_the_error() {
+    // A 4 m³/h y 150 m (nq ≈ 2) la extrapolación da ηh ≈ −0,01. Con ηh ≤ 0 la
+    // potencia sale negativa y el error llegaba como «el eje necesita un par
+    // positivo»: tiene que nombrar ηh y el rango de su fórmula.
+    for (q, h, n) in [
+        ("4 m3/h", "150 m", "2900 rpm"),
+        ("3 m3/h", "80 m", "1450 rpm"),
+    ] {
+        let text = design(&input(q, h, n)).unwrap_err().to_string();
+        assert!(text.contains("ηh") && text.contains("0,005"), "{text}");
+        assert!(!text.contains("eje"), "{text}");
+    }
+}

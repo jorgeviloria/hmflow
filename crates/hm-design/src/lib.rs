@@ -611,6 +611,14 @@ pub fn blade_blockage(blade_count: u32, thickness: f64, diameter: f64, beta_rad:
     1.0 / (1.0 - metal.min(BLADE_BLOCKAGE_LIMIT))
 }
 
+/// Frase que explica que el caudal queda fuera del rango del ηh estadístico.
+fn eta_h_range_note(q: f64) -> String {
+    format!(
+        "El caudal ({q:.4} m³/s) está fuera de 0,005..1 m³/s, el rango del ηh estadístico de \
+         Gülich (ec. 3.9.6); fuera de él ηh se extrapola y puede quedar muy bajo"
+    )
+}
+
 fn eta_h_flow_in_range(q: f64) -> bool {
     (ETA_H_FLOW_RANGE.0..=ETA_H_FLOW_RANGE.1).contains(&q)
 }
@@ -1041,6 +1049,17 @@ pub fn design_with_options(
     )?
     .value();
 
+    if !eta_h.is_finite() || eta_h <= 0.0 || eta_h >= 1.0 {
+        let note = if eta_h_flow_in_range(input.q.si) {
+            String::new()
+        } else {
+            format!(". {}", eta_h_range_note(input.q.si))
+        };
+        return Err(DesignError::Input(format!(
+            "el ηh estadístico de Gülich sale {eta_h:.3} (nq = {nq:.1}), fuera de (0, 1){note}"
+        )));
+    }
+
     // Dos ηv, a propósito. Este, el de Srinivasan, dimensiona φ, Qth y b2
     // y es el que deja las medidas de D1.A1. El de Gülich entra solo en el
     // análisis de pérdidas.
@@ -1279,12 +1298,7 @@ pub fn design_with_options(
     )
     .map_err(|error| match error {
         DesignError::Input(text) if !eta_h_flow_in_range(input.q.si) => {
-            DesignError::Input(format!(
-                "{text}. El caudal ({:.4} m³/s) está fuera de 0,005..1 m³/s, el rango del ηh \
-                 estadístico de Gülich (ec. 3.9.6); fuera de él ηh se extrapola y puede \
-                 quedar muy bajo",
-                input.q.si
-            ))
+            DesignError::Input(format!("{text}. {}", eta_h_range_note(input.q.si)))
         }
         other => other,
     })?;

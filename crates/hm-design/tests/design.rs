@@ -1407,3 +1407,46 @@ fn b1_blade_loading_is_inside_the_band() {
     assert!((0.85..=1.15).contains(&ratio), "ξeff/ξal = {ratio}");
     assert!(!has(&result, "HM-DES-036"));
 }
+
+/// Fuga del anillo delantero con un fluido de viscosidad `nu` (m²/s) en la duty
+/// de 120 m³/h, 45 m y 2900 rpm, con las selecciones del diseño con agua.
+fn seal_leakage_with_viscosity(nu: f64) -> f64 {
+    let water = input("120 m3/h", "45 m", "2900 rpm");
+    let sized = design(&water).unwrap();
+    let mut viscous = water;
+    viscous.nu = Some(nu);
+    design_with_options(
+        &viscous,
+        &DesignOptions {
+            psi: Some(sized.selection.psi),
+            phi: Some(sized.selection.phi),
+            beta2_rad: Some(sized.selection.beta2_deg.to_radians()),
+            blade_count: Some(sized.selection.blade_count),
+            c0: Some(sized.selection.c0),
+            cm0: Some(sized.selection.cm0),
+            j: Some(sized.selection.j),
+            ..DesignOptions::default()
+        },
+    )
+    .unwrap()
+    .seal_leakage_ratio
+}
+
+#[test]
+fn seal_leakage_never_rises_with_viscosity_through_the_transition() {
+    // Gülich 3.7.11: con Re < 2000, λ0 = 96/Re; la regla máx(λlam; λtur) es solo
+    // para la transición. Con ella aplicada en todo el régimen laminar, la
+    // correlación turbulenta (polo en Re ≈ 6) mandaba entre ≈ 40 y 75 cSt y la
+    // fuga subía al aumentar ν (+35 % de 50 a 75 cSt).
+    let mut previous = f64::INFINITY;
+    for cst in [
+        5.0, 10.0, 20.0, 30.0, 40.0, 50.0, 60.0, 75.0, 100.0, 200.0, 500.0,
+    ] {
+        let leak = seal_leakage_with_viscosity(cst * 1.0e-6);
+        assert!(
+            leak <= previous * (1.0 + 1e-9),
+            "{cst} cSt: la fuga sube de {previous} a {leak}"
+        );
+        previous = leak;
+    }
+}

@@ -2153,8 +2153,10 @@ fn seal_leakage(
             ));
         }
         // 3.7.13 (turbulento) va dentro de la fórmula del pack. Con Re* < 2000
-        // el factor de rotación es el laminar, 3.7.14: λ0 sin rotación (usp = 0)
-        // por ese factor.
+        // (y por tanto Re < 2000) vale el régimen laminar: λ0 = 96/Re (3.7.11,
+        // sin excentricidad) por el factor de rotación 3.7.14. La regla
+        // máx(λlam; λtur) es solo para la transición y con Re ≲ 6 la
+        // correlación turbulenta tiene un polo.
         let re = 2.0 * s * cax / nu.si;
         let reu = 2.0 * s * usp.si / nu.si;
         let laminar = seal_rotation_is_laminar(re, reu);
@@ -2172,7 +2174,12 @@ fn seal_leakage(
             )
         };
         let next = if laminar {
-            let lambda0 = friction(Quantity::from_si(0.0, ms.clone()))?.si;
+            let lambda0 = evaluate(
+                registry,
+                "design.seal_friction_laminar",
+                &[("Re", quantity(re, one.clone()))],
+            )?
+            .si;
             let factor = evaluate(
                 registry,
                 "design.seal_rotation_laminar",

@@ -26,13 +26,13 @@ fn pack_is_audit_clean() {
 }
 
 #[test]
-fn pack_has_seventy_eight_formulas() {
-    assert_eq!(Registry::from_toml(END_SUCTION_V01_PACK).unwrap().len(), 78);
+fn pack_has_seventy_nine_formulas() {
+    assert_eq!(Registry::from_toml(END_SUCTION_V01_PACK).unwrap().len(), 79);
 }
 
 #[test]
 fn all_merges_both_packs() {
-    assert_eq!(Registry::all().len(), 88);
+    assert_eq!(Registry::all().len(), 89);
 }
 
 #[test]
@@ -1159,6 +1159,14 @@ fn seal_friction_coefficient() {
         0.050_750,
         1e-5,
     );
+}
+
+#[test]
+fn seal_friction_laminar() {
+    // Gülich 3.7.11 sin excentricidad: λ0 = 96/Re.
+    let lambda = |re: &str| evaluate("design.seal_friction_laminar", &[("Re", re)]);
+    close(lambda("1000"), 0.096, 1e-12);
+    close(lambda("5"), 19.2, 1e-12);
 }
 
 #[test]

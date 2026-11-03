@@ -1625,6 +1625,26 @@ value = "max(0.31/(log10(0.135*eps/s + 6.5/(2*s*cax/nu)))^2, 96/(2*s*cax/nu))*(1
 assumptions = "λ0 = máx(λ turbulento con A = 0,135·ε/s; 96/Re laminar sin excentricidad), Re = 2·s·cax/ν, y la rotación por Re_u/Re = usp/cax con el exponente turbulento. Junta lisa sin ranuras."
 
 [[formula]]
+id = "design.seal_friction_laminar"
+version = 1
+validation = "pilot"
+module = "design"
+title = "Coeficiente de fricción del anillo, flujo laminar sin excentricidad"
+source = "Gülich 2020, tabla 3.7 (1), ec. (3.7.11), p. 157"
+units = "1"
+range = "0 .. 1000"
+test = "crates/hm-formula/tests/end_suction.rs::seal_friction_laminar"
+
+[formula.inputs]
+Re = "1"
+
+[formula.expr]
+value = "96/Re"
+
+[formula.notes]
+assumptions = "λ0 = 96/Re·(1 − 0,6·ex/s) para Re < 2000 y usp = 0, con excentricidad ex = 0. La regla máx(λlam; λtur) del libro es solo para la transición: por debajo de Re ≈ 6 la correlación turbulenta tiene un polo y no puede mandar en régimen laminar."
+
+[[formula]]
 id = "design.seal_rotation_laminar"
 version = 1
 validation = "pilot"

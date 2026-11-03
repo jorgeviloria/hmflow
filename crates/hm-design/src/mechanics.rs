@@ -31,6 +31,10 @@ pub const HUB_RATIO: f64 = 1.25;
 /// dimensionar eje y cojinetes.
 pub const RADIAL_DESIGN_COEFFICIENT: f64 = 0.08;
 
+/// Caudal relativo hasta el que vale el kR constante de una voluta doble
+/// (Gülich 2020, tabla 9.7 (1) y nota 5 de la p. 705).
+pub const DOUBLE_VOLUTE_MAX_FLOW: f64 = 1.1;
+
 /// Intervalo de nq de la fig. 9.46 de Gülich 2020; fuera de él kR0 se
 /// evalúa en el extremo.
 pub const RADIAL_NQ_RANGE: (f64, f64) = (10.0, 95.0);
@@ -240,6 +244,19 @@ pub fn mechanics(
         &[("nq", pure(nq))],
     )?;
     let k_opt = RADIAL_DESIGN_COEFFICIENT;
+    // Voluta doble: kR = FDsp·kR0, constante hasta 1,1·Qd. Por encima el
+    // libro no da dato y no se baja del empuje de voluta simple.
+    let double_k0 = match result.volute.wrap_deg {
+        Some(wrap) => {
+            let factor = evaluate(
+                &registry,
+                "mech.double_volute_factor",
+                &[("eps_deg", pure(wrap))],
+            )?;
+            Some(factor * k0)
+        }
+        None => None,
+    };
 
     let d2 = result.d2.si;
     let (blade_thickness_ratio, blade_thickness, trailing_edge_thickness) =
@@ -251,7 +268,7 @@ pub fn mechanics(
     )?;
     let radial_width = result.b2.si + 2.0 * shroud_thickness;
     let radial = |ratio: f64| -> Result<f64, DesignError> {
-        let k = evaluate(
+        let single = evaluate(
             &registry,
             "mech.radial_thrust_coefficient",
             &[
@@ -260,6 +277,11 @@ pub fn mechanics(
                 ("kR_opt", pure(k_opt)),
             ],
         )?;
+        let k = match double_k0 {
+            Some(double) if ratio <= DOUBLE_VOLUTE_MAX_FLOW => double,
+            Some(double) => double.max(single),
+            None => single,
+        };
         evaluate(
             &registry,
             "mech.radial_thrust",
@@ -315,8 +337,8 @@ pub fn mechanics(
         shaft_shear_stress: shear_stress,
         shaft_min_diameter,
         hub_diameter,
-        radial_coefficient_shutoff: k0,
-        radial_coefficient_design: k_opt,
+        radial_coefficient_shutoff: double_k0.unwrap_or(k0),
+        radial_coefficient_design: double_k0.unwrap_or(k_opt),
         blade_thickness_ratio,
         blade_thickness,
         trailing_edge_thickness,

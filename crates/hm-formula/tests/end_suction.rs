@@ -26,13 +26,13 @@ fn pack_is_audit_clean() {
 }
 
 #[test]
-fn pack_has_seventy_seven_formulas() {
-    assert_eq!(Registry::from_toml(END_SUCTION_V01_PACK).unwrap().len(), 77);
+fn pack_has_seventy_eight_formulas() {
+    assert_eq!(Registry::from_toml(END_SUCTION_V01_PACK).unwrap().len(), 78);
 }
 
 #[test]
 fn all_merges_both_packs() {
-    assert_eq!(Registry::all().len(), 87);
+    assert_eq!(Registry::all().len(), 88);
 }
 
 #[test]
@@ -726,6 +726,15 @@ fn disk_roughness_factor() {
     };
     close(factor("1e7", "1e-4"), 1.652_957, 1e-5);
     close(factor("1e7", "0"), 1.0, 1e-12);
+}
+
+#[test]
+fn double_volute_factor() {
+    // Gülich tabla 9.7 (1): FDsp = 1,75 − 0,0083·εsp°, con εsp en grados.
+    let factor = |eps: &str| evaluate("mech.double_volute_factor", &[("eps_deg", eps)]);
+    close(factor("180"), 0.256, 1e-12);
+    close(factor("165"), 0.380_5, 1e-12);
+    close(factor("90"), 1.003, 1e-12);
 }
 
 #[test]

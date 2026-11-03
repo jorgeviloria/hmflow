@@ -1308,6 +1308,26 @@ value = "max((kR0 - kR_opt)*(1 - q^2) + kR_opt, kR_opt*q^2)"
 assumptions = "q = Q/Q de diseño de la voluta. Para 0 < q < 1, kR = (kR0 − kR,opt)(1 − q²) + kR,opt; para q > 1, kR = kR,opt·q² (la tabla admite kR,opt en lugar del factor 0,09). El máximo de los dos tramos es cada uno en su intervalo cuando kR0 ≥ kR,opt."
 
 [[formula]]
+id = "mech.double_volute_factor"
+version = 1
+validation = "pilot"
+module = "mech"
+title = "Factor del empuje radial de una voluta doble"
+source = "Gülich 2020, tabla 9.7 (1), p. 704 (fig. 9.48)"
+units = "1"
+range = "0.2 .. 1.1"
+test = "crates/hm-formula/tests/end_suction.rs::double_volute_factor"
+
+[formula.inputs]
+eps_deg = "1"
+
+[formula.expr]
+value = "1.75 - 0.0083*eps_deg"
+
+[formula.notes]
+assumptions = "FDsp = 1,75 − 0,0083·εsp° con εsp el ángulo de envolvente de la voluta interior en grados (90..180°); kR,Dsp = FDsp·kR0 y vale de q* = 0 a 1,1. Con εsp = 180°, 0,256. El libro no da fórmula por encima de q* ≈ 1,1, donde el empuje «puede subir mucho»."
+
+[[formula]]
 id = "mech.radial_thrust"
 version = 1
 validation = "pilot"

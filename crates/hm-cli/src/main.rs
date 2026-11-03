@@ -511,7 +511,11 @@ fn run(cli: Cli) -> Result<ExitCode, Box<dyn std::error::Error>> {
                 mech.hub_diameter * 1000.0
             );
             println!(
-                "  Empuje radial: {:.0} N cerrada   {:.0} N diseño   {:.0} N a {:.1}·Qd   axial ≈ {:.0}..{:.0} N",
+                "  Empuje radial ({}): {:.0} N cerrada   {:.0} N diseño   {:.0} N a {:.1}·Qd   axial ≈ {:.0}..{:.0} N",
+                match result.volute.wrap_deg {
+                    Some(wrap) => format!("voluta doble, ε = {wrap:.0}°"),
+                    None => "voluta simple".to_string(),
+                },
                 mech.radial_thrust_shutoff,
                 mech.radial_thrust_design,
                 mech.radial_thrust_overload,
@@ -1248,6 +1252,7 @@ fn design_options(project: &Project) -> Result<DesignOptions, Box<dyn std::error
         volute_ratio: None,
         impeller_roughness: None,
         volute_channels: None,
+        volute_wrap_deg: None,
     })
 }
 

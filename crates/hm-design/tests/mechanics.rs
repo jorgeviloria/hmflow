@@ -3,7 +3,7 @@ use hm_design::mechanics::{
     HUB_RATIO, RADIAL_DESIGN_COEFFICIENT, driver_margin, mechanics, mechanics_diagnostics,
     motor_rating,
 };
-use hm_design::{DesignInput, curve_head, design};
+use hm_design::{DesignInput, DesignOptions, curve_head, design, design_with_options};
 use hm_units::parse_quantity;
 
 fn close(actual: f64, expected: f64, tolerance: f64) {
@@ -233,4 +233,79 @@ fn a_motor_beyond_the_iec_series_is_flagged() {
     let mech = mechanics(&input, &result, DEFAULT_SHAFT_SHEAR_STRESS).unwrap();
     assert_eq!(mech.motor_rating, None);
     assert!(codes(&mechanics_diagnostics(&mech, &result)).contains(&"HM-DES-030".to_string()));
+}
+
+fn double_volute(wrap: f64) -> DesignOptions {
+    DesignOptions {
+        volute_wrap_deg: Some(wrap),
+        ..DesignOptions::default()
+    }
+}
+
+#[test]
+fn double_volute_radial_thrust_follows_table_9_7() {
+    // Gülich tabla 9.7 (1): kR,Dsp = FDsp·kR0 con FDsp = 1,75 − 0,0083·εsp°,
+    // constante de 0 a 1,1·Qd (nota 5 de la p. 705). Con εsp = 180°, 0,256.
+    // Por encima de 1,1·Qd el libro solo dice que el empuje «puede subir
+    // mucho»: el motor no baja del de voluta simple.
+    let q = input("1060 gpm", "83 m", "1750 rpm");
+    let simple_result = design(&q).unwrap();
+    let double_result = design_with_options(&q, &double_volute(180.0)).unwrap();
+    let simple = mechanics(&q, &simple_result, DEFAULT_SHAFT_SHEAR_STRESS).unwrap();
+    let double = mechanics(&q, &double_result, DEFAULT_SHAFT_SHEAR_STRESS).unwrap();
+
+    let factor = 0.256;
+    // A válvula cerrada: kR0 por el factor, con la misma altura.
+    close(
+        double.radial_thrust_shutoff,
+        factor * simple.radial_thrust_shutoff,
+        1e-9,
+    );
+    close(
+        double.radial_coefficient_shutoff,
+        factor * simple.radial_coefficient_shutoff,
+        1e-12,
+    );
+    // En el punto de diseño: FDsp·kR0 en lugar de kR,opt.
+    close(
+        double.radial_thrust_design / simple.radial_thrust_design,
+        factor * simple.radial_coefficient_shutoff / RADIAL_DESIGN_COEFFICIENT,
+        1e-9,
+    );
+    close(
+        double.radial_coefficient_design,
+        factor * simple.radial_coefficient_shutoff,
+        1e-12,
+    );
+    // A 1,2·Qd (> 1,1) el empuje de voluta simple manda.
+    close(
+        double.radial_thrust_overload / simple.radial_thrust_overload,
+        1.0,
+        1e-9,
+    );
+}
+
+#[test]
+fn single_volute_is_unchanged_without_a_wrap_angle() {
+    let q = input("120 m3/h", "45 m", "2900 rpm");
+    let simple = design(&q).unwrap();
+    assert!(simple.volute.wrap_deg.is_none());
+    let mech = mechanics(&q, &simple, DEFAULT_SHAFT_SHEAR_STRESS).unwrap();
+    close(
+        mech.radial_coefficient_design,
+        RADIAL_DESIGN_COEFFICIENT,
+        1e-12,
+    );
+}
+
+#[test]
+fn invalid_wrap_angle_is_rejected() {
+    // La fórmula vale de 90° a 180° (tabla 9.7 (1)).
+    let q = input("120 m3/h", "45 m", "2900 rpm");
+    for bad in [60.0, 200.0, f64::NAN] {
+        let error = design_with_options(&q, &double_volute(bad))
+            .unwrap_err()
+            .to_string();
+        assert!(error.contains("volute_wrap_deg"), "{bad}: {error}");
+    }
 }

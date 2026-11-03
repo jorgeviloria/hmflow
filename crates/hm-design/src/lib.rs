@@ -193,6 +193,8 @@ pub struct VoluteResult {
     /// Diámetro de la garganta circular por conservación del momento cinético
     /// (Gülich T7.7.7), de contraste: el motor dimensiona con la razón c3q/c2.
     pub momentum_throat_diameter: Quantity,
+    /// Ángulo de envolvente de la voluta doble, grados; `None` si es simple.
+    pub wrap_deg: Option<f64>,
     pub sections: Vec<VoluteSection>,
 }
 
@@ -500,6 +502,10 @@ pub const DEFAULT_VOLUTE_RATIO: f64 = 0.8;
 /// Intervalo admitido para la razón c3q/c2 de la garganta.
 pub const VOLUTE_RATIO_RANGE: (f64, f64) = (0.5, 1.0);
 
+/// Intervalo del ángulo de envolvente de una voluta doble en que vale la
+/// tabla 9.7 (1), en grados.
+pub const VOLUTE_WRAP_RANGE_DEG: (f64, f64) = (90.0, 180.0);
+
 /// Espesor del borde de ataque de la lengua frente a d2 (Gülich 2020, p. 493).
 const CUTWATER_THICKNESS_RATIO: f64 = 0.02;
 
@@ -528,6 +534,10 @@ pub struct DesignOptions {
     /// ([`gulich_volumetric_efficiency`]). Entre 0 y 1, sin incluir los
     /// extremos. Dimensiona Qth, φ y b2 y entra en el análisis de pérdidas.
     pub eta_v: Option<f64>,
+    /// Ángulo de envolvente de la voluta interior, en grados, de una voluta
+    /// doble (90..180°). `None` es una voluta simple. Solo cambia el empuje
+    /// radial (Gülich tabla 9.7 (1)): kR = FDsp·kR0 de 0 a 1,1·Qd.
+    pub volute_wrap_deg: Option<f64>,
     /// Número de lenguas de la voluta zLe: 1 en una voluta simple (por
     /// defecto), 2 en una doble. Con un zLe par se evita un Z par (Gülich
     /// p. 491).
@@ -1172,6 +1182,15 @@ pub fn design_with_options(
     let k3_value = options.k3.unwrap_or(cutwater_min_ratio);
     let volute_width_value = options.volute_width_factor.unwrap_or(DEFAULT_VOLUTE_C);
     let k_eff_value = options.k_eff.unwrap_or(DEFAULT_K_EFF);
+    if let Some(wrap) = options.volute_wrap_deg
+        && (!wrap.is_finite()
+            || !(VOLUTE_WRAP_RANGE_DEG.0..=VOLUTE_WRAP_RANGE_DEG.1).contains(&wrap))
+    {
+        return Err(DesignError::Input(format!(
+            "`volute_wrap_deg` = {wrap} no es válido; debe estar entre {} y {} grados",
+            VOLUTE_WRAP_RANGE_DEG.0, VOLUTE_WRAP_RANGE_DEG.1
+        )));
+    }
     let volute_channels = match options.volute_channels {
         Some(0) => {
             return Err(DesignError::Input(
@@ -1627,6 +1646,7 @@ pub fn design_with_options(
         throat_diameter: with_unit(d360, &m),
         outer_radius: with_unit(r4, &m),
         momentum_throat_diameter: with_unit(momentum_throat_diameter, &m),
+        wrap_deg: options.volute_wrap_deg,
         sections,
     };
 

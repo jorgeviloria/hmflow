@@ -1,7 +1,7 @@
 use hm_design::{
     DesignInput, DesignOptions, PARAM_SPECS, default_mechanical_efficiency, design,
-    design_with_options, designed_si, gulich_b2_star, param_spec, required_npsha,
-    stored_si_matches, water_density,
+    design_with_options, designed_si, gulich_b2_star, inlet_throat_area, param_spec,
+    required_npsha, stored_si_matches, water_density,
 };
 use hm_units::parse_quantity;
 
@@ -610,9 +610,10 @@ fn transition_comes_from_the_geometry() {
     let qd = input.q.si;
     close(result.shockless_flow.si / qd, 1.119, 0.005);
     close(result.volute_matching_flow.si / qd, 0.989, 0.005);
-    // τ1 sube β1B y QSF divide por τ. QW usa sen β1B sin ese divisor.
+    // v0.9: τ1 sube β1B y divide QSF; la garganta de QW también se cierra
+    // con el espesor (A1·sen β1B/τ1), así que QW queda por debajo de QSF.
     assert!(
-        result.throat_flow.si > result.shockless_flow.si * 1.2,
+        result.throat_flow.si < result.shockless_flow.si,
         "QW {:.3} QSF {:.3}",
         result.throat_flow.si,
         result.shockless_flow.si
@@ -907,4 +908,29 @@ fn explicit_volumetric_efficiency_replaces_the_estimate() {
         .to_string();
         assert!(error.contains("eta_v"), "{error}");
     }
+}
+
+#[test]
+fn inlet_throat_area_shrinks_with_blade_blockage() {
+    // zLa·A1q = A1·sen β1B/τ1: el metal de los álabes cierra la garganta.
+    let beta = 20f64.to_radians();
+    close(inlet_throat_area(0.01, beta, 1.0), 0.003_420_201_4, 1e-9);
+    close(
+        inlet_throat_area(0.01, beta, 1.28),
+        0.003_420_201_4 / 1.28,
+        1e-9,
+    );
+}
+
+#[test]
+fn throat_flow_is_below_shockless_flow_with_blockage() {
+    // Gülich 6.18 con la garganta con espesor: QW < QSF cuando τ1 > 1. Con el
+    // área sin espesor salía QW = τ1·QSF (1,43·Qd frente a 1,12·Qd en B1).
+    let result = design(&input("1060 gpm", "83 m", "1750 rpm")).unwrap();
+    assert!(
+        result.throat_flow.si < result.shockless_flow.si,
+        "QW {} frente a QSF {}",
+        result.throat_flow.si,
+        result.shockless_flow.si
+    );
 }

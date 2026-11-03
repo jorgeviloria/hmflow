@@ -864,7 +864,7 @@ eta_v = "1"
 value = "eta_v*A1*u1m/sqrt((A1/A1q)^2 - 1)"
 
 [formula.notes]
-assumptions = "QW = fq A1 u1m/√((A1/(zLa A1q))² − 1 + 1/tan α1) con α1 = 90°; A1q es el área de garganta total zLa·A1q. Sin espesor de álabe, zLa A1q = π d1 b1 sen β1B y QW coincide con QSF."
+assumptions = "QW = fq A1 u1m/√((A1/(zLa A1q))² − 1 + 1/tan α1) con α1 = 90°; A1q es el área de garganta total zLa·A1q. Sin espesor de álabe, zLa A1q = π d1 b1 sen β1B y QW coincide con QSF. Con espesor, el motor pasa zLa A1q = A1 sen β1B/τ1."
 
 [[formula]]
 id = "design.volute_matching_flow"

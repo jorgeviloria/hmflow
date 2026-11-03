@@ -665,6 +665,13 @@ fn eta_h_flow_in_range(q: f64) -> bool {
     (ETA_H_FLOW_RANGE.0..=ETA_H_FLOW_RANGE.1).contains(&q)
 }
 
+/// Área total de garganta de la entrada, `zLa·A1q`, con el espesor de los
+/// álabes: `A1·sen β1B/τ1` (Gülich 2020, ec. 6.18). Con τ1 = 1 (sin espesor)
+/// es `A1·sen β1B` y QW coincide con QSF.
+pub fn inlet_throat_area(a1: f64, beta1b_rad: f64, tau1: f64) -> f64 {
+    a1 * beta1b_rad.sin() / tau1
+}
+
 /// Viscosidad cinemática que usan discos y anillo, m²/s.
 fn fluid_nu(input: &DesignInput) -> f64 {
     match input.nu {
@@ -1496,7 +1503,7 @@ pub fn design_with_options(
     let w2 = Quantity::from_si(cm2.si.hypot(u2.si - cu2.si), ms.clone());
 
     // Transición del NPSH3 (Gülich §6.3.3, ec. 6.17–6.20). τ1 entra en β1B
-    // y en QSF. A1q no se reduce: con τ ≠ 1, QW deja de coincidir con QSF.
+    // y en QSF. A1q es la garganta con espesor (A1·sen β1B/τ1): con τ1 > 1, QW < QSF.
     let deg = unit("deg")?;
     let m2 = unit("m2")?;
     let (beta1b, tau1) = leading_edge(
@@ -1529,7 +1536,7 @@ pub fn design_with_options(
             ("A1", Quantity::from_si(inlet_area, m2.clone())),
             (
                 "A1q",
-                Quantity::from_si(inlet_area * beta1b.sin(), m2.clone()),
+                Quantity::from_si(inlet_throat_area(inlet_area, beta1b, tau1), m2.clone()),
             ),
             ("u1m", u1.clone()),
             ("eta_v", eta_v_quantity.clone()),

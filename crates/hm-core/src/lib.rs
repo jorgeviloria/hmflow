@@ -5,8 +5,10 @@
 use serde::{Deserialize, Serialize};
 
 pub mod codes;
+pub mod pump;
 
 pub use codes::{CODES, CodeInfo, CodeStatus, code_info};
+pub use pump::PumpType;
 
 /// Gravedad de un diagnóstico.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]

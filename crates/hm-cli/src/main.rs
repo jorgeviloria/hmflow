@@ -1924,6 +1924,38 @@ mod tests {
     }
 
     #[test]
+    fn recalc_migrates_a_v08_project() {
+        // El .hmf de referencia de la v0.8, con A y J manuales. `recalc`
+        // lo lleva a la v0.9 y conserva las selecciones manuales.
+        let fixture = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../hm-project/tests/fixtures/end_suction_v0.8.hmf");
+        let path = std::env::temp_dir().join(format!(
+            "hmflow-v08-{}-{:?}.hmf",
+            std::process::id(),
+            std::thread::current().id()
+        ));
+        std::fs::copy(&fixture, &path).unwrap();
+        let before = Project::load(&path).unwrap();
+        assert_eq!(before.design.method, "end_suction_v0.8");
+
+        recalc(&path, false).unwrap();
+        let project = Project::load(&path).unwrap();
+        std::fs::remove_file(&path).unwrap();
+
+        assert_eq!(project.design.method, "end_suction_v0.9");
+        assert_eq!(
+            format!("{:?}", project.params["J"]),
+            format!("{:?}", before.params["J"])
+        );
+        let diagnostics = design_audit(&project);
+        assert!(
+            !diagnostics.has_errors(),
+            "códigos: {:?}",
+            codes(&diagnostics)
+        );
+    }
+
+    #[test]
     fn recalc_migrates_a_legacy_project() {
         let path = std::env::temp_dir().join(format!(
             "hmflow-legacy-{}-{:?}.hmf",
@@ -2022,14 +2054,14 @@ mod tests {
     }
 
     /// Guarda de versionado: el `.hmf` de referencia se escribió con
-    /// `end_suction_v0.8`. Si el motor cambia sus resultados sin cambiar
+    /// `end_suction_v0.9`. Si el motor cambia sus resultados sin cambiar
     /// `METHOD`, sus valores `auto` dejan de cuadrar y este test falla. La
     /// salida correcta es subir `METHOD`, añadir el anterior a
     /// `LEGACY_METHODS` y regenerar el archivo con `design`.
     #[test]
     fn reference_project_of_the_current_method_audits_clean() {
         let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
-            .join("../hm-project/tests/fixtures/end_suction_v0.8.hmf");
+            .join("../hm-project/tests/fixtures/end_suction_v0.9.hmf");
         let project = Project::load(&path).unwrap();
         assert_eq!(
             project.design.method, METHOD,

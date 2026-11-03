@@ -209,7 +209,12 @@ pub struct ParamSpec {
 ///   margen de Gülich (§6.3.3 y tabla 6.2), H0 de Gülich (3.28).
 /// - v0.3: la transición del NPSHr a la subida brusca sale de la geometría
 ///   (Gülich ec. 6.17–6.20) en vez de suponerla en el caudal de diseño.
-pub const METHOD: &str = "end_suction_v0.8";
+/// - v0.8: el espesor del álabe y d1/d2 entran en Euler; Z de 5 a 9 según β2; el
+///   ojo minimiza el NPSH3 con el cubo restado.
+/// - v0.9: el motor sigue a Gülich donde la auditoría lo vio apartarse
+///   (`docs/validation/formula-audit.md`): un solo ηv, garganta y Qc, anillo
+///   laminar, rugosidad, Z entre 5 y 7, avisos de entrada y carga del álabe.
+pub const METHOD: &str = "end_suction_v0.9";
 
 /// Métodos anteriores que `recalc` sabe migrar a [`METHOD`].
 pub const LEGACY_METHODS: &[&str] = &[
@@ -220,6 +225,7 @@ pub const LEGACY_METHODS: &[&str] = &[
     "end_suction_v0.5",
     "end_suction_v0.6",
     "end_suction_v0.7",
+    "end_suction_v0.8",
 ];
 
 /// Parámetros que genera o consume el método [`METHOD`].

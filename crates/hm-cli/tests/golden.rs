@@ -1,8 +1,15 @@
 //! Salidas congeladas de la CLI.
 //!
-//! Cada caso ejecuta una o más órdenes en un directorio temporal, con los
-//! fixtures copiados dentro y rutas relativas, y compara `stdout`, `stderr`,
-//! el código de salida y los archivos escritos con `tests/golden/<caso>.txt`.
+//! Cada escenario es un test. Ejecuta sus órdenes en un directorio temporal,
+//! con los fixtures copiados dentro y rutas relativas, y compara el texto que
+//! vería quien las ejecuta con `tests/golden/<caso>.txt`.
+//!
+//! Se guarda el stdout de `design`, `check` y `recalc`, el stderr, el código
+//! de salida y los archivos que la orden no debe escribir. El `.hmf` se
+//! comprueba que exista, sin copiarlo: el proyecto ya tiene pruebas propias.
+//! El informe JSON se guarda solo en `ref`; en el resto se exige el formato
+//! `hmflow.design-report` y no se archiva, para que un campo nuevo no
+//! reescriba todos los casos.
 //!
 //! Para regenerar las salidas:
 //!
@@ -23,14 +30,28 @@ use std::process::Command;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
 const NONE: &[&str] = &[];
+const NONE_FIXTURES: &[(&str, &str)] = &[];
+const NONE_FILES: &[(&str, &str)] = &[];
+
+/// Qué parte de la orden entra en el archivo golden.
+#[derive(Clone, Copy)]
+enum Capture {
+    /// Stdout, stderr y estado.
+    Transcript,
+    /// El stdout es el informe JSON: se comprueba el formato y no se guarda.
+    ReportStatus,
+}
 
 struct CommandSpec {
     args: &'static [&'static str],
     status: i32,
-    /// Archivos que la orden debe escribir; se copian al golden.
+    /// Archivos cuyo contenido se copia al golden.
     files: &'static [&'static str],
+    /// Archivos que la orden debe escribir y cuyo contenido no se copia.
+    present: &'static [&'static str],
     /// Archivos que la orden no debe escribir.
     absent: &'static [&'static str],
+    capture: Capture,
 }
 
 struct Scenario {
@@ -85,58 +106,77 @@ date = "2026-11-03"
 reason = "golden"
 "#;
 
+/// `design` seguido de `report`. El informe no se archiva.
+macro_rules! design_case {
+    ($name:literal, $($arg:literal),+ $(,)?) => {
+        Scenario {
+            name: $name,
+            fixtures: NONE_FIXTURES,
+            files: NONE_FILES,
+            commands: &[
+                CommandSpec {
+                    args: &["design", "--name", $name, $($arg),+],
+                    status: 0,
+                    files: NONE,
+                    present: &[concat!($name, ".hmf")],
+                    absent: NONE,
+                    capture: Capture::Transcript,
+                },
+                CommandSpec {
+                    args: &["report", concat!($name, ".hmf"), "--curve-points", "11"],
+                    status: 0,
+                    files: NONE,
+                    present: NONE,
+                    absent: NONE,
+                    capture: Capture::ReportStatus,
+                },
+            ],
+        }
+    };
+}
+
+/// `recalc` de un fixture seguido de `report`. El `.hmf` migrado no se archiva.
+macro_rules! recalc_case {
+    ($name:literal, $fixture:literal, $local:literal) => {
+        Scenario {
+            name: $name,
+            fixtures: &[($fixture, $local)],
+            files: NONE_FILES,
+            commands: &[
+                CommandSpec {
+                    args: &["recalc", $local],
+                    status: 0,
+                    files: NONE,
+                    present: &[$local],
+                    absent: NONE,
+                    capture: Capture::Transcript,
+                },
+                CommandSpec {
+                    args: &["report", $local, "--curve-points", "11"],
+                    status: 0,
+                    files: NONE,
+                    present: NONE,
+                    absent: NONE,
+                    capture: Capture::ReportStatus,
+                },
+            ],
+        }
+    };
+}
+
 const SCENARIOS: &[Scenario] = &[
-    Scenario {
-        name: "b1",
-        fixtures: NONE_FIXTURES,
-        files: NONE_FILES,
-        commands: &[
-            CommandSpec {
-                args: &[
-                    "design", "--name", "b1", "--q", "1060 gpm", "--h", "83 m", "--n", "1750 rpm",
-                    "--npsha", "10 m",
-                ],
-                status: 0,
-                files: &["b1.hmf"],
-                absent: NONE,
-            },
-            CommandSpec {
-                args: &["report", "b1.hmf", "--curve-points", "11"],
-                status: 0,
-                files: NONE,
-                absent: NONE,
-            },
-        ],
-    },
-    Scenario {
-        name: "d1a1",
-        fixtures: NONE_FIXTURES,
-        files: NONE_FILES,
-        commands: &[
-            CommandSpec {
-                args: &[
-                    "design",
-                    "--name",
-                    "d1a1",
-                    "--q",
-                    "0.016 m3/s",
-                    "--h",
-                    "13.8 m",
-                    "--n",
-                    "1800 rpm",
-                ],
-                status: 0,
-                files: &["d1a1.hmf"],
-                absent: NONE,
-            },
-            CommandSpec {
-                args: &["report", "d1a1.hmf", "--curve-points", "11"],
-                status: 0,
-                files: NONE,
-                absent: NONE,
-            },
-        ],
-    },
+    design_case!(
+        "b1", "--q", "1060 gpm", "--h", "83 m", "--n", "1750 rpm", "--npsha", "10 m",
+    ),
+    design_case!(
+        "d1a1",
+        "--q",
+        "0.016 m3/s",
+        "--h",
+        "13.8 m",
+        "--n",
+        "1800 rpm",
+    ),
     Scenario {
         name: "ref",
         fixtures: NONE_FIXTURES,
@@ -160,319 +200,127 @@ const SCENARIOS: &[Scenario] = &[
                     "curve.csv",
                 ],
                 status: 0,
-                files: &["ref.hmf", "curve.csv"],
+                files: &["curve.csv"],
+                present: &["ref.hmf"],
                 absent: NONE,
+                capture: Capture::Transcript,
             },
             CommandSpec {
                 args: &["report", "ref.hmf", "--curve-points", "11"],
                 status: 0,
                 files: NONE,
+                present: NONE,
                 absent: NONE,
+                capture: Capture::Transcript,
             },
         ],
     },
-    Scenario {
-        name: "sweep-low",
-        fixtures: NONE_FIXTURES,
-        files: NONE_FILES,
-        commands: &[
-            CommandSpec {
-                args: &[
-                    "design",
-                    "--name",
-                    "sweep-low",
-                    "--q",
-                    "40 m3/h",
-                    "--h",
-                    "100 m",
-                    "--n",
-                    "2900 rpm",
-                ],
-                status: 0,
-                files: &["sweep-low.hmf"],
-                absent: NONE,
-            },
-            CommandSpec {
-                args: &["report", "sweep-low.hmf", "--curve-points", "11"],
-                status: 0,
-                files: NONE,
-                absent: NONE,
-            },
-        ],
-    },
-    Scenario {
-        name: "sweep-mid",
-        fixtures: NONE_FIXTURES,
-        files: NONE_FILES,
-        commands: &[
-            CommandSpec {
-                args: &[
-                    "design",
-                    "--name",
-                    "sweep-mid",
-                    "--q",
-                    "120 m3/h",
-                    "--h",
-                    "45 m",
-                    "--n",
-                    "2900 rpm",
-                    "--viscosity",
-                    "40 cSt",
-                ],
-                status: 0,
-                files: &["sweep-mid.hmf"],
-                absent: NONE,
-            },
-            CommandSpec {
-                args: &["report", "sweep-mid.hmf", "--curve-points", "11"],
-                status: 0,
-                files: NONE,
-                absent: NONE,
-            },
-        ],
-    },
-    Scenario {
-        name: "sweep-high",
-        fixtures: NONE_FIXTURES,
-        files: NONE_FILES,
-        commands: &[
-            CommandSpec {
-                args: &[
-                    "design",
-                    "--name",
-                    "sweep-high",
-                    "--q",
-                    "800 m3/h",
-                    "--h",
-                    "20 m",
-                    "--n",
-                    "1450 rpm",
-                ],
-                status: 0,
-                files: &["sweep-high.hmf"],
-                absent: NONE,
-            },
-            CommandSpec {
-                args: &["report", "sweep-high.hmf", "--curve-points", "11"],
-                status: 0,
-                files: NONE,
-                absent: NONE,
-            },
-        ],
-    },
-    Scenario {
-        name: "double-volute",
-        fixtures: NONE_FIXTURES,
-        files: NONE_FILES,
-        commands: &[
-            CommandSpec {
-                args: &[
-                    "design",
-                    "--name",
-                    "double-volute",
-                    "--q",
-                    "120 m3/h",
-                    "--h",
-                    "45 m",
-                    "--n",
-                    "2900 rpm",
-                    "--npsha",
-                    "15 m",
-                    "--volute-channels",
-                    "2",
-                    "--volute-wrap",
-                    "165",
-                ],
-                status: 0,
-                files: &["double-volute.hmf"],
-                absent: NONE,
-            },
-            CommandSpec {
-                args: &["report", "double-volute.hmf", "--curve-points", "11"],
-                status: 0,
-                files: NONE,
-                absent: NONE,
-            },
-        ],
-    },
-    Scenario {
-        name: "suction-water",
-        fixtures: NONE_FIXTURES,
-        files: NONE_FILES,
-        commands: &[
-            CommandSpec {
-                args: &[
-                    "design",
-                    "--name",
-                    "suction-water",
-                    "--q",
-                    "120 m3/h",
-                    "--h",
-                    "45 m",
-                    "--n",
-                    "2900 rpm",
-                    "--suction-pressure",
-                    "1 atm",
-                    "--suction-height",
-                    "2 m",
-                    "--suction-losses",
-                    "0.5 m",
-                ],
-                status: 0,
-                files: &["suction-water.hmf"],
-                absent: NONE,
-            },
-            CommandSpec {
-                args: &["report", "suction-water.hmf", "--curve-points", "11"],
-                status: 0,
-                files: NONE,
-                absent: NONE,
-            },
-        ],
-    },
-    Scenario {
-        name: "suction-custom",
-        fixtures: NONE_FIXTURES,
-        files: NONE_FILES,
-        commands: &[
-            CommandSpec {
-                args: &[
-                    "design",
-                    "--name",
-                    "suction-custom",
-                    "--q",
-                    "120 m3/h",
-                    "--h",
-                    "45 m",
-                    "--n",
-                    "2900 rpm",
-                    "--fluid",
-                    "custom",
-                    "--rho",
-                    "850 kg/m3",
-                    "--suction-pressure",
-                    "1 atm",
-                    "--suction-height",
-                    "2 m",
-                    "--suction-losses",
-                    "0.5 m",
-                    "--vapor-pressure",
-                    "5 kPa",
-                ],
-                status: 0,
-                files: &["suction-custom.hmf"],
-                absent: NONE,
-            },
-            CommandSpec {
-                args: &["report", "suction-custom.hmf", "--curve-points", "11"],
-                status: 0,
-                files: NONE,
-                absent: NONE,
-            },
-        ],
-    },
-    Scenario {
-        name: "hot-water",
-        fixtures: NONE_FIXTURES,
-        files: NONE_FILES,
-        commands: &[
-            CommandSpec {
-                args: &[
-                    "design",
-                    "--name",
-                    "hot-water",
-                    "--q",
-                    "120 m3/h",
-                    "--h",
-                    "45 m",
-                    "--n",
-                    "2900 rpm",
-                    "--temperature",
-                    "80 degC",
-                ],
-                status: 0,
-                files: &["hot-water.hmf"],
-                absent: NONE,
-            },
-            CommandSpec {
-                args: &["report", "hot-water.hmf", "--curve-points", "11"],
-                status: 0,
-                files: NONE,
-                absent: NONE,
-            },
-        ],
-    },
-    Scenario {
-        name: "hot-water-rho",
-        fixtures: NONE_FIXTURES,
-        files: NONE_FILES,
-        commands: &[
-            CommandSpec {
-                args: &[
-                    "design",
-                    "--name",
-                    "hot-water-rho",
-                    "--q",
-                    "120 m3/h",
-                    "--h",
-                    "45 m",
-                    "--n",
-                    "2900 rpm",
-                    "--temperature",
-                    "80 degC",
-                    "--rho",
-                    "998.2 kg/m3",
-                ],
-                status: 0,
-                files: &["hot-water-rho.hmf"],
-                absent: NONE,
-            },
-            CommandSpec {
-                args: &["report", "hot-water-rho.hmf", "--curve-points", "11"],
-                status: 0,
-                files: NONE,
-                absent: NONE,
-            },
-        ],
-    },
-    Scenario {
-        name: "recalc-v0.8",
-        fixtures: &[("end_suction_v0.8.hmf", "v0.8.hmf")],
-        files: NONE_FILES,
-        commands: &[
-            CommandSpec {
-                args: &["recalc", "v0.8.hmf"],
-                status: 0,
-                files: &["v0.8.hmf"],
-                absent: NONE,
-            },
-            CommandSpec {
-                args: &["report", "v0.8.hmf", "--curve-points", "11"],
-                status: 0,
-                files: NONE,
-                absent: NONE,
-            },
-        ],
-    },
-    Scenario {
-        name: "recalc-v0.2",
-        fixtures: &[("end_suction_v0.2.hmf", "v0.2.hmf")],
-        files: NONE_FILES,
-        commands: &[
-            CommandSpec {
-                args: &["recalc", "v0.2.hmf"],
-                status: 0,
-                files: &["v0.2.hmf"],
-                absent: NONE,
-            },
-            CommandSpec {
-                args: &["report", "v0.2.hmf", "--curve-points", "11"],
-                status: 0,
-                files: NONE,
-                absent: NONE,
-            },
-        ],
-    },
+    design_case!(
+        "sweep-low",
+        "--q",
+        "40 m3/h",
+        "--h",
+        "100 m",
+        "--n",
+        "2900 rpm"
+    ),
+    design_case!(
+        "sweep-mid",
+        "--q",
+        "120 m3/h",
+        "--h",
+        "45 m",
+        "--n",
+        "2900 rpm",
+        "--viscosity",
+        "40 cSt",
+    ),
+    design_case!(
+        "sweep-high",
+        "--q",
+        "800 m3/h",
+        "--h",
+        "20 m",
+        "--n",
+        "1450 rpm",
+    ),
+    design_case!(
+        "double-volute",
+        "--q",
+        "120 m3/h",
+        "--h",
+        "45 m",
+        "--n",
+        "2900 rpm",
+        "--npsha",
+        "15 m",
+        "--volute-channels",
+        "2",
+        "--volute-wrap",
+        "165",
+    ),
+    design_case!(
+        "suction-water",
+        "--q",
+        "120 m3/h",
+        "--h",
+        "45 m",
+        "--n",
+        "2900 rpm",
+        "--suction-pressure",
+        "1 atm",
+        "--suction-height",
+        "2 m",
+        "--suction-losses",
+        "0.5 m",
+    ),
+    design_case!(
+        "suction-custom",
+        "--q",
+        "120 m3/h",
+        "--h",
+        "45 m",
+        "--n",
+        "2900 rpm",
+        "--fluid",
+        "custom",
+        "--rho",
+        "850 kg/m3",
+        "--suction-pressure",
+        "1 atm",
+        "--suction-height",
+        "2 m",
+        "--suction-losses",
+        "0.5 m",
+        "--vapor-pressure",
+        "5 kPa",
+    ),
+    design_case!(
+        "hot-water",
+        "--q",
+        "120 m3/h",
+        "--h",
+        "45 m",
+        "--n",
+        "2900 rpm",
+        "--temperature",
+        "80 degC",
+    ),
+    design_case!(
+        "hot-water-rho",
+        "--q",
+        "120 m3/h",
+        "--h",
+        "45 m",
+        "--n",
+        "2900 rpm",
+        "--temperature",
+        "80 degC",
+        "--rho",
+        "998.2 kg/m3",
+    ),
+    recalc_case!("recalc-v0.8", "end_suction_v0.8.hmf", "v0.8.hmf"),
+    recalc_case!("recalc-v0.2", "end_suction_v0.2.hmf", "v0.2.hmf"),
     Scenario {
         name: "check-ref",
         fixtures: &[("end_suction_v0.9.hmf", "reference.hmf")],
@@ -481,7 +329,9 @@ const SCENARIOS: &[Scenario] = &[
             args: &["check", "reference.hmf"],
             status: 0,
             files: NONE,
+            present: NONE,
             absent: NONE,
+            capture: Capture::Transcript,
         }],
     },
     Scenario {
@@ -492,7 +342,9 @@ const SCENARIOS: &[Scenario] = &[
             args: &["check", "v0.8.hmf"],
             status: 1,
             files: NONE,
+            present: NONE,
             absent: NONE,
+            capture: Capture::Transcript,
         }],
     },
     Scenario {
@@ -503,7 +355,9 @@ const SCENARIOS: &[Scenario] = &[
             args: &["report", "v0.8.hmf"],
             status: 1,
             files: NONE,
+            present: NONE,
             absent: NONE,
+            capture: Capture::Transcript,
         }],
     },
     Scenario {
@@ -514,7 +368,9 @@ const SCENARIOS: &[Scenario] = &[
             args: &["recalc", "inline.hmf"],
             status: 1,
             files: NONE,
+            present: NONE,
             absent: NONE,
+            capture: Capture::Transcript,
         }],
     },
     Scenario {
@@ -527,7 +383,9 @@ const SCENARIOS: &[Scenario] = &[
             ],
             status: 1,
             files: NONE,
+            present: NONE,
             absent: &["invalid.hmf"],
+            capture: Capture::Transcript,
         }],
     },
     Scenario {
@@ -538,7 +396,9 @@ const SCENARIOS: &[Scenario] = &[
             args: &["report", "override.hmf"],
             status: 1,
             files: NONE,
+            present: NONE,
             absent: NONE,
+            capture: Capture::Transcript,
         }],
     },
     Scenario {
@@ -550,7 +410,9 @@ const SCENARIOS: &[Scenario] = &[
                 args: &["report", "ref.hmf", "--curve-points", "1"],
                 status: 1,
                 files: NONE,
+                present: NONE,
                 absent: NONE,
+                capture: Capture::Transcript,
             },
             CommandSpec {
                 args: &[
@@ -568,7 +430,9 @@ const SCENARIOS: &[Scenario] = &[
                 ],
                 status: 1,
                 files: NONE,
+                present: NONE,
                 absent: &["curve.hmf"],
+                capture: Capture::Transcript,
             },
         ],
     },
@@ -592,50 +456,97 @@ const SCENARIOS: &[Scenario] = &[
             ],
             status: 1,
             files: NONE,
+            present: NONE,
             absent: &["invalid-diagnostic.hmf"],
+            capture: Capture::Transcript,
         }],
     },
 ];
 
-const NONE_FIXTURES: &[(&str, &str)] = &[];
-const NONE_FILES: &[(&str, &str)] = &[];
+macro_rules! cases {
+    ($($fn_name:ident = $name:literal),* $(,)?) => {
+        const CASE_NAMES: &[&str] = &[$($name),*];
+
+        $(
+            #[test]
+            fn $fn_name() {
+                check($name);
+            }
+        )*
+    };
+}
+
+cases! {
+    b1 = "b1",
+    d1a1 = "d1a1",
+    ref_case = "ref",
+    sweep_low = "sweep-low",
+    sweep_mid = "sweep-mid",
+    sweep_high = "sweep-high",
+    double_volute = "double-volute",
+    suction_water = "suction-water",
+    suction_custom = "suction-custom",
+    hot_water = "hot-water",
+    hot_water_rho = "hot-water-rho",
+    recalc_v0_8 = "recalc-v0.8",
+    recalc_v0_2 = "recalc-v0.2",
+    check_ref = "check-ref",
+    check_v0_8 = "check-v0.8",
+    report_v0_8 = "report-v0.8",
+    recalc_inline = "recalc-inline",
+    design_negative_q = "design-negative-q",
+    report_override = "report-override",
+    curve_points = "curve-points",
+    design_with_errors = "design-with-errors",
+}
 
 #[test]
-fn golden_outputs_do_not_change() {
+fn every_scenario_is_its_own_test() {
+    let mut from_table: Vec<_> = SCENARIOS.iter().map(|scenario| scenario.name).collect();
+    let mut from_tests = CASE_NAMES.to_vec();
+    from_table.sort_unstable();
+    from_tests.sort_unstable();
+    assert_eq!(
+        from_table, from_tests,
+        "cada escenario de SCENARIOS tiene que tener su test en cases!"
+    );
+}
+
+fn check(name: &str) {
     let bless = std::env::var_os("HMFLOW_BLESS").is_some();
     if bless && std::env::var_os("CI").is_some() {
         panic!("HMFLOW_BLESS no se permite en CI; revisa el cambio y bendice en local");
     }
 
+    let scenario = SCENARIOS
+        .iter()
+        .find(|scenario| scenario.name == name)
+        .unwrap_or_else(|| panic!("no existe el escenario `{name}`"));
+    let actual = run_scenario(scenario);
     let golden_dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/golden");
     fs::create_dir_all(&golden_dir).expect("no se pudo crear tests/golden");
+    let path = golden_dir.join(format!("{name}.txt"));
 
-    for scenario in SCENARIOS {
-        let actual = run_scenario(scenario);
-        let path = golden_dir.join(format!("{}.txt", scenario.name));
-
-        if bless {
-            fs::write(&path, &actual)
-                .unwrap_or_else(|error| panic!("no se pudo escribir {}: {error}", path.display()));
-            continue;
-        }
-
-        let expected = fs::read_to_string(&path).unwrap_or_else(|error| {
-            panic!(
-                "no se pudo leer {}: {error}\n\
-                 genera las salidas con HMFLOW_BLESS=1 cargo test -p hmflow-cli --test golden",
-                path.display()
-            )
-        });
-
-        assert_eq!(
-            actual, expected,
-            "la salida de `{}` cambió.\n\
-             Si es intencional: HMFLOW_BLESS=1 cargo test -p hmflow-cli --test golden\n\
-             y revisa el diff de tests/golden/.",
-            scenario.name
-        );
+    if bless {
+        fs::write(&path, &actual)
+            .unwrap_or_else(|error| panic!("no se pudo escribir {}: {error}", path.display()));
+        return;
     }
+
+    let expected = fs::read_to_string(&path).unwrap_or_else(|error| {
+        panic!(
+            "no se pudo leer {}: {error}\n\
+             genera las salidas con HMFLOW_BLESS=1 cargo test -p hmflow-cli --test golden",
+            path.display()
+        )
+    });
+
+    assert_eq!(
+        actual, expected,
+        "la salida de `{name}` cambió.\n\
+         Si es intencional: HMFLOW_BLESS=1 cargo test -p hmflow-cli --test golden\n\
+         y revisa el diff de tests/golden/."
+    );
 }
 
 fn run_scenario(scenario: &Scenario) -> String {
@@ -652,27 +563,34 @@ fn run_scenario(scenario: &Scenario) -> String {
                 panic!("no se pudo ejecutar `{}`: {error}", command.args.join(" "))
             });
 
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        let stderr = String::from_utf8_lossy(&output.stderr);
         let status = output.status.code().unwrap_or(-1);
         assert_eq!(
             status,
             command.status,
-            "caso `{}`: `hmflow-cli {}` terminó con {status}, se esperaba {}.\nstdout:\n{}\nstderr:\n{}",
+            "caso `{}`: `hmflow-cli {}` terminó con {status}, se esperaba {}.\nstdout:\n{stdout}\nstderr:\n{stderr}",
             scenario.name,
             command.args.join(" "),
             command.status,
-            String::from_utf8_lossy(&output.stdout),
-            String::from_utf8_lossy(&output.stderr)
         );
+
+        if matches!(command.capture, Capture::ReportStatus) {
+            assert_report_json(scenario.name, &command.args.join(" "), &stdout);
+        }
 
         record.push_str("# command\n$ hmflow-cli ");
         record.push_str(&command.args.join(" "));
-        record.push_str("\n# stdout\n");
-        record.push_str(&String::from_utf8_lossy(&output.stdout));
-        if !record.ends_with('\n') {
-            record.push('\n');
+        record.push('\n');
+        if matches!(command.capture, Capture::Transcript) {
+            record.push_str("# stdout\n");
+            record.push_str(&stdout);
+            if !record.ends_with('\n') {
+                record.push('\n');
+            }
         }
         record.push_str("# stderr\n");
-        record.push_str(&String::from_utf8_lossy(&output.stderr));
+        record.push_str(&stderr);
         if !record.ends_with('\n') {
             record.push('\n');
         }
@@ -697,6 +615,18 @@ fn run_scenario(scenario: &Scenario) -> String {
             }
         }
 
+        for file in command.present {
+            let path = directory.join(file);
+            assert!(
+                path.is_file(),
+                "caso `{}`: `{}` debería existir después de `{}`",
+                scenario.name,
+                path.display(),
+                command.args.join(" ")
+            );
+            record.push_str(&format!("# present {file}\n"));
+        }
+
         for file in command.absent {
             let path = directory.join(file);
             assert!(
@@ -713,6 +643,14 @@ fn run_scenario(scenario: &Scenario) -> String {
     let normalized = normalize(&record, &directory);
     let _ = fs::remove_dir_all(&directory);
     normalized
+}
+
+fn assert_report_json(scenario: &str, args: &str, stdout: &str) {
+    if stdout.contains("\"format\": \"hmflow.design-report\"") {
+        return;
+    }
+    let sample: String = stdout.chars().take(240).collect();
+    panic!("caso `{scenario}`: `hmflow-cli {args}` no escribió el informe JSON.\n{sample}");
 }
 
 fn prepare(scenario: &Scenario, directory: &Path) {

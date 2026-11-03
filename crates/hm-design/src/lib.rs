@@ -1916,7 +1916,7 @@ pub fn design_with_options(
         )?;
     }
 
-    result.diagnostics = diagnostics_for(&result, input);
+    result.diagnostics = diagnostics_for(&result, input, options);
     if seal_without_drive {
         result.diagnostics.push(
             Diagnostic::info(
@@ -2426,7 +2426,11 @@ pub fn stored_si_matches(expected: f64, actual: f64) -> bool {
     (expected - actual).abs() <= 1e-4 * scale
 }
 
-fn diagnostics_for(result: &DesignResult, input: &DesignInput) -> Diagnostics {
+fn diagnostics_for(
+    result: &DesignResult,
+    input: &DesignInput,
+    options: &DesignOptions,
+) -> Diagnostics {
     let mut diagnostics = Diagnostics::new();
 
     if !(10.0..=100.0).contains(&result.nq) {
@@ -2706,7 +2710,29 @@ fn diagnostics_for(result: &DesignResult, input: &DesignInput) -> Diagnostics {
                     result.selection.blade_count
                 ),
             )
-            .with_hint("Con 5..7 álabes β2 se sale de 15..45°; revisa ψ, φ o el ojo."),
+            .with_hint(if options.blade_count.is_some() {
+                "Z fijado a mano: el motor no lo eligió. Con 5..7 álabes mira si β2 queda en \
+                 15..45°."
+            } else {
+                "Con 5..7 álabes β2 se sale de 15..45°; revisa ψ, φ o el ojo."
+            }),
+        );
+    }
+
+    if options.blade_count.is_some_and(|z| z.is_multiple_of(2))
+        && options.volute_channels.is_some_and(|z| z.is_multiple_of(2))
+    {
+        diagnostics.push(
+            Diagnostic::warning(
+                "HM-DES-037",
+                format!(
+                    "Z = {} y {} lenguas de voluta, ambos pares: Gülich evita un Z par con un \
+                     zLe par (p. 491) por las pulsaciones de presión",
+                    result.selection.blade_count,
+                    options.volute_channels.unwrap_or(1)
+                ),
+            )
+            .with_hint("Usa un Z impar, o deja que el motor lo elija."),
         );
     }
 

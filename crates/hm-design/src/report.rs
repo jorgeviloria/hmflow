@@ -292,6 +292,8 @@ impl DesignReport {
             })
             .collect();
 
+        let cylindrical = result.nq <= crate::CYLINDRICAL_BLADE_MAX_NQ;
+
         Self {
             format: REPORT_FORMAT.to_string(),
             version: REPORT_VERSION,
@@ -318,11 +320,11 @@ impl DesignReport {
                 seal_leakage_ratio: Measure::new(result.seal_leakage_ratio, "1"),
                 seal_eta_v: Measure::new(result.seal_eta_v, "1"),
                 inlet_deceleration: Some(Measure::new(result.inlet_deceleration, "1")),
-                blade_loading: Some(Measure::new(result.blade_loading, "1")),
-                blade_loading_allowable: Some(Measure::new(
-                    crate::blade_loading_allowable(result.nq),
-                    "1",
-                )),
+                // Con nq > 40 la línea media 2D no vale (HM-DES-036 tampoco
+                // se evalúa): no se publica una carga engañosa.
+                blade_loading: cylindrical.then(|| Measure::new(result.blade_loading, "1")),
+                blade_loading_allowable: cylindrical
+                    .then(|| Measure::new(crate::blade_loading_allowable(result.nq), "1")),
                 momentum_throat_diameter: Some(Measure::new(
                     result.volute.momentum_throat_diameter.si,
                     "m",

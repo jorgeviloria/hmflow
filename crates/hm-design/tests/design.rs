@@ -1292,6 +1292,48 @@ fn more_than_seven_blades_are_reported() {
 }
 
 #[test]
+fn manual_blade_count_above_seven_does_not_blame_the_engine() {
+    // Con Z fijado a mano, la sugerencia «con 5..7 álabes β2 se sale de
+    // 15..45°» no es verdad ni útil: el motor no eligió ese Z.
+    let result = design_with_options(
+        &input("120 m3/h", "45 m", "2900 rpm"),
+        &DesignOptions {
+            blade_count: Some(9),
+            ..DesignOptions::default()
+        },
+    )
+    .unwrap();
+    let note = result
+        .diagnostics
+        .iter()
+        .find(|diagnostic| diagnostic.code == "HM-DES-034")
+        .expect("Z = 9 avisa");
+    let hint = note.hint.clone().unwrap_or_default();
+    assert!(!hint.contains("se sale de 15..45"), "{hint}");
+    assert!(hint.contains("fijado"), "{hint}");
+}
+
+#[test]
+fn even_manual_blade_count_with_two_tongues_is_reported() {
+    // Gülich p. 491: con zLe par se evita un Z par. El motor lo respeta al
+    // elegir Z; con Z manual solo puede avisar (HM-DES-037).
+    let base = input("120 m3/h", "45 m", "2900 rpm");
+    let with = |z: u32| {
+        design_with_options(
+            &base,
+            &DesignOptions {
+                blade_count: Some(z),
+                volute_channels: Some(2),
+                ..DesignOptions::default()
+            },
+        )
+        .unwrap()
+    };
+    assert!(has(&with(6), "HM-DES-037"));
+    assert!(!has(&with(7), "HM-DES-037"));
+}
+
+#[test]
 fn two_volute_channels_get_an_odd_blade_count() {
     // Con zLe = 2 (voluta doble) hay que evitar un Z par (Gülich p. 491).
     for (q, h, n) in [

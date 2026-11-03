@@ -284,3 +284,22 @@ fn report_says_which_volute_the_radial_thrust_assumes() {
     assert_eq!(wrap.unit, "rad");
     assert!((wrap.value - 165.0_f64.to_radians()).abs() < 1e-9);
 }
+
+#[test]
+fn blade_loading_is_left_out_above_the_cylindrical_blade_range() {
+    // Con nq > 40 la línea media 2D sobrestima la carga (2–3×): el informe
+    // no publica ξeff ni ξal ahí, en vez de publicar un número engañoso.
+    let input = DesignInput {
+        q: parse_quantity("954 m3/h").unwrap(),
+        h: parse_quantity("15 m").unwrap(),
+        n: parse_quantity("1450 rpm").unwrap(),
+        ..input()
+    };
+    let result = design(&input).unwrap();
+    assert!(result.nq > hm_design::CYLINDRICAL_BLADE_MAX_NQ);
+    let report = DesignReport::new(&input, &result, 11, Vec::new());
+    let hydraulics = report.hydraulics.expect("hidráulica");
+    assert!(hydraulics.blade_loading.is_none());
+    assert!(hydraulics.blade_loading_allowable.is_none());
+    assert!(hydraulics.inlet_deceleration.is_some());
+}

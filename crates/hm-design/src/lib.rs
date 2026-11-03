@@ -688,6 +688,16 @@ fn eta_h_flow_in_range(q: f64) -> bool {
     (ETA_H_FLOW_RANGE.0..=ETA_H_FLOW_RANGE.1).contains(&q)
 }
 
+/// Re* de transición laminar/turbulento del anillo (Gülich 3.7.10).
+const SEAL_TRANSITION_REYNOLDS: f64 = 2000.0;
+
+/// El flujo del anillo se trata como laminar para el factor de rotación si
+/// `Re* = √(Re² + ¼·Reu²) < 2000` (Gülich 3.7.10): entonces vale 3.7.14, y si
+/// no 3.7.13. `re = 2·s·cax/ν` y `reu = 2·s·usp/ν`.
+pub fn seal_rotation_is_laminar(re: f64, reu: f64) -> bool {
+    (re * re + 0.25 * reu * reu).sqrt() < SEAL_TRANSITION_REYNOLDS
+}
+
 /// Área total de garganta de la entrada, `zLa·A1q`, con el espesor de los
 /// álabes: `A1·sen β1B/τ1` (Gülich 2020, ec. 6.18). Con τ1 = 1 (sin espesor)
 /// es `A1·sen β1B` y QW coincide con QSF.
@@ -1969,18 +1979,37 @@ fn seal_leakage(
                 "la velocidad en el anillo no es positiva".to_string(),
             ));
         }
-        let next = evaluate(
-            registry,
-            "design.seal_friction_coefficient",
-            &[
-                ("s", metres(s)),
-                ("cax", Quantity::from_si(cax, ms.clone())),
-                ("nu", nu.clone()),
-                ("eps", metres(SEAL_ROUGHNESS)),
-                ("usp", usp.clone()),
-            ],
-        )?
-        .si;
+        // 3.7.13 (turbulento) va dentro de la fórmula del pack. Con Re* < 2000
+        // el factor de rotación es el laminar, 3.7.14: λ0 sin rotación (usp = 0)
+        // por ese factor.
+        let re = 2.0 * s * cax / nu.si;
+        let reu = 2.0 * s * usp.si / nu.si;
+        let laminar = seal_rotation_is_laminar(re, reu);
+        let friction = |usp: Quantity| {
+            evaluate(
+                registry,
+                "design.seal_friction_coefficient",
+                &[
+                    ("s", metres(s)),
+                    ("cax", Quantity::from_si(cax, ms.clone())),
+                    ("nu", nu.clone()),
+                    ("eps", metres(SEAL_ROUGHNESS)),
+                    ("usp", usp),
+                ],
+            )
+        };
+        let next = if laminar {
+            let lambda0 = friction(Quantity::from_si(0.0, ms.clone()))?.si;
+            let factor = evaluate(
+                registry,
+                "design.seal_rotation_laminar",
+                &[("Reu", quantity(reu, one.clone()))],
+            )?
+            .si;
+            lambda0 * factor
+        } else {
+            friction(usp.clone())?.si
+        };
         if !next.is_finite() || next <= 0.0 {
             return Err(DesignError::Input(
                 "el coeficiente de rozamiento del anillo no es positivo".to_string(),

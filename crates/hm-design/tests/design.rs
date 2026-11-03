@@ -1,7 +1,7 @@
 use hm_design::{
     DesignInput, DesignOptions, PARAM_SPECS, default_mechanical_efficiency, design,
     design_with_options, designed_si, gulich_b2_star, inlet_throat_area, param_spec,
-    required_npsha, stored_si_matches, water_density,
+    required_npsha, seal_rotation_is_laminar, stored_si_matches, water_density,
 };
 use hm_units::parse_quantity;
 
@@ -1061,4 +1061,53 @@ fn momentum_throat_is_a_contrast_that_agrees_at_low_nq() {
     let high = design(&input("200 m3/h", "8 m", "1750 rpm")).unwrap();
     let ratio = high.volute.momentum_throat_diameter.si / equivalent(&high);
     assert!(ratio > 1.25, "nq 87: {ratio}");
+}
+
+#[test]
+fn seal_rotation_regime_uses_the_transition_reynolds_number() {
+    // Gülich 3.7.10: Re* = √(Re² + ¼·Reu²); laminar si Re* < 2000.
+    assert!(seal_rotation_is_laminar(100.0, 1000.0));
+    assert!(seal_rotation_is_laminar(1900.0, 1000.0)); // Re* = 1964,7
+    assert!(!seal_rotation_is_laminar(1950.0, 1000.0)); // Re* = 2013,1
+    assert!(!seal_rotation_is_laminar(5000.0, 1000.0));
+}
+
+#[test]
+fn laminar_seal_leakage_scales_with_inverse_viscosity() {
+    // En régimen laminar con poca rotación (Reu ≪ 2000) la fuga del anillo
+    // sigue a Hagen–Poiseuille, Qsp ∝ 1/ν: duplicar la viscosidad la divide
+    // por dos. Con el factor turbulento aplicado también al caso laminar
+    // (v0.8) la escala era otra.
+    let water = input("120 m3/h", "45 m", "2900 rpm");
+    let sized = design(&water).unwrap();
+    let leak = |nu: f64| {
+        let mut viscous = water.clone();
+        viscous.nu = Some(nu);
+        design_with_options(
+            &viscous,
+            &DesignOptions {
+                psi: Some(sized.selection.psi),
+                phi: Some(sized.selection.phi),
+                beta2_rad: Some(sized.selection.beta2_deg.to_radians()),
+                blade_count: Some(sized.selection.blade_count),
+                c0: Some(sized.selection.c0),
+                cm0: Some(sized.selection.cm0),
+                j: Some(sized.selection.j),
+                ..DesignOptions::default()
+            },
+        )
+        .unwrap()
+        .seal_leakage_ratio
+    };
+    let ratio = leak(2.0e-3) / leak(1.0e-3);
+    assert!(
+        (0.45..0.55).contains(&ratio),
+        "Qsp(2000 cSt)/Qsp(1000 cSt) = {ratio}"
+    );
+    // 4000 cSt es el límite de la tabla 13.1: también cierra y sigue la escala.
+    let ratio = leak(4.0e-3) / leak(2.0e-3);
+    assert!(
+        (0.45..0.55).contains(&ratio),
+        "Qsp(4000 cSt)/Qsp(2000 cSt) = {ratio}"
+    );
 }

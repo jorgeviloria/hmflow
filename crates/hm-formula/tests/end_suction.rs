@@ -26,13 +26,13 @@ fn pack_is_audit_clean() {
 }
 
 #[test]
-fn pack_has_seventy_five_formulas() {
-    assert_eq!(Registry::from_toml(END_SUCTION_V01_PACK).unwrap().len(), 75);
+fn pack_has_seventy_six_formulas() {
+    assert_eq!(Registry::from_toml(END_SUCTION_V01_PACK).unwrap().len(), 76);
 }
 
 #[test]
 fn all_merges_both_packs() {
-    assert_eq!(Registry::all().len(), 85);
+    assert_eq!(Registry::all().len(), 86);
 }
 
 #[test]
@@ -1137,6 +1137,15 @@ fn seal_friction_coefficient() {
         0.050_750,
         1e-5,
     );
+}
+
+#[test]
+fn seal_rotation_laminar() {
+    // Gülich 3.7.14: λ/λ0 = {1 + 0,2·(Reu/2000)²}^1,03
+    let factor = |reu: &str| evaluate("design.seal_rotation_laminar", &[("Reu", reu)]);
+    close(factor("1000"), 1.051_538, 1e-6);
+    close(factor("500"), 1.012_877, 1e-6);
+    close(factor("0"), 1.0, 1e-12);
 }
 
 #[test]

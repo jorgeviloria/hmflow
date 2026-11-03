@@ -1584,6 +1584,26 @@ value = "max(0.31/(log10(0.135*eps/s + 6.5/(2*s*cax/nu)))^2, 96/(2*s*cax/nu))*(1
 assumptions = "λ0 = máx(λ turbulento con A = 0,135·ε/s; 96/Re laminar sin excentricidad), Re = 2·s·cax/ν, y la rotación por Re_u/Re = usp/cax con el exponente turbulento. Junta lisa sin ranuras."
 
 [[formula]]
+id = "design.seal_rotation_laminar"
+version = 1
+validation = "pilot"
+module = "design"
+title = "Influencia de la rotación en la fricción del anillo, flujo laminar"
+source = "Gülich 2020, tabla 3.7 (1), ec. (3.7.14), p. 157"
+units = "1"
+range = "1 .. 100"
+test = "crates/hm-formula/tests/end_suction.rs::seal_rotation_laminar"
+
+[formula.inputs]
+Reu = "1"
+
+[formula.expr]
+value = "(1 + 0.2*(Reu/2000)^2)^1.03"
+
+[formula.notes]
+assumptions = "λ/λ0 = {1 + 0,2·(Reu/2000)²}^1,03 con Reu = 2·s·usp/ν, para Re* < 2000 (3.7.10). Con Re* ≥ 2000 vale 3.7.13, que lleva `design.seal_friction_coefficient`."
+
+[[formula]]
 id = "design.seal_axial_velocity"
 version = 1
 validation = "pilot"

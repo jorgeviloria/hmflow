@@ -137,7 +137,8 @@ pub struct DesignResult {
     pub transition_ratio: f64,
     /// Inicio estimado de la recirculación a la entrada, fracción de Qd.
     pub recirculation_onset: f64,
-    /// ηv por la fuga estimada de Gülich (ec. 3.10.3), para contraste.
+    /// ηv del método (Gülich 3.5.10, o el manual); igual a `eta_v`. Se conserva
+    /// como campo del informe.
     pub leakage_eta_v: f64,
     /// ηm estimado de Gülich (ec. 3.10.14), para contraste.
     pub mechanical_eta_estimate: f64,
@@ -677,7 +678,7 @@ const POWER_CURVE_POINTS: usize = 101;
 ///
 /// - ψ: Gülich 2020, ec. (3.26) con fT = 1,0.
 /// - φ: el que da la anchura relativa media de Gülich, ec. (7.1), con ese ψ y
-///   el ηv de Srinivasan. Un φ constante por tramos no puede seguir esa curva,
+///   el ηv del método. Un φ constante por tramos no puede seguir esa curva,
 ///   porque b2* crece con nq² a φ fijo.
 fn base_selection(
     registry: &Registry,
@@ -1203,7 +1204,7 @@ pub fn design_with_options(
         Some(value) if value.is_finite() && value > 0.0 && value < 1.0 => value,
         Some(value) => {
             return Err(DesignError::Input(format!(
-                "`eta_v` = {value} no es válido; debe estar entre 0 y 1 sin incluirlos"
+                "`eta_v` (parámetro `eta_v_fixed`, opción `--eta-v`) = {value} no es válido; debe estar entre 0 y 1 sin incluirlos"
             )));
         }
         None => gulich_volumetric_efficiency(nq, options.balance_holes)?,

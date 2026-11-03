@@ -147,7 +147,8 @@ enum Command {
         /// Gülich 3.5.10.
         #[arg(long)]
         eta_v: Option<f64>,
-        /// El rodete tiene agujeros de equilibrio (la fuga se duplica).
+        /// El rodete tiene agujeros de equilibrio (la fuga se duplica). Con
+        /// `--eta-v` no tiene efecto: el ηv fijado manda.
         #[arg(long)]
         balance_holes: bool,
         /// Razón c3q/c2 de la garganta de la voluta, entre 0,5 y 1. Por
@@ -537,7 +538,7 @@ fn run(cli: Cli) -> Result<ExitCode, Box<dyn std::error::Error>> {
                 input.eta_m
             );
             println!(
-                "  Pérdidas Gülich: discos PRR/Pu {:.3}   ηh estadístico {:.3} (dimensionado {:.3})   ηv fugas {:.3}   ηm {:.3}   → η {:.3}",
+                "  Pérdidas Gülich: discos PRR/Pu {:.3}   ηh estadístico {:.3} (dimensionado {:.3})   ηv {:.3}   ηm {:.3}   → η {:.3}",
                 result.disk_friction_ratio,
                 result.statistical_eta_h,
                 result.eta_h,

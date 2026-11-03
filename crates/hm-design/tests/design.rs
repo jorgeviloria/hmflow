@@ -662,9 +662,9 @@ fn transition_comes_from_the_geometry() {
 
 #[test]
 fn high_nq_recirculation_is_reported() {
-    // nq ≈ 98: recirculación desde 0,63·Qd (±0,1). Con 6.22a el Qc de la
-    // voluta es el de diseño, así que no hay aviso de transición (con 6.19
-    // salía 0,93·Qd y HM-DES-025).
+    // nq ≈ 98: recirculación desde 0,63·Qd (±0,1). Con 6.22a (a > 1) el Qc
+    // de la voluta sale en torno al de diseño (≥ 0,95·Qd), así que no hay
+    // aviso de transición (con 6.19 salía 0,93·Qd y HM-DES-025).
     let input = input("954 m3/h", "15 m", "1450 rpm");
     let result = design(&input).unwrap();
     assert!(

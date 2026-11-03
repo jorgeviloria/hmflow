@@ -26,13 +26,13 @@ fn pack_is_audit_clean() {
 }
 
 #[test]
-fn pack_has_seventy_six_formulas() {
-    assert_eq!(Registry::from_toml(END_SUCTION_V01_PACK).unwrap().len(), 76);
+fn pack_has_seventy_seven_formulas() {
+    assert_eq!(Registry::from_toml(END_SUCTION_V01_PACK).unwrap().len(), 77);
 }
 
 #[test]
 fn all_merges_both_packs() {
-    assert_eq!(Registry::all().len(), 86);
+    assert_eq!(Registry::all().len(), 87);
 }
 
 #[test]
@@ -713,6 +713,19 @@ fn leakage_volumetric_efficiency() {
         0.98255,
         1e-4,
     );
+}
+
+#[test]
+fn disk_roughness_factor() {
+    // Gülich 3.6.6 / 3.10.7: {log(12,5/Re)/log(0,2·ε/r2 + 12,5/Re)}^2,15
+    let factor = |re: &str, eps: &str| {
+        evaluate(
+            "design.disk_roughness_factor",
+            &[("Re", re), ("eps_over_r2", eps)],
+        )
+    };
+    close(factor("1e7", "1e-4"), 1.652_957, 1e-5);
+    close(factor("1e7", "0"), 1.0, 1e-12);
 }
 
 #[test]

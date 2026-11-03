@@ -519,6 +519,10 @@ pub struct DesignOptions {
     /// ([`gulich_volumetric_efficiency`]). Entre 0 y 1, sin incluir los
     /// extremos. Dimensiona Qth, φ y b2 y entra en el análisis de pérdidas.
     pub eta_v: Option<f64>,
+    /// Rugosidad de arena equivalente del rodete, m (Gülich 3.10.5). Sin dato
+    /// el rodete se trata como liso, que es lo que dejaba la v0.8. Multiplica
+    /// el rozamiento de discos por fR (3.6.6).
+    pub impeller_roughness: Option<f64>,
     /// El rodete tiene agujeros de equilibrio: la fuga de Gülich 3.5.10 se
     /// duplica (zH = 2).
     pub balance_holes: bool,
@@ -557,6 +561,11 @@ pub fn gulich_volumetric_efficiency(nq: f64, balance_holes: bool) -> Result<f64,
     )?
     .value())
 }
+
+/// Rugosidad relativa máxima ε/r2 que admite el motor para el rodete. Elección
+/// del motor: una fundición rugosa da ε/r2 ≈ 1e-4..1e-3; por encima, la ec.
+/// 3.6.6 deja de describir un rodete y el rozamiento de discos se dispara.
+const MAX_RELATIVE_ROUGHNESS: f64 = 0.01;
 
 /// Qc/Qd que se informa cuando la voluta no cruza c3q = c2: finito, para que el
 /// informe lo escriba como número, y lejos del rango de la curva (hasta 1,3·Qd).
@@ -1250,6 +1259,33 @@ pub fn design_with_options(
             ("nu", nu.clone()),
         ],
     )?;
+    let disk_roughness_factor = match options.impeller_roughness {
+        None => 1.0,
+        Some(eps) => {
+            let eps_over_r2 = eps / (0.5 * d2.si);
+            let inside_log = 0.2 * eps_over_r2 + 12.5 / disk_reynolds.value();
+            if !eps.is_finite()
+                || eps < 0.0
+                || eps_over_r2 > MAX_RELATIVE_ROUGHNESS
+                || !inside_log.is_finite()
+                || inside_log >= 1.0
+            {
+                return Err(DesignError::Input(format!(
+                    "`impeller_roughness` = {eps} m no es válida; debe ser finita, no \
+                     negativa, con ε/r2 ≤ {MAX_RELATIVE_ROUGHNESS} y 0,2·ε/r2 + 12,5/Re < 1"
+                )));
+            }
+            evaluate(
+                &registry,
+                "design.disk_roughness_factor",
+                &[
+                    ("Re", disk_reynolds.clone()),
+                    ("eps_over_r2", quantity(eps_over_r2, one.clone())),
+                ],
+            )?
+            .value()
+        }
+    };
     let disk_friction_coefficient = evaluate(
         &registry,
         "design.disk_friction_coefficient",
@@ -1258,6 +1294,10 @@ pub fn design_with_options(
             ("k0", quantity(DISK_K0, one.clone())),
         ],
     )?;
+    let disk_friction_coefficient = quantity(
+        disk_friction_coefficient.value() * disk_roughness_factor,
+        one.clone(),
+    );
     let disk_friction_ratio = evaluate(
         &registry,
         "design.disk_friction_ratio",

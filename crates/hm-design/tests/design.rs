@@ -1,6 +1,6 @@
 use hm_design::{
-    DesignInput, DesignOptions, PARAM_SPECS, default_mechanical_efficiency, design,
-    design_with_options, designed_si, gulich_b2_star, inlet_throat_area, param_spec,
+    DesignInput, DesignOptions, PARAM_SPECS, REFERENCE_WATER_NU, default_mechanical_efficiency,
+    design, design_with_options, designed_si, gulich_b2_star, inlet_throat_area, param_spec,
     required_npsha, seal_rotation_is_laminar, stored_si_matches, water_density,
 };
 use hm_units::parse_quantity;
@@ -1110,4 +1110,50 @@ fn laminar_seal_leakage_scales_with_inverse_viscosity() {
         (0.45..0.55).contains(&ratio),
         "Qsp(4000 cSt)/Qsp(2000 cSt) = {ratio}"
     );
+}
+
+#[test]
+fn rough_impeller_raises_disk_loss() {
+    // Gülich 3.10.7: fR = {log(12,5/Re)/log(0,2·ε/r2 + 12,5/Re)}^2,15 con
+    // Re = ω·r2²/ν. Se multiplica el kRR del segundo término de 3.10.9.
+    let q = input("1060 gpm", "83 m", "1750 rpm");
+    let smooth = design(&q).unwrap();
+    let eps = 50.0e-6;
+    let rough = design_with_options(
+        &q,
+        &DesignOptions {
+            impeller_roughness: Some(eps),
+            ..DesignOptions::default()
+        },
+    )
+    .unwrap();
+
+    let r2 = 0.5 * smooth.d2.si;
+    let re = 2.0 * std::f64::consts::PI * q.n.si * r2 * r2 / REFERENCE_WATER_NU;
+    let factor = ((12.5 / re).log10() / (0.2 * eps / r2 + 12.5 / re).log10()).powf(2.15);
+    assert!(factor > 1.5, "fR {factor}");
+    close(
+        rough.disk_friction_ratio / smooth.disk_friction_ratio,
+        factor,
+        1e-6 * factor,
+    );
+    assert!(rough.p_disk_loss.si > smooth.p_disk_loss.si);
+    assert!(rough.eta < smooth.eta);
+}
+
+#[test]
+fn invalid_impeller_roughness_is_rejected() {
+    let q = input("120 m3/h", "45 m", "2900 rpm");
+    for bad in [-1.0e-6, f64::NAN, f64::INFINITY, 0.05] {
+        let error = design_with_options(
+            &q,
+            &DesignOptions {
+                impeller_roughness: Some(bad),
+                ..DesignOptions::default()
+            },
+        )
+        .unwrap_err()
+        .to_string();
+        assert!(error.contains("impeller_roughness"), "{bad}: {error}");
+    }
 }

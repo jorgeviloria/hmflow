@@ -1093,6 +1093,27 @@ value = "0.0625/Re^0.2*(1 - k0)^1.75"
 assumptions = "Solo el término turbulento de la ec. 3.10.9: con Re > 1e6 el término laminar π r2/(2 Re sax) es despreciable. Paredes lisas (fR = 1), sin fuga por las cámaras laterales (fL = 1), sin álabes dorsales (fRS = 1) y agua (ftherm ≈ 1). k0 = 0,5 corresponde a cámaras abiertas (rw = r2, tax = 0, ec. 3.10.8). La rugosidad de fundición sube kRR: queda para cuando se conozca."
 
 [[formula]]
+id = "design.disk_roughness_factor"
+version = 1
+validation = "pilot"
+module = "design"
+title = "Influencia de la rugosidad del rodete en el rozamiento de discos"
+source = "Gülich 2020, tabla 3.6, ec. (3.6.6), p. 156, y tabla 3.10, ec. (3.10.7), p. 164"
+units = "1"
+range = "1 .. 5"
+test = "crates/hm-formula/tests/end_suction.rs::disk_roughness_factor"
+
+[formula.inputs]
+Re = "1"
+eps_over_r2 = "1"
+
+[formula.expr]
+value = "(log10(12.5/Re)/log10(0.2*eps_over_r2 + 12.5/Re))^2.15"
+
+[formula.notes]
+assumptions = "fR = kRR(ε)/kRR(ε = 0) = {log(12,5/Re)/log(0,2·ε/r2 + 12,5/Re)}^2,15, solo para flujo turbulento, con ε la rugosidad de arena equivalente del rodete (ε = εmax/ceq, ceq = 2,6, 3.10.5). No incluye la rugosidad de la voluta (que entra en k0, 3.10.8). Exige 0,2·ε/r2 + 12,5/Re < 1."
+
+[[formula]]
 id = "design.disk_friction_ratio"
 version = 1
 validation = "pilot"

@@ -808,3 +808,26 @@ fn blade_count_search_goes_up_when_seven_blades_fall_short() {
     let euler_head = result.eta_h * result.u2.si * result.cu2.si / 9.806_65;
     close(euler_head, input.h.si, 1e-6 * input.h.si);
 }
+
+#[test]
+fn statistical_efficiency_warns_outside_its_flow_range() {
+    // El ηh de Gülich (ec. 3.9.6) vale para 0,005 ≤ Q ≤ 1 m³/s. Con 15 m³/h
+    // (0,0042 m³/s) el diseño sale, pero con ηh extrapolado: tiene que avisar.
+    let small = design(&input("15 m3/h", "10 m", "2900 rpm")).unwrap();
+    assert!(
+        small.diagnostics.iter().any(|d| d.code == "HM-DES-033"),
+        "{:?}",
+        codes(&small)
+    );
+    let inside = design(&input("120 m3/h", "45 m", "2900 rpm")).unwrap();
+    assert!(!inside.diagnostics.iter().any(|d| d.code == "HM-DES-033"));
+}
+
+#[test]
+fn failed_euler_names_the_flow_range_of_the_efficiency() {
+    // A 5 m³/h el ηh extrapolado sale ≈ 0,37 y Euler no cierra. El error tiene
+    // que decir que el caudal está fuera del rango del ηh, no solo «aumenta Z».
+    let error = design(&input("5 m3/h", "60 m", "2900 rpm")).unwrap_err();
+    let text = error.to_string();
+    assert!(text.contains("0,005") && text.contains("ηh"), "{text}");
+}

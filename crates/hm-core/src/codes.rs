@@ -309,6 +309,11 @@ pub const CODES: &[CodeInfo] = &[
         Info,
         "La altura a través del anillo delantero no empuja fuga.",
     ),
+    active(
+        "HM-DES-033",
+        Warning,
+        "El caudal está fuera del rango del ηh estadístico de Gülich (ec. 3.9.6): extrapolado.",
+    ),
 ];
 
 /// Busca un código en el registro.

@@ -492,6 +492,10 @@ pub struct DesignOptions {
     pub seal_clearance: Option<f64>,
 }
 
+/// Caudales entre los que vale el ηh estadístico de Gülich (ec. 3.9.6,
+/// tabla 3.9), m³/s. Fuera de ahí el motor lo extrapola.
+pub const ETA_H_FLOW_RANGE: (f64, f64) = (0.005, 1.0);
+
 /// Intervalo de búsqueda de β2, en grados.
 const BETA2_SEARCH_DEG: (f64, f64) = (1.0, 89.0);
 
@@ -605,6 +609,10 @@ pub fn blade_blockage(blade_count: u32, thickness: f64, diameter: f64, beta_rad:
     let sin_beta = beta_rad.sin().abs().max(1e-4);
     let metal = f64::from(blade_count) * thickness / (std::f64::consts::PI * diameter * sin_beta);
     1.0 / (1.0 - metal.min(BLADE_BLOCKAGE_LIMIT))
+}
+
+fn eta_h_flow_in_range(q: f64) -> bool {
+    (ETA_H_FLOW_RANGE.0..=ETA_H_FLOW_RANGE.1).contains(&q)
 }
 
 /// Viscosidad cinemática que usan discos y anillo, m²/s.
@@ -1268,7 +1276,18 @@ pub fn design_with_options(
             blade_count: options.blade_count,
             beta2_rad: options.beta2_rad,
         },
-    )?;
+    )
+    .map_err(|error| match error {
+        DesignError::Input(text) if !eta_h_flow_in_range(input.q.si) => {
+            DesignError::Input(format!(
+                "{text}. El caudal ({:.4} m³/s) está fuera de 0,005..1 m³/s, el rango del ηh \
+                 estadístico de Gülich (ec. 3.9.6); fuera de él ηh se extrapola y puede \
+                 quedar muy bajo",
+                input.q.si
+            ))
+        }
+        other => other,
+    })?;
     selection.blade_count = outlet.blade_count;
     selection.beta2_deg = outlet.beta2_deg;
     let tau2 = outlet.tau2;
@@ -2065,6 +2084,20 @@ fn diagnostics_for(result: &DesignResult, input: &DesignInput) -> Diagnostics {
                 ),
             )
             .with_hint("Revisa el coeficiente de altura o la velocidad de giro."),
+        );
+    }
+
+    if !eta_h_flow_in_range(input.q.si) {
+        diagnostics.push(
+            Diagnostic::warning(
+                "HM-DES-033",
+                format!(
+                    "Q = {:.4} m³/s fuera de {}..{} m³/s, el rango del ηh estadístico de Gülich \
+                     (ec. 3.9.6): ηh = {:.3} es una extrapolación",
+                    input.q.si, ETA_H_FLOW_RANGE.0, ETA_H_FLOW_RANGE.1, result.eta_h
+                ),
+            )
+            .with_hint("Contrasta ηh, y con él β2 y la potencia, con una bomba semejante."),
         );
     }
 

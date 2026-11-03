@@ -319,6 +319,11 @@ pub const CODES: &[CodeInfo] = &[
         Info,
         "Más de 7 álabes: Gülich no recomienda 8 o más por la estabilidad de la curva Q-H.",
     ),
+    active(
+        "HM-DES-035",
+        Info,
+        "La deceleración w1q/w1m en la garganta del rodete queda fuera de 0,75..0,85.",
+    ),
 ];
 
 /// Busca un código en el registro.

@@ -119,6 +119,9 @@ pub struct DesignResult {
     pub shockless_flow: Quantity,
     /// Caudal con w1 = w1q, QW (Gülich ec. 6.18).
     pub throat_flow: Quantity,
+    /// w1q/w1m en el punto de diseño (Gülich §7.2.1, paso 15): velocidad en la
+    /// garganta del rodete frente a la relativa de entrada.
+    pub inlet_deceleration: f64,
     /// Caudal de la bomba en que c3q = c2 en la garganta de la voluta, Qc
     /// (Gülich ec. 6.22a, con la meridional). Sin cruce vale
     /// [`NO_MATCHING_FLOW_RATIO`]·Qd.
@@ -715,6 +718,16 @@ const SEAL_TRANSITION_REYNOLDS: f64 = 2000.0;
 /// no 3.7.13. `re = 2·s·cax/ν` y `reu = 2·s·usp/ν`.
 pub fn seal_rotation_is_laminar(re: f64, reu: f64) -> bool {
     (re * re + 0.25 * reu * reu).sqrt() < SEAL_TRANSITION_REYNOLDS
+}
+
+/// Banda de w1q/w1m en el BEP con entrada axial (Gülich 2020, p. 415).
+pub const INLET_THROAT_RATIO_BAND: (f64, f64) = (0.75, 0.85);
+
+/// Deceleración de la velocidad relativa de entrada a la de la garganta,
+/// `w1q/w1m = (QLa/A1q)/√(c1m² + u1m²)` (Gülich 2020, §7.2.1 paso 15). `a1q_total`
+/// es `zLa·A1q`. El borde de ataque 2D es cilíndrico: d1m = d1 y `u1m = u1`.
+pub fn inlet_throat_ratio(q_la: f64, a1q_total: f64, c1m: f64, u1m: f64) -> f64 {
+    (q_la / a1q_total) / c1m.hypot(u1m)
 }
 
 /// Área total de garganta de la entrada, `zLa·A1q`, con el espesor de los
@@ -1667,6 +1680,12 @@ pub fn design_with_options(
         ],
     )?;
     let inlet_area = std::f64::consts::PI * d1.si * b1.si;
+    let inlet_deceleration = inlet_throat_ratio(
+        qth.si,
+        inlet_throat_area(inlet_area, beta1b, tau1),
+        selection.cm0,
+        u1.si,
+    );
     let throat_flow = evaluate(
         &registry,
         "design.throat_flow",
@@ -1752,6 +1771,7 @@ pub fn design_with_options(
         beta1b,
         shockless_flow: with_unit(shockless_flow, &m3s),
         throat_flow: with_unit(throat_flow, &m3s),
+        inlet_deceleration,
         volute_matching_flow: with_unit(volute_matching_flow, &m3s),
         transition_ratio,
         recirculation_onset,
@@ -2459,6 +2479,32 @@ fn diagnostics_for(result: &DesignResult, input: &DesignInput) -> Diagnostics {
                 "Con Qc bajo, agranda la garganta de la voluta; con QSF bajo, sube β1B o el \
                  área de entrada.",
             ),
+        );
+    }
+
+    let (ratio_low, ratio_high) = INLET_THROAT_RATIO_BAND;
+    if !(ratio_low..=ratio_high).contains(&result.inlet_deceleration) {
+        let (what, hint) = if result.inlet_deceleration > ratio_high {
+            (
+                "garganta estrecha",
+                "Riesgo de cavitación a caudal alto: sube β1B o el área de entrada.",
+            )
+        } else {
+            (
+                "deceleración excesiva",
+                "Riesgo de recirculación anticipada a la entrada: baja β1B o el área de entrada.",
+            )
+        };
+        diagnostics.push(
+            Diagnostic::info(
+                "HM-DES-035",
+                format!(
+                    "w1q/w1m = {:.2} en el punto de diseño, fuera de {ratio_low}..{ratio_high} \
+                     (Gülich 2020, p. 415): {what}",
+                    result.inlet_deceleration
+                ),
+            )
+            .with_hint(hint),
         );
     }
 

@@ -1,7 +1,8 @@
 use hm_design::{
     DesignInput, DesignOptions, PARAM_SPECS, REFERENCE_WATER_NU, default_mechanical_efficiency,
-    design, design_with_options, designed_si, gulich_b2_star, inlet_throat_area, param_spec,
-    required_npsha, seal_rotation_is_laminar, stored_si_matches, water_density,
+    design, design_with_options, designed_si, gulich_b2_star, inlet_throat_area,
+    inlet_throat_ratio, param_spec, required_npsha, seal_rotation_is_laminar, stored_si_matches,
+    water_density,
 };
 use hm_units::parse_quantity;
 
@@ -77,8 +78,12 @@ fn d1a1_reference() {
     // Con β2 = 23,5° y τ2 > 1, Euler da +4,0 % (14,35 m frente a 13,8).
     // El τ2 aplana la pendiente de §4.3.5 y la parábola con H0 estadístico
     // tiene un máximo a caudal parcial (HM-DES-031): es la parábola, no
-    // una inestabilidad medida.
-    assert_eq!(codes(&result), ["HM-DES-031", "HM-DES-019", "HM-DES-012"]);
+    // una inestabilidad medida. v0.9: HM-DES-035 informa de que w1q/w1m queda
+    // fuera de 0,75..0,85 en el punto de diseño de D1.A1.
+    assert_eq!(
+        codes(&result),
+        ["HM-DES-031", "HM-DES-019", "HM-DES-035", "HM-DES-012"]
+    );
 }
 
 fn d1a1_selections() -> DesignOptions {
@@ -152,8 +157,12 @@ fn existing_case_is_consistent() {
     close(result.shutoff_head.value(), 53.65, 0.1);
     // H0/Hd = 1,19: por debajo del 1,2 de Gülich, informativo. Desde la v0.5
     // la pendiente de la tangente (§4.3.5) es mayor de lo que admite ese H0 y
-    // la curva tiene un máximo a caudal parcial (HM-DES-031).
-    assert_eq!(codes(&result), ["HM-DES-017", "HM-DES-031", "HM-DES-012"]);
+    // la curva tiene un máximo a caudal parcial (HM-DES-031). v0.9: HM-DES-035
+    // (w1q/w1m fuera de 0,75..0,85, informativo).
+    assert_eq!(
+        codes(&result),
+        ["HM-DES-017", "HM-DES-031", "HM-DES-035", "HM-DES-012"]
+    );
 }
 
 #[test]
@@ -1245,4 +1254,51 @@ fn zero_volute_channels_are_rejected() {
     .unwrap_err()
     .to_string();
     assert!(error.contains("volute_channels"), "{error}");
+}
+
+#[test]
+fn inlet_throat_ratio_is_the_throat_over_the_mean_relative_velocity() {
+    // w1q = QLa/A1q = 3,5 m/s; w1m = √(3,5² + 30²) = 30,2035 m/s.
+    close(inlet_throat_ratio(0.07, 0.02, 3.5, 30.0), 0.115_88, 1e-5);
+}
+
+#[test]
+fn inlet_deceleration_agrees_with_the_throat_flow() {
+    // Gülich 6.18: QW es el caudal con w1 = w1q. A caudal de diseño
+    // c1m = cm0 y w1q = QLa/A1q, así que w1q/w1m se deduce de QW:
+    // x = Qth/QW,La; W = √((QW,La/A1)² + u1²); w1q/w1m = x·W/√((x·QW,La/A1)² + u1²).
+    for (q, h, n) in [
+        ("1060 gpm", "83 m", "1750 rpm"),
+        ("120 m3/h", "45 m", "2900 rpm"),
+        ("200 m3/h", "8 m", "1750 rpm"),
+    ] {
+        let result = design(&input(q, h, n)).unwrap();
+        assert!(
+            (0.5..1.2).contains(&result.inlet_deceleration),
+            "{q}: {}",
+            result.inlet_deceleration
+        );
+        let a1 = std::f64::consts::PI * result.d1.si * result.b1.si;
+        let qw_la = result.throat_flow.si / result.eta_v;
+        let u1 = result.u1.si;
+        let x = result.qth.si / qw_la;
+        let w = ((qw_la / a1).powi(2) + u1 * u1).sqrt();
+        let expected = x * w / ((x * qw_la / a1).powi(2) + u1 * u1).sqrt();
+        close(result.inlet_deceleration, expected, 1e-9);
+    }
+}
+
+#[test]
+fn inlet_deceleration_warning_follows_the_band() {
+    // Gülich p. 415: w1q/w1m de 0,75 a 0,85 en el BEP con entrada axial.
+    for (q, h, n) in [
+        ("1060 gpm", "83 m", "1750 rpm"),
+        ("120 m3/h", "45 m", "2900 rpm"),
+        ("500 m3/h", "60 m", "1450 rpm"),
+        ("200 m3/h", "8 m", "1750 rpm"),
+    ] {
+        let result = design(&input(q, h, n)).unwrap();
+        let inside = (0.75..=0.85).contains(&result.inlet_deceleration);
+        assert_eq!(has(&result, "HM-DES-035"), !inside, "{q}");
+    }
 }

@@ -1,0 +1,7 @@
+# command
+$ hmflow-cli recalc inline.hmf
+# stdout
+# stderr
+error: recalc solo admite end-suction; el proyecto es inline
+# status
+1

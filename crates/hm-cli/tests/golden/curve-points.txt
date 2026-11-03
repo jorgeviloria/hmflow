@@ -1,0 +1,15 @@
+# command
+$ hmflow-cli report ref.hmf --curve-points 1
+# stdout
+# stderr
+error: --curve-points debe estar entre 2 y 1000
+# status
+1
+# command
+$ hmflow-cli design --name curve --q 120 m3/h --h 45 m --n 2900 rpm --curve-points 1
+# stdout
+# stderr
+error: --curve-points debe estar entre 2 y 1000
+# status
+1
+# absent curve.hmf

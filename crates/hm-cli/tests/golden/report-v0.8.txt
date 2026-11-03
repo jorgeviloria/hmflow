@@ -1,0 +1,7 @@
+# command
+$ hmflow-cli report v0.8.hmf
+# stdout
+# stderr
+error: el proyecto es de end_suction_v0.8; migra con `hmflow-cli recalc` antes de pedir el informe
+# status
+1

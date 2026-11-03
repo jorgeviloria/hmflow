@@ -1,0 +1,8 @@
+# command
+$ hmflow-cli check v0.8.hmf
+# stdout
+[Error] HM-PROJ-025: el proyecto se diseñó con end_suction_v0.8; el motor actual es end_suction_v0.9 y puede dar otros resultados
+        sugerencia: Ejecuta `hmflow-cli recalc --reselect <archivo>` para migrarlo con las selecciones nuevas, o `recalc` sin --reselect para conservar las tuyas.
+# stderr
+# status
+1

@@ -1,0 +1,13 @@
+# command
+$ hmflow-cli check reference.hmf
+# stdout
+[Info] HM-DES-017: H0/Hd = 1.19, por debajo del 1.2 que Gülich recomienda con nq < 40 (p. 403): curva Q-H plana
+        sugerencia: Si hace falta una curva más estable, reduce ψ o estrecha la voluta.
+[Info] HM-DES-031: la parábola H(Q) tiene un máximo en 0.25·Qd (54.8 m), por encima de H0 = 53.6 m. H0 estadístico (ec. 3.28) no ve Z ni β2, así que no casa con la pendiente de §4.3.5
+        sugerencia: Esto no demuestra por sí solo una bomba inestable: la parábola junta un H0 estadístico con una pendiente geométrica.
+[Info] HM-DES-035: w1q/w1m = 0.92 en el punto de diseño, fuera de 0.75..0.85 (Gülich 2020, p. 415): garganta estrecha. Depende de la incidencia i1 (por defecto 2°) y se calcula con el borde de ataque 2D, que no distingue líneas de corriente
+        sugerencia: Riesgo de cavitación a caudal alto: sube β1B o el área de entrada. Si conoces la incidencia real, fíjala con `incidence_deg` (0..4°, p. 411).
+[Info] HM-DES-006: NPSHa supera el necesario (Gülich 2020, tabla 6.2) en al menos 8.22 m en la región preferente (0.7..1.2 Qd)
+# stderr
+# status
+0

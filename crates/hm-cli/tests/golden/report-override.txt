@@ -1,0 +1,7 @@
+# command
+$ hmflow-cli report override.hmf
+# stdout
+# stderr
+error: `psi` está en override; la auditoría no evalúa overrides
+# status
+1

@@ -1,0 +1,1573 @@
+# command
+$ hmflow-cli design --name suction-custom --q 120 m3/h --h 45 m --n 2900 rpm --fluid custom --rho 850 kg/m3 --suction-pressure 1 atm --suction-height 2 m --suction-losses 0.5 m --vapor-pressure 5 kPa
+# stdout
+Diseño preliminar end-suction OH1/OH2
+  Punto: Q = 120 m3/h, H = 45 m, n = 2900 rpm
+  nq = 30.47   psi = 0.957   phi = 0.099   beta2 = 18.8 deg   Z = 7
+  D0 = 0.1009 m   D1 = 0.1049 m   B1 = 0.0243 m
+  D2 = 0.2000 m   B2 = 0.0179 m   u2 = 30.37 m/s
+  eta_h = 0.904   eta_v = 0.981   eta = 0.842
+  P_hyd = 12503 W   P_eje = 14858 W   P_max = 16343 W
+  T = 48.92 N*m   T_max = 53.82 N*m
+  NPSHr_d = 3.78 m   H0 = 53.65 m   Hth = 0 en 2.72·Qd   pendiente H/Hd en Qd -0.582
+  Voluta: R3 = 0.1109 m   B3 = 0.0279 m   C3 = 16.35 m/s
+  A360 = 0.002548 m2   D360 = 0.0627 m   R4 = 0.1422 m
+  Pérdidas: hyd = 1327 W   vol = 267 W   discos = 546 W   mech = 214 W
+  NPSH3: entrada sin choque 1.12·Qd   voluta 1.15·Qd   subida desde 1.11·Qd   recirculación ≈ 0.51·Qd
+  Contraste Gülich: ηv anillo delantero 0.976 (Qsp/Q 0.024; ηv del método 0.981)   ηm 0.986 (motor 0.986)
+  Pérdidas Gülich: discos PRR/Pu 0.044   ηh estadístico 0.904 (dimensionado 0.904)   ηv 0.981   ηm 0.986   → η 0.842
+  Álabe: β1B = 20.4 deg   envolvimiento = 103.5 deg
+  Salida: lengua dz/d2 = 1.109   DN 65   difusor ≥ 0.031 m (2.1 deg)
+  Eje: ds ≥ 23.0 mm (torsión, τ = 22.5 MPa)   cubo ≈ 28.8 mm
+  Empuje radial (voluta simple): 611 N cerrada   156 N diseño   195 N a 1.2·Qd   axial ≈ 2100..2699 N
+  Espesores: álabe e = 3.2 mm   salida 1.6 mm   tapas 4.0 mm   holgura anillo Δd = 0.41 mm
+  Motor: 14.86 kW × 1.25 (API 610) = 18.57 kW → 22 kW (IEC)   máx. curva 15.77 kW
+  NPSHa de la instalación = 13.06 m
+[Info] HM-DES-017: H0/Hd = 1.19, por debajo del 1.2 que Gülich recomienda con nq < 40 (p. 403): curva Q-H plana
+        sugerencia: Si hace falta una curva más estable, reduce ψ o estrecha la voluta.
+[Info] HM-DES-031: la parábola H(Q) tiene un máximo en 0.25·Qd (54.8 m), por encima de H0 = 53.6 m. H0 estadístico (ec. 3.28) no ve Z ni β2, así que no casa con la pendiente de §4.3.5
+        sugerencia: Esto no demuestra por sí solo una bomba inestable: la parábola junta un H0 estadístico con una pendiente geométrica.
+[Info] HM-DES-035: w1q/w1m = 0.92 en el punto de diseño, fuera de 0.75..0.85 (Gülich 2020, p. 415): garganta estrecha. Depende de la incidencia i1 (por defecto 2°) y se calcula con el borde de ataque 2D, que no distingue líneas de corriente
+        sugerencia: Riesgo de cavitación a caudal alto: sube β1B o el área de entrada. Si conoces la incidencia real, fíjala con `incidence_deg` (0..4°, p. 411).
+[Info] HM-DES-006: NPSHa supera el necesario (Gülich 2020, tabla 6.2) en al menos 6.31 m en la región preferente (0.7..1.2 Qd)
+[Warning] HM-DES-018: el NPSHA necesario supone agua (FF = 1) y el fluido es `custom`; la tabla 6.2 de Gülich pide FF ≥ 1,15 con agua de mar o fluidos corrosivos y otros criterios con hidrocarburos
+        sugerencia: Aumenta el NPSHA en consecuencia o confirma el NPSHR con el fabricante.
+[Info] HM-DES-022: el fluido es `custom` y no tiene viscosidad: no se evaluó su efecto
+        sugerencia: Indica la viscosidad en [operating] (viscosity = "30 cSt").
+escrito suction-custom.hmf
+# stderr
+# status
+0
+# file suction-custom.hmf
+schema = 2
+
+[project]
+name = "suction-custom"
+
+[design]
+pump_type = "end_suction"
+stages = 1
+standard = "ISO 2858"
+method = "end_suction_v0.9"
+
+[operating]
+Q = "120 m3/h"
+H = "45 m"
+n = "2900 rpm"
+fluid = "custom"
+temperature = "20 degC"
+
+[suction]
+pressure = "1 atm"
+height = "2 m"
+losses = "0.5 m"
+vapor_pressure = "5 kPa"
+
+[params.A]
+mode = "manual"
+value = "4.5"
+
+[params.J]
+mode = "manual"
+value = "1.039833359"
+
+[params.a360]
+mode = "auto"
+formula = "design.volute_throat_area_ratio"
+value = "0.002547824 m2"
+
+[params.b1]
+mode = "auto"
+formula = "design.b1"
+value = "0.024258617 m"
+
+[params.b2]
+mode = "auto"
+formula = "design.b2"
+value = "0.017935753 m"
+
+[params.b3]
+mode = "auto"
+formula = "design.volute_width"
+value = "0.027936114 m"
+
+[params.balance_holes]
+mode = "manual"
+value = "0"
+
+[params.beta2]
+mode = "manual"
+value = "18.833039088 deg"
+
+[params.blade_count]
+mode = "manual"
+value = "7"
+
+[params.c0]
+mode = "manual"
+value = "4.249273752 m/s"
+
+[params.c3]
+mode = "auto"
+formula = "design.volute_inlet_velocity"
+value = "16.353821436 m/s"
+
+[params.cm0]
+mode = "manual"
+value = "4.249273752 m/s"
+
+[params.cm2]
+mode = "auto"
+formula = "design.cm2"
+value = "3.014872562 m/s"
+
+[params.cu2]
+mode = "auto"
+formula = "design.cu2"
+value = "16.073519185 m/s"
+
+[params.d0]
+mode = "auto"
+formula = "design.d0"
+value = "0.100899675 m"
+
+[params.d1]
+mode = "auto"
+formula = "design.d1"
+value = "0.104918848 m"
+
+[params.d2]
+mode = "auto"
+formula = "design.d2"
+value = "0.200007219 m"
+
+[params.d360]
+mode = "auto"
+formula = "design.volute_throat_diameter"
+value = "0.062651648 m"
+
+[params.dn]
+mode = "auto"
+formula = "design.specific_diameter"
+value = "101.556119099"
+
+[params.eta]
+mode = "auto"
+formula = "design.loss_efficiency"
+value = "0.841555643"
+
+[params.eta_h]
+mode = "auto"
+formula = "design.statistical_hydraulic_efficiency"
+value = "0.904023928"
+
+[params.eta_m]
+mode = "manual"
+value = "0.985606414"
+
+[params.eta_v]
+mode = "auto"
+formula = "design.volumetric_efficiency_gulich"
+value = "0.981057858"
+
+[params.eta_v_fixed]
+mode = "manual"
+value = "0"
+
+[params.h0]
+mode = "auto"
+formula = "design.shutoff_head"
+value = "53.646326440 m"
+
+[params.impeller_roughness]
+mode = "manual"
+value = "0 m"
+
+[params.incidence_deg]
+mode = "manual"
+value = "2 deg"
+
+[params.k3]
+mode = "manual"
+value = "1.108862241"
+
+[params.k_eff]
+mode = "manual"
+value = "1.1"
+
+[params.margin]
+mode = "manual"
+value = "1.1"
+
+[params.mm]
+mode = "manual"
+value = "0.001 m"
+
+[params.npshr_d]
+mode = "auto"
+formula = "design.npsh3_inlet"
+value = "3.784892716 m"
+
+[params.nq]
+mode = "auto"
+formula = "similarity.nq"
+value = "30.473896290"
+
+[params.p_disk_loss]
+mode = "auto"
+formula = "design.disk_friction_loss"
+value = "545.763057636 W"
+
+[params.p_hyd]
+mode = "auto"
+formula = "perf.hydraulic_power"
+value = "12503.478750000 W"
+
+[params.p_hyd_loss]
+mode = "auto"
+formula = "design.hydraulic_loss"
+value = "1327.436955731 W"
+
+[params.p_max]
+mode = "auto"
+formula = "design.max_power"
+value = "16343.335988324 W"
+
+[params.p_mech_loss]
+mode = "auto"
+formula = "design.bearing_seal_loss"
+value = "213.853822762 W"
+
+[params.p_shaft]
+mode = "auto"
+formula = "design.shaft_power"
+value = "14857.578171204 W"
+
+[params.p_vol_loss]
+mode = "auto"
+formula = "design.volumetric_loss"
+value = "267.045585074 W"
+
+[params.phi]
+mode = "manual"
+value = "0.099271976"
+
+[params.psi]
+mode = "manual"
+value = "0.956926549"
+
+[params.qth]
+mode = "auto"
+formula = "design.qth"
+value = "0.033976929 m3/s"
+
+[params.r3]
+mode = "auto"
+formula = "design.volute_base_radius"
+value = "0.110890226 m"
+
+[params.r4]
+mode = "auto"
+formula = "design.volute_outer_radius"
+value = "0.142216050 m"
+
+[params.rho]
+mode = "manual"
+value = "850 kg/m3"
+
+[params.sigma]
+mode = "auto"
+formula = "design.thoma_sigma"
+value = "0.114222561"
+
+[params.slip]
+mode = "auto"
+formula = "design.slip_factor"
+value = "0.837395917"
+
+[params.torque]
+mode = "auto"
+formula = "mech.shaft_torque"
+value = "48.923938103 N*m"
+
+[params.u2]
+mode = "auto"
+formula = "design.u2"
+value = "30.369825085 m/s"
+
+[params.volute_c]
+mode = "manual"
+value = "0.05"
+
+[params.volute_channels]
+mode = "manual"
+value = "1"
+
+[params.volute_ratio]
+mode = "manual"
+value = "0.8"
+
+[params.volute_wrap_deg]
+mode = "manual"
+value = "0 deg"
+# command
+$ hmflow-cli report suction-custom.hmf --curve-points 11
+# stdout
+{
+  "format": "hmflow.design-report",
+  "version": 1,
+  "method": "end_suction_v0.9",
+  "input": {
+    "H": {
+      "value": 45.0,
+      "unit": "m"
+    },
+    "Q": {
+      "value": 0.033333333,
+      "unit": "m3/s"
+    },
+    "eta_m": {
+      "value": 0.985606414,
+      "unit": "1"
+    },
+    "n": {
+      "value": 48.333333333,
+      "unit": "1/s"
+    },
+    "npsha": {
+      "value": 13.055784025,
+      "unit": "m"
+    },
+    "rho": {
+      "value": 850.0,
+      "unit": "kg/m3"
+    }
+  },
+  "selection": {
+    "A": {
+      "value": 4.5,
+      "unit": "1"
+    },
+    "J": {
+      "value": 1.039833359,
+      "unit": "1"
+    },
+    "beta2": {
+      "value": 0.328698540,
+      "unit": "rad"
+    },
+    "blade_count": {
+      "value": 7.0,
+      "unit": "1"
+    },
+    "c0": {
+      "value": 4.249273752,
+      "unit": "m/s"
+    },
+    "cm0": {
+      "value": 4.249273752,
+      "unit": "m/s"
+    },
+    "margin": {
+      "value": 1.1,
+      "unit": "1"
+    },
+    "phi": {
+      "value": 0.099271976,
+      "unit": "1"
+    },
+    "psi": {
+      "value": 0.956926549,
+      "unit": "1"
+    }
+  },
+  "results": {
+    "a360": {
+      "value": 0.002547824,
+      "unit": "m2"
+    },
+    "b1": {
+      "value": 0.024258617,
+      "unit": "m"
+    },
+    "b2": {
+      "value": 0.017935753,
+      "unit": "m"
+    },
+    "b3": {
+      "value": 0.027936114,
+      "unit": "m"
+    },
+    "c3": {
+      "value": 16.353821436,
+      "unit": "m/s"
+    },
+    "cm2": {
+      "value": 3.014872562,
+      "unit": "m/s"
+    },
+    "cu2": {
+      "value": 16.073519185,
+      "unit": "m/s"
+    },
+    "d0": {
+      "value": 0.100899675,
+      "unit": "m"
+    },
+    "d1": {
+      "value": 0.104918848,
+      "unit": "m"
+    },
+    "d2": {
+      "value": 0.200007219,
+      "unit": "m"
+    },
+    "d360": {
+      "value": 0.062651648,
+      "unit": "m"
+    },
+    "dn": {
+      "value": 101.556119099,
+      "unit": "1"
+    },
+    "eta": {
+      "value": 0.841555643,
+      "unit": "1"
+    },
+    "eta_h": {
+      "value": 0.904023928,
+      "unit": "1"
+    },
+    "eta_v": {
+      "value": 0.981057858,
+      "unit": "1"
+    },
+    "h0": {
+      "value": 53.646326440,
+      "unit": "m"
+    },
+    "npshr_d": {
+      "value": 3.784892716,
+      "unit": "m"
+    },
+    "nq": {
+      "value": 30.473896290,
+      "unit": "1"
+    },
+    "p_disk_loss": {
+      "value": 545.763057636,
+      "unit": "W"
+    },
+    "p_hyd": {
+      "value": 12503.478750000,
+      "unit": "W"
+    },
+    "p_hyd_loss": {
+      "value": 1327.436955731,
+      "unit": "W"
+    },
+    "p_max": {
+      "value": 16343.335988324,
+      "unit": "W"
+    },
+    "p_mech_loss": {
+      "value": 213.853822762,
+      "unit": "W"
+    },
+    "p_shaft": {
+      "value": 14857.578171204,
+      "unit": "W"
+    },
+    "p_vol_loss": {
+      "value": 267.045585074,
+      "unit": "W"
+    },
+    "qth": {
+      "value": 0.033976929,
+      "unit": "m3/s"
+    },
+    "r3": {
+      "value": 0.110890226,
+      "unit": "m"
+    },
+    "r4": {
+      "value": 0.142216050,
+      "unit": "m"
+    },
+    "sigma": {
+      "value": 0.114222561,
+      "unit": "1"
+    },
+    "slip": {
+      "value": 0.837395917,
+      "unit": "1"
+    },
+    "torque": {
+      "value": 48.923938103,
+      "unit": "N*m"
+    },
+    "torque_max": {
+      "value": 53.816331914,
+      "unit": "N*m"
+    },
+    "u1": {
+      "value": 15.931260253,
+      "unit": "m/s"
+    },
+    "u2": {
+      "value": 30.369825085,
+      "unit": "m/s"
+    },
+    "w1": {
+      "value": 16.488219451,
+      "unit": "m/s"
+    },
+    "w2": {
+      "value": 14.610743271,
+      "unit": "m/s"
+    }
+  },
+  "volute_sections": [
+    {
+      "angle": {
+        "value": 0.0,
+        "unit": "rad"
+      },
+      "area": {
+        "value": 0.0,
+        "unit": "m2"
+      },
+      "diameter": {
+        "value": 0.0,
+        "unit": "m"
+      },
+      "outer_radius": {
+        "value": 0.110890226,
+        "unit": "m"
+      }
+    },
+    {
+      "angle": {
+        "value": 0.785398163,
+        "unit": "rad"
+      },
+      "area": {
+        "value": 0.000318478,
+        "unit": "m2"
+      },
+      "diameter": {
+        "value": 0.022150703,
+        "unit": "m"
+      },
+      "outer_radius": {
+        "value": 0.121965578,
+        "unit": "m"
+      }
+    },
+    {
+      "angle": {
+        "value": 1.570796327,
+        "unit": "rad"
+      },
+      "area": {
+        "value": 0.000636956,
+        "unit": "m2"
+      },
+      "diameter": {
+        "value": 0.031325824,
+        "unit": "m"
+      },
+      "outer_radius": {
+        "value": 0.126553138,
+        "unit": "m"
+      }
+    },
+    {
+      "angle": {
+        "value": 2.356194490,
+        "unit": "rad"
+      },
+      "area": {
+        "value": 0.000955434,
+        "unit": "m2"
+      },
+      "diameter": {
+        "value": 0.038366142,
+        "unit": "m"
+      },
+      "outer_radius": {
+        "value": 0.130073297,
+        "unit": "m"
+      }
+    },
+    {
+      "angle": {
+        "value": 3.141592654,
+        "unit": "rad"
+      },
+      "area": {
+        "value": 0.001273912,
+        "unit": "m2"
+      },
+      "diameter": {
+        "value": 0.044301405,
+        "unit": "m"
+      },
+      "outer_radius": {
+        "value": 0.133040929,
+        "unit": "m"
+      }
+    },
+    {
+      "angle": {
+        "value": 3.926990817,
+        "unit": "rad"
+      },
+      "area": {
+        "value": 0.001592390,
+        "unit": "m2"
+      },
+      "diameter": {
+        "value": 0.049530477,
+        "unit": "m"
+      },
+      "outer_radius": {
+        "value": 0.135655465,
+        "unit": "m"
+      }
+    },
+    {
+      "angle": {
+        "value": 4.712388980,
+        "unit": "rad"
+      },
+      "area": {
+        "value": 0.001910868,
+        "unit": "m2"
+      },
+      "diameter": {
+        "value": 0.054257919,
+        "unit": "m"
+      },
+      "outer_radius": {
+        "value": 0.138019186,
+        "unit": "m"
+      }
+    },
+    {
+      "angle": {
+        "value": 5.497787144,
+        "unit": "rad"
+      },
+      "area": {
+        "value": 0.002229346,
+        "unit": "m2"
+      },
+      "diameter": {
+        "value": 0.058605250,
+        "unit": "m"
+      },
+      "outer_radius": {
+        "value": 0.140192851,
+        "unit": "m"
+      }
+    },
+    {
+      "angle": {
+        "value": 6.283185307,
+        "unit": "rad"
+      },
+      "area": {
+        "value": 0.002547824,
+        "unit": "m2"
+      },
+      "diameter": {
+        "value": 0.062651648,
+        "unit": "m"
+      },
+      "outer_radius": {
+        "value": 0.142216050,
+        "unit": "m"
+      }
+    }
+  ],
+  "curve": [
+    {
+      "q": {
+        "value": 0.01,
+        "unit": "m3/s"
+      },
+      "h": {
+        "value": 54.738516697,
+        "unit": "m"
+      },
+      "eta": {
+        "value": 0.594138284,
+        "unit": "1"
+      },
+      "p_shaft": {
+        "value": 7679.714738468,
+        "unit": "W"
+      },
+      "npshr": {
+        "value": 1.402466669,
+        "unit": "m"
+      }
+    },
+    {
+      "q": {
+        "value": 0.013333333,
+        "unit": "m3/s"
+      },
+      "h": {
+        "value": 54.400468080,
+        "unit": "m"
+      },
+      "eta": {
+        "value": 0.659779624,
+        "unit": "1"
+      },
+      "p_shaft": {
+        "value": 9163.936587883,
+        "unit": "W"
+      },
+      "npshr": {
+        "value": 1.714663417,
+        "unit": "m"
+      }
+    },
+    {
+      "q": {
+        "value": 0.016666667,
+        "unit": "m3/s"
+      },
+      "h": {
+        "value": 53.711363445,
+        "unit": "m"
+      },
+      "eta": {
+        "value": 0.715322296,
+        "unit": "1"
+      },
+      "p_shaft": {
+        "value": 10431.644196977,
+        "unit": "W"
+      },
+      "npshr": {
+        "value": 2.027558406,
+        "unit": "m"
+      }
+    },
+    {
+      "q": {
+        "value": 0.02,
+        "unit": "m3/s"
+      },
+      "h": {
+        "value": 52.671202792,
+        "unit": "m"
+      },
+      "eta": {
+        "value": 0.760766301,
+        "unit": "1"
+      },
+      "p_shaft": {
+        "value": 11542.278950679,
+        "unit": "W"
+      },
+      "npshr": {
+        "value": 2.348413071,
+        "unit": "m"
+      }
+    },
+    {
+      "q": {
+        "value": 0.023333333,
+        "unit": "m3/s"
+      },
+      "h": {
+        "value": 51.279986121,
+        "unit": "m"
+      },
+      "eta": {
+        "value": 0.796111638,
+        "unit": "1"
+      },
+      "p_shaft": {
+        "value": 12528.247162068,
+        "unit": "W"
+      },
+      "npshr": {
+        "value": 2.681793760,
+        "unit": "m"
+      }
+    },
+    {
+      "q": {
+        "value": 0.026666667,
+        "unit": "m3/s"
+      },
+      "h": {
+        "value": 49.537713432,
+        "unit": "m"
+      },
+      "eta": {
+        "value": 0.821358307,
+        "unit": "1"
+      },
+      "p_shaft": {
+        "value": 13406.383419678,
+        "unit": "W"
+      },
+      "npshr": {
+        "value": 3.030860730,
+        "unit": "m"
+      }
+    },
+    {
+      "q": {
+        "value": 0.030000000,
+        "unit": "m3/s"
+      },
+      "h": {
+        "value": 47.444384725,
+        "unit": "m"
+      },
+      "eta": {
+        "value": 0.836506309,
+        "unit": "1"
+      },
+      "p_shaft": {
+        "value": 14183.272733145,
+        "unit": "W"
+      },
+      "npshr": {
+        "value": 3.397953460,
+        "unit": "m"
+      }
+    },
+    {
+      "q": {
+        "value": 0.033333333,
+        "unit": "m3/s"
+      },
+      "h": {
+        "value": 45.0,
+        "unit": "m"
+      },
+      "eta": {
+        "value": 0.841555643,
+        "unit": "1"
+      },
+      "p_shaft": {
+        "value": 14857.578171204,
+        "unit": "W"
+      },
+      "npshr": {
+        "value": 3.784892716,
+        "unit": "m"
+      }
+    },
+    {
+      "q": {
+        "value": 0.036666667,
+        "unit": "m3/s"
+      },
+      "h": {
+        "value": 42.204559257,
+        "unit": "m"
+      },
+      "eta": {
+        "value": 0.838610198,
+        "unit": "1"
+      },
+      "p_shaft": {
+        "value": 15381.909843898,
+        "unit": "W"
+      },
+      "npshr": {
+        "value": 4.193151332,
+        "unit": "m"
+      }
+    },
+    {
+      "q": {
+        "value": 0.04,
+        "unit": "m3/s"
+      },
+      "h": {
+        "value": 39.058062496,
+        "unit": "m"
+      },
+      "eta": {
+        "value": 0.829773864,
+        "unit": "1"
+      },
+      "p_shaft": {
+        "value": 15694.610324478,
+        "unit": "W"
+      },
+      "npshr": {
+        "value": 5.396502770,
+        "unit": "m"
+      }
+    },
+    {
+      "q": {
+        "value": 0.043333333,
+        "unit": "m3/s"
+      },
+      "h": {
+        "value": 35.560509717,
+        "unit": "m"
+      },
+      "eta": {
+        "value": 0.815046640,
+        "unit": "1"
+      },
+      "p_shaft": {
+        "value": 15759.673465298,
+        "unit": "W"
+      },
+      "npshr": {
+        "value": 6.861178580,
+        "unit": "m"
+      }
+    }
+  ],
+  "hydraulics": {
+    "beta1b": {
+      "value": 0.355264926,
+      "unit": "rad"
+    },
+    "shockless_flow": {
+      "value": 0.037273545,
+      "unit": "m3/s"
+    },
+    "throat_flow": {
+      "value": 0.036397963,
+      "unit": "m3/s"
+    },
+    "volute_matching_flow": {
+      "value": 0.038377438,
+      "unit": "m3/s"
+    },
+    "transition_ratio": {
+      "value": 1.105072624,
+      "unit": "1"
+    },
+    "recirculation_onset": {
+      "value": 0.514665465,
+      "unit": "1"
+    },
+    "leakage_eta_v": {
+      "value": 0.981057858,
+      "unit": "1"
+    },
+    "mechanical_eta_estimate": {
+      "value": 0.985606414,
+      "unit": "1"
+    },
+    "disk_friction_ratio": {
+      "value": 0.043648897,
+      "unit": "1"
+    },
+    "statistical_eta_h": {
+      "value": 0.904023928,
+      "unit": "1"
+    },
+    "loss_eta": {
+      "value": 0.841555643,
+      "unit": "1"
+    },
+    "zero_head_flow_ratio": {
+      "value": 2.717614462,
+      "unit": "1"
+    },
+    "head_slope": {
+      "value": -0.582202830,
+      "unit": "1"
+    },
+    "seal_leakage_ratio": {
+      "value": 0.024360486,
+      "unit": "1"
+    },
+    "seal_eta_v": {
+      "value": 0.976218834,
+      "unit": "1"
+    },
+    "inlet_deceleration": {
+      "value": 0.921632871,
+      "unit": "1"
+    },
+    "blade_loading": {
+      "value": 1.308049887,
+      "unit": "1"
+    },
+    "blade_loading_allowable": {
+      "value": 1.232995935,
+      "unit": "1"
+    },
+    "momentum_throat_diameter": {
+      "value": 0.061196709,
+      "unit": "m"
+    }
+  },
+  "geometry": {
+    "impeller": {
+      "beta1b": {
+        "value": 0.355264926,
+        "unit": "rad"
+      },
+      "wrap_angle": {
+        "value": 1.805563831,
+        "unit": "rad"
+      },
+      "blade": [
+        {
+          "r": {
+            "value": 0.052459424,
+            "unit": "m"
+          },
+          "beta": {
+            "value": 0.355264926,
+            "unit": "rad"
+          },
+          "theta": {
+            "value": 0.0,
+            "unit": "rad"
+          },
+          "width": {
+            "value": 0.024258617,
+            "unit": "m"
+          }
+        },
+        {
+          "r": {
+            "value": 0.054836633,
+            "unit": "m"
+          },
+          "beta": {
+            "value": 0.353936607,
+            "unit": "rad"
+          },
+          "theta": {
+            "value": 0.119732620,
+            "unit": "rad"
+          },
+          "width": {
+            "value": 0.023549033,
+            "unit": "m"
+          }
+        },
+        {
+          "r": {
+            "value": 0.057213842,
+            "unit": "m"
+          },
+          "beta": {
+            "value": 0.352608288,
+            "unit": "rad"
+          },
+          "theta": {
+            "value": 0.234849773,
+            "unit": "rad"
+          },
+          "width": {
+            "value": 0.022908224,
+            "unit": "m"
+          }
+        },
+        {
+          "r": {
+            "value": 0.059591052,
+            "unit": "m"
+          },
+          "beta": {
+            "value": 0.351279968,
+            "unit": "rad"
+          },
+          "theta": {
+            "value": 0.345730939,
+            "unit": "rad"
+          },
+          "width": {
+            "value": 0.022328388,
+            "unit": "m"
+          }
+        },
+        {
+          "r": {
+            "value": 0.061968261,
+            "unit": "m"
+          },
+          "beta": {
+            "value": 0.349951649,
+            "unit": "rad"
+          },
+          "theta": {
+            "value": 0.452711036,
+            "unit": "rad"
+          },
+          "width": {
+            "value": 0.021802945,
+            "unit": "m"
+          }
+        },
+        {
+          "r": {
+            "value": 0.064345470,
+            "unit": "m"
+          },
+          "beta": {
+            "value": 0.348623330,
+            "unit": "rad"
+          },
+          "theta": {
+            "value": 0.556087141,
+            "unit": "rad"
+          },
+          "width": {
+            "value": 0.021326315,
+            "unit": "m"
+          }
+        },
+        {
+          "r": {
+            "value": 0.066722679,
+            "unit": "m"
+          },
+          "beta": {
+            "value": 0.347295010,
+            "unit": "rad"
+          },
+          "theta": {
+            "value": 0.656123990,
+            "unit": "rad"
+          },
+          "width": {
+            "value": 0.020893741,
+            "unit": "m"
+          }
+        },
+        {
+          "r": {
+            "value": 0.069099889,
+            "unit": "m"
+          },
+          "beta": {
+            "value": 0.345966691,
+            "unit": "rad"
+          },
+          "theta": {
+            "value": 0.753058518,
+            "unit": "rad"
+          },
+          "width": {
+            "value": 0.020501149,
+            "unit": "m"
+          }
+        },
+        {
+          "r": {
+            "value": 0.071477098,
+            "unit": "m"
+          },
+          "beta": {
+            "value": 0.344638372,
+            "unit": "rad"
+          },
+          "theta": {
+            "value": 0.847103621,
+            "unit": "rad"
+          },
+          "width": {
+            "value": 0.020145036,
+            "unit": "m"
+          }
+        },
+        {
+          "r": {
+            "value": 0.073854307,
+            "unit": "m"
+          },
+          "beta": {
+            "value": 0.343310053,
+            "unit": "rad"
+          },
+          "theta": {
+            "value": 0.938451312,
+            "unit": "rad"
+          },
+          "width": {
+            "value": 0.019822382,
+            "unit": "m"
+          }
+        },
+        {
+          "r": {
+            "value": 0.076231517,
+            "unit": "m"
+          },
+          "beta": {
+            "value": 0.341981733,
+            "unit": "rad"
+          },
+          "theta": {
+            "value": 1.027275365,
+            "unit": "rad"
+          },
+          "width": {
+            "value": 0.019530579,
+            "unit": "m"
+          }
+        },
+        {
+          "r": {
+            "value": 0.078608726,
+            "unit": "m"
+          },
+          "beta": {
+            "value": 0.340653414,
+            "unit": "rad"
+          },
+          "theta": {
+            "value": 1.113733565,
+            "unit": "rad"
+          },
+          "width": {
+            "value": 0.019267365,
+            "unit": "m"
+          }
+        },
+        {
+          "r": {
+            "value": 0.080985935,
+            "unit": "m"
+          },
+          "beta": {
+            "value": 0.339325095,
+            "unit": "rad"
+          },
+          "theta": {
+            "value": 1.197969613,
+            "unit": "rad"
+          },
+          "width": {
+            "value": 0.019030785,
+            "unit": "m"
+          }
+        },
+        {
+          "r": {
+            "value": 0.083363144,
+            "unit": "m"
+          },
+          "beta": {
+            "value": 0.337996775,
+            "unit": "rad"
+          },
+          "theta": {
+            "value": 1.280114756,
+            "unit": "rad"
+          },
+          "width": {
+            "value": 0.018819143,
+            "unit": "m"
+          }
+        },
+        {
+          "r": {
+            "value": 0.085740354,
+            "unit": "m"
+          },
+          "beta": {
+            "value": 0.336668456,
+            "unit": "rad"
+          },
+          "theta": {
+            "value": 1.360289194,
+            "unit": "rad"
+          },
+          "width": {
+            "value": 0.018630974,
+            "unit": "m"
+          }
+        },
+        {
+          "r": {
+            "value": 0.088117563,
+            "unit": "m"
+          },
+          "beta": {
+            "value": 0.335340137,
+            "unit": "rad"
+          },
+          "theta": {
+            "value": 1.438603285,
+            "unit": "rad"
+          },
+          "width": {
+            "value": 0.018465014,
+            "unit": "m"
+          }
+        },
+        {
+          "r": {
+            "value": 0.090494772,
+            "unit": "m"
+          },
+          "beta": {
+            "value": 0.334011817,
+            "unit": "rad"
+          },
+          "theta": {
+            "value": 1.515158598,
+            "unit": "rad"
+          },
+          "width": {
+            "value": 0.018320179,
+            "unit": "m"
+          }
+        },
+        {
+          "r": {
+            "value": 0.092871981,
+            "unit": "m"
+          },
+          "beta": {
+            "value": 0.332683498,
+            "unit": "rad"
+          },
+          "theta": {
+            "value": 1.590048827,
+            "unit": "rad"
+          },
+          "width": {
+            "value": 0.018195547,
+            "unit": "m"
+          }
+        },
+        {
+          "r": {
+            "value": 0.095249191,
+            "unit": "m"
+          },
+          "beta": {
+            "value": 0.331355179,
+            "unit": "rad"
+          },
+          "theta": {
+            "value": 1.663360582,
+            "unit": "rad"
+          },
+          "width": {
+            "value": 0.018090341,
+            "unit": "m"
+          }
+        },
+        {
+          "r": {
+            "value": 0.097626400,
+            "unit": "m"
+          },
+          "beta": {
+            "value": 0.330026860,
+            "unit": "rad"
+          },
+          "theta": {
+            "value": 1.735174095,
+            "unit": "rad"
+          },
+          "width": {
+            "value": 0.018003916,
+            "unit": "m"
+          }
+        },
+        {
+          "r": {
+            "value": 0.100003609,
+            "unit": "m"
+          },
+          "beta": {
+            "value": 0.328698540,
+            "unit": "rad"
+          },
+          "theta": {
+            "value": 1.805563831,
+            "unit": "rad"
+          },
+          "width": {
+            "value": 0.017935753,
+            "unit": "m"
+          }
+        }
+      ]
+    },
+    "volute_outlet": {
+      "cutwater_radius": {
+        "value": 0.110890226,
+        "unit": "m"
+      },
+      "cutwater_min_radius": {
+        "value": 0.110890226,
+        "unit": "m"
+      },
+      "nominal_diameter": {
+        "value": 0.065,
+        "unit": "m"
+      },
+      "area_ratio": {
+        "value": 1.076370329,
+        "unit": "1"
+      },
+      "min_length": {
+        "value": 0.031325824,
+        "unit": "m"
+      },
+      "half_angle": {
+        "value": 0.037465149,
+        "unit": "rad"
+      }
+    }
+  },
+  "mechanics": {
+    "shaft_torque": {
+      "value": 53.816331914,
+      "unit": "N*m"
+    },
+    "shaft_shear_stress": {
+      "value": 22500000.0,
+      "unit": "Pa"
+    },
+    "shaft_min_diameter": {
+      "value": 0.023009149,
+      "unit": "m"
+    },
+    "hub_diameter": {
+      "value": 0.028761437,
+      "unit": "m"
+    },
+    "radial_volute": "simple",
+    "radial_coefficient_shutoff": {
+      "value": 0.263197620,
+      "unit": "1"
+    },
+    "radial_coefficient_design": {
+      "value": 0.08,
+      "unit": "1"
+    },
+    "radial_width": {
+      "value": 0.025965256,
+      "unit": "m"
+    },
+    "radial_thrust_shutoff": {
+      "value": 611.223198075,
+      "unit": "N"
+    },
+    "radial_thrust_design": {
+      "value": 155.840518001,
+      "unit": "N"
+    },
+    "radial_thrust_overload": {
+      "value": 194.778518127,
+      "unit": "N"
+    },
+    "front_seal_diameter": {
+      "value": 0.104918848,
+      "unit": "m"
+    },
+    "shaft_seal_diameter": {
+      "value": 0.028761437,
+      "unit": "m"
+    },
+    "axial_thrust_low": {
+      "value": 2099.517838652,
+      "unit": "N"
+    },
+    "axial_thrust_high": {
+      "value": 2699.380078267,
+      "unit": "N"
+    },
+    "blade_thickness_ratio": {
+      "value": 0.016058426,
+      "unit": "1"
+    },
+    "blade_thickness": {
+      "value": 0.003211801,
+      "unit": "m"
+    },
+    "trailing_edge_thickness": {
+      "value": 0.001605901,
+      "unit": "m"
+    },
+    "shroud_thickness": {
+      "value": 0.004014751,
+      "unit": "m"
+    },
+    "seal_clearance": {
+      "value": 0.000409130,
+      "unit": "m"
+    },
+    "rated_power": {
+      "value": 14857.578171204,
+      "unit": "W"
+    },
+    "driver_margin": {
+      "value": 1.25,
+      "unit": "1"
+    },
+    "driver_power": {
+      "value": 18571.972714004,
+      "unit": "W"
+    },
+    "motor_rating": {
+      "value": 22000.0,
+      "unit": "W"
+    },
+    "curve_max_power": {
+      "value": 15768.783561272,
+      "unit": "W"
+    }
+  },
+  "diagnostics": [
+    {
+      "severity": "info",
+      "code": "HM-DES-017",
+      "message": "H0/Hd = 1.19, por debajo del 1.2 que Gülich recomienda con nq < 40 (p. 403): curva Q-H plana",
+      "hint": "Si hace falta una curva más estable, reduce ψ o estrecha la voluta."
+    },
+    {
+      "severity": "info",
+      "code": "HM-DES-031",
+      "message": "la parábola H(Q) tiene un máximo en 0.25·Qd (54.8 m), por encima de H0 = 53.6 m. H0 estadístico (ec. 3.28) no ve Z ni β2, así que no casa con la pendiente de §4.3.5",
+      "hint": "Esto no demuestra por sí solo una bomba inestable: la parábola junta un H0 estadístico con una pendiente geométrica."
+    },
+    {
+      "severity": "info",
+      "code": "HM-DES-035",
+      "message": "w1q/w1m = 0.92 en el punto de diseño, fuera de 0.75..0.85 (Gülich 2020, p. 415): garganta estrecha. Depende de la incidencia i1 (por defecto 2°) y se calcula con el borde de ataque 2D, que no distingue líneas de corriente",
+      "hint": "Riesgo de cavitación a caudal alto: sube β1B o el área de entrada. Si conoces la incidencia real, fíjala con `incidence_deg` (0..4°, p. 411)."
+    },
+    {
+      "severity": "info",
+      "code": "HM-DES-006",
+      "message": "NPSHa supera el necesario (Gülich 2020, tabla 6.2) en al menos 6.31 m en la región preferente (0.7..1.2 Qd)"
+    },
+    {
+      "severity": "warning",
+      "code": "HM-DES-018",
+      "message": "el NPSHA necesario supone agua (FF = 1) y el fluido es `custom`; la tabla 6.2 de Gülich pide FF ≥ 1,15 con agua de mar o fluidos corrosivos y otros criterios con hidrocarburos",
+      "hint": "Aumenta el NPSHA en consecuencia o confirma el NPSHR con el fabricante."
+    },
+    {
+      "severity": "info",
+      "code": "HM-DES-022",
+      "message": "el fluido es `custom` y no tiene viscosidad: no se evaluó su efecto",
+      "hint": "Indica la viscosidad en [operating] (viscosity = /"30 cSt/")."
+    }
+  ]
+}
+# stderr
+# status
+0

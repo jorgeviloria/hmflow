@@ -1,0 +1,38 @@
+# command
+$ hmflow-cli design --name invalid-diagnostic --q 120 m3/h --h 45 m --n 2900 rpm --npsha 0.1 m
+# stdout
+Diseño preliminar end-suction OH1/OH2
+  Punto: Q = 120 m3/h, H = 45 m, n = 2900 rpm
+  nq = 30.47   psi = 0.957   phi = 0.099   beta2 = 18.8 deg   Z = 7
+  D0 = 0.1009 m   D1 = 0.1054 m   B1 = 0.0242 m
+  D2 = 0.2000 m   B2 = 0.0179 m   u2 = 30.37 m/s
+  eta_h = 0.904   eta_v = 0.981   eta = 0.842
+  P_hyd = 14684 W   P_eje = 17448 W   P_max = 19193 W
+  T = 57.45 N*m   T_max = 63.20 N*m
+  NPSHr_d = 3.81 m   H0 = 53.65 m   Hth = 0 en 2.72·Qd   pendiente H/Hd en Qd -0.582
+  Voluta: R3 = 0.1109 m   B3 = 0.0279 m   C3 = 16.35 m/s
+  A360 = 0.002548 m2   D360 = 0.0627 m   R4 = 0.1423 m
+  Pérdidas: hyd = 1559 W   vol = 314 W   discos = 641 W   mech = 251 W
+  NPSH3: entrada sin choque 1.12·Qd   voluta 1.15·Qd   subida desde 1.11·Qd   recirculación ≈ 0.51·Qd
+  Contraste Gülich: ηv anillo delantero 0.976 (Qsp/Q 0.025; ηv del método 0.981)   ηm 0.986 (motor 0.986)
+  Pérdidas Gülich: discos PRR/Pu 0.044   ηh estadístico 0.904 (dimensionado 0.904)   ηv 0.981   ηm 0.986   → η 0.842
+  Álabe: β1B = 20.3 deg   envolvimiento = 103.0 deg
+  Salida: lengua dz/d2 = 1.109   DN 65   difusor ≥ 0.031 m (2.1 deg)
+  Eje: ds ≥ 24.3 mm (torsión, τ = 22.5 MPa)   cubo ≈ 30.3 mm
+  Empuje radial (voluta simple): 718 N cerrada   183 N diseño   229 N a 1.2·Qd   axial ≈ 2466..3170 N
+  Espesores: álabe e = 3.2 mm   salida 1.6 mm   tapas 4.0 mm   holgura anillo Δd = 0.41 mm
+  Motor: 17.45 kW × 1.25 (API 610) = 21.81 kW → 22 kW (IEC)   máx. curva 18.52 kW
+  Viscosidad: ν = 1.003 cSt   fQ = 1.000   fH = 1.000   fη = 1.000
+[Info] HM-DES-017: H0/Hd = 1.19, por debajo del 1.2 que Gülich recomienda con nq < 40 (p. 403): curva Q-H plana
+        sugerencia: Si hace falta una curva más estable, reduce ψ o estrecha la voluta.
+[Info] HM-DES-031: la parábola H(Q) tiene un máximo en 0.25·Qd (54.8 m), por encima de H0 = 53.6 m. H0 estadístico (ec. 3.28) no ve Z ni β2, así que no casa con la pendiente de §4.3.5
+        sugerencia: Esto no demuestra por sí solo una bomba inestable: la parábola junta un H0 estadístico con una pendiente geométrica.
+[Info] HM-DES-035: w1q/w1m = 0.92 en el punto de diseño, fuera de 0.75..0.85 (Gülich 2020, p. 415): garganta estrecha. Depende de la incidencia i1 (por defecto 2°) y se calcula con el borde de ataque 2D, que no distingue líneas de corriente
+        sugerencia: Riesgo de cavitación a caudal alto: sube β1B o el área de entrada. Si conoces la incidencia real, fíjala con `incidence_deg` (0..4°, p. 411).
+[Error] HM-DES-007: NPSHa = 0.10 m no llega al necesario 6.78 m a Q = 144 m3/h dentro de la región preferente (0.7..1.2 Qd; Gülich 2020, tabla 6.2)
+        sugerencia: Aumenta el NPSHa o reduce la velocidad de giro.
+# stderr
+error: el diseño tiene errores; no se escribió el proyecto
+# status
+1
+# absent invalid-diagnostic.hmf

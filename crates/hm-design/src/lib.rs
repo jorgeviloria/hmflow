@@ -674,7 +674,16 @@ fn euler_blade_angle(registry: &Registry, target: &EulerTarget) -> Result<f64, D
         BETA2_SEARCH_DEG.0.to_radians(),
         BETA2_SEARCH_DEG.1.to_radians(),
     );
-    let reachable = cu2_over_u2(high)?;
+    // cu2/u2 = γ(β2) − τ·φ/tan β2 no es monótona: √sen β2 en el deslizamiento
+    // la hace pasar por un máximo antes de 89°. La altura es alcanzable si
+    // ese máximo llega a `needed`, y la raíz buscada es la de la rama
+    // creciente (menor β2), donde más β2 da más altura.
+    let peak = golden_section_min(
+        |beta2| cu2_over_u2(beta2).map_or(f64::INFINITY, |value| -value),
+        low,
+        high,
+    );
+    let reachable = cu2_over_u2(peak)?;
     if reachable < needed {
         return Err(DesignError::Input(format!(
             "con ψ = {psi:.3}, φ = {phi:.3} y Z = {blade_count}, ningún β2 da la altura: \
@@ -687,7 +696,7 @@ fn euler_blade_angle(registry: &Registry, target: &EulerTarget) -> Result<f64, D
     let root = hm_math::bisect(
         |beta2| cu2_over_u2(beta2).map_or(f64::NAN, |value| value - needed),
         low,
-        high,
+        peak,
         1e-10,
         200,
     )
@@ -772,7 +781,16 @@ fn select_outlet(
 
     let mut z = BLADE_COUNT_START;
     for _ in 0..8 {
-        let outlet = solve(z)?;
+        let outlet = match solve(z) {
+            Ok(outlet) => outlet,
+            // Con pocos álabes el deslizamiento no deja alcanzar la altura:
+            // se sigue subiendo y solo se falla cuando Z ya está en el tope.
+            Err(_) if z < BLADE_COUNT_SEARCH.1 => {
+                z += 1;
+                continue;
+            }
+            Err(error) => return Err(error),
+        };
         if outlet.beta2_deg < BETA2_RANGE_DEG.0 && z > BLADE_COUNT_SEARCH.0 {
             z -= 1;
             continue;

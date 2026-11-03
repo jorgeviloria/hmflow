@@ -778,3 +778,33 @@ fn one_hydraulic_efficiency_for_euler_and_power() {
         close(euler_head, input.h.si, 1e-6 * input.h.si);
     }
 }
+
+#[test]
+fn euler_closes_head_where_slip_peaks_before_89_degrees() {
+    // cu2/u2 = γ(β2) − τ·φ/tan β2 no crece siempre con β2: el deslizamiento de
+    // Wiesner (√sen β2) lo hace pasar por un máximo hacia 25°. A nq ≈ 10 la
+    // altura pedida (0,727·u2) cae entre el valor a 89° (0,700 con Z = 6) y
+    // ese máximo (0,729), y el motor la daba por inalcanzable.
+    let input = input("60 m3/h", "120 m", "2900 rpm");
+    let result = design(&input).expect("hay un β2 que da la altura");
+    let beta2 = result.selection.beta2_deg;
+    assert!(beta2 > 5.0 && beta2 < 60.0, "β2 {beta2}");
+    let euler_head = result.eta_h * result.u2.si * result.cu2.si / 9.806_65;
+    close(euler_head, input.h.si, 1e-6 * input.h.si);
+}
+
+#[test]
+fn blade_count_search_goes_up_when_seven_blades_fall_short() {
+    // A nq ≈ 9 con Z = 7 el máximo de cu2/u2 (0,761) no llega a lo pedido
+    // (0,766). Con más álabes sí llega: el recorrido de Z tiene que seguir
+    // subiendo en vez de abandonar con el error del primer Z.
+    let input = input("60 m3/h", "150 m", "2900 rpm");
+    let result = design(&input).expect("Z = 8 o 9 alcanzan la altura");
+    assert!(
+        result.selection.blade_count > 7,
+        "Z {}",
+        result.selection.blade_count
+    );
+    let euler_head = result.eta_h * result.u2.si * result.cu2.si / 9.806_65;
+    close(euler_head, input.h.si, 1e-6 * input.h.si);
+}

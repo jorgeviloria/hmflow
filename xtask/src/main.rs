@@ -1,6 +1,6 @@
 //! Puertas de calidad del repositorio.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
 use std::process::{Command, ExitCode};
 
@@ -13,6 +13,7 @@ fn main() -> ExitCode {
 
     match task.as_str() {
         "ci" => ci(),
+        "deps" => deps(),
         "cases" => bool_to_code(cases()),
         "provenance" => provenance(),
         "licences" => licences(),
@@ -20,7 +21,7 @@ fn main() -> ExitCode {
         "codes" => codes(std::env::args().nth(2).as_deref() == Some("--write")),
         other => {
             eprintln!("tarea desconocida: {other}");
-            eprintln!("tareas: ci, cases, provenance, licences, assets, codes [--write]");
+            eprintln!("tareas: ci, deps, cases, provenance, licences, assets, codes [--write]");
             ExitCode::FAILURE
         }
     }
@@ -34,7 +35,161 @@ fn bool_to_code(ok: bool) -> ExitCode {
     }
 }
 
+/// Grafo de dependencias normales y de build: paquete → paquetes.
+type Graph = BTreeMap<String, BTreeSet<String>>;
+
+/// Capa de cada crate del workspace. Un arco hacia otro crate de esta tabla
+/// solo es legal si el destino está en una capa estrictamente inferior.
+/// Un crate del workspace que no esté aquí es un error. Un nombre que no esté
+/// aquí es una dependencia externa y se ignora.
+const LAYERS: &[(&str, u8)] = &[
+    ("hm-core", 0),
+    ("hm-units", 0),
+    ("hm-math", 0),
+    ("hm-formula", 1),
+    ("hm-design", 2),
+    ("hm-project", 2),
+    ("hm-engine", 3),
+    ("hmflow-cli", 4),
+    ("hm-ui-egui", 4),
+    ("xtask", 4),
+];
+
+fn layer_of(name: &str) -> Option<u8> {
+    LAYERS
+        .iter()
+        .find_map(|(crate_name, layer)| (*crate_name == name).then_some(*layer))
+}
+
+fn deps() -> ExitCode {
+    let root = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .parent()
+        .unwrap_or_else(|| Path::new("."));
+
+    let graph = match metadata_graph(root, None) {
+        Ok(graph) => graph,
+        Err(error) => {
+            eprintln!("deps: {error}");
+            return ExitCode::FAILURE;
+        }
+    };
+
+    let mut issues = check_deps(&graph);
+
+    let egui_manifest = root.join("crates/hm-ui-egui/Cargo.toml");
+    if egui_manifest.is_file() {
+        match metadata_graph(root, Some(&egui_manifest)) {
+            Ok(egui_graph) => issues.extend(check_deps(&egui_graph)),
+            Err(error) => {
+                eprintln!("deps: hm-ui-egui: {error}");
+                return ExitCode::FAILURE;
+            }
+        }
+    }
+
+    if issues.is_empty() {
+        println!("deps: ok");
+        ExitCode::SUCCESS
+    } else {
+        for issue in &issues {
+            eprintln!("deps: {issue}");
+        }
+        eprintln!("deps: {} problemas", issues.len());
+        ExitCode::FAILURE
+    }
+}
+
+fn metadata_graph(root: &Path, manifest: Option<&Path>) -> Result<Graph, String> {
+    let mut command = Command::new("cargo");
+    command
+        .args(["metadata", "--format-version", "1", "--no-deps"])
+        .current_dir(root);
+
+    if let Some(manifest) = manifest {
+        command.arg("--manifest-path").arg(manifest);
+    }
+
+    let output = command
+        .output()
+        .map_err(|error| format!("no se pudo ejecutar cargo metadata: {error}"))?;
+
+    if !output.status.success() {
+        return Err(format!(
+            "cargo metadata falló: {}",
+            String::from_utf8_lossy(&output.stderr).trim()
+        ));
+    }
+
+    graph_from_metadata(&output.stdout)
+}
+
+#[derive(Deserialize)]
+struct Metadata {
+    packages: Vec<PackageMeta>,
+}
+
+#[derive(Deserialize)]
+struct PackageMeta {
+    name: String,
+    dependencies: Vec<DependencyMeta>,
+}
+
+#[derive(Deserialize)]
+struct DependencyMeta {
+    name: String,
+    /// `null` en una dependencia normal, `"dev"` o `"build"` en las otras.
+    kind: Option<String>,
+}
+
+fn graph_from_metadata(stdout: &[u8]) -> Result<Graph, String> {
+    let metadata: Metadata = serde_json::from_slice(stdout)
+        .map_err(|error| format!("cargo metadata no devolvió JSON válido: {error}"))?;
+
+    let mut graph = Graph::new();
+    for package in metadata.packages {
+        let mut dependencies = BTreeSet::new();
+        for dependency in package.dependencies {
+            if dependency.kind.as_deref() == Some("dev") {
+                continue;
+            }
+            dependencies.insert(dependency.name);
+        }
+        graph.insert(package.name, dependencies);
+    }
+
+    Ok(graph)
+}
+
+fn check_deps(graph: &Graph) -> Vec<String> {
+    let mut issues = Vec::new();
+
+    for (name, dependencies) in graph {
+        let Some(from) = layer_of(name) else {
+            issues.push(format!(
+                "`{name}` es un crate del workspace y no está en la tabla de capas"
+            ));
+            continue;
+        };
+
+        for dependency in dependencies {
+            let Some(to) = layer_of(dependency) else {
+                continue;
+            };
+            if to >= from {
+                issues.push(format!(
+                    "`{name}` (capa {from}) no puede depender de `{dependency}` (capa {to}): el destino tiene que estar en una capa inferior"
+                ));
+            }
+        }
+    }
+
+    issues
+}
+
 fn ci() -> ExitCode {
+    if deps() != ExitCode::SUCCESS {
+        return ExitCode::FAILURE;
+    }
     if !cases() {
         return ExitCode::FAILURE;
     }
@@ -508,11 +663,135 @@ fn diagnostics_markdown() -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::find_codes;
+    use super::{Graph, check_deps, find_codes, graph_from_metadata};
+    use std::collections::{BTreeMap, BTreeSet};
+
+    fn graph(entries: &[(&str, &[&str])]) -> Graph {
+        entries
+            .iter()
+            .map(|(name, dependencies)| {
+                (
+                    (*name).to_string(),
+                    dependencies
+                        .iter()
+                        .map(|name| (*name).to_string())
+                        .collect(),
+                )
+            })
+            .collect::<BTreeMap<_, BTreeSet<_>>>()
+    }
 
     #[test]
     fn finds_well_formed_codes_only() {
         let text = "a HM-DES-007, b `HM-PROJ-025`; HM-DES-12 HM-des-001 HM-DES-0071 HM--001";
         assert_eq!(find_codes(text), ["HM-DES-007", "HM-PROJ-025"]);
+    }
+
+    #[test]
+    fn a_graph_that_respects_the_layers_has_no_issues() {
+        let graph = graph(&[
+            ("hm-core", &["serde"]),
+            ("hm-units", &[]),
+            ("hm-math", &[]),
+            ("hm-formula", &["hm-units"]),
+            (
+                "hm-design",
+                &["hm-core", "hm-formula", "hm-math", "hm-units"],
+            ),
+            ("hm-project", &["hm-core", "hm-formula", "hm-units"]),
+            (
+                "hmflow-cli",
+                &[
+                    "hm-core",
+                    "hm-design",
+                    "hm-formula",
+                    "hm-project",
+                    "hm-units",
+                ],
+            ),
+            (
+                "hm-ui-egui",
+                &["hm-core", "hm-design", "hm-formula", "hm-units"],
+            ),
+            ("xtask", &["hm-core", "hm-formula", "hm-units"]),
+        ]);
+
+        let issues = check_deps(&graph);
+        assert!(issues.is_empty(), "{issues:?}");
+    }
+
+    #[test]
+    fn the_domain_cannot_depend_on_persistence() {
+        let issues = check_deps(&graph(&[("hm-design", &["hm-project"])]));
+        assert_eq!(issues.len(), 1);
+        assert!(issues[0].contains("hm-design") && issues[0].contains("hm-project"));
+    }
+
+    #[test]
+    fn a_lower_layer_cannot_depend_on_a_higher_one() {
+        let issues = check_deps(&graph(&[("hm-formula", &["hm-design"])]));
+        assert_eq!(issues.len(), 1);
+        assert!(issues[0].contains("hm-formula") && issues[0].contains("hm-design"));
+    }
+
+    #[test]
+    fn the_engine_cannot_depend_on_an_adapter() {
+        let issues = check_deps(&graph(&[("hm-engine", &["hmflow-cli"])]));
+        assert_eq!(issues.len(), 1);
+        assert!(issues[0].contains("hm-engine") && issues[0].contains("hmflow-cli"));
+    }
+
+    #[test]
+    fn the_domain_and_persistence_cannot_depend_on_the_engine() {
+        let issues = check_deps(&graph(&[
+            ("hm-design", &["hm-engine"]),
+            ("hm-project", &["hm-engine"]),
+        ]));
+        assert_eq!(issues.len(), 2);
+    }
+
+    #[test]
+    fn the_cli_and_the_ui_cannot_depend_on_each_other() {
+        let issues = check_deps(&graph(&[
+            ("hmflow-cli", &["hm-ui-egui"]),
+            ("hm-ui-egui", &["hmflow-cli"]),
+        ]));
+        assert_eq!(issues.len(), 2);
+    }
+
+    #[test]
+    fn the_ui_cannot_depend_on_the_cli() {
+        let issues = check_deps(&graph(&[("hm-ui-egui", &["hmflow-cli"])]));
+        assert_eq!(issues.len(), 1);
+        assert!(issues[0].contains("hm-ui-egui") && issues[0].contains("hmflow-cli"));
+    }
+
+    #[test]
+    fn a_workspace_crate_missing_from_the_table_is_an_error() {
+        let issues = check_deps(&graph(&[("hm-nuevo", &[])]));
+        assert_eq!(issues.len(), 1);
+        assert!(issues[0].contains("hm-nuevo"));
+    }
+
+    #[test]
+    fn metadata_without_a_package_name_is_rejected() {
+        let error = graph_from_metadata(br#"{"packages":[{"dependencies":[]}]}"#).unwrap_err();
+        assert!(error.contains("JSON"), "{error}");
+    }
+
+    #[test]
+    fn metadata_keeps_normal_and_build_dependencies() {
+        let graph = graph_from_metadata(
+            br#"{"packages":[{"name":"hm-formula","dependencies":[
+                {"name":"hm-units","kind":null},
+                {"name":"serde","kind":"dev"},
+                {"name":"cc","kind":"build"}
+            ]}]}"#,
+        )
+        .unwrap();
+        let dependencies = &graph["hm-formula"];
+        assert!(dependencies.contains("hm-units"));
+        assert!(dependencies.contains("cc"));
+        assert!(!dependencies.contains("serde"));
     }
 }

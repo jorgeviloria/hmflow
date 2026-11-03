@@ -1,5 +1,7 @@
 //! Proyecto de HidroMac Flow: formato `.hmf`.
 
+#![deny(clippy::print_stdout, clippy::print_stderr, clippy::exit)]
+
 use std::collections::BTreeMap;
 use std::fmt;
 use std::path::Path;

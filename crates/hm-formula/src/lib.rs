@@ -4,6 +4,8 @@
 //! pública, un rango de validez y un test. El motor comprueba dimensiones antes
 //! de evaluar y nunca devuelve un `NaN` silencioso.
 
+#![deny(clippy::print_stdout, clippy::print_stderr, clippy::exit)]
+
 mod ast;
 mod error;
 mod eval;

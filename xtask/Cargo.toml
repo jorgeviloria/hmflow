@@ -11,4 +11,5 @@ hm-core = { path = "../crates/hm-core" }
 hm-formula = { path = "../crates/hm-formula" }
 hm-units = { path = "../crates/hm-units" }
 serde = { workspace = true }
+serde_json = { workspace = true }
 toml = { workspace = true }

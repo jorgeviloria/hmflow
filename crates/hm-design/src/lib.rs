@@ -6,6 +6,8 @@
 //! y 45°. El ojo, cuando no se fija a mano, minimiza el NPSH3 descontando el
 //! cubo.
 
+#![deny(clippy::print_stdout, clippy::print_stderr, clippy::exit)]
+
 use std::collections::BTreeMap;
 
 pub mod fluid;

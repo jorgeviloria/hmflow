@@ -4,6 +4,8 @@
 //! `sqrt` y potencias fraccionarias durante el cálculo. Una magnitud física
 //! válida debe terminar con exponentes enteros.
 
+#![deny(clippy::print_stdout, clippy::print_stderr, clippy::exit)]
+
 mod dim;
 mod error;
 mod parse;

@@ -1,5 +1,7 @@
 //! Utilidades numéricas: interpolación y resolución de raíces.
 
+#![deny(clippy::print_stdout, clippy::print_stderr, clippy::exit)]
+
 use thiserror::Error;
 
 /// Errores de cálculo numérico.

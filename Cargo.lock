@@ -411,6 +411,7 @@ dependencies = [
  "hm-formula",
  "hm-units",
  "serde",
+ "serde_json",
  "toml",
 ]
 

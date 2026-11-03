@@ -1,5 +1,7 @@
 //! Tipos transversales: diagnósticos, severidad y revisión.
 
+#![deny(clippy::print_stdout, clippy::print_stderr, clippy::exit)]
+
 use serde::{Deserialize, Serialize};
 
 pub mod codes;

@@ -166,6 +166,10 @@ enum Command {
         /// él, voluta simple.
         #[arg(long, allow_hyphen_values = true)]
         volute_wrap: Option<f64>,
+        /// Incidencia del álabe a la entrada, en grados (0..10; 0..4 según
+        /// Gülich). Sin ella, 2°.
+        #[arg(long, allow_hyphen_values = true)]
+        incidence: Option<f64>,
         /// Archivo de salida; por defecto <name>.hmf.
         #[arg(long)]
         out: Option<PathBuf>,
@@ -358,6 +362,7 @@ fn run(cli: Cli) -> Result<ExitCode, Box<dyn std::error::Error>> {
             roughness,
             volute_channels,
             volute_wrap,
+            incidence,
             out,
             force,
             curves,
@@ -448,6 +453,7 @@ fn run(cli: Cli) -> Result<ExitCode, Box<dyn std::error::Error>> {
                     .transpose()?,
                 volute_channels,
                 volute_wrap_deg: volute_wrap,
+                incidence_deg: incidence,
                 ..DesignOptions::default()
             };
             let result = design_with_options(&input, &options)?;
@@ -822,6 +828,7 @@ fn stale_selections(project: &Project) -> Vec<&'static str> {
         impeller_roughness: options.impeller_roughness,
         volute_channels: options.volute_channels,
         volute_wrap_deg: options.volute_wrap_deg,
+        incidence_deg: options.incidence_deg,
         ..DesignOptions::default()
     };
     let Ok(fresh) = design_with_options(&input, &data_only) else {
@@ -1203,6 +1210,7 @@ struct ManualDefaults {
     impeller_roughness: String,
     volute_channels: String,
     volute_wrap_deg: String,
+    incidence_deg: String,
 }
 
 impl ManualDefaults {
@@ -1225,6 +1233,12 @@ impl ManualDefaults {
             impeller_roughness: format!("{} m", options.impeller_roughness.unwrap_or(0.0)),
             volute_channels: options.volute_channels.unwrap_or(1).to_string(),
             volute_wrap_deg: format!("{} deg", options.volute_wrap_deg.unwrap_or(0.0)),
+            incidence_deg: format!(
+                "{} deg",
+                options
+                    .incidence_deg
+                    .unwrap_or(hm_design::geometry::DEFAULT_INCIDENCE_DEG)
+            ),
         }
     }
 }
@@ -1258,6 +1272,7 @@ fn default_manual_text(
         "impeller_roughness" => defaults.impeller_roughness.clone(),
         "volute_channels" => defaults.volute_channels.clone(),
         "volute_wrap_deg" => defaults.volute_wrap_deg.clone(),
+        "incidence_deg" => defaults.incidence_deg.clone(),
         _ => return None,
     })
 }
@@ -1347,6 +1362,7 @@ fn design_options(project: &Project) -> Result<DesignOptions, Box<dyn std::error
         volute_wrap_deg: param_f64(project, "volute_wrap_deg", "deg")?
             .filter(|value| *value != 0.0)
             .map(f64::to_degrees),
+        incidence_deg: param_f64(project, "incidence_deg", "deg")?.map(f64::to_degrees),
     })
 }
 
@@ -2041,6 +2057,7 @@ mod tests {
         assert_eq!(defaults.impeller_roughness, None);
         assert_eq!(defaults.volute_channels, Some(1));
         assert_eq!(defaults.volute_wrap_deg, None);
+        assert!((defaults.incidence_deg.unwrap() - 2.0).abs() < 1e-9);
 
         // Y con valores manuales, el motor los usa.
         for (name, value) in [
@@ -2050,6 +2067,7 @@ mod tests {
             ("impeller_roughness", "0.00005 m"),
             ("volute_channels", "2"),
             ("volute_wrap_deg", "165 deg"),
+            ("incidence_deg", "4 deg"),
         ] {
             project
                 .params
@@ -2062,6 +2080,7 @@ mod tests {
         assert_eq!(options.impeller_roughness, Some(0.00005));
         assert_eq!(options.volute_channels, Some(2));
         assert!((options.volute_wrap_deg.unwrap() - 165.0).abs() < 1e-9);
+        assert!((options.incidence_deg.unwrap() - 4.0).abs() < 1e-9);
 
         let result = design_with_options(&input, &options).unwrap();
         assert_eq!(result.eta_v, 0.95);

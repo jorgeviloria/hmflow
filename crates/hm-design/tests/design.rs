@@ -1375,6 +1375,61 @@ fn inlet_deceleration_warning_follows_the_band() {
 }
 
 #[test]
+fn incidence_option_moves_the_inlet_angle_and_the_throat_ratio() {
+    // Gülich p. 411: i1 de 0 a 4°. B1 (120 m³/h, 45 m, 2900 rpm): con 4°,
+    // w1q/w1m ≈ 0,84 (en la banda de 0,75..0,85) y QSF sube; con 2° (por
+    // defecto) queda en 0,92 y HM-DES-035 informa.
+    let base = input("120 m3/h", "45 m", "2900 rpm");
+    let with = |incidence: Option<f64>| {
+        design_with_options(
+            &base,
+            &DesignOptions {
+                incidence_deg: incidence,
+                ..DesignOptions::default()
+            },
+        )
+        .unwrap()
+    };
+    let default = with(None);
+    let two = with(Some(2.0));
+    let four = with(Some(4.0));
+    close(default.inlet_deceleration, two.inlet_deceleration, 1e-12);
+    close(two.inlet_deceleration, 0.923, 0.01);
+    close(four.inlet_deceleration, 0.84, 0.01);
+    assert!(has(&two, "HM-DES-035"));
+    // El aviso dice de qué depende y cómo se cambia.
+    let note = two
+        .diagnostics
+        .iter()
+        .find(|diagnostic| diagnostic.code == "HM-DES-035")
+        .unwrap();
+    let text = format!("{} {}", note.message, note.hint.clone().unwrap_or_default());
+    assert!(
+        text.contains("incidence_deg") && text.contains("2D"),
+        "{text}"
+    );
+    assert!(!has(&four, "HM-DES-035"));
+    assert!(four.shockless_flow.si > two.shockless_flow.si);
+}
+
+#[test]
+fn incidence_option_rejects_values_outside_the_range() {
+    let base = input("120 m3/h", "45 m", "2900 rpm");
+    for bad in [-1.0, 12.0, f64::NAN] {
+        let error = design_with_options(
+            &base,
+            &DesignOptions {
+                incidence_deg: Some(bad),
+                ..DesignOptions::default()
+            },
+        )
+        .unwrap_err()
+        .to_string();
+        assert!(error.contains("incidence_deg"), "{bad}: {error}");
+    }
+}
+
+#[test]
 fn allowable_blade_loading_follows_nq() {
     // Gülich 7.1.11: ξal = (40/nq)^0,77.
     close(blade_loading_allowable(40.0), 1.0, 1e-12);

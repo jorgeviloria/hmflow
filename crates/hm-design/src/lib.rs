@@ -355,6 +355,11 @@ pub const PARAM_SPECS: &[ParamSpec] = &[
         formula: None,
     },
     ParamSpec {
+        name: "incidence_deg",
+        unit: "deg",
+        formula: None,
+    },
+    ParamSpec {
         name: "slip",
         unit: "1",
         formula: Some("design.slip_factor"),
@@ -571,6 +576,11 @@ pub struct DesignOptions {
     /// doble (90..180°). `None` es una voluta simple. Solo cambia el empuje
     /// radial (Gülich tabla 9.7 (1)): kR = FDsp·kR0 de 0 a 1,1·Qd.
     pub volute_wrap_deg: Option<f64>,
+    /// Incidencia del álabe a la entrada i1, en grados: β1B es arctan(τ1·cm0/u1)
+    /// más i1. Sin dato, [`geometry::DEFAULT_INCIDENCE_DEG`] (2°, centro de los
+    /// 0..4° de Gülich p. 411). Entre 0 y [`INCIDENCE_RANGE_DEG`].1. Mueve
+    /// QSF, QW, QPS y w1q/w1m (HM-DES-035), no el NPSH3.
+    pub incidence_deg: Option<f64>,
     /// Número de lenguas de la voluta zLe: 1 en una voluta simple (por
     /// defecto), 2 en una doble. Con un zLe par se evita un Z par (Gülich
     /// p. 491).
@@ -1098,9 +1108,15 @@ fn choose_inlet(
     Ok((c0, cm0, j, false))
 }
 
+/// Intervalo admitido de la incidencia i1, en grados. Gülich p. 411 da 0..4°;
+/// el tope de 10° deja margen a una medida de planta sin admitir un ángulo
+/// que ya no es incidencia.
+pub const INCIDENCE_RANGE_DEG: (f64, f64) = (0.0, 10.0);
+
 /// β1B y τ1. β1B = arctan(τ1·cm0/u1) + i1, y τ1 depende de β1B.
 fn leading_edge(
     registry: &Registry,
+    incidence_deg: f64,
     cm0: f64,
     u1: f64,
     d1: f64,
@@ -1109,7 +1125,7 @@ fn leading_edge(
 ) -> Result<(f64, f64), DesignError> {
     let deg = unit("deg")?;
     let ms = unit("m/s")?;
-    let incidence = geometry::DEFAULT_INCIDENCE_DEG.to_radians();
+    let incidence = incidence_deg.to_radians();
     let mut beta = (cm0 / u1.max(1.0e-9)).atan() + incidence;
     let mut tau = blade_blockage(blade_count, thickness, d1, beta);
     for _ in 0..20 {
@@ -1222,6 +1238,17 @@ pub fn design_with_options(
         return Err(DesignError::Input(format!(
             "`volute_wrap_deg` = {wrap} no es válido; debe estar entre {} y {} grados",
             VOLUTE_WRAP_RANGE_DEG.0, VOLUTE_WRAP_RANGE_DEG.1
+        )));
+    }
+    let incidence_deg = options
+        .incidence_deg
+        .unwrap_or(geometry::DEFAULT_INCIDENCE_DEG);
+    if !incidence_deg.is_finite()
+        || !(INCIDENCE_RANGE_DEG.0..=INCIDENCE_RANGE_DEG.1).contains(&incidence_deg)
+    {
+        return Err(DesignError::Input(format!(
+            "`incidence_deg` = {incidence_deg} no es válido; debe estar entre {} y {} grados",
+            INCIDENCE_RANGE_DEG.0, INCIDENCE_RANGE_DEG.1
         )));
     }
     let volute_channels = match options.volute_channels {
@@ -1731,6 +1758,7 @@ pub fn design_with_options(
     let m2 = unit("m2")?;
     let (beta1b, tau1) = leading_edge(
         &registry,
+        incidence_deg,
         selection.cm0,
         u1.si,
         d1.si,
@@ -2590,11 +2618,15 @@ fn diagnostics_for(result: &DesignResult, input: &DesignInput) -> Diagnostics {
                 "HM-DES-035",
                 format!(
                     "w1q/w1m = {:.2} en el punto de diseño, fuera de {ratio_low}..{ratio_high} \
-                     (Gülich 2020, p. 415): {what}",
+                     (Gülich 2020, p. 415): {what}. Depende de la incidencia i1 (por \
+                     defecto 2°) y se calcula con el borde de ataque 2D, que no \
+                     distingue líneas de corriente",
                     result.inlet_deceleration
                 ),
             )
-            .with_hint(hint),
+            .with_hint(format!(
+                "{hint} Si conoces la incidencia real, fíjala con `incidence_deg` (0..4°, p. 411)."
+            )),
         );
     }
 

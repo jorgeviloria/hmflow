@@ -137,6 +137,10 @@ value = "53.64632644002136 m"
 mode = "manual"
 value = "0 m"
 
+[params.incidence_deg]
+mode = "manual"
+value = "2 deg"
+
 [params.k3]
 mode = "manual"
 value = "1.1093290833252558"

@@ -5,11 +5,15 @@
 //! vería quien las ejecuta con `tests/golden/<caso>.txt`.
 //!
 //! Se guarda el stdout de `design`, `check` y `recalc`, el stderr, el código
-//! de salida y los archivos que la orden no debe escribir. El `.hmf` se
-//! comprueba que exista, sin copiarlo: el proyecto ya tiene pruebas propias.
-//! El informe JSON se guarda solo en `ref`; en el resto se exige el formato
-//! `hmflow.design-report` y no se archiva, para que un campo nuevo no
-//! reescriba todos los casos.
+//! de salida y los archivos que la orden escribe o no debe escribir.
+//!
+//! El `.hmf` y el informe JSON son largos y un cambio de redacción reescribiría
+//! todos los casos, así que se archivan solo donde protegen una rama distinta:
+//! el `.hmf` en `ref`, `hot-water`, `suction-custom`, `sweep-mid` y los dos
+//! `recalc` (lo que escribe `design` y lo que migra `recalc`); el informe
+//! completo en `ref`, `sweep-mid` (viscosidad) y `suction-custom` (aspiración).
+//! En el resto se comprueba que el `.hmf` exista y que el informe tenga el
+//! formato `hmflow.design-report`.
 //!
 //! Para regenerar las salidas:
 //!
@@ -106,9 +110,29 @@ date = "2026-11-03"
 reason = "golden"
 "#;
 
-/// `design` seguido de `report`. El informe no se archiva.
+/// `design` seguido de `report`. Ni el `.hmf` ni el informe se archivan.
 macro_rules! design_case {
     ($name:literal, $($arg:literal),+ $(,)?) => {
+        design_scenario!($name, NONE, &[concat!($name, ".hmf")], Capture::ReportStatus, $($arg),+)
+    };
+}
+
+/// Como `design_case!`, pero archiva también el `.hmf`.
+macro_rules! hmf_design_case {
+    ($name:literal, $($arg:literal),+ $(,)?) => {
+        design_scenario!($name, &[concat!($name, ".hmf")], NONE, Capture::ReportStatus, $($arg),+)
+    };
+}
+
+/// Como `design_case!`, pero archiva el `.hmf` y el informe completo.
+macro_rules! pinned_design_case {
+    ($name:literal, $($arg:literal),+ $(,)?) => {
+        design_scenario!($name, &[concat!($name, ".hmf")], NONE, Capture::Transcript, $($arg),+)
+    };
+}
+
+macro_rules! design_scenario {
+    ( $name:literal, $files:expr, $present:expr, $capture:expr, $($arg:literal),+) => {
         Scenario {
             name: $name,
             fixtures: NONE_FIXTURES,
@@ -117,8 +141,8 @@ macro_rules! design_case {
                 CommandSpec {
                     args: &["design", "--name", $name, $($arg),+],
                     status: 0,
-                    files: NONE,
-                    present: &[concat!($name, ".hmf")],
+                    files: $files,
+                    present: $present,
                     absent: NONE,
                     capture: Capture::Transcript,
                 },
@@ -128,14 +152,14 @@ macro_rules! design_case {
                     files: NONE,
                     present: NONE,
                     absent: NONE,
-                    capture: Capture::ReportStatus,
+                    capture: $capture,
                 },
             ],
         }
     };
 }
 
-/// `recalc` de un fixture seguido de `report`. El `.hmf` migrado no se archiva.
+/// `recalc` de un fixture seguido de `report`. El `.hmf` migrado se archiva.
 macro_rules! recalc_case {
     ($name:literal, $fixture:literal, $local:literal) => {
         Scenario {
@@ -146,8 +170,8 @@ macro_rules! recalc_case {
                 CommandSpec {
                     args: &["recalc", $local],
                     status: 0,
-                    files: NONE,
-                    present: &[$local],
+                    files: &[$local],
+                    present: NONE,
                     absent: NONE,
                     capture: Capture::Transcript,
                 },
@@ -200,8 +224,8 @@ const SCENARIOS: &[Scenario] = &[
                     "curve.csv",
                 ],
                 status: 0,
-                files: &["curve.csv"],
-                present: &["ref.hmf"],
+                files: &["curve.csv", "ref.hmf"],
+                present: NONE,
                 absent: NONE,
                 capture: Capture::Transcript,
             },
@@ -224,7 +248,7 @@ const SCENARIOS: &[Scenario] = &[
         "--n",
         "2900 rpm"
     ),
-    design_case!(
+    pinned_design_case!(
         "sweep-mid",
         "--q",
         "120 m3/h",
@@ -274,7 +298,7 @@ const SCENARIOS: &[Scenario] = &[
         "--suction-losses",
         "0.5 m",
     ),
-    design_case!(
+    pinned_design_case!(
         "suction-custom",
         "--q",
         "120 m3/h",
@@ -295,7 +319,7 @@ const SCENARIOS: &[Scenario] = &[
         "--vapor-pressure",
         "5 kPa",
     ),
-    design_case!(
+    hmf_design_case!(
         "hot-water",
         "--q",
         "120 m3/h",

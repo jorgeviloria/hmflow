@@ -36,6 +36,9 @@ pub struct Measure {
 
 impl Measure {
     fn new(value: f64, unit: &str) -> Self {
+        // Un valor no finito se serializa como `null` y deja el informe
+        // ilegible; ningún camino lo produce hoy, y si aparece es un error.
+        debug_assert!(value.is_finite(), "medida en {unit} no es finito: {value}");
         Self {
             value,
             unit: unit.to_string(),
@@ -424,5 +427,24 @@ impl DesignReport {
             shaft_power: Measure::new(correction.shaft_power.si, "W"),
         });
         self
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::Measure;
+
+    #[test]
+    #[cfg(debug_assertions)]
+    #[should_panic(expected = "no es finito")]
+    fn a_non_finite_measure_is_a_bug_not_a_report_value() {
+        // serde_json escribe NaN como `null` y el informe ya no se puede leer.
+        let _ = Measure::new(f64::NAN, "m");
+    }
+
+    #[test]
+    fn finite_measures_keep_their_value_and_unit() {
+        let measure = Measure::new(1.5, "m");
+        assert_eq!((measure.value, measure.unit.as_str()), (1.5, "m"));
     }
 }

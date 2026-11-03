@@ -510,6 +510,32 @@ fn every_scenario_is_its_own_test() {
         from_table, from_tests,
         "cada escenario de SCENARIOS tiene que tener su test en cases!"
     );
+
+    // En modo bendición los tests escriben en paralelo; no se exige que el
+    // directorio esté completo hasta la siguiente ejecución normal.
+    if std::env::var_os("HMFLOW_BLESS").is_some() {
+        return;
+    }
+
+    let golden_dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/golden");
+    let mut from_disk: Vec<String> = fs::read_dir(&golden_dir)
+        .unwrap_or_else(|error| panic!("no se pudo leer {}: {error}", golden_dir.display()))
+        .map(|entry| entry.expect("entrada de tests/golden").path())
+        .filter(|path| path.extension().and_then(|extension| extension.to_str()) == Some("txt"))
+        .filter_map(|path| {
+            path.file_stem()
+                .and_then(|stem| stem.to_str())
+                .map(str::to_string)
+        })
+        .collect();
+    from_disk.sort_unstable();
+
+    let mut from_tests: Vec<String> = CASE_NAMES.iter().map(|name| (*name).to_string()).collect();
+    from_tests.sort_unstable();
+    assert_eq!(
+        from_disk, from_tests,
+        "tests/golden/ tiene archivos de más o de menos respecto a cases!"
+    );
 }
 
 fn check(name: &str) {
@@ -550,14 +576,14 @@ fn check(name: &str) {
 }
 
 fn run_scenario(scenario: &Scenario) -> String {
-    let directory = temp_directory(scenario.name);
-    prepare(scenario, &directory);
+    let directory = TempDirectory::new(scenario.name);
+    prepare(scenario, directory.path());
 
     let mut record = String::new();
     for command in scenario.commands {
         let output = Command::new(cli())
             .args(command.args.iter().copied())
-            .current_dir(&directory)
+            .current_dir(directory.path())
             .output()
             .unwrap_or_else(|error| {
                 panic!("no se pudo ejecutar `{}`: {error}", command.args.join(" "))
@@ -599,7 +625,7 @@ fn run_scenario(scenario: &Scenario) -> String {
         record.push('\n');
 
         for file in command.files {
-            let path = directory.join(file);
+            let path = directory.path().join(file);
             let contents = fs::read(&path).unwrap_or_else(|error| {
                 panic!(
                     "caso `{}`: no se pudo leer {} después de `{}`: {error}",
@@ -616,7 +642,7 @@ fn run_scenario(scenario: &Scenario) -> String {
         }
 
         for file in command.present {
-            let path = directory.join(file);
+            let path = directory.path().join(file);
             assert!(
                 path.is_file(),
                 "caso `{}`: `{}` debería existir después de `{}`",
@@ -628,7 +654,7 @@ fn run_scenario(scenario: &Scenario) -> String {
         }
 
         for file in command.absent {
-            let path = directory.join(file);
+            let path = directory.path().join(file);
             assert!(
                 !path.exists(),
                 "caso `{}`: `{}` no debería existir después de `{}`",
@@ -640,17 +666,20 @@ fn run_scenario(scenario: &Scenario) -> String {
         }
     }
 
-    let normalized = normalize(&record, &directory);
-    let _ = fs::remove_dir_all(&directory);
-    normalized
+    normalize(&record, directory.path())
 }
 
 fn assert_report_json(scenario: &str, args: &str, stdout: &str) {
-    if stdout.contains("\"format\": \"hmflow.design-report\"") {
-        return;
-    }
     let sample: String = stdout.chars().take(240).collect();
-    panic!("caso `{scenario}`: `hmflow-cli {args}` no escribió el informe JSON.\n{sample}");
+    let value: serde_json::Value = serde_json::from_str(stdout.trim()).unwrap_or_else(|error| {
+        panic!("caso `{scenario}`: `hmflow-cli {args}` no escribió JSON válido: {error}\n{sample}")
+    });
+    let format = value.get("format").and_then(|value| value.as_str());
+    assert_eq!(
+        format,
+        Some(hm_design::REPORT_FORMAT),
+        "caso `{scenario}`: `hmflow-cli {args}` no escribió el informe de hmflow.\n{sample}"
+    );
 }
 
 fn prepare(scenario: &Scenario, directory: &Path) {
@@ -742,7 +771,7 @@ fn normalize_floats(text: &str) -> String {
                 }
             }
 
-            if has_dot && fraction_digits > 9 {
+            if has_exponent || (has_dot && fraction_digits > 9) {
                 let token: String = chars[start..end].iter().collect();
                 if let Ok(value) = token.parse::<f64>() {
                     if has_exponent {
@@ -767,6 +796,28 @@ fn normalize_floats(text: &str) -> String {
     out
 }
 
+struct TempDirectory(PathBuf);
+
+impl TempDirectory {
+    fn new(name: &str) -> Self {
+        Self(temp_directory(name))
+    }
+
+    fn path(&self) -> &Path {
+        &self.0
+    }
+}
+
+impl Drop for TempDirectory {
+    fn drop(&mut self) {
+        if let Err(error) = fs::remove_dir_all(&self.0)
+            && self.0.exists()
+        {
+            eprintln!("no se pudo limpiar {}: {error}", self.0.display());
+        }
+    }
+}
+
 fn temp_directory(name: &str) -> PathBuf {
     static NEXT: AtomicUsize = AtomicUsize::new(0);
     let unique = NEXT.fetch_add(1, Ordering::Relaxed);
@@ -788,4 +839,12 @@ fn temp_directory(name: &str) -> PathBuf {
 
 fn cli() -> &'static str {
     env!("CARGO_BIN_EXE_hmflow-cli")
+}
+
+#[test]
+fn long_floats_are_normalized() {
+    assert_eq!(normalize_floats("0.123456789123"), "0.123456789");
+    assert_eq!(normalize_floats("1e-7"), "1.000000000e-7");
+    assert_eq!(normalize_floats("1.234567890123e-7"), "1.234567890e-7");
+    assert_eq!(normalize_floats("83.0"), "83.0");
 }

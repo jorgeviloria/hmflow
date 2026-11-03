@@ -3,7 +3,7 @@ use hm_design::{
     CYLINDRICAL_BLADE_MAX_NQ, DesignInput, DesignOptions, PARAM_SPECS, REFERENCE_WATER_NU,
     blade_loading_allowable, default_mechanical_efficiency, design, design_with_options,
     designed_si, gulich_b2_star, inlet_throat_area, inlet_throat_ratio, param_spec, required_npsha,
-    seal_rotation_is_laminar, stored_si_matches, water_density,
+    seal_rotation_is_laminar, stored_si_matches, validate_duty, water_density,
 };
 use hm_units::parse_quantity;
 
@@ -1588,4 +1588,243 @@ fn seal_leakage_never_rises_with_viscosity_through_the_transition() {
         );
         previous = leak;
     }
+}
+
+#[track_caller]
+fn assert_input_error(input: &DesignInput, name: &str, message: &str) {
+    let error = input.validate().unwrap_err();
+    assert_eq!(error.name, name);
+    assert_eq!(error.message, message);
+}
+
+#[track_caller]
+fn assert_option_error(options: DesignOptions, name: &str, message: &str) {
+    let error = options.validate().unwrap_err();
+    assert_eq!(error.name, name);
+    assert_eq!(error.message, message);
+}
+
+#[track_caller]
+fn assert_design_error(options: &DesignOptions, message: &str) {
+    let error = design_with_options(&input("120 m3/h", "45 m", "2900 rpm"), options)
+        .unwrap_err()
+        .to_string();
+    assert_eq!(error, format!("entrada inválida: {message}"));
+}
+
+#[test]
+fn each_invalid_input_names_its_field() {
+    assert_input_error(
+        &input("120 m", "45 m", "2900 rpm"),
+        "Q",
+        "Q debe tener dimensiones de m3/s",
+    );
+    assert_input_error(
+        &input("120 m3/h", "45 s", "2900 rpm"),
+        "H",
+        "H debe tener dimensiones de m",
+    );
+    assert_input_error(
+        &input("120 m3/h", "45 m", "2900 m"),
+        "n",
+        "n debe tener dimensiones de 1/s",
+    );
+
+    let mut rho = input("120 m3/h", "45 m", "2900 rpm");
+    rho.rho = parse_quantity("998.2 m").unwrap();
+    assert_input_error(&rho, "rho", "rho debe tener dimensiones de kg/m3");
+
+    let mut npsha = input("120 m3/h", "45 m", "2900 rpm");
+    npsha.npsha = Some(parse_quantity("10 s").unwrap());
+    assert_input_error(&npsha, "NPSHa", "NPSHa debe tener dimensiones de m");
+
+    let mut eta_m = input("120 m3/h", "45 m", "2900 rpm");
+    eta_m.eta_m = 0.0;
+    assert_input_error(
+        &eta_m,
+        "eta_m",
+        "la eficiencia mecánica debe ser mayor que 0 y menor que 1",
+    );
+
+    assert_input_error(
+        &input("0 m3/s", "45 m", "2900 rpm"),
+        "Q",
+        "Q debe ser finito y positivo",
+    );
+}
+
+#[test]
+fn each_invalid_option_names_its_parameter() {
+    assert_option_error(
+        DesignOptions {
+            eta_v: Some(1.2),
+            ..DesignOptions::default()
+        },
+        "eta_v_fixed",
+        "`eta_v` (parámetro `eta_v_fixed`, opción `--eta-v`) = 1.2 no es válido; debe estar entre 0 y 1 sin incluirlos",
+    );
+
+    assert_option_error(
+        DesignOptions {
+            volute_wrap_deg: Some(45.0),
+            ..DesignOptions::default()
+        },
+        "volute_wrap_deg",
+        "`volute_wrap_deg` = 45 no es válido; debe estar entre 90 y 180 grados",
+    );
+
+    assert_option_error(
+        DesignOptions {
+            incidence_deg: Some(12.0),
+            ..DesignOptions::default()
+        },
+        "incidence_deg",
+        "`incidence_deg` = 12 no es válido; debe estar entre 0 y 10 grados",
+    );
+
+    assert_option_error(
+        DesignOptions {
+            volute_channels: Some(0),
+            ..DesignOptions::default()
+        },
+        "volute_channels",
+        "`volute_channels` = 0 no es válido; debe ser al menos 1",
+    );
+
+    assert_option_error(
+        DesignOptions {
+            volute_ratio: Some(1.2),
+            ..DesignOptions::default()
+        },
+        "volute_ratio",
+        "`volute_ratio` = 1.2 no es válido; debe estar entre 0.5 y 1",
+    );
+}
+
+#[test]
+fn design_with_options_keeps_the_same_error_text() {
+    assert_design_error(
+        &DesignOptions {
+            eta_v: Some(1.2),
+            ..DesignOptions::default()
+        },
+        "`eta_v` (parámetro `eta_v_fixed`, opción `--eta-v`) = 1.2 no es válido; debe estar entre 0 y 1 sin incluirlos",
+    );
+    assert_design_error(
+        &DesignOptions {
+            volute_wrap_deg: Some(45.0),
+            ..DesignOptions::default()
+        },
+        "`volute_wrap_deg` = 45 no es válido; debe estar entre 90 y 180 grados",
+    );
+    assert_design_error(
+        &DesignOptions {
+            incidence_deg: Some(12.0),
+            ..DesignOptions::default()
+        },
+        "`incidence_deg` = 12 no es válido; debe estar entre 0 y 10 grados",
+    );
+    assert_design_error(
+        &DesignOptions {
+            volute_channels: Some(0),
+            ..DesignOptions::default()
+        },
+        "`volute_channels` = 0 no es válido; debe ser al menos 1",
+    );
+    assert_design_error(
+        &DesignOptions {
+            volute_ratio: Some(1.2),
+            ..DesignOptions::default()
+        },
+        "`volute_ratio` = 1.2 no es válido; debe estar entre 0.5 y 1",
+    );
+
+    let error = design_with_options(
+        &input("0 m3/s", "45 m", "2900 rpm"),
+        &DesignOptions::default(),
+    )
+    .unwrap_err()
+    .to_string();
+    assert_eq!(error, "entrada inválida: Q debe ser finito y positivo");
+}
+
+#[test]
+fn validate_duty_checks_only_the_duty() {
+    let case = input("120 m3/h", "45 m", "2900 rpm");
+    assert!(validate_duty(&case.q, &case.h, &case.n).is_ok());
+
+    let mut no_eta = case.clone();
+    no_eta.eta_m = 0.0;
+    assert!(validate_duty(&no_eta.q, &no_eta.h, &no_eta.n).is_ok());
+
+    let zero = input("0 m3/s", "45 m", "2900 rpm");
+    assert_eq!(
+        validate_duty(&zero.q, &zero.h, &zero.n).unwrap_err().name,
+        "Q"
+    );
+}
+
+#[test]
+fn options_are_checked_in_a_fixed_order() {
+    // Con varias opciones inválidas a la vez, manda la primera de esta lista.
+    let mut options = DesignOptions {
+        eta_v: Some(1.2),
+        volute_wrap_deg: Some(45.0),
+        incidence_deg: Some(12.0),
+        volute_channels: Some(0),
+        volute_ratio: Some(1.2),
+        ..DesignOptions::default()
+    };
+    for expected in [
+        "eta_v_fixed",
+        "volute_wrap_deg",
+        "incidence_deg",
+        "volute_channels",
+        "volute_ratio",
+    ] {
+        assert_eq!(options.validate().unwrap_err().name, expected);
+        match expected {
+            "eta_v_fixed" => options.eta_v = None,
+            "volute_wrap_deg" => options.volute_wrap_deg = None,
+            "incidence_deg" => options.incidence_deg = None,
+            "volute_channels" => options.volute_channels = None,
+            _ => options.volute_ratio = None,
+        }
+    }
+    assert!(options.validate().is_ok());
+}
+
+#[test]
+fn an_invalid_input_is_reported_before_an_invalid_option() {
+    let options = DesignOptions {
+        volute_wrap_deg: Some(45.0),
+        ..DesignOptions::default()
+    };
+    let error = design_with_options(&input("0 m3/s", "45 m", "2900 rpm"), &options)
+        .unwrap_err()
+        .to_string();
+    assert_eq!(error, "entrada inválida: Q debe ser finito y positivo");
+}
+
+#[test]
+fn an_invalid_option_is_reported_before_an_invalid_selection() {
+    // `psi = 0` lo rechaza validate_selection, que corre después de las opciones.
+    let options = DesignOptions {
+        psi: Some(0.0),
+        volute_wrap_deg: Some(45.0),
+        ..DesignOptions::default()
+    };
+    assert_design_error(
+        &options,
+        "`volute_wrap_deg` = 45 no es válido; debe estar entre 90 y 180 grados",
+    );
+
+    let only_selection = DesignOptions {
+        psi: Some(0.0),
+        ..DesignOptions::default()
+    };
+    assert_design_error(
+        &only_selection,
+        "`psi` = 0 no es válido; debe ser mayor que 0",
+    );
 }

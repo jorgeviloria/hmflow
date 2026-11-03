@@ -44,6 +44,13 @@ pub enum DesignError {
     Input(String),
 }
 
+/// Error de una entrada concreta, con el nombre del parámetro del proyecto.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct FieldError {
+    pub name: &'static str,
+    pub message: String,
+}
+
 /// Datos de entrada del diseño preliminar.
 #[derive(Debug, Clone)]
 pub struct DesignInput {
@@ -61,6 +68,13 @@ pub struct DesignInput {
     /// de discos y en la fuga del anillo. La corrección viscosa de la curva
     /// (tabla 13.1) sigue siendo un contraste y no redimensiona el rodete.
     pub nu: Option<f64>,
+}
+
+impl DesignInput {
+    /// Valida las entradas del diseño y devuelve el primer campo inválido.
+    pub fn validate(&self) -> Result<(), FieldError> {
+        validate_input(self)
+    }
 }
 
 /// Selecciones empíricas aplicadas por el motor.
@@ -595,6 +609,70 @@ pub struct DesignOptions {
     /// El rodete tiene agujeros de equilibrio: la fuga de Gülich 3.5.10 se
     /// duplica (zH = 2).
     pub balance_holes: bool,
+}
+
+impl DesignOptions {
+    /// Valida las opciones que no dependen de valores calculados.
+    pub fn validate(&self) -> Result<(), FieldError> {
+        if let Some(value) = self.eta_v
+            && (!value.is_finite() || value <= 0.0 || value >= 1.0)
+        {
+            return Err(FieldError {
+                name: "eta_v_fixed",
+                message: format!(
+                    "`eta_v` (parámetro `eta_v_fixed`, opción `--eta-v`) = {value} no es válido; debe estar entre 0 y 1 sin incluirlos"
+                ),
+            });
+        }
+
+        if let Some(value) = self.volute_wrap_deg
+            && (!value.is_finite()
+                || !(VOLUTE_WRAP_RANGE_DEG.0..=VOLUTE_WRAP_RANGE_DEG.1).contains(&value))
+        {
+            return Err(FieldError {
+                name: "volute_wrap_deg",
+                message: format!(
+                    "`volute_wrap_deg` = {value} no es válido; debe estar entre {} y {} grados",
+                    VOLUTE_WRAP_RANGE_DEG.0, VOLUTE_WRAP_RANGE_DEG.1
+                ),
+            });
+        }
+
+        if let Some(value) = self.incidence_deg
+            && (!value.is_finite()
+                || !(INCIDENCE_RANGE_DEG.0..=INCIDENCE_RANGE_DEG.1).contains(&value))
+        {
+            return Err(FieldError {
+                name: "incidence_deg",
+                message: format!(
+                    "`incidence_deg` = {value} no es válido; debe estar entre {} y {} grados",
+                    INCIDENCE_RANGE_DEG.0, INCIDENCE_RANGE_DEG.1
+                ),
+            });
+        }
+
+        if self.volute_channels == Some(0) {
+            return Err(FieldError {
+                name: "volute_channels",
+                message: "`volute_channels` = 0 no es válido; debe ser al menos 1".to_string(),
+            });
+        }
+
+        if let Some(value) = self.volute_ratio
+            && (!value.is_finite()
+                || !(VOLUTE_RATIO_RANGE.0..=VOLUTE_RATIO_RANGE.1).contains(&value))
+        {
+            return Err(FieldError {
+                name: "volute_ratio",
+                message: format!(
+                    "`volute_ratio` = {value} no es válido; debe estar entre {} y {}",
+                    VOLUTE_RATIO_RANGE.0, VOLUTE_RATIO_RANGE.1
+                ),
+            });
+        }
+
+        Ok(())
+    }
 }
 
 /// Caudales entre los que vale el ηh estadístico de Gülich (ec. 3.9.6,
@@ -1180,7 +1258,9 @@ pub fn design_with_options(
     input: &DesignInput,
     options: &DesignOptions,
 ) -> Result<DesignResult, DesignError> {
-    validate_input(input)?;
+    input
+        .validate()
+        .map_err(|error| DesignError::Input(error.message))?;
 
     let registry = Registry::all();
 
@@ -1202,13 +1282,12 @@ pub fn design_with_options(
     )?
     .value();
 
+    options
+        .validate()
+        .map_err(|error| DesignError::Input(error.message))?;
+
     let eta_v = match options.eta_v {
-        Some(value) if value.is_finite() && value > 0.0 && value < 1.0 => value,
-        Some(value) => {
-            return Err(DesignError::Input(format!(
-                "`eta_v` (parámetro `eta_v_fixed`, opción `--eta-v`) = {value} no es válido; debe estar entre 0 y 1 sin incluirlos"
-            )));
-        }
+        Some(value) => value,
         None => gulich_volumetric_efficiency(nq, options.balance_holes)?,
     };
     let table = base_selection(&registry, nq, eta_v)?;
@@ -1234,50 +1313,11 @@ pub fn design_with_options(
     let k3_value = options.k3.unwrap_or(cutwater_min_ratio);
     let volute_width_value = options.volute_width_factor.unwrap_or(DEFAULT_VOLUTE_C);
     let k_eff_value = options.k_eff.unwrap_or(DEFAULT_K_EFF);
-    if let Some(wrap) = options.volute_wrap_deg
-        && (!wrap.is_finite()
-            || !(VOLUTE_WRAP_RANGE_DEG.0..=VOLUTE_WRAP_RANGE_DEG.1).contains(&wrap))
-    {
-        return Err(DesignError::Input(format!(
-            "`volute_wrap_deg` = {wrap} no es válido; debe estar entre {} y {} grados",
-            VOLUTE_WRAP_RANGE_DEG.0, VOLUTE_WRAP_RANGE_DEG.1
-        )));
-    }
     let incidence_deg = options
         .incidence_deg
         .unwrap_or(geometry::DEFAULT_INCIDENCE_DEG);
-    if !incidence_deg.is_finite()
-        || !(INCIDENCE_RANGE_DEG.0..=INCIDENCE_RANGE_DEG.1).contains(&incidence_deg)
-    {
-        return Err(DesignError::Input(format!(
-            "`incidence_deg` = {incidence_deg} no es válido; debe estar entre {} y {} grados",
-            INCIDENCE_RANGE_DEG.0, INCIDENCE_RANGE_DEG.1
-        )));
-    }
-    let volute_channels = match options.volute_channels {
-        Some(0) => {
-            return Err(DesignError::Input(
-                "`volute_channels` = 0 no es válido; debe ser al menos 1".to_string(),
-            ));
-        }
-        Some(value) => value,
-        None => 1,
-    };
-    let volute_ratio_value = match options.volute_ratio {
-        Some(value)
-            if value.is_finite()
-                && (VOLUTE_RATIO_RANGE.0..=VOLUTE_RATIO_RANGE.1).contains(&value) =>
-        {
-            value
-        }
-        Some(value) => {
-            return Err(DesignError::Input(format!(
-                "`volute_ratio` = {value} no es válido; debe estar entre {} y {}",
-                VOLUTE_RATIO_RANGE.0, VOLUTE_RATIO_RANGE.1
-            )));
-        }
-        None => DEFAULT_VOLUTE_RATIO,
-    };
+    let volute_channels = options.volute_channels.unwrap_or(1);
+    let volute_ratio_value = options.volute_ratio.unwrap_or(DEFAULT_VOLUTE_RATIO);
     validate_selection(&selection, k3_value, volute_width_value, k_eff_value)?;
 
     let specific_diameter_mm = evaluate(
@@ -2943,47 +2983,79 @@ fn validate_selection(
     Ok(())
 }
 
-fn validate_input(input: &DesignInput) -> Result<(), DesignError> {
-    require_dimension("Q", &input.q, "m3/s")?;
-    require_dimension("H", &input.h, "m")?;
-    require_dimension("n", &input.n, "1/s")?;
+/// Valida las tres entradas de duty, antes de estimar ηm.
+pub fn validate_duty(q: &Quantity, h: &Quantity, n: &Quantity) -> Result<(), FieldError> {
+    validate_duty_dimensions(q, h, n)?;
+    validate_duty_positivity(q, h, n)
+}
+
+fn validate_duty_dimensions(q: &Quantity, h: &Quantity, n: &Quantity) -> Result<(), FieldError> {
+    require_dimension("Q", q, "m3/s")?;
+    require_dimension("H", h, "m")?;
+    require_dimension("n", n, "1/s")?;
+    Ok(())
+}
+
+fn validate_duty_positivity(q: &Quantity, h: &Quantity, n: &Quantity) -> Result<(), FieldError> {
+    require_positive("Q", q.si)?;
+    require_positive("H", h.si)?;
+    require_positive("n", n.si)?;
+    Ok(())
+}
+
+fn validate_input(input: &DesignInput) -> Result<(), FieldError> {
+    // Mismo orden que la validación original: dimensiones de duty, rho,
+    // NPSHa, positividad de duty y rho, y ηm.
+    validate_duty_dimensions(&input.q, &input.h, &input.n)?;
     require_dimension("rho", &input.rho, "kg/m3")?;
 
     if let Some(npsha) = &input.npsha {
         require_dimension("NPSHa", npsha, "m")?;
         if !npsha.si.is_finite() {
-            return Err(DesignError::Input("NPSHa no es finito".to_string()));
+            return Err(FieldError {
+                name: "NPSHa",
+                message: "NPSHa no es finito".to_string(),
+            });
         }
     }
 
-    for (name, value) in [
-        ("Q", input.q.si),
-        ("H", input.h.si),
-        ("n", input.n.si),
-        ("rho", input.rho.si),
-    ] {
-        if !value.is_finite() || value <= 0.0 {
-            return Err(DesignError::Input(format!(
-                "{name} debe ser finito y positivo"
-            )));
-        }
-    }
+    validate_duty_positivity(&input.q, &input.h, &input.n)?;
+    require_positive("rho", input.rho.si)?;
 
     if !input.eta_m.is_finite() || input.eta_m <= 0.0 || input.eta_m >= 1.0 {
-        return Err(DesignError::Input(
-            "la eficiencia mecánica debe ser mayor que 0 y menor que 1".to_string(),
-        ));
+        return Err(FieldError {
+            name: "eta_m",
+            message: "la eficiencia mecánica debe ser mayor que 0 y menor que 1".to_string(),
+        });
     }
 
     Ok(())
 }
 
-fn require_dimension(name: &str, quantity: &Quantity, unit_text: &str) -> Result<(), DesignError> {
-    let expected = parse_unit(unit_text)?;
+fn require_dimension(
+    name: &'static str,
+    quantity: &Quantity,
+    unit_text: &str,
+) -> Result<(), FieldError> {
+    let expected = parse_unit(unit_text).map_err(|error| FieldError {
+        name,
+        message: error.to_string(),
+    })?;
     if quantity.dim() != expected.dim {
-        return Err(DesignError::Input(format!(
-            "{name} debe tener dimensiones de {unit_text}"
-        )));
+        return Err(FieldError {
+            name,
+            message: format!("{name} debe tener dimensiones de {unit_text}"),
+        });
+    }
+    Ok(())
+}
+
+fn require_positive(name: &'static str, value: f64) -> Result<(), FieldError> {
+    if !value.is_finite() || value <= 0.0 {
+        return Err(FieldError {
+            name,
+            message: format!("{name} debe ser finito y positivo"),
+        });
     }
     Ok(())
 }

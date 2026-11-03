@@ -23,8 +23,9 @@
 //!
 //! En CI no se bendice nunca: si `CI` está definido, `HMFLOW_BLESS` falla.
 //!
-//! Los flotantes con más de 9 decimales se redondean a 9 antes de comparar:
-//! la última cifra de `libm` puede cambiar entre Linux, macOS y Windows, y la
+//! Los flotantes con más de 12 cifras significativas se redondean a 12 antes
+//! de comparar: la última cifra de `libm` puede cambiar entre Linux, macOS y
+//! Windows (en CI, `1323403.48751481` frente a `1323403.487514801`), y la
 //! golden no debe romperse por una diferencia de 1 ulp. Las pruebas numéricas
 //! del proyecto conservan la precisión completa.
 
@@ -32,6 +33,9 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::sync::atomic::{AtomicUsize, Ordering};
+
+/// Cifras significativas que se conservan al comparar flotantes.
+const SIGNIFICANT_DIGITS: usize = 12;
 
 const NONE: &[&str] = &[];
 const NONE_FIXTURES: &[(&str, &str)] = &[];
@@ -769,14 +773,14 @@ fn normalize_floats(text: &str) -> String {
             }
 
             let mut has_dot = false;
-            let mut fraction_digits = 0;
+            let mut mantissa_end = end;
             if end < chars.len() && chars[end] == '.' {
                 has_dot = true;
                 end += 1;
                 while end < chars.len() && chars[end].is_ascii_digit() {
                     end += 1;
-                    fraction_digits += 1;
                 }
+                mantissa_end = end;
             }
 
             let mut has_exponent = false;
@@ -795,13 +799,23 @@ fn normalize_floats(text: &str) -> String {
                 }
             }
 
-            if has_exponent || (has_dot && fraction_digits > 9) {
+            // Cifras significativas de la mantisa, sin ceros a la izquierda.
+            let significant = chars[start..mantissa_end]
+                .iter()
+                .filter(|c| c.is_ascii_digit())
+                .skip_while(|c| **c == '0')
+                .count();
+
+            if (has_dot || has_exponent) && significant > SIGNIFICANT_DIGITS {
                 let token: String = chars[start..end].iter().collect();
                 if let Ok(value) = token.parse::<f64>() {
                     if has_exponent {
-                        out.push_str(&format!("{value:.9e}"));
+                        out.push_str(&format!("{value:.*e}", SIGNIFICANT_DIGITS - 1));
                     } else {
-                        out.push_str(&format!("{value:.9}"));
+                        // Cifras decimales que dejan SIGNIFICANT_DIGITS en total.
+                        let magnitude = value.abs().log10().floor() as i32;
+                        let decimals = (SIGNIFICANT_DIGITS as i32 - 1 - magnitude).max(0);
+                        out.push_str(&format!("{value:.*}", decimals as usize));
                     }
                     index = end;
                     continue;
@@ -867,8 +881,18 @@ fn cli() -> &'static str {
 
 #[test]
 fn long_floats_are_normalized() {
-    assert_eq!(normalize_floats("0.123456789123"), "0.123456789");
-    assert_eq!(normalize_floats("1e-7"), "1.000000000e-7");
-    assert_eq!(normalize_floats("1.234567890123e-7"), "1.234567890e-7");
+    // 1 ulp de diferencia entre plataformas: mismo resultado.
+    assert_eq!(
+        normalize_floats("1323403.48751481"),
+        normalize_floats("1323403.487514801")
+    );
+    assert_eq!(normalize_floats("1323403.487514801"), "1323403.48751");
+    assert_eq!(normalize_floats("0.123456789123456"), "0.123456789123");
+    assert_eq!(normalize_floats("0.0123456789123456"), "0.0123456789123");
+    assert_eq!(normalize_floats("1.234567890123456e-7"), "1.23456789012e-7");
+    // Lo corto no se toca.
     assert_eq!(normalize_floats("83.0"), "83.0");
+    assert_eq!(normalize_floats("1e-7"), "1e-7");
+    assert_eq!(normalize_floats("0.999999999"), "0.999999999");
+    assert_eq!(normalize_floats("2026-11-03"), "2026-11-03");
 }

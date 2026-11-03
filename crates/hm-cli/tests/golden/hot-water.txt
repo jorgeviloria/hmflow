@@ -60,27 +60,27 @@ value = "4.5"
 
 [params.J]
 mode = "manual"
-value = "1.043281168"
+value = "1.04328116762"
 
 [params.a360]
 mode = "auto"
 formula = "design.volute_throat_area_ratio"
-value = "0.002547824 m2"
+value = "0.00254782448428 m2"
 
 [params.b1]
 mode = "auto"
 formula = "design.b1"
-value = "0.024178447 m"
+value = "0.0241784473270 m"
 
 [params.b2]
 mode = "auto"
 formula = "design.b2"
-value = "0.017935753 m"
+value = "0.0179357533200 m"
 
 [params.b3]
 mode = "auto"
 formula = "design.volute_width"
-value = "0.027936114 m"
+value = "0.0279361142505 m"
 
 [params.balance_holes]
 mode = "manual"
@@ -88,7 +88,7 @@ value = "0"
 
 [params.beta2]
 mode = "manual"
-value = "18.833039088 deg"
+value = "18.8330390882 deg"
 
 [params.blade_count]
 mode = "manual"
@@ -96,46 +96,46 @@ value = "7"
 
 [params.c0]
 mode = "manual"
-value = "4.249273728 m/s"
+value = "4.24927372796 m/s"
 
 [params.c3]
 mode = "auto"
 formula = "design.volute_inlet_velocity"
-value = "16.353821436 m/s"
+value = "16.3538214362 m/s"
 
 [params.cm0]
 mode = "manual"
-value = "4.249273728 m/s"
+value = "4.24927372796 m/s"
 
 [params.cm2]
 mode = "auto"
 formula = "design.cm2"
-value = "3.014872562 m/s"
+value = "3.01487256174 m/s"
 
 [params.cu2]
 mode = "auto"
 formula = "design.cu2"
-value = "16.073519185 m/s"
+value = "16.0735191854 m/s"
 
 [params.d0]
 mode = "auto"
 formula = "design.d0"
-value = "0.100899675 m"
+value = "0.100899675034 m"
 
 [params.d1]
 mode = "auto"
 formula = "design.d1"
-value = "0.105266731 m"
+value = "0.105266730783 m"
 
 [params.d2]
 mode = "auto"
 formula = "design.d2"
-value = "0.200007219 m"
+value = "0.200007218610 m"
 
 [params.d360]
 mode = "auto"
 formula = "design.volute_throat_diameter"
-value = "0.062651648 m"
+value = "0.0626516478042 m"
 
 [params.dn]
 mode = "auto"
@@ -145,21 +145,21 @@ value = "101.556119099"
 [params.eta]
 mode = "auto"
 formula = "design.loss_efficiency"
-value = "0.847347753"
+value = "0.847347752871"
 
 [params.eta_h]
 mode = "auto"
 formula = "design.statistical_hydraulic_efficiency"
-value = "0.904023928"
+value = "0.904023928424"
 
 [params.eta_m]
 mode = "manual"
-value = "0.985606414"
+value = "0.985606414431"
 
 [params.eta_v]
 mode = "auto"
 formula = "design.volumetric_efficiency_gulich"
-value = "0.981057858"
+value = "0.981057857972"
 
 [params.eta_v_fixed]
 mode = "manual"
@@ -168,7 +168,7 @@ value = "0"
 [params.h0]
 mode = "auto"
 formula = "design.shutoff_head"
-value = "53.646326440 m"
+value = "53.6463264400 m"
 
 [params.impeller_roughness]
 mode = "manual"
@@ -180,7 +180,7 @@ value = "2 deg"
 
 [params.k3]
 mode = "manual"
-value = "1.109245904"
+value = "1.10924590443"
 
 [params.k_eff]
 mode = "manual"
@@ -197,12 +197,12 @@ value = "0.001 m"
 [params.npshr_d]
 mode = "auto"
 formula = "design.npsh3_inlet"
-value = "3.802084006 m"
+value = "3.80208400559 m"
 
 [params.nq]
 mode = "auto"
 formula = "similarity.nq"
-value = "30.473896290"
+value = "30.4738962901"
 
 [params.p_disk_loss]
 mode = "auto"
@@ -212,17 +212,17 @@ value = "509.524857952 W"
 [params.p_hyd]
 mode = "auto"
 formula = "perf.hydraulic_power"
-value = "14295.124285050 W"
+value = "14295.1242850 W"
 
 [params.p_hyd_loss]
 mode = "auto"
 formula = "design.hydraulic_loss"
-value = "1517.647739654 W"
+value = "1517.64773965 W"
 
 [params.p_max]
 mode = "auto"
 formula = "design.max_power"
-value = "18557.477328846 W"
+value = "18557.4773288 W"
 
 [params.p_mech_loss]
 mode = "auto"
@@ -232,7 +232,7 @@ value = "242.826034442 W"
 [params.p_shaft]
 mode = "auto"
 formula = "design.shaft_power"
-value = "16870.433935314 W"
+value = "16870.4339353 W"
 
 [params.p_vol_loss]
 mode = "auto"
@@ -241,26 +241,26 @@ value = "305.311018216 W"
 
 [params.phi]
 mode = "manual"
-value = "0.099271976"
+value = "0.0992719764874"
 
 [params.psi]
 mode = "manual"
-value = "0.956926549"
+value = "0.956926548958"
 
 [params.qth]
 mode = "auto"
 formula = "design.qth"
-value = "0.033976929 m3/s"
+value = "0.0339769291510 m3/s"
 
 [params.r3]
 mode = "auto"
 formula = "design.volute_base_radius"
-value = "0.110928594 m"
+value = "0.110928594049 m"
 
 [params.r4]
 mode = "auto"
 formula = "design.volute_outer_radius"
-value = "0.142254418 m"
+value = "0.142254417952 m"
 
 [params.rho]
 mode = "manual"
@@ -269,22 +269,22 @@ value = "971.798 kg/m3"
 [params.sigma]
 mode = "auto"
 formula = "design.thoma_sigma"
-value = "0.114222561"
+value = "0.114222560915"
 
 [params.slip]
 mode = "auto"
 formula = "design.slip_factor"
-value = "0.837395917"
+value = "0.837395917456"
 
 [params.torque]
 mode = "auto"
 formula = "mech.shaft_torque"
-value = "55.551992129 N*m"
+value = "55.5519921292 N*m"
 
 [params.u2]
 mode = "auto"
 formula = "design.u2"
-value = "30.369825085 m/s"
+value = "30.3698250848 m/s"
 
 [params.volute_c]
 mode = "manual"

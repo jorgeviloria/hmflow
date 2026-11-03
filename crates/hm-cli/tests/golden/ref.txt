@@ -87,27 +87,27 @@ value = "4.5"
 
 [params.J]
 mode = "manual"
-value = "1.044242812"
+value = "1.04424281207"
 
 [params.a360]
 mode = "auto"
 formula = "design.volute_throat_area_ratio"
-value = "0.002547824 m2"
+value = "0.00254782448428 m2"
 
 [params.b1]
 mode = "auto"
 formula = "design.b1"
-value = "0.024156181 m"
+value = "0.0241561813435 m"
 
 [params.b2]
 mode = "auto"
 formula = "design.b2"
-value = "0.017935753 m"
+value = "0.0179357533200 m"
 
 [params.b3]
 mode = "auto"
 formula = "design.volute_width"
-value = "0.027936114 m"
+value = "0.0279361142505 m"
 
 [params.balance_holes]
 mode = "manual"
@@ -115,7 +115,7 @@ value = "0"
 
 [params.beta2]
 mode = "manual"
-value = "18.833039088 deg"
+value = "18.8330390882 deg"
 
 [params.blade_count]
 mode = "manual"
@@ -123,46 +123,46 @@ value = "7"
 
 [params.c0]
 mode = "manual"
-value = "4.249273736 m/s"
+value = "4.24927373592 m/s"
 
 [params.c3]
 mode = "auto"
 formula = "design.volute_inlet_velocity"
-value = "16.353821436 m/s"
+value = "16.3538214362 m/s"
 
 [params.cm0]
 mode = "manual"
-value = "4.249273736 m/s"
+value = "4.24927373592 m/s"
 
 [params.cm2]
 mode = "auto"
 formula = "design.cm2"
-value = "3.014872562 m/s"
+value = "3.01487256174 m/s"
 
 [params.cu2]
 mode = "auto"
 formula = "design.cu2"
-value = "16.073519185 m/s"
+value = "16.0735191854 m/s"
 
 [params.d0]
 mode = "auto"
 formula = "design.d0"
-value = "0.100899675 m"
+value = "0.100899674940 m"
 
 [params.d1]
 mode = "auto"
 formula = "design.d1"
-value = "0.105363760 m"
+value = "0.105363760296 m"
 
 [params.d2]
 mode = "auto"
 formula = "design.d2"
-value = "0.200007219 m"
+value = "0.200007218610 m"
 
 [params.d360]
 mode = "auto"
 formula = "design.volute_throat_diameter"
-value = "0.062651648 m"
+value = "0.0626516478042 m"
 
 [params.dn]
 mode = "auto"
@@ -172,21 +172,21 @@ value = "101.556119099"
 [params.eta]
 mode = "auto"
 formula = "design.loss_efficiency"
-value = "0.841555642"
+value = "0.841555641994"
 
 [params.eta_h]
 mode = "auto"
 formula = "design.statistical_hydraulic_efficiency"
-value = "0.904023928"
+value = "0.904023928424"
 
 [params.eta_m]
 mode = "manual"
-value = "0.985606414"
+value = "0.985606414431"
 
 [params.eta_v]
 mode = "auto"
 formula = "design.volumetric_efficiency_gulich"
-value = "0.981057858"
+value = "0.981057857972"
 
 [params.eta_v_fixed]
 mode = "manual"
@@ -195,7 +195,7 @@ value = "0"
 [params.h0]
 mode = "auto"
 formula = "design.shutoff_head"
-value = "53.646326440 m"
+value = "53.6463264400 m"
 
 [params.impeller_roughness]
 mode = "manual"
@@ -207,7 +207,7 @@ value = "2 deg"
 
 [params.k3]
 mode = "manual"
-value = "1.109329083"
+value = "1.10932908333"
 
 [params.k_eff]
 mode = "manual"
@@ -224,12 +224,12 @@ value = "0.001 m"
 [params.npshr_d]
 mode = "auto"
 formula = "design.npsh3_inlet"
-value = "3.806889057 m"
+value = "3.80688905726 m"
 
 [params.nq]
 mode = "auto"
 formula = "similarity.nq"
-value = "30.473896290"
+value = "30.4738962901"
 
 [params.p_disk_loss]
 mode = "auto"
@@ -239,17 +239,17 @@ value = "640.921038992 W"
 [params.p_hyd]
 mode = "auto"
 formula = "perf.hydraulic_power"
-value = "14683.555884900 W"
+value = "14683.5558849 W"
 
 [params.p_hyd_loss]
 mode = "auto"
 formula = "design.hydraulic_loss"
-value = "1558.885739952 W"
+value = "1558.88573995 W"
 
 [params.p_max]
 mode = "auto"
 formula = "design.max_power"
-value = "19192.921617294 W"
+value = "19192.9216173 W"
 
 [params.p_mech_loss]
 mode = "auto"
@@ -259,7 +259,7 @@ value = "251.140872388 W"
 [params.p_shaft]
 mode = "auto"
 formula = "design.shaft_power"
-value = "17448.110561177 W"
+value = "17448.1105612 W"
 
 [params.p_vol_loss]
 mode = "auto"
@@ -268,26 +268,26 @@ value = "313.607024945 W"
 
 [params.phi]
 mode = "manual"
-value = "0.099271976"
+value = "0.0992719764874"
 
 [params.psi]
 mode = "manual"
-value = "0.956926549"
+value = "0.956926548958"
 
 [params.qth]
 mode = "auto"
 formula = "design.qth"
-value = "0.033976929 m3/s"
+value = "0.0339769291510 m3/s"
 
 [params.r3]
 mode = "auto"
 formula = "design.volute_base_radius"
-value = "0.110936912 m"
+value = "0.110936912240 m"
 
 [params.r4]
 mode = "auto"
 formula = "design.volute_outer_radius"
-value = "0.142262736 m"
+value = "0.142262736142 m"
 
 [params.rho]
 mode = "manual"
@@ -296,22 +296,22 @@ value = "998.204 kg/m3"
 [params.sigma]
 mode = "auto"
 formula = "design.thoma_sigma"
-value = "0.114222561"
+value = "0.114222560915"
 
 [params.slip]
 mode = "auto"
 formula = "design.slip_factor"
-value = "0.837395917"
+value = "0.837395917456"
 
 [params.torque]
 mode = "auto"
 formula = "mech.shaft_torque"
-value = "57.454200898 N*m"
+value = "57.4542008985 N*m"
 
 [params.u2]
 mode = "auto"
 formula = "design.u2"
-value = "30.369825085 m/s"
+value = "30.3698250848 m/s"
 
 [params.volute_c]
 mode = "manual"
@@ -341,15 +341,15 @@ $ hmflow-cli report ref.hmf --curve-points 11
       "unit": "m"
     },
     "Q": {
-      "value": 0.033333333,
+      "value": 0.0333333333333,
       "unit": "m3/s"
     },
     "eta_m": {
-      "value": 0.985606414,
+      "value": 0.985606414431,
       "unit": "1"
     },
     "n": {
-      "value": 48.333333333,
+      "value": 48.3333333333,
       "unit": "1/s"
     },
     "npsha": {
@@ -367,11 +367,11 @@ $ hmflow-cli report ref.hmf --curve-points 11
       "unit": "1"
     },
     "J": {
-      "value": 1.044242812,
+      "value": 1.04424281207,
       "unit": "1"
     },
     "beta2": {
-      "value": 0.328698540,
+      "value": 0.328698540245,
       "unit": "rad"
     },
     "blade_count": {
@@ -379,11 +379,11 @@ $ hmflow-cli report ref.hmf --curve-points 11
       "unit": "1"
     },
     "c0": {
-      "value": 4.249273736,
+      "value": 4.24927373592,
       "unit": "m/s"
     },
     "cm0": {
-      "value": 4.249273736,
+      "value": 4.24927373592,
       "unit": "m/s"
     },
     "margin": {
@@ -391,57 +391,57 @@ $ hmflow-cli report ref.hmf --curve-points 11
       "unit": "1"
     },
     "phi": {
-      "value": 0.099271976,
+      "value": 0.0992719764874,
       "unit": "1"
     },
     "psi": {
-      "value": 0.956926549,
+      "value": 0.956926548958,
       "unit": "1"
     }
   },
   "results": {
     "a360": {
-      "value": 0.002547824,
+      "value": 0.00254782448428,
       "unit": "m2"
     },
     "b1": {
-      "value": 0.024156181,
+      "value": 0.0241561813435,
       "unit": "m"
     },
     "b2": {
-      "value": 0.017935753,
+      "value": 0.0179357533200,
       "unit": "m"
     },
     "b3": {
-      "value": 0.027936114,
+      "value": 0.0279361142505,
       "unit": "m"
     },
     "c3": {
-      "value": 16.353821436,
+      "value": 16.3538214362,
       "unit": "m/s"
     },
     "cm2": {
-      "value": 3.014872562,
+      "value": 3.01487256174,
       "unit": "m/s"
     },
     "cu2": {
-      "value": 16.073519185,
+      "value": 16.0735191854,
       "unit": "m/s"
     },
     "d0": {
-      "value": 0.100899675,
+      "value": 0.100899674940,
       "unit": "m"
     },
     "d1": {
-      "value": 0.105363760,
+      "value": 0.105363760296,
       "unit": "m"
     },
     "d2": {
-      "value": 0.200007219,
+      "value": 0.200007218610,
       "unit": "m"
     },
     "d360": {
-      "value": 0.062651648,
+      "value": 0.0626516478042,
       "unit": "m"
     },
     "dn": {
@@ -449,27 +449,27 @@ $ hmflow-cli report ref.hmf --curve-points 11
       "unit": "1"
     },
     "eta": {
-      "value": 0.841555642,
+      "value": 0.841555641994,
       "unit": "1"
     },
     "eta_h": {
-      "value": 0.904023928,
+      "value": 0.904023928424,
       "unit": "1"
     },
     "eta_v": {
-      "value": 0.981057858,
+      "value": 0.981057857972,
       "unit": "1"
     },
     "h0": {
-      "value": 53.646326440,
+      "value": 53.6463264400,
       "unit": "m"
     },
     "npshr_d": {
-      "value": 3.806889057,
+      "value": 3.80688905726,
       "unit": "m"
     },
     "nq": {
-      "value": 30.473896290,
+      "value": 30.4738962901,
       "unit": "1"
     },
     "p_disk_loss": {
@@ -477,15 +477,15 @@ $ hmflow-cli report ref.hmf --curve-points 11
       "unit": "W"
     },
     "p_hyd": {
-      "value": 14683.555884900,
+      "value": 14683.5558849,
       "unit": "W"
     },
     "p_hyd_loss": {
-      "value": 1558.885739952,
+      "value": 1558.88573995,
       "unit": "W"
     },
     "p_max": {
-      "value": 19192.921617294,
+      "value": 19192.9216173,
       "unit": "W"
     },
     "p_mech_loss": {
@@ -493,7 +493,7 @@ $ hmflow-cli report ref.hmf --curve-points 11
       "unit": "W"
     },
     "p_shaft": {
-      "value": 17448.110561177,
+      "value": 17448.1105612,
       "unit": "W"
     },
     "p_vol_loss": {
@@ -501,47 +501,47 @@ $ hmflow-cli report ref.hmf --curve-points 11
       "unit": "W"
     },
     "qth": {
-      "value": 0.033976929,
+      "value": 0.0339769291510,
       "unit": "m3/s"
     },
     "r3": {
-      "value": 0.110936912,
+      "value": 0.110936912240,
       "unit": "m"
     },
     "r4": {
-      "value": 0.142262736,
+      "value": 0.142262736142,
       "unit": "m"
     },
     "sigma": {
-      "value": 0.114222561,
+      "value": 0.114222560915,
       "unit": "1"
     },
     "slip": {
-      "value": 0.837395917,
+      "value": 0.837395917456,
       "unit": "1"
     },
     "torque": {
-      "value": 57.454200898,
+      "value": 57.4542008985,
       "unit": "N*m"
     },
     "torque_max": {
-      "value": 63.199620988,
+      "value": 63.1996209883,
       "unit": "N*m"
     },
     "u1": {
-      "value": 15.998817406,
+      "value": 15.9988174062,
       "unit": "m/s"
     },
     "u2": {
-      "value": 30.369825085,
+      "value": 30.3698250848,
       "unit": "m/s"
     },
     "w1": {
-      "value": 16.553503728,
+      "value": 16.5535037282,
       "unit": "m/s"
     },
     "w2": {
-      "value": 14.610743271,
+      "value": 14.6107432711,
       "unit": "m/s"
     }
   },
@@ -560,151 +560,151 @@ $ hmflow-cli report ref.hmf --curve-points 11
         "unit": "m"
       },
       "outer_radius": {
-        "value": 0.110936912,
+        "value": 0.110936912240,
         "unit": "m"
       }
     },
     {
       "angle": {
-        "value": 0.785398163,
+        "value": 0.785398163397,
         "unit": "rad"
       },
       "area": {
-        "value": 0.000318478,
+        "value": 0.000318478060535,
         "unit": "m2"
       },
       "diameter": {
-        "value": 0.022150703,
+        "value": 0.0221507025074,
         "unit": "m"
       },
       "outer_radius": {
-        "value": 0.122012263,
+        "value": 0.122012263493,
         "unit": "m"
       }
     },
     {
       "angle": {
-        "value": 1.570796327,
+        "value": 1.57079632679,
         "unit": "rad"
       },
       "area": {
-        "value": 0.000636956,
+        "value": 0.000636956121070,
         "unit": "m2"
       },
       "diameter": {
-        "value": 0.031325824,
+        "value": 0.0313258239021,
         "unit": "m"
       },
       "outer_radius": {
-        "value": 0.126599824,
+        "value": 0.126599824191,
         "unit": "m"
       }
     },
     {
       "angle": {
-        "value": 2.356194490,
+        "value": 2.35619449019,
         "unit": "rad"
       },
       "area": {
-        "value": 0.000955434,
+        "value": 0.000955434181605,
         "unit": "m2"
       },
       "diameter": {
-        "value": 0.038366142,
+        "value": 0.0383661421662,
         "unit": "m"
       },
       "outer_radius": {
-        "value": 0.130119983,
+        "value": 0.130119983323,
         "unit": "m"
       }
     },
     {
       "angle": {
-        "value": 3.141592654,
+        "value": 3.14159265359,
         "unit": "rad"
       },
       "area": {
-        "value": 0.001273912,
+        "value": 0.00127391224214,
         "unit": "m2"
       },
       "diameter": {
-        "value": 0.044301405,
+        "value": 0.0443014050149,
         "unit": "m"
       },
       "outer_radius": {
-        "value": 0.133087615,
+        "value": 0.133087614747,
         "unit": "m"
       }
     },
     {
       "angle": {
-        "value": 3.926990817,
+        "value": 3.92699081699,
         "unit": "rad"
       },
       "area": {
-        "value": 0.001592390,
+        "value": 0.00159239030268,
         "unit": "m2"
       },
       "diameter": {
-        "value": 0.049530477,
+        "value": 0.0495304765560,
         "unit": "m"
       },
       "outer_radius": {
-        "value": 0.135702151,
+        "value": 0.135702150518,
         "unit": "m"
       }
     },
     {
       "angle": {
-        "value": 4.712388980,
+        "value": 4.71238898038,
         "unit": "rad"
       },
       "area": {
-        "value": 0.001910868,
+        "value": 0.00191086836321,
         "unit": "m2"
       },
       "diameter": {
-        "value": 0.054257919,
+        "value": 0.0542579185874,
         "unit": "m"
       },
       "outer_radius": {
-        "value": 0.138065872,
+        "value": 0.138065871533,
         "unit": "m"
       }
     },
     {
       "angle": {
-        "value": 5.497787144,
+        "value": 5.49778714378,
         "unit": "rad"
       },
       "area": {
-        "value": 0.002229346,
+        "value": 0.00222934642375,
         "unit": "m2"
       },
       "diameter": {
-        "value": 0.058605250,
+        "value": 0.0586052502000,
         "unit": "m"
       },
       "outer_radius": {
-        "value": 0.140239537,
+        "value": 0.140239537340,
         "unit": "m"
       }
     },
     {
       "angle": {
-        "value": 6.283185307,
+        "value": 6.28318530718,
         "unit": "rad"
       },
       "area": {
-        "value": 0.002547824,
+        "value": 0.00254782448428,
         "unit": "m2"
       },
       "diameter": {
-        "value": 0.062651648,
+        "value": 0.0626516478042,
         "unit": "m"
       },
       "outer_radius": {
-        "value": 0.142262736,
+        "value": 0.142262736142,
         "unit": "m"
       }
     }
@@ -716,63 +716,63 @@ $ hmflow-cli report ref.hmf --curve-points 11
         "unit": "m3/s"
       },
       "h": {
-        "value": 54.738516697,
+        "value": 54.7385166972,
         "unit": "m"
       },
       "eta": {
-        "value": 0.594138283,
+        "value": 0.594138283248,
         "unit": "1"
       },
       "p_shaft": {
-        "value": 9018.731740197,
+        "value": 9018.73174020,
         "unit": "W"
       },
       "npshr": {
-        "value": 1.413540801,
+        "value": 1.41354080143,
         "unit": "m"
       }
     },
     {
       "q": {
-        "value": 0.013333333,
+        "value": 0.0133333333333,
         "unit": "m3/s"
       },
       "h": {
-        "value": 54.400468080,
+        "value": 54.4004680802,
         "unit": "m"
       },
       "eta": {
-        "value": 0.659779623,
+        "value": 0.659779623324,
         "unit": "1"
       },
       "p_shaft": {
-        "value": 10761.739020892,
+        "value": 10761.7390209,
         "unit": "W"
       },
       "npshr": {
-        "value": 1.727710841,
+        "value": 1.72771084140,
         "unit": "m"
       }
     },
     {
       "q": {
-        "value": 0.016666667,
+        "value": 0.0166666666667,
         "unit": "m3/s"
       },
       "h": {
-        "value": 53.711363445,
+        "value": 53.7113634452,
         "unit": "m"
       },
       "eta": {
-        "value": 0.715322296,
+        "value": 0.715322295695,
         "unit": "1"
       },
       "p_shaft": {
-        "value": 12250.481147491,
+        "value": 12250.4811475,
         "unit": "W"
       },
       "npshr": {
-        "value": 2.042375515,
+        "value": 2.04237551469,
         "unit": "m"
       }
     },
@@ -782,91 +782,91 @@ $ hmflow-cli report ref.hmf --curve-points 11
         "unit": "m3/s"
       },
       "h": {
-        "value": 52.671202792,
+        "value": 52.6712027922,
         "unit": "m"
       },
       "eta": {
-        "value": 0.760766300,
+        "value": 0.760766300363,
         "unit": "1"
       },
       "p_shaft": {
-        "value": 13554.763565014,
+        "value": 13554.7635650,
         "unit": "W"
       },
       "npshr": {
-        "value": 2.364852880,
+        "value": 2.36485287962,
         "unit": "m"
       }
     },
     {
       "q": {
-        "value": 0.023333333,
+        "value": 0.0233333333333,
         "unit": "m3/s"
       },
       "h": {
-        "value": 51.279986121,
+        "value": 51.2799861211,
         "unit": "m"
       },
       "eta": {
-        "value": 0.796111637,
+        "value": 0.796111637327,
         "unit": "1"
       },
       "p_shaft": {
-        "value": 14712.642875081,
+        "value": 14712.6428751,
         "unit": "W"
       },
       "npshr": {
-        "value": 2.699743428,
+        "value": 2.69974342798,
         "unit": "m"
       }
     },
     {
       "q": {
-        "value": 0.026666667,
+        "value": 0.0266666666667,
         "unit": "m3/s"
       },
       "h": {
-        "value": 49.537713432,
+        "value": 49.5377134321,
         "unit": "m"
       },
       "eta": {
-        "value": 0.821358307,
+        "value": 0.821358306587,
         "unit": "1"
       },
       "p_shaft": {
-        "value": 15743.888905490,
+        "value": 15743.8889055,
         "unit": "W"
       },
       "npshr": {
-        "value": 3.050229935,
+        "value": 3.05022993490,
         "unit": "m"
       }
     },
     {
       "q": {
-        "value": 0.030000000,
+        "value": 0.0300000000000,
         "unit": "m3/s"
       },
       "h": {
-        "value": 47.444384725,
+        "value": 47.4443847251,
         "unit": "m"
       },
       "eta": {
-        "value": 0.836506308,
+        "value": 0.836506308142,
         "unit": "1"
       },
       "p_shaft": {
-        "value": 16656.234812674,
+        "value": 16656.2348127,
         "unit": "W"
       },
       "npshr": {
-        "value": 3.418667686,
+        "value": 3.41866768609,
         "unit": "m"
       }
     },
     {
       "q": {
-        "value": 0.033333333,
+        "value": 0.0333333333333,
         "unit": "m3/s"
       },
       "h": {
@@ -874,37 +874,37 @@ $ hmflow-cli report ref.hmf --curve-points 11
         "unit": "m"
       },
       "eta": {
-        "value": 0.841555642,
+        "value": 0.841555641994,
         "unit": "1"
       },
       "p_shaft": {
-        "value": 17448.110561177,
+        "value": 17448.1105612,
         "unit": "W"
       },
       "npshr": {
-        "value": 3.806889057,
+        "value": 3.80688905726,
         "unit": "m"
       }
     },
     {
       "q": {
-        "value": 0.036666667,
+        "value": 0.0366666666667,
         "unit": "m3/s"
       },
       "h": {
-        "value": 42.204559257,
+        "value": 42.2045592569,
         "unit": "m"
       },
       "eta": {
-        "value": 0.838610197,
+        "value": 0.838610197247,
         "unit": "1"
       },
       "p_shaft": {
-        "value": 18063.863471273,
+        "value": 18063.8634713,
         "unit": "W"
       },
       "npshr": {
-        "value": 4.216375719,
+        "value": 4.21637571855,
         "unit": "m"
       }
     },
@@ -914,179 +914,179 @@ $ hmflow-cli report ref.hmf --curve-points 11
         "unit": "m3/s"
       },
       "h": {
-        "value": 39.058062496,
+        "value": 39.0580624958,
         "unit": "m"
       },
       "eta": {
-        "value": 0.829773863,
+        "value": 0.829773863006,
         "unit": "1"
       },
       "p_shaft": {
-        "value": 18431.085672282,
+        "value": 18431.0856723,
         "unit": "W"
       },
       "npshr": {
-        "value": 5.421502083,
+        "value": 5.42150208284,
         "unit": "m"
       }
     },
     {
       "q": {
-        "value": 0.043333333,
+        "value": 0.0433333333333,
         "unit": "m3/s"
       },
       "h": {
-        "value": 35.560509717,
+        "value": 35.5605097167,
         "unit": "m"
       },
       "eta": {
-        "value": 0.815046639,
+        "value": 0.815046639272,
         "unit": "1"
       },
       "p_shaft": {
-        "value": 18507.493069329,
+        "value": 18507.4930693,
         "unit": "W"
       },
       "npshr": {
-        "value": 6.892963007,
+        "value": 6.89296300695,
         "unit": "m"
       }
     }
   ],
   "hydraulics": {
     "beta1b": {
-      "value": 0.353952437,
+      "value": 0.353952437461,
       "unit": "rad"
     },
     "shockless_flow": {
-      "value": 0.037287275,
+      "value": 0.0372872751924,
       "unit": "m3/s"
     },
     "throat_flow": {
-      "value": 0.036418673,
+      "value": 0.0364186730009,
       "unit": "m3/s"
     },
     "volute_matching_flow": {
-      "value": 0.038377438,
+      "value": 0.0383774377501,
       "unit": "m3/s"
     },
     "transition_ratio": {
-      "value": 1.105589223,
+      "value": 1.10558922290,
       "unit": "1"
     },
     "recirculation_onset": {
-      "value": 0.514665465,
+      "value": 0.514665464519,
       "unit": "1"
     },
     "leakage_eta_v": {
-      "value": 0.981057858,
+      "value": 0.981057857972,
       "unit": "1"
     },
     "mechanical_eta_estimate": {
-      "value": 0.985606414,
+      "value": 0.985606414431,
       "unit": "1"
     },
     "disk_friction_ratio": {
-      "value": 0.043648898,
+      "value": 0.0436488984015,
       "unit": "1"
     },
     "statistical_eta_h": {
-      "value": 0.904023928,
+      "value": 0.904023928424,
       "unit": "1"
     },
     "loss_eta": {
-      "value": 0.841555642,
+      "value": 0.841555641994,
       "unit": "1"
     },
     "zero_head_flow_ratio": {
-      "value": 2.717614462,
+      "value": 2.71761446154,
       "unit": "1"
     },
     "head_slope": {
-      "value": -0.582202830,
+      "value": -0.582202829793,
       "unit": "1"
     },
     "seal_leakage_ratio": {
-      "value": 0.024509349,
+      "value": 0.0245093490853,
       "unit": "1"
     },
     "seal_eta_v": {
-      "value": 0.976076988,
+      "value": 0.976076988358,
       "unit": "1"
     },
     "inlet_deceleration": {
-      "value": 0.921103717,
+      "value": 0.921103717196,
       "unit": "1"
     },
     "blade_loading": {
-      "value": 1.309090025,
+      "value": 1.30909002452,
       "unit": "1"
     },
     "blade_loading_allowable": {
-      "value": 1.232995935,
+      "value": 1.23299593477,
       "unit": "1"
     },
     "momentum_throat_diameter": {
-      "value": 0.061207997,
+      "value": 0.0612079970203,
       "unit": "m"
     }
   },
   "viscous": {
     "nu": {
-      "value": 1.003400147e-6,
+      "value": 1.00340014697e-6,
       "unit": "m2/s"
     },
     "reynolds_mod": {
-      "value": 1323403.487514801,
+      "value": 1323403.48751,
       "unit": "1"
     },
     "f_q": {
-      "value": 1.000000000,
+      "value": 0.999999999709,
       "unit": "1"
     },
     "f_h": {
-      "value": 1.000000000,
+      "value": 0.999999999709,
       "unit": "1"
     },
     "f_eta": {
-      "value": 0.999999999,
+      "value": 0.999999998798,
       "unit": "1"
     },
     "flow": {
-      "value": 0.033333333,
+      "value": 0.0333333333236,
       "unit": "m3/s"
     },
     "head": {
-      "value": 44.999999987,
+      "value": 44.9999999869,
       "unit": "m"
     },
     "efficiency": {
-      "value": 0.841555641,
+      "value": 0.841555640983,
       "unit": "1"
     },
     "shaft_power": {
-      "value": 17448.110572001,
+      "value": 17448.1105720,
       "unit": "W"
     }
   },
   "geometry": {
     "impeller": {
       "beta1b": {
-        "value": 0.353952437,
+        "value": 0.353952437461,
         "unit": "rad"
       },
       "wrap_angle": {
-        "value": 1.797799228,
+        "value": 1.79779922795,
         "unit": "rad"
       },
       "blade": [
         {
           "r": {
-            "value": 0.052681880,
+            "value": 0.0526818801479,
             "unit": "m"
           },
           "beta": {
-            "value": 0.353952437,
+            "value": 0.353952437461,
             "unit": "rad"
           },
           "theta": {
@@ -1094,367 +1094,367 @@ $ hmflow-cli report ref.hmf --curve-points 11
             "unit": "rad"
           },
           "width": {
-            "value": 0.024156181,
+            "value": 0.0241561813435,
             "unit": "m"
           }
         },
         {
           "r": {
-            "value": 0.055047967,
+            "value": 0.0550479666058,
             "unit": "m"
           },
           "beta": {
-            "value": 0.352689743,
+            "value": 0.352689742601,
             "unit": "rad"
           },
           "theta": {
-            "value": 0.119159862,
+            "value": 0.119159862135,
             "unit": "rad"
           },
           "width": {
-            "value": 0.023458627,
+            "value": 0.0234586268909,
             "unit": "m"
           }
         },
         {
           "r": {
-            "value": 0.057414053,
+            "value": 0.0574140530636,
             "unit": "m"
           },
           "beta": {
-            "value": 0.351427048,
+            "value": 0.351427047740,
             "unit": "rad"
           },
           "theta": {
-            "value": 0.233746854,
+            "value": 0.233746854444,
             "unit": "rad"
           },
           "width": {
-            "value": 0.022828340,
+            "value": 0.0228283403875,
             "unit": "m"
           }
         },
         {
           "r": {
-            "value": 0.059780140,
+            "value": 0.0597801395215,
             "unit": "m"
           },
           "beta": {
-            "value": 0.350164353,
+            "value": 0.350164352879,
             "unit": "rad"
           },
           "theta": {
-            "value": 0.344133694,
+            "value": 0.344133694212,
             "unit": "rad"
           },
           "width": {
-            "value": 0.022257762,
+            "value": 0.0222577621615,
             "unit": "m"
           }
         },
         {
           "r": {
-            "value": 0.062146226,
+            "value": 0.0621462259793,
             "unit": "m"
           },
           "beta": {
-            "value": 0.348901658,
+            "value": 0.348901658018,
             "unit": "rad"
           },
           "theta": {
-            "value": 0.450649663,
+            "value": 0.450649662589,
             "unit": "rad"
           },
           "width": {
-            "value": 0.021740509,
+            "value": 0.0217405091922,
             "unit": "m"
           }
         },
         {
           "r": {
-            "value": 0.064512312,
+            "value": 0.0645123124372,
             "unit": "m"
           },
           "beta": {
-            "value": 0.347638963,
+            "value": 0.347638963157,
             "unit": "rad"
           },
           "theta": {
-            "value": 0.553587109,
+            "value": 0.553587108671,
             "unit": "rad"
           },
           "width": {
-            "value": 0.021271161,
+            "value": 0.0212711612466,
             "unit": "m"
           }
         },
         {
           "r": {
-            "value": 0.066878399,
+            "value": 0.0668783988951,
             "unit": "m"
           },
           "beta": {
-            "value": 0.346376268,
+            "value": 0.346376268297,
             "unit": "rad"
           },
           "theta": {
-            "value": 0.653206780,
+            "value": 0.653206779818,
             "unit": "rad"
           },
           "width": {
-            "value": 0.020845093,
+            "value": 0.0208450925907,
             "unit": "m"
           }
         },
         {
           "r": {
-            "value": 0.069244485,
+            "value": 0.0692444853529,
             "unit": "m"
           },
           "beta": {
-            "value": 0.345113573,
+            "value": 0.345113573436,
             "unit": "rad"
           },
           "theta": {
-            "value": 0.749742224,
+            "value": 0.749742223625,
             "unit": "rad"
           },
           "width": {
-            "value": 0.020458338,
+            "value": 0.0204583383927,
             "unit": "m"
           }
         },
         {
           "r": {
-            "value": 0.071610572,
+            "value": 0.0716105718108,
             "unit": "m"
           },
           "beta": {
-            "value": 0.343850879,
+            "value": 0.343850878575,
             "unit": "rad"
           },
           "theta": {
-            "value": 0.843403449,
+            "value": 0.843403449082,
             "unit": "rad"
           },
           "width": {
-            "value": 0.020107488,
+            "value": 0.0201074878150,
             "unit": "m"
           }
         },
         {
           "r": {
-            "value": 0.073976658,
+            "value": 0.0739766582686,
             "unit": "m"
           },
           "beta": {
-            "value": 0.342588184,
+            "value": 0.342588183714,
             "unit": "rad"
           },
           "theta": {
-            "value": 0.934379992,
+            "value": 0.934379991705,
             "unit": "rad"
           },
           "width": {
-            "value": 0.019789598,
+            "value": 0.0197895978445,
             "unit": "m"
           }
         },
         {
           "r": {
-            "value": 0.076342745,
+            "value": 0.0763427447265,
             "unit": "m"
           },
           "beta": {
-            "value": 0.341325489,
+            "value": 0.341325488853,
             "unit": "rad"
           },
           "theta": {
-            "value": 1.022843495,
+            "value": 1.02284349543,
             "unit": "rad"
           },
           "width": {
-            "value": 0.019502123,
+            "value": 0.0195021233855,
             "unit": "m"
           }
         },
         {
           "r": {
-            "value": 0.078708831,
+            "value": 0.0787088311844,
             "unit": "m"
           },
           "beta": {
-            "value": 0.340062794,
+            "value": 0.340062793993,
             "unit": "rad"
           },
           "theta": {
-            "value": 1.108949900,
+            "value": 1.10894989992,
             "unit": "rad"
           },
           "width": {
-            "value": 0.019242860,
+            "value": 0.0192428602222,
             "unit": "m"
           }
         },
         {
           "r": {
-            "value": 0.081074918,
+            "value": 0.0810749176422,
             "unit": "m"
           },
           "beta": {
-            "value": 0.338800099,
+            "value": 0.338800099132,
             "unit": "rad"
           },
           "theta": {
-            "value": 1.192841304,
+            "value": 1.19284130353,
             "unit": "rad"
           },
           "width": {
-            "value": 0.019009898,
+            "value": 0.0190098982536,
             "unit": "m"
           }
         },
         {
           "r": {
-            "value": 0.083441004,
+            "value": 0.0834410041001,
             "unit": "m"
           },
           "beta": {
-            "value": 0.337537404,
+            "value": 0.337537404271,
             "unit": "rad"
           },
           "theta": {
-            "value": 1.274647558,
+            "value": 1.27464755794,
             "unit": "rad"
           },
           "width": {
-            "value": 0.018801583,
+            "value": 0.0188015829941,
             "unit": "m"
           }
         },
         {
           "r": {
-            "value": 0.085807091,
+            "value": 0.0858070905579,
             "unit": "m"
           },
           "beta": {
-            "value": 0.336274709,
+            "value": 0.336274709410,
             "unit": "rad"
           },
           "theta": {
-            "value": 1.354487640,
+            "value": 1.35448763967,
             "unit": "rad"
           },
           "width": {
-            "value": 0.018616484,
+            "value": 0.0186164837856,
             "unit": "m"
           }
         },
         {
           "r": {
-            "value": 0.088173177,
+            "value": 0.0881731770158,
             "unit": "m"
           },
           "beta": {
-            "value": 0.335012015,
+            "value": 0.335012014549,
             "unit": "rad"
           },
           "theta": {
-            "value": 1.432470835,
+            "value": 1.43247083479,
             "unit": "rad"
           },
           "width": {
-            "value": 0.018453368,
+            "value": 0.0184533675014,
             "unit": "m"
           }
         },
         {
           "r": {
-            "value": 0.090539263,
+            "value": 0.0905392634737,
             "unit": "m"
           },
           "beta": {
-            "value": 0.333749320,
+            "value": 0.333749319689,
             "unit": "rad"
           },
           "theta": {
-            "value": 1.508697767,
+            "value": 1.50869776660,
             "unit": "rad"
           },
           "width": {
-            "value": 0.018311177,
+            "value": 0.0183111767865,
             "unit": "m"
           }
         },
         {
           "r": {
-            "value": 0.092905350,
+            "value": 0.0929053499315,
             "unit": "m"
           },
           "beta": {
-            "value": 0.332486625,
+            "value": 0.332486624828,
             "unit": "rad"
           },
           "theta": {
-            "value": 1.583261291,
+            "value": 1.58326129070,
             "unit": "rad"
           },
           "width": {
-            "value": 0.018189012,
+            "value": 0.0181890120804,
             "unit": "m"
           }
         },
         {
           "r": {
-            "value": 0.095271436,
+            "value": 0.0952714363894,
             "unit": "m"
           },
           "beta": {
-            "value": 0.331223930,
+            "value": 0.331223929967,
             "unit": "rad"
           },
           "theta": {
-            "value": 1.656247277,
+            "value": 1.65624727731,
             "unit": "rad"
           },
           "width": {
-            "value": 0.018086117,
+            "value": 0.0180861168243,
             "unit": "m"
           }
         },
         {
           "r": {
-            "value": 0.097637523,
+            "value": 0.0976375228472,
             "unit": "m"
           },
           "beta": {
-            "value": 0.329961235,
+            "value": 0.329961235106,
             "unit": "rad"
           },
           "theta": {
-            "value": 1.727735298,
+            "value": 1.72773529763,
             "unit": "rad"
           },
           "width": {
-            "value": 0.018001865,
+            "value": 0.0180018653848,
             "unit": "m"
           }
         },
         {
           "r": {
-            "value": 0.100003609,
+            "value": 0.100003609305,
             "unit": "m"
           },
           "beta": {
-            "value": 0.328698540,
+            "value": 0.328698540245,
             "unit": "rad"
           },
           "theta": {
-            "value": 1.797799228,
+            "value": 1.79779922795,
             "unit": "rad"
           },
           "width": {
-            "value": 0.017935753,
+            "value": 0.0179357533200,
             "unit": "m"
           }
         }
@@ -1462,11 +1462,11 @@ $ hmflow-cli report ref.hmf --curve-points 11
     },
     "volute_outlet": {
       "cutwater_radius": {
-        "value": 0.110936912,
+        "value": 0.110936912240,
         "unit": "m"
       },
       "cutwater_min_radius": {
-        "value": 0.110936912,
+        "value": 0.110936912240,
         "unit": "m"
       },
       "nominal_diameter": {
@@ -1474,22 +1474,22 @@ $ hmflow-cli report ref.hmf --curve-points 11
         "unit": "m"
       },
       "area_ratio": {
-        "value": 1.076370329,
+        "value": 1.07637032884,
         "unit": "1"
       },
       "min_length": {
-        "value": 0.031325824,
+        "value": 0.0313258239021,
         "unit": "m"
       },
       "half_angle": {
-        "value": 0.037465149,
+        "value": 0.0374651494452,
         "unit": "rad"
       }
     }
   },
   "mechanics": {
     "shaft_torque": {
-      "value": 63.199620988,
+      "value": 63.1996209883,
       "unit": "N*m"
     },
     "shaft_shear_stress": {
@@ -1497,16 +1497,16 @@ $ hmflow-cli report ref.hmf --curve-points 11
       "unit": "Pa"
     },
     "shaft_min_diameter": {
-      "value": 0.024275454,
+      "value": 0.0242754536857,
       "unit": "m"
     },
     "hub_diameter": {
-      "value": 0.030344317,
+      "value": 0.0303443171072,
       "unit": "m"
     },
     "radial_volute": "simple",
     "radial_coefficient_shutoff": {
-      "value": 0.263197620,
+      "value": 0.263197620482,
       "unit": "1"
     },
     "radial_coefficient_design": {
@@ -1514,7 +1514,7 @@ $ hmflow-cli report ref.hmf --curve-points 11
       "unit": "1"
     },
     "radial_width": {
-      "value": 0.025965256,
+      "value": 0.0259652561099,
       "unit": "m"
     },
     "radial_thrust_shutoff": {
@@ -1530,43 +1530,43 @@ $ hmflow-cli report ref.hmf --curve-points 11
       "unit": "N"
     },
     "front_seal_diameter": {
-      "value": 0.105363760,
+      "value": 0.105363760296,
       "unit": "m"
     },
     "shaft_seal_diameter": {
-      "value": 0.030344317,
+      "value": 0.0303443171072,
       "unit": "m"
     },
     "axial_thrust_low": {
-      "value": 2465.584838446,
+      "value": 2465.58483845,
       "unit": "N"
     },
     "axial_thrust_high": {
-      "value": 3170.037649430,
+      "value": 3170.03764943,
       "unit": "N"
     },
     "blade_thickness_ratio": {
-      "value": 0.016058426,
+      "value": 0.0160584259822,
       "unit": "1"
     },
     "blade_thickness": {
-      "value": 0.003211801,
+      "value": 0.00321180111597,
       "unit": "m"
     },
     "trailing_edge_thickness": {
-      "value": 0.001605901,
+      "value": 0.00160590055798,
       "unit": "m"
     },
     "shroud_thickness": {
-      "value": 0.004014751,
+      "value": 0.00401475139496,
       "unit": "m"
     },
     "seal_clearance": {
-      "value": 0.000409944,
+      "value": 0.000409944330281,
       "unit": "m"
     },
     "rated_power": {
-      "value": 17448.110561177,
+      "value": 17448.1105612,
       "unit": "W"
     },
     "driver_margin": {
@@ -1574,7 +1574,7 @@ $ hmflow-cli report ref.hmf --curve-points 11
       "unit": "1"
     },
     "driver_power": {
-      "value": 21810.138201471,
+      "value": 21810.1382015,
       "unit": "W"
     },
     "motor_rating": {
@@ -1582,7 +1582,7 @@ $ hmflow-cli report ref.hmf --curve-points 11
       "unit": "W"
     },
     "curve_max_power": {
-      "value": 18518.191580212,
+      "value": 18518.1915802,
       "unit": "W"
     }
   },

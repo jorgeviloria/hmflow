@@ -61,16 +61,36 @@ fn d1a1_reference() {
     // 0,870, que sigue contrastada en hm-formula (hydraulic_efficiency).
     close(result.eta_h, 0.8896, 0.001);
     close(result.eta_v, 0.9722, 0.002);
-    // Desde end_suction_v0.4 η sale del análisis de pérdidas de Gülich; el
-    // libro da 0,813 con su cadena ηh·ηv·ηm. Desde la v0.9 el ηv del libro
-    // (0,9722) también entra en el análisis de pérdidas: 0,806, −0,9 % en
-    // potencia y par frente al libro. Es la del modelo, no la de la cadena.
-    close(result.eta, 0.806, 0.005);
+    // El libro da η = 0,813 con su cadena ηh·ηv·ηm, y de ahí P = 2658,5 W.
+    // Desde end_suction_v0.4 η sale del análisis de pérdidas de Gülich, y
+    // desde la v0.9 el ηv del libro (0,9722) también entra en él: el motor da
+    // 0,806, −0,9 % en η y +0,9 % en potencia y par. Es la diferencia del
+    // modelo (pérdidas por fuga y rozamiento de discos frente a la cadena de
+    // rendimientos), no un error de fórmula: la tolerancia es del 1,2 %. La
+    // potencia y el par máximos escalan la P del libro con la razón P_max/P
+    // del motor (curva de potencia, no publicada en D1.A1).
+    let book_eta = 0.813;
+    let book_p_shaft = 2161.4 / book_eta;
+    let book_scale = book_p_shaft / 2683.0;
+    let rel = 0.012;
+    close(result.eta, book_eta, book_eta * rel);
     close(result.p_hyd.value(), 2161.4, 5.0);
-    close(result.p_shaft.value(), 2683.0, 15.0);
-    close(result.p_max.value(), 2951.3, 20.0);
-    close(result.torque.value(), 14.23, 0.08);
-    close(result.torque_max.value(), 15.66, 0.1);
+    close(result.p_shaft.value(), book_p_shaft, book_p_shaft * rel);
+    close(
+        result.p_max.value(),
+        2951.3 * book_scale,
+        2951.3 * book_scale * rel,
+    );
+    close(
+        result.torque.value(),
+        14.23 * book_scale,
+        14.23 * book_scale * rel,
+    );
+    close(
+        result.torque_max.value(),
+        15.66 * book_scale,
+        15.66 * book_scale * rel,
+    );
     // NPSH3 con cm0 = 2,25 m/s (la meridional del álabe), no con c0 = 3,6.
     // El libro no publica el NPSH de D1.A1.
     close(result.npshr_design.value(), 0.895, 0.01);

@@ -137,6 +137,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "hm-engine"
+version = "0.0.1"
+dependencies = [
+ "hm-core",
+ "hm-design",
+ "hm-formula",
+ "hm-project",
+ "hm-units",
+ "thiserror",
+]
+
+[[package]]
 name = "hm-formula"
 version = "0.0.1"
 dependencies = [

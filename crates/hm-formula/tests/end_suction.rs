@@ -26,13 +26,13 @@ fn pack_is_audit_clean() {
 }
 
 #[test]
-fn pack_has_seventy_three_formulas() {
-    assert_eq!(Registry::from_toml(END_SUCTION_V01_PACK).unwrap().len(), 73);
+fn pack_has_seventy_five_formulas() {
+    assert_eq!(Registry::from_toml(END_SUCTION_V01_PACK).unwrap().len(), 75);
 }
 
 #[test]
 fn all_merges_both_packs() {
-    assert_eq!(Registry::all().len(), 83);
+    assert_eq!(Registry::all().len(), 85);
 }
 
 #[test]
@@ -628,6 +628,39 @@ fn volute_matching_flow_cm() {
             ],
         ),
         0.103_966,
+        1e-6,
+    );
+}
+
+#[test]
+fn volute_throat_area_ratio() {
+    // T7.7.11 con c3q = ratio·c2: A = Q/(ratio·c2) = 0,1/(0,8·20).
+    close(
+        evaluate(
+            "design.volute_throat_area_ratio",
+            &[("Q", "0.1 m3/s"), ("c2", "20 m/s"), ("ratio", "0.8")],
+        ),
+        0.006_25,
+        1e-9,
+    );
+}
+
+#[test]
+fn volute_momentum_throat_diameter() {
+    // T7.7.7 con εsp = 2π: X = Q/(π·c2u·r2), d3q = X + √(2·dz'·X).
+    // Q = 0,06688 m3/s, c2u = 23,9 m/s, r2 = 0,21325 m, dz' = 0,46705 m.
+    close(
+        evaluate(
+            "design.volute_momentum_throat_diameter",
+            &[
+                ("Q", "0.06688 m3/s"),
+                ("c2u", "23.9 m/s"),
+                ("r2", "0.21325 m"),
+                ("dz", "0.46705 m"),
+                ("eps_sp", "6.283185307179586"),
+            ],
+        ),
+        0.066_641,
         1e-6,
     );
 }

@@ -27,8 +27,8 @@ value = "1.0442428120665044"
 
 [params.a360]
 mode = "auto"
-formula = "design.volute_throat_area"
-value = "0.0020382595874240917 m2"
+formula = "design.volute_throat_area_ratio"
+value = "0.0025478244842801145 m2"
 
 [params.b1]
 mode = "auto"
@@ -94,7 +94,7 @@ value = "0.20000721861021556 m"
 [params.d360]
 mode = "auto"
 formula = "design.volute_throat_diameter"
-value = "0.056037337357017214 m"
+value = "0.06265164780418946 m"
 
 [params.dn]
 mode = "auto"
@@ -207,7 +207,7 @@ value = "0.11093691223965224 m"
 [params.r4]
 mode = "auto"
 formula = "design.volute_outer_radius"
-value = "0.13895558091816085 m"
+value = "0.14226273614174698 m"
 
 [params.rho]
 mode = "manual"

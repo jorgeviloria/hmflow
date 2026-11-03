@@ -34,6 +34,8 @@ fn volute_follows_d2_2() {
         k3: Some(1.04),
         // El ηv de Srinivasan (0,9722); el motor usa el de Gülich 3.5.10.
         eta_v: Some(0.9722),
+        // La garganta de Srinivasan: c3q = c2. El motor usa 0,8 (Gülich).
+        volute_ratio: Some(1.0),
         ..DesignOptions::default()
     };
     let result = design_with_options(&input(), &options).unwrap();

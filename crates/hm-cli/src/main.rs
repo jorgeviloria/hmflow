@@ -1241,9 +1241,11 @@ fn design_options(project: &Project) -> Result<DesignOptions, Box<dyn std::error
         k_eff: param_f64(project, "k_eff", "1")?,
         // La holgura medida entrará como parámetro cuando se adopte.
         seal_clearance: None,
-        // ηv y agujeros de equilibrio entran como parámetros en la tarea 12.
+        // ηv, agujeros de equilibrio y razón de la garganta entran como
+        // parámetros en la tarea 12.
         eta_v: None,
         balance_holes: false,
+        volute_ratio: None,
     })
 }
 

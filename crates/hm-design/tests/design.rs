@@ -283,10 +283,11 @@ fn has(result: &hm_design::DesignResult, code: &str) -> bool {
 
 #[test]
 fn npsh_margin_is_enforced_inside_the_preferred_region() {
-    // Con el NPSH3 de la v0.6 la región 0,7..1,2 Qd pide ≈ 8,6 m (tabla 6.2
-    // de Gülich en 1,2 Qd); 8 m no llega.
+    // v0.9: la subida del NPSH3 empieza en QPS ≈ 1,1·Qd, no en Qc, y la región
+    // 0,7..1,2 Qd pide ≈ 6,8 m (tabla 6.2 de Gülich en 1,2 Qd); 6 m no llega.
+    // Con la voluta de la v0.8 pedía 8,6 m.
     let mut input = input("120 m3/h", "45 m", "2900 rpm");
-    input.npsha = Some(parse_quantity("8 m").unwrap());
+    input.npsha = Some(parse_quantity("6 m").unwrap());
     let result = design(&input).unwrap();
     assert!(has(&result, "HM-DES-007"));
     assert!(result.diagnostics.has_errors());
@@ -294,9 +295,9 @@ fn npsh_margin_is_enforced_inside_the_preferred_region() {
 
 #[test]
 fn npsh_shortfall_outside_the_preferred_region_only_warns() {
-    // 10 m cubre la región 0,7..1,2 Qd (≈ 8,6 m) pero no 1,3 Qd (≈ 11 m).
+    // 8 m cubre la región 0,7..1,2 Qd (≈ 6,8 m) pero no 1,3 Qd (≈ 8,6 m).
     let mut input = input("120 m3/h", "45 m", "2900 rpm");
-    input.npsha = Some(parse_quantity("10 m").unwrap());
+    input.npsha = Some(parse_quantity("8 m").unwrap());
     let result = design(&input).unwrap();
     assert!(!result.diagnostics.has_errors());
     assert!(has(&result, "HM-DES-006"));
@@ -604,14 +605,14 @@ fn unreachable_head_is_an_error() {
 #[test]
 fn transition_comes_from_the_geometry() {
     // Gülich ec. 6.17-6.20 con el diseño por defecto de 120 m3/h y 45 m:
-    // la voluta manda (Qc < QSF) y la subida empieza en Qd.
+    // con la garganta de 0,8 la voluta deja de mandar y la subida empieza en QPS.
     let input = input("120 m3/h", "45 m", "2900 rpm");
     let result = design(&input).unwrap();
     let qd = input.q.si;
     close(result.shockless_flow.si / qd, 1.119, 0.005);
-    // v0.9: Qc por 6.22a (con c2m); con la garganta de c3q = c2 es el de diseño.
-    // Con 6.19 salía 0,989·Qd.
-    close(result.volute_matching_flow.si / qd, 1.0, 1e-6);
+    // v0.9: Qc por 6.22a (con c2m) con la garganta de c3q/c2 = 0,8: 1,15·Qd.
+    // Con 6.19 y la garganta de Srinivasan salía 0,989·Qd.
+    close(result.volute_matching_flow.si / qd, 1.151, 0.005);
     // v0.9: τ1 sube β1B y divide QSF; la garganta de QW también se cierra
     // con el espesor (A1·sen β1B/τ1), así que QW queda por debajo de QSF.
     assert!(
@@ -620,11 +621,10 @@ fn transition_comes_from_the_geometry() {
         result.throat_flow.si,
         result.shockless_flow.si
     );
-    close(
-        result.transition_ratio,
-        result.volute_matching_flow.si / qd,
-        1e-12,
-    );
+    // Qc queda por encima de QPS = (QSF + QW)/2: la subida empieza en QPS.
+    let pressure_side = 0.5 * (result.shockless_flow.si + result.throat_flow.si);
+    assert!(pressure_side < result.volute_matching_flow.si);
+    close(result.transition_ratio, pressure_side / qd, 1e-12);
     assert!(!has(&result, "HM-DES-025"));
     close(result.recirculation_onset, 0.513, 0.002);
     assert!(!has(&result, "HM-DES-026"));
@@ -940,9 +940,9 @@ fn throat_flow_is_below_shockless_flow_with_blockage() {
 }
 
 #[test]
-fn volute_matching_flow_is_the_design_flow_with_the_cm_equation() {
-    // Gülich 6.22a (con c2m): la garganta se dimensiona con c3q = c2, así que
-    // el caudal en que c3q = c2 es el de diseño. Con 6.19 (sin c2m) salía
+fn volute_matching_flow_is_the_design_flow_when_c3q_equals_c2() {
+    // Gülich 6.22a (con c2m): con la garganta de Srinivasan (c3q = c2) el
+    // caudal en que c3q = c2 es el de diseño. Con 6.19 (sin c2m) salía
     // 0,92·Qd en nq ≈ 87.
     for (q, h, n) in [
         ("1060 gpm", "83 m", "1750 rpm"),
@@ -950,8 +950,32 @@ fn volute_matching_flow_is_the_design_flow_with_the_cm_equation() {
         ("200 m3/h", "8 m", "1750 rpm"),
     ] {
         let input = input(q, h, n);
-        let result = design(&input).unwrap();
+        let result = design_with_options(
+            &input,
+            &DesignOptions {
+                volute_ratio: Some(1.0),
+                ..DesignOptions::default()
+            },
+        )
+        .unwrap();
         close(result.volute_matching_flow.si / input.q.si, 1.0, 1e-6);
+    }
+}
+
+#[test]
+fn default_volute_leaves_margin_over_the_design_flow() {
+    // Con c3q/c2 = 0,8 la voluta cruza c3q = c2 por encima de Qd (Gülich pide
+    // 1,1..1,3·Qd con nq bajo). Con nq alto no hay cruce (Qc se toma como
+    // 10·Qd): c3q no llega a c2 en ningún caudal.
+    for (q, h, n, upper) in [
+        ("1060 gpm", "83 m", "1750 rpm", 1.3),
+        ("500 m3/h", "60 m", "1450 rpm", 1.3),
+        ("200 m3/h", "8 m", "1750 rpm", f64::INFINITY),
+    ] {
+        let input = input(q, h, n);
+        let result = design(&input).unwrap();
+        let ratio = result.volute_matching_flow.si / input.q.si;
+        assert!(ratio >= 1.1 && ratio < upper, "{q}: {ratio}");
     }
 }
 
@@ -975,4 +999,66 @@ fn matching_flow_without_crossing_stays_finite() {
     assert!(result.volute_matching_flow.si.is_finite());
     close(result.volute_matching_flow.si / input.q.si, 10.0, 1e-9);
     assert!(result.transition_ratio < 10.0);
+}
+
+#[test]
+fn volute_throat_follows_the_deceleration_ratio() {
+    // end_suction_v0.9: A360 = Q/(ratio·c2) con ratio = 0,8 por defecto
+    // (Gülich T7.7.11, tabla 10.2 fila 9). Con ratio = 1 sale la de Srinivasan.
+    let input = input("1060 gpm", "83 m", "1750 rpm");
+    let result = design(&input).unwrap();
+    let c2 = result.volute.inlet_velocity.si;
+    close(result.volute.throat_area.si, input.q.si / (0.8 * c2), 1e-9);
+    let equivalent = (4.0 * result.volute.throat_area.si / std::f64::consts::PI).sqrt();
+    close(result.volute.throat_diameter.si, 1.1 * equivalent, 1e-9);
+
+    let srinivasan = design_with_options(
+        &input,
+        &DesignOptions {
+            volute_ratio: Some(1.0),
+            ..DesignOptions::default()
+        },
+    )
+    .unwrap();
+    close(
+        srinivasan.volute.throat_area.si,
+        input.q.si / srinivasan.volute.inlet_velocity.si,
+        1e-9,
+    );
+    close(
+        result.volute.throat_area.si / srinivasan.volute.throat_area.si,
+        1.0 / 0.8,
+        1e-9,
+    );
+}
+
+#[test]
+fn invalid_volute_ratio_is_rejected() {
+    let q = input("120 m3/h", "45 m", "2900 rpm");
+    for bad in [0.4, 1.2, f64::NAN] {
+        let error = design_with_options(
+            &q,
+            &DesignOptions {
+                volute_ratio: Some(bad),
+                ..DesignOptions::default()
+            },
+        )
+        .unwrap_err()
+        .to_string();
+        assert!(error.contains("volute_ratio"), "{error}");
+    }
+}
+
+#[test]
+fn momentum_throat_is_a_contrast_that_agrees_at_low_nq() {
+    // T7.7.7 (momento cinético) y la razón 0,8 coinciden en B1 (nq 16,5) y
+    // se separan con nq alto, donde el momento cinético pide c3q/c2 ≈ 0,4.
+    let equivalent =
+        |r: &hm_design::DesignResult| (4.0 * r.volute.throat_area.si / std::f64::consts::PI).sqrt();
+    let b1 = design(&input("1060 gpm", "83 m", "1750 rpm")).unwrap();
+    let low = b1.volute.momentum_throat_diameter.si / equivalent(&b1);
+    assert!((low - 1.0).abs() < 0.03, "B1: {low}");
+    let high = design(&input("200 m3/h", "8 m", "1750 rpm")).unwrap();
+    let ratio = high.volute.momentum_throat_diameter.si / equivalent(&high);
+    assert!(ratio > 1.25, "nq 87: {ratio}");
 }

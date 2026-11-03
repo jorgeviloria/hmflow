@@ -181,6 +181,9 @@ pub struct VoluteResult {
     pub throat_area: Quantity,
     pub throat_diameter: Quantity,
     pub outer_radius: Quantity,
+    /// Diámetro de la garganta circular por conservación del momento cinético
+    /// (Gülich T7.7.7), de contraste: el motor dimensiona con la razón c3q/c2.
+    pub momentum_throat_diameter: Quantity,
     pub sections: Vec<VoluteSection>,
 }
 
@@ -455,7 +458,7 @@ pub const PARAM_SPECS: &[ParamSpec] = &[
     ParamSpec {
         name: "a360",
         unit: "m2",
-        formula: Some("design.volute_throat_area"),
+        formula: Some("design.volute_throat_area_ratio"),
     },
     ParamSpec {
         name: "d360",
@@ -480,6 +483,17 @@ pub const DEFAULT_VOLUTE_C: f64 = 0.05;
 /// Factor de diámetro efectivo de la garganta por defecto (Srinivasan 2017, D2.2).
 pub const DEFAULT_K_EFF: f64 = 1.1;
 
+/// Razón de deceleración c3q/c2 de la garganta de la voluta por defecto:
+/// Gülich 2020, tabla 10.2 (fila 9, «no mucho menor que 0,8») y p. 180. Con
+/// 1,0 sale la garganta de Srinivasan (D2.2).
+pub const DEFAULT_VOLUTE_RATIO: f64 = 0.8;
+
+/// Intervalo admitido para la razón c3q/c2 de la garganta.
+pub const VOLUTE_RATIO_RANGE: (f64, f64) = (0.5, 1.0);
+
+/// Espesor del borde de ataque de la lengua frente a d2 (Gülich 2020, p. 493).
+const CUTWATER_THICKNESS_RATIO: f64 = 0.02;
+
 /// Selecciones que se pueden fijar desde el proyecto.
 #[derive(Debug, Clone, Default)]
 pub struct DesignOptions {
@@ -495,6 +509,9 @@ pub struct DesignOptions {
     pub k3: Option<f64>,
     pub volute_width_factor: Option<f64>,
     pub k_eff: Option<f64>,
+    /// Razón c3q/c2 de la garganta de la voluta. Sin dato,
+    /// [`DEFAULT_VOLUTE_RATIO`]. Entre 0,5 y 1.
+    pub volute_ratio: Option<f64>,
     /// Holgura diametral del anillo de desgaste delantero, m. Sin dato, la de
     /// Gülich ec. (3.12). Solo entra en el contraste de fugas `seal_eta_v`.
     pub seal_clearance: Option<f64>,
@@ -1084,6 +1101,21 @@ pub fn design_with_options(
     let k3_value = options.k3.unwrap_or(cutwater_min_ratio);
     let volute_width_value = options.volute_width_factor.unwrap_or(DEFAULT_VOLUTE_C);
     let k_eff_value = options.k_eff.unwrap_or(DEFAULT_K_EFF);
+    let volute_ratio_value = match options.volute_ratio {
+        Some(value)
+            if value.is_finite()
+                && (VOLUTE_RATIO_RANGE.0..=VOLUTE_RATIO_RANGE.1).contains(&value) =>
+        {
+            value
+        }
+        Some(value) => {
+            return Err(DesignError::Input(format!(
+                "`volute_ratio` = {value} no es válido; debe estar entre {} y {}",
+                VOLUTE_RATIO_RANGE.0, VOLUTE_RATIO_RANGE.1
+            )));
+        }
+        None => DEFAULT_VOLUTE_RATIO,
+    };
     validate_selection(&selection, k3_value, volute_width_value, k_eff_value)?;
 
     let specific_diameter_mm = evaluate(
@@ -1427,8 +1459,12 @@ pub fn design_with_options(
     )?;
     let a360 = evaluate(
         &registry,
-        "design.volute_throat_area",
-        &[("Q", input.q.clone()), ("C3", c3.clone())],
+        "design.volute_throat_area_ratio",
+        &[
+            ("Q", input.q.clone()),
+            ("c2", c3.clone()),
+            ("ratio", quantity(volute_ratio_value, one.clone())),
+        ],
     )?;
     let d360 = evaluate(
         &registry,
@@ -1456,6 +1492,21 @@ pub fn design_with_options(
         });
     }
 
+    let momentum_throat_diameter = evaluate(
+        &registry,
+        "design.volute_momentum_throat_diameter",
+        &[
+            ("Q", input.q.clone()),
+            ("c2u", cu2.clone()),
+            ("r2", Quantity::from_si(0.5 * d2.si, m.clone())),
+            (
+                "dz",
+                Quantity::from_si((k3_value + CUTWATER_THICKNESS_RATIO) * d2.si, m.clone()),
+            ),
+            ("eps_sp", quantity(2.0 * std::f64::consts::PI, one.clone())),
+        ],
+    )?;
+
     let volute = VoluteResult {
         base_radius: with_unit(r3, &m),
         width: with_unit(b3, &m),
@@ -1463,6 +1514,7 @@ pub fn design_with_options(
         throat_area: with_unit(a360, &m2),
         throat_diameter: with_unit(d360, &m),
         outer_radius: with_unit(r4, &m),
+        momentum_throat_diameter: with_unit(momentum_throat_diameter, &m),
         sections,
     };
 

@@ -365,6 +365,52 @@ value = "Q/C3"
 assumptions = "A360=Q/C3. En D2.2, A=0.0013 m2 con C3=12.089 m/s."
 
 [[formula]]
+id = "design.volute_throat_area_ratio"
+version = 1
+validation = "pilot"
+module = "design"
+title = "Área de la garganta de la voluta por razón de deceleración c3q/c2"
+source = "Gülich 2020, ec. (T7.7.11), p. 507, y tabla 10.2, p. 729"
+units = "m2"
+range = "0 .. 10"
+test = "crates/hm-formula/tests/end_suction.rs::volute_throat_area_ratio"
+
+[formula.inputs]
+Q = "m3/s"
+c2 = "m/s"
+ratio = "1"
+
+[formula.expr]
+value = "Q/(ratio*c2)"
+
+[formula.notes]
+assumptions = "A3q = Q_Le/(zLe·c3q) con c3q = ratio·c2 y zLe = 1. Con ratio = 1 es la fórmula de Srinivasan (A = Q/C3). Gülich pide c3q/c2 «no mucho menor que 0,8» (tabla 10.2, fila 9; óptimo ≈ 0,8 en la p. 180; banda 0,7–0,85 en la p. 508)."
+
+[[formula]]
+id = "design.volute_momentum_throat_diameter"
+version = 1
+validation = "pilot"
+module = "design"
+title = "Diámetro de la garganta circular por conservación del momento cinético"
+source = "Gülich 2020, tabla 7.7, ec. (7.7.7), p. 505"
+units = "m"
+range = "0 .. 5"
+test = "crates/hm-formula/tests/end_suction.rs::volute_momentum_throat_diameter"
+
+[formula.inputs]
+Q = "m3/s"
+c2u = "m/s"
+r2 = "m"
+dz = "m"
+eps_sp = "1"
+
+[formula.expr]
+value = "Q/(pi*c2u*r2)*eps_sp/(2*pi) + sqrt(2*dz*(Q/(pi*c2u*r2)*eps_sp/(2*pi)))"
+
+[formula.notes]
+assumptions = "X = Q_Le/(π c2u r2)·εsp/2π y d3q = X + √(2 dz' X) para una sección circular o el círculo equivalente de una sección cualquiera (A3q = π d3q²/4). dz' es el diámetro del punto de remanso: dz + e3, con e3 ≈ 0,02·d2. εsp = 2π en una voluta simple. Se usa como contraste, no para dimensionar."
+
+[[formula]]
 id = "design.volute_throat_diameter"
 version = 1
 validation = "reference"

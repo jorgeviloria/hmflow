@@ -84,6 +84,9 @@ pub struct Mechanics {
     pub shaft_min_diameter: f64,
     /// Diámetro del cubo con ese eje, m.
     pub hub_diameter: f64,
+    /// Ángulo de envolvente de la voluta doble en que se basa el empuje radial,
+    /// grados; `None` es una voluta simple.
+    pub volute_wrap_deg: Option<f64>,
     /// kR0, a válvula cerrada.
     pub radial_coefficient_shutoff: f64,
     /// kR,opt, en el punto de diseño.
@@ -337,6 +340,7 @@ pub fn mechanics(
         shaft_shear_stress: shear_stress,
         shaft_min_diameter,
         hub_diameter,
+        volute_wrap_deg: result.volute.wrap_deg,
         radial_coefficient_shutoff: double_k0.unwrap_or(k0),
         radial_coefficient_design: double_k0.unwrap_or(k_opt),
         blade_thickness_ratio,

@@ -119,6 +119,14 @@ pub struct ReportMechanics {
     pub shaft_shear_stress: Measure,
     pub shaft_min_diameter: Measure,
     pub hub_diameter: Measure,
+    /// Voluta en que se basa el empuje radial: `simple` (kR,opt = 0,08) o
+    /// `doble` (FDsp·kR0, tabla 9.7 (1)). Opcional: un informe anterior a la
+    /// v0.9 no lo lleva.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub radial_volute: Option<String>,
+    /// Ángulo de envolvente de la voluta doble, rad; ausente en una simple.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub volute_wrap: Option<Measure>,
     pub radial_coefficient_shutoff: Measure,
     pub radial_coefficient_design: Measure,
     pub radial_width: Measure,
@@ -365,6 +373,17 @@ impl DesignReport {
             shaft_shear_stress: Measure::new(mechanics.shaft_shear_stress, "Pa"),
             shaft_min_diameter: Measure::new(mechanics.shaft_min_diameter, "m"),
             hub_diameter: Measure::new(mechanics.hub_diameter, "m"),
+            radial_volute: Some(
+                if mechanics.volute_wrap_deg.is_some() {
+                    "doble"
+                } else {
+                    "simple"
+                }
+                .to_string(),
+            ),
+            volute_wrap: mechanics
+                .volute_wrap_deg
+                .map(|degrees| Measure::new(degrees.to_radians(), "rad")),
             radial_coefficient_shutoff: Measure::new(mechanics.radial_coefficient_shutoff, "1"),
             radial_coefficient_design: Measure::new(mechanics.radial_coefficient_design, "1"),
             radial_width: Measure::new(mechanics.radial_width, "m"),

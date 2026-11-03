@@ -1,5 +1,8 @@
 use hm_design::mechanics::{DEFAULT_SHAFT_SHEAR_STRESS, mechanics};
-use hm_design::{DesignInput, DesignReport, PARAM_SPECS, REPORT_FORMAT, REPORT_VERSION, design};
+use hm_design::{
+    DesignInput, DesignOptions, DesignReport, PARAM_SPECS, REPORT_FORMAT, REPORT_VERSION, design,
+    design_with_options,
+};
 use hm_units::{parse_quantity, parse_unit};
 
 fn input() -> DesignInput {
@@ -121,6 +124,11 @@ fn every_value_is_coherent_si() {
         mech.motor_rating
             .iter()
             .map(|measure| ("motor_rating", measure)),
+    );
+    measures.extend(
+        mech.volute_wrap
+            .iter()
+            .map(|measure| ("volute_wrap", measure)),
     );
     for point in &report.curve {
         measures.extend([
@@ -245,4 +253,34 @@ fn geometry_block_is_si_and_round_trips() {
     let text = serde_json::to_string(&report).unwrap();
     let back: DesignReport = serde_json::from_str(&text).unwrap();
     assert_eq!(back, report);
+}
+
+#[test]
+fn report_says_which_volute_the_radial_thrust_assumes() {
+    // Sin ángulo de envolvente el empuje radial es el de una voluta simple
+    // (kR,opt = 0,08); con él, el de voluta doble (tabla 9.7 (1)). El informe
+    // lo dice para que no haya que adivinarlo a partir de los coeficientes.
+    let mech = report().mechanics.expect("el informe lleva mecánica");
+    assert_eq!(mech.radial_volute.as_deref(), Some("simple"));
+    assert!(mech.volute_wrap.is_none());
+
+    let input = input();
+    let result = design_with_options(
+        &input,
+        &DesignOptions {
+            volute_wrap_deg: Some(165.0),
+            ..DesignOptions::default()
+        },
+    )
+    .unwrap();
+    let measured = mechanics(&input, &result, DEFAULT_SHAFT_SHEAR_STRESS).unwrap();
+    let report = DesignReport::new(&input, &result, 11, result.diagnostics.clone().into_vec())
+        .with_mechanics(&measured);
+    let mech = report.mechanics.expect("el informe lleva mecánica");
+    assert_eq!(mech.radial_volute.as_deref(), Some("doble"));
+    let wrap = mech
+        .volute_wrap
+        .expect("la voluta doble lleva su envolvente");
+    assert_eq!(wrap.unit, "rad");
+    assert!((wrap.value - 165.0_f64.to_radians()).abs() < 1e-9);
 }

@@ -4,17 +4,24 @@ on:
   push:
   pull_request:
 
+# Un push nuevo a la misma rama cancela la ejecución anterior: así no se
+# acumulan trabajos de macOS esperando runner.
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
   test:
     name: ${{ matrix.os }}
     runs-on: ${{ matrix.os }}
+    timeout-minutes: 30
     strategy:
       fail-fast: false
       matrix:
         os: [ubuntu-latest, windows-latest, macos-latest]
 
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
       - name: Instalar Rust
         uses: dtolnay/rust-toolchain@stable
@@ -51,17 +58,23 @@ jobs:
   ui-egui:
     name: ui-egui
     runs-on: macos-latest
+    timeout-minutes: 30
     defaults:
       run:
         working-directory: crates/hm-ui-egui
 
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
       - name: Instalar Rust
         uses: dtolnay/rust-toolchain@stable
         with:
           components: rustfmt, clippy
+
+      - name: Caché de cargo
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: crates/hm-ui-egui
 
       - name: Formato
         run: cargo fmt -- --check

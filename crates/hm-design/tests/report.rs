@@ -69,6 +69,22 @@ fn every_value_is_coherent_si() {
         ("seal_leakage_ratio", &hydraulics.seal_leakage_ratio),
         ("seal_eta_v", &hydraulics.seal_eta_v),
     ]);
+    // v0.9: deceleración de entrada, carga del álabe y garganta por momento
+    // cinético. Opcionales: un informe anterior no los lleva.
+    for (name, measure) in [
+        ("inlet_deceleration", &hydraulics.inlet_deceleration),
+        ("blade_loading", &hydraulics.blade_loading),
+        (
+            "blade_loading_allowable",
+            &hydraulics.blade_loading_allowable,
+        ),
+        (
+            "momentum_throat_diameter",
+            &hydraulics.momentum_throat_diameter,
+        ),
+    ] {
+        measures.push((name, measure.as_ref().expect(name)));
+    }
     let mech = report
         .mechanics
         .as_ref()

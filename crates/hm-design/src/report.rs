@@ -162,6 +162,19 @@ pub struct ReportHydraulics {
     pub head_slope: Measure,
     pub seal_leakage_ratio: Measure,
     pub seal_eta_v: Measure,
+    /// w1q/w1m en el punto de diseño (Gülich §7.2.1, paso 15). Opcional: un
+    /// informe anterior a la v0.9 no lo lleva.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub inlet_deceleration: Option<Measure>,
+    /// Carga efectiva del álabe ξeff (Gülich 7.1.10).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub blade_loading: Option<Measure>,
+    /// Carga admisible ξal (Gülich 7.1.11).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub blade_loading_allowable: Option<Measure>,
+    /// Diámetro de la garganta por momento cinético (T7.7.7), de contraste.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub momentum_throat_diameter: Option<Measure>,
 }
 
 /// Informe completo de un diseño.
@@ -296,6 +309,16 @@ impl DesignReport {
                 head_slope: Measure::new(result.head_slope, "1"),
                 seal_leakage_ratio: Measure::new(result.seal_leakage_ratio, "1"),
                 seal_eta_v: Measure::new(result.seal_eta_v, "1"),
+                inlet_deceleration: Some(Measure::new(result.inlet_deceleration, "1")),
+                blade_loading: Some(Measure::new(result.blade_loading, "1")),
+                blade_loading_allowable: Some(Measure::new(
+                    crate::blade_loading_allowable(result.nq),
+                    "1",
+                )),
+                momentum_throat_diameter: Some(Measure::new(
+                    result.volute.momentum_throat_diameter.si,
+                    "m",
+                )),
             }),
             viscous: None,
             geometry: None,

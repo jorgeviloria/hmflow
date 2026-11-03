@@ -321,6 +321,39 @@ pub const PARAM_SPECS: &[ParamSpec] = &[
         unit: "1",
         formula: None,
     },
+    // Opciones del método v0.9. Se guardan con su valor efectivo; en
+    // `eta_v_fixed`, `impeller_roughness` y `volute_wrap_deg`, 0 significa
+    // «sin dato» (ηv estimado, rodete liso, voluta simple).
+    ParamSpec {
+        name: "eta_v_fixed",
+        unit: "1",
+        formula: None,
+    },
+    ParamSpec {
+        name: "balance_holes",
+        unit: "1",
+        formula: None,
+    },
+    ParamSpec {
+        name: "volute_ratio",
+        unit: "1",
+        formula: None,
+    },
+    ParamSpec {
+        name: "impeller_roughness",
+        unit: "m",
+        formula: None,
+    },
+    ParamSpec {
+        name: "volute_channels",
+        unit: "1",
+        formula: None,
+    },
+    ParamSpec {
+        name: "volute_wrap_deg",
+        unit: "deg",
+        formula: None,
+    },
     ParamSpec {
         name: "slip",
         unit: "1",

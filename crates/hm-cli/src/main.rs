@@ -12,8 +12,8 @@ use hm_design::mechanics::{DEFAULT_SHAFT_SHEAR_STRESS, mechanics, mechanics_diag
 use hm_design::{
     DEFAULT_K_EFF, DEFAULT_VOLUTE_C, DesignInput, DesignOptions, DesignReport, DesignResult,
     LEGACY_METHODS, METHOD, PARAM_SPECS, ParamSpec, WATER_DENSITY_RANGE_C,
-    default_mechanical_efficiency, design, design_with_options, designed_si, param_spec,
-    performance_curve, stored_si_matches, water_density,
+    default_mechanical_efficiency, design_with_options, designed_si, param_spec, performance_curve,
+    stored_si_matches, water_density,
 };
 use hm_design::{ViscousCorrection, viscous_correction, viscous_diagnostics};
 use hm_formula::{Registry, eval, infer, parse};
@@ -143,6 +143,29 @@ enum Command {
         /// sin ella, la del agua a la temperatura indicada si es agua.
         #[arg(long, allow_hyphen_values = true)]
         viscosity: Option<String>,
+        /// Rendimiento volumétrico del rodete, entre 0 y 1. Sin él, el de
+        /// Gülich 3.5.10.
+        #[arg(long)]
+        eta_v: Option<f64>,
+        /// El rodete tiene agujeros de equilibrio (la fuga se duplica).
+        #[arg(long)]
+        balance_holes: bool,
+        /// Razón c3q/c2 de la garganta de la voluta, entre 0,5 y 1. Por
+        /// defecto 0,8 (Gülich, tabla 10.2); con 1 sale la de Srinivasan.
+        #[arg(long)]
+        volute_ratio: Option<f64>,
+        /// Rugosidad de arena equivalente del rodete, por ejemplo "0.05 mm" (50 µm).
+        /// Sin ella el rodete se trata como liso.
+        #[arg(long, allow_hyphen_values = true)]
+        roughness: Option<String>,
+        /// Lenguas de la voluta: 1 simple (por defecto), 2 doble. Con un
+        /// número par solo se eligen álabes impares.
+        #[arg(long)]
+        volute_channels: Option<u32>,
+        /// Ángulo de envolvente de la voluta doble, en grados (90..180). Sin
+        /// él, voluta simple.
+        #[arg(long, allow_hyphen_values = true)]
+        volute_wrap: Option<f64>,
         /// Archivo de salida; por defecto <name>.hmf.
         #[arg(long)]
         out: Option<PathBuf>,
@@ -329,6 +352,12 @@ fn run(cli: Cli) -> Result<ExitCode, Box<dyn std::error::Error>> {
             suction_losses,
             vapor_pressure,
             viscosity,
+            eta_v,
+            balance_holes,
+            volute_ratio,
+            roughness,
+            volute_channels,
+            volute_wrap,
             out,
             force,
             curves,
@@ -401,7 +430,27 @@ fn run(cli: Cli) -> Result<ExitCode, Box<dyn std::error::Error>> {
                 return Err("--curve-points debe estar entre 2 y 1000".into());
             }
 
-            let result = design(&input)?;
+            let options = DesignOptions {
+                eta_v,
+                balance_holes,
+                volute_ratio,
+                impeller_roughness: roughness
+                    .as_deref()
+                    .map(|text| -> Result<f64, Box<dyn std::error::Error>> {
+                        let quantity = parse_quantity(text)?;
+                        if quantity.dim() != parse_unit("m")?.dim {
+                            return Err(
+                                "--roughness debe ser una longitud, por ejemplo \"0.05 mm\"".into(),
+                            );
+                        }
+                        Ok(quantity.si)
+                    })
+                    .transpose()?,
+                volute_channels,
+                volute_wrap_deg: volute_wrap,
+                ..DesignOptions::default()
+            };
+            let result = design_with_options(&input, &options)?;
 
             println!("Diseño preliminar end-suction OH1/OH2");
             println!("  Punto: Q = {q}, H = {h}, n = {n}");
@@ -612,10 +661,7 @@ fn run(cli: Cli) -> Result<ExitCode, Box<dyn std::error::Error>> {
             }
             project.design.method = METHOD.to_string();
 
-            let defaults = ManualDefaults {
-                rho: rho_text,
-                eta_m: eta_m.to_string(),
-            };
+            let defaults = ManualDefaults::with_options(rho_text, eta_m.to_string(), &options);
             project.params = design_params(&result, None, &defaults)?.0;
 
             let diagnostics = project.validate(&Registry::all());
@@ -764,10 +810,21 @@ fn fresh_selection_si(result: &DesignResult, name: &str) -> Option<f64> {
 /// para el punto actual, con el fluido del proyecto y sin otras selecciones
 /// manuales. Las `locked` son decisiones explícitas y no se señalan.
 fn stale_selections(project: &Project) -> Vec<&'static str> {
-    let Ok((input, _)) = design_inputs(project) else {
+    let Ok((input, options)) = design_inputs(project) else {
         return Vec::new();
     };
-    let Ok(fresh) = design(&input) else {
+    // Sin otras selecciones manuales, pero con los datos del proyecto (ηv,
+    // rugosidad, razón de la garganta, voluta…): no son selecciones del motor.
+    let data_only = DesignOptions {
+        eta_v: options.eta_v,
+        balance_holes: options.balance_holes,
+        volute_ratio: options.volute_ratio,
+        impeller_roughness: options.impeller_roughness,
+        volute_channels: options.volute_channels,
+        volute_wrap_deg: options.volute_wrap_deg,
+        ..DesignOptions::default()
+    };
+    let Ok(fresh) = design_with_options(&input, &data_only) else {
         return Vec::new();
     };
     NQ_SELECTIONS
@@ -895,10 +952,8 @@ fn recalc(file: &std::path::Path, reselect: bool) -> Result<ExitCode, Box<dyn st
         return Err("el diseño tiene errores; no se escribió el proyecto".into());
     }
 
-    let defaults = ManualDefaults {
-        rho: format!("{} kg/m3", input.rho.si),
-        eta_m: input.eta_m.to_string(),
-    };
+    let defaults =
+        ManualDefaults::engine(format!("{} kg/m3", input.rho.si), input.eta_m.to_string());
     let (params, filled) = design_params(&result, Some(&project.params), &defaults)?;
     project.params = params;
     project.design.method = METHOD.to_string();
@@ -1141,6 +1196,37 @@ fn print_diagnostics(diagnostics: &Diagnostics) {
 struct ManualDefaults {
     rho: String,
     eta_m: String,
+    /// Opciones del método v0.9 (tarea 12), como texto de su parámetro.
+    eta_v_fixed: String,
+    balance_holes: String,
+    volute_ratio: String,
+    impeller_roughness: String,
+    volute_channels: String,
+    volute_wrap_deg: String,
+}
+
+impl ManualDefaults {
+    /// Con las opciones por defecto del motor.
+    fn engine(rho: String, eta_m: String) -> Self {
+        Self::with_options(rho, eta_m, &DesignOptions::default())
+    }
+
+    /// Con los valores de `options`; «0» donde no hay dato.
+    fn with_options(rho: String, eta_m: String, options: &DesignOptions) -> Self {
+        Self {
+            rho,
+            eta_m,
+            eta_v_fixed: options.eta_v.unwrap_or(0.0).to_string(),
+            balance_holes: u8::from(options.balance_holes).to_string(),
+            volute_ratio: options
+                .volute_ratio
+                .unwrap_or(hm_design::DEFAULT_VOLUTE_RATIO)
+                .to_string(),
+            impeller_roughness: format!("{} m", options.impeller_roughness.unwrap_or(0.0)),
+            volute_channels: options.volute_channels.unwrap_or(1).to_string(),
+            volute_wrap_deg: format!("{} deg", options.volute_wrap_deg.unwrap_or(0.0)),
+        }
+    }
 }
 
 /// Valor manual que usó el motor para `name`.
@@ -1166,6 +1252,12 @@ fn default_manual_text(
         "k3" => (result.volute.base_radius.si / (result.d2.si / 2.0)).to_string(),
         "volute_c" => DEFAULT_VOLUTE_C.to_string(),
         "k_eff" => DEFAULT_K_EFF.to_string(),
+        "eta_v_fixed" => defaults.eta_v_fixed.clone(),
+        "balance_holes" => defaults.balance_holes.clone(),
+        "volute_ratio" => defaults.volute_ratio.clone(),
+        "impeller_roughness" => defaults.impeller_roughness.clone(),
+        "volute_channels" => defaults.volute_channels.clone(),
+        "volute_wrap_deg" => defaults.volute_wrap_deg.clone(),
         _ => return None,
     })
 }
@@ -1245,14 +1337,16 @@ fn design_options(project: &Project) -> Result<DesignOptions, Box<dyn std::error
         k_eff: param_f64(project, "k_eff", "1")?,
         // La holgura medida entrará como parámetro cuando se adopte.
         seal_clearance: None,
-        // ηv, agujeros de equilibrio, razón de la garganta y rugosidad entran
-        // como parámetros en la tarea 12.
-        eta_v: None,
-        balance_holes: false,
-        volute_ratio: None,
-        impeller_roughness: None,
-        volute_channels: None,
-        volute_wrap_deg: None,
+        // «0» significa sin dato: ηv estimado, rodete liso, voluta simple.
+        eta_v: param_f64(project, "eta_v_fixed", "1")?.filter(|value| *value != 0.0),
+        balance_holes: param_f64(project, "balance_holes", "1")?.is_some_and(|value| value != 0.0),
+        volute_ratio: param_f64(project, "volute_ratio", "1")?,
+        impeller_roughness: param_f64(project, "impeller_roughness", "m")?
+            .filter(|value| *value != 0.0),
+        volute_channels: param_u32(project, "volute_channels")?,
+        volute_wrap_deg: param_f64(project, "volute_wrap_deg", "deg")?
+            .filter(|value| *value != 0.0)
+            .map(f64::to_degrees),
     })
 }
 
@@ -1679,6 +1773,7 @@ fn auto(formula: &str, value: String) -> Param {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use hm_design::design;
 
     fn codes(diagnostics: &Diagnostics) -> Vec<&str> {
         diagnostics
@@ -1932,6 +2027,77 @@ mod tests {
         project.design.method = "end_suction_v0.1".to_string();
         let diagnostics = design_audit(&project);
         assert_eq!(codes(&diagnostics), ["HM-PROJ-025"]);
+    }
+
+    #[test]
+    fn new_options_round_trip_through_the_project() {
+        // Un proyecto recién diseñado guarda las opciones del método v0.9 con
+        // su valor por defecto («0» = sin dato) y no cambia el diseño.
+        let mut project = designed_project();
+        let (_, defaults) = design_inputs(&project).unwrap();
+        assert_eq!(defaults.eta_v, None);
+        assert!(!defaults.balance_holes);
+        assert_eq!(defaults.volute_ratio, Some(hm_design::DEFAULT_VOLUTE_RATIO));
+        assert_eq!(defaults.impeller_roughness, None);
+        assert_eq!(defaults.volute_channels, Some(1));
+        assert_eq!(defaults.volute_wrap_deg, None);
+
+        // Y con valores manuales, el motor los usa.
+        for (name, value) in [
+            ("eta_v_fixed", "0.95"),
+            ("balance_holes", "1"),
+            ("volute_ratio", "0.85"),
+            ("impeller_roughness", "0.00005 m"),
+            ("volute_channels", "2"),
+            ("volute_wrap_deg", "165 deg"),
+        ] {
+            project
+                .params
+                .insert(name.to_string(), manual(value.to_string()));
+        }
+        let (input, options) = design_inputs(&project).unwrap();
+        assert_eq!(options.eta_v, Some(0.95));
+        assert!(options.balance_holes);
+        assert_eq!(options.volute_ratio, Some(0.85));
+        assert_eq!(options.impeller_roughness, Some(0.00005));
+        assert_eq!(options.volute_channels, Some(2));
+        assert!((options.volute_wrap_deg.unwrap() - 165.0).abs() < 1e-9);
+
+        let result = design_with_options(&input, &options).unwrap();
+        assert_eq!(result.eta_v, 0.95);
+        assert_eq!(result.selection.blade_count % 2, 1);
+        assert!((result.volute.wrap_deg.unwrap() - 165.0).abs() < 1e-9);
+        let c2 = result.volute.inlet_velocity.si;
+        assert!((result.volute.throat_area.si - input.q.si / (0.85 * c2)).abs() < 1e-12);
+    }
+
+    #[test]
+    fn project_options_do_not_make_selections_look_stale() {
+        // ηv, rugosidad, razón de la garganta… son datos del proyecto, no
+        // selecciones: un proyecto diseñado con ellos no debe avisar HM-DES-013
+        // al compararlo con la selección del motor.
+        let options = DesignOptions {
+            eta_v: Some(0.93),
+            volute_ratio: Some(0.85),
+            ..DesignOptions::default()
+        };
+        let input = DesignInput {
+            q: parse_quantity("120 m3/h").unwrap(),
+            h: parse_quantity("45 m").unwrap(),
+            n: parse_quantity("2900 rpm").unwrap(),
+            rho: parse_quantity("998.2 kg/m3").unwrap(),
+            eta_m: 0.96,
+            npsha: Some(parse_quantity("15 m").unwrap()),
+            nu: None,
+        };
+        let result = design_with_options(&input, &options).unwrap();
+        let mut project = Project::new("demo", PumpType::EndSuction);
+        project.design.method = METHOD.to_string();
+        project.operating.npsha = "15 m".to_string();
+        let defaults =
+            ManualDefaults::with_options("998.2 kg/m3".to_string(), "0.96".to_string(), &options);
+        project.params = design_params(&result, None, &defaults).unwrap().0;
+        assert_eq!(stale_selections(&project), Vec::<&str>::new());
     }
 
     #[test]
@@ -2300,10 +2466,7 @@ mod tests {
         let mut project = Project::new("demo", PumpType::EndSuction);
         project.design.method = METHOD.to_string();
         project.operating.npsha = "15 m".to_string();
-        let defaults = ManualDefaults {
-            rho: "998.2 kg/m3".to_string(),
-            eta_m: "0.96".to_string(),
-        };
+        let defaults = ManualDefaults::engine("998.2 kg/m3".to_string(), "0.96".to_string());
         project.params = design_params(&result, None, &defaults).unwrap().0;
         project
     }
@@ -2311,10 +2474,7 @@ mod tests {
     fn recalculated(project: &Project) -> Project {
         let (input, options) = design_inputs(project).unwrap();
         let result = design_with_options(&input, &options).unwrap();
-        let defaults = ManualDefaults {
-            rho: "998.2 kg/m3".to_string(),
-            eta_m: "0.96".to_string(),
-        };
+        let defaults = ManualDefaults::engine("998.2 kg/m3".to_string(), "0.96".to_string());
         let mut project = project.clone();
         project.params = design_params(&result, Some(&project.params), &defaults)
             .unwrap()
@@ -2386,10 +2546,7 @@ mod tests {
         project.params.remove("k_eff");
         let (input, options) = design_inputs(&project).unwrap();
         let result = design_with_options(&input, &options).unwrap();
-        let defaults = ManualDefaults {
-            rho: "998.2 kg/m3".to_string(),
-            eta_m: "0.96".to_string(),
-        };
+        let defaults = ManualDefaults::engine("998.2 kg/m3".to_string(), "0.96".to_string());
         let (params, filled) = design_params(&result, Some(&project.params), &defaults).unwrap();
         assert_eq!(filled, ["k_eff"]);
         assert!(params.contains_key("k_eff"));
@@ -2408,10 +2565,7 @@ mod tests {
             },
         );
         let result = sample_design();
-        let defaults = ManualDefaults {
-            rho: "998.2 kg/m3".to_string(),
-            eta_m: "0.96".to_string(),
-        };
+        let defaults = ManualDefaults::engine("998.2 kg/m3".to_string(), "0.96".to_string());
         assert!(design_params(&result, Some(&project.params), &defaults).is_err());
     }
 

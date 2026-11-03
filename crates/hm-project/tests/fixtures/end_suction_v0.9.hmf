@@ -45,6 +45,10 @@ mode = "auto"
 formula = "design.volute_width"
 value = "0.027936114250489218 m"
 
+[params.balance_holes]
+mode = "manual"
+value = "0"
+
 [params.beta2]
 mode = "manual"
 value = "18.833039088174417 deg"
@@ -120,10 +124,18 @@ mode = "auto"
 formula = "design.volumetric_efficiency_gulich"
 value = "0.9810578579721277"
 
+[params.eta_v_fixed]
+mode = "manual"
+value = "0"
+
 [params.h0]
 mode = "auto"
 formula = "design.shutoff_head"
 value = "53.64632644002136 m"
+
+[params.impeller_roughness]
+mode = "manual"
+value = "0 m"
 
 [params.k3]
 mode = "manual"
@@ -236,3 +248,15 @@ value = "30.369825084787745 m/s"
 [params.volute_c]
 mode = "manual"
 value = "0.05"
+
+[params.volute_channels]
+mode = "manual"
+value = "1"
+
+[params.volute_ratio]
+mode = "manual"
+value = "0.8"
+
+[params.volute_wrap_deg]
+mode = "manual"
+value = "0 deg"

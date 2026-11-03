@@ -958,10 +958,10 @@ tau = "1"
 beta2 = "deg"
 
 [formula.expr]
-value = "u2*A2*slip*(sqrt(a^2 - 1) - tau/tan(beta2))/(a^2 - 1 - (tau/tan(beta2))^2)"
+value = "u2*A2*slip/(sqrt(a^2 - 1) + tau/tan(beta2))"
 
 [formula.notes]
-assumptions = "QLa,c = u2 fq A2 γ (√(a² − 1) − τ2/tan β2B)/(a² − 1 − (τ2/tan β2B)²) con a = fq A2 QLe/(zLe A3q QLa). Es el caudal del rodete en que la velocidad en la garganta c3q iguala a c2 (incluye c2m, que 6.19 desprecia y que solo vale con nq bajo). Para pasarlo al caudal de la bomba se multiplica por QLe/QLa. Exige a² − 1 > (τ2/tan β2B)²; si no, no hay cruce."
+assumptions = "QLa,c = u2 fq A2 γ (√(a² − 1) − τ2/tan β2B)/(a² − 1 − (τ2/tan β2B)²) con a = fq A2 QLe/(zLe A3q QLa); como (x − t)/(x² − t²) = 1/(x + t), se escribe QLa,c = u2 fq A2 γ/(√(a² − 1) + τ2/tan β2B), finita y positiva siempre que a > 1. Es el caudal del rodete en que la velocidad en la garganta c3q iguala a c2 (incluye c2m, que 6.19 desprecia y que solo vale con nq bajo). Para pasarlo al caudal de la bomba se multiplica por QLe/QLa. Exige a > 1: con a ≤ 1 la garganta es mayor que A2·ηv y c3q no alcanza c2 en ningún caudal."
 
 [[formula]]
 id = "design.recirculation_onset"

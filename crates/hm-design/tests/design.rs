@@ -974,19 +974,80 @@ fn volute_matching_flow_is_the_design_flow_when_c3q_equals_c2() {
 
 #[test]
 fn default_volute_leaves_margin_over_the_design_flow() {
-    // Con c3q/c2 = 0,8 la voluta cruza c3q = c2 por encima de Qd (Gülich pide
-    // 1,1..1,3·Qd con nq bajo). Con nq alto no hay cruce (Qc se toma como
-    // 10·Qd): c3q no llega a c2 en ningún caudal.
-    for (q, h, n, upper) in [
-        ("1060 gpm", "83 m", "1750 rpm", 1.3),
-        ("500 m3/h", "60 m", "1450 rpm", 1.3),
-        ("200 m3/h", "8 m", "1750 rpm", f64::INFINITY),
+    // Con c3q/c2 = 0,8 la voluta cruza c3q = c2 por encima de Qd, también con
+    // nq alto (Gülich pide 1,1..1,3·Qd con nq bajo).
+    for (q, h, n) in [
+        ("1060 gpm", "83 m", "1750 rpm"),
+        ("500 m3/h", "60 m", "1450 rpm"),
+        ("200 m3/h", "8 m", "1750 rpm"),
+        ("150 m3/h", "10 m", "1450 rpm"),
     ] {
         let input = input(q, h, n);
         let result = design(&input).unwrap();
         let ratio = result.volute_matching_flow.si / input.q.si;
-        assert!(ratio >= 1.1 && ratio < upper, "{q}: {ratio}");
+        assert!((1.1..1.3).contains(&ratio), "{q}: {ratio}");
     }
+}
+
+/// Qc/Qd de Gülich 6.22a en su forma simplificada, `u2·A2·γ/(√(a² − 1) + t)`
+/// con `t = τ2/tan β2B`, calculada con los campos del resultado. Es idéntica a
+/// la forma del libro, `(√(a²−1) − t)/(a² − 1 − t²)`, y vale para todo a > 1.
+fn matching_flow_ratio(input: &DesignInput, result: &hm_design::DesignResult) -> (f64, f64) {
+    let a2 = std::f64::consts::PI * result.d2.si * result.b2.si;
+    let a = a2 * input.q.si / (result.volute.throat_area.si * result.qth.si);
+    let beta2 = result.selection.beta2_deg.to_radians();
+    let tau2 = (result.u2.si * result.slip - result.cu2.si) * beta2.tan() / result.cm2.si;
+    let impeller_flow =
+        result.u2.si * a2 * result.slip / ((a * a - 1.0).max(0.0).sqrt() + tau2 / beta2.tan());
+    (a, impeller_flow / result.qth.si)
+}
+
+#[test]
+fn matching_flow_follows_the_simplified_cm_equation() {
+    // Gülich 6.22a es finita y positiva siempre que a > 1; el motor informaba
+    // 10·Qd (v0.9 antes de la revisión) cuando √(a² − 1) < τ2/tan β2B.
+    for (q, h, n) in [
+        ("120 m3/h", "45 m", "2900 rpm"),
+        ("200 m3/h", "8 m", "1750 rpm"),
+        ("500 m3/h", "40 m", "2900 rpm"),
+        ("150 m3/h", "10 m", "1450 rpm"),
+        ("1500 m3/h", "15 m", "1450 rpm"),
+    ] {
+        let input = input(q, h, n);
+        let result = design(&input).unwrap();
+        let (a, expected) = matching_flow_ratio(&input, &result);
+        assert!(a > 1.0, "{q}: a = {a}");
+        close(
+            result.volute_matching_flow.si / input.q.si,
+            expected,
+            1e-6 * expected,
+        );
+        assert!((1.0..3.0).contains(&expected), "{q}: Qc/Qd = {expected}");
+    }
+}
+
+#[test]
+fn matching_flow_is_capped_only_when_the_throat_exceeds_a2_eta_v() {
+    // a = A2·Q/(A3q·Qth) ≤ 1: la garganta es mayor que A2·ηv y c3q no alcanza
+    // c2 en ningún caudal. Qc se toma como 10·Qd, finito para el informe JSON.
+    let input = input("1500 m3/h", "15 m", "1450 rpm");
+    let result = design_with_options(
+        &input,
+        &DesignOptions {
+            volute_ratio: Some(0.5),
+            ..DesignOptions::default()
+        },
+    )
+    .unwrap();
+    let (a, _) = matching_flow_ratio(&input, &result);
+    assert!(a <= 1.0, "a = {a}: el caso ya no cumple la condición");
+    assert!(result.volute_matching_flow.si.is_finite());
+    close(
+        result.volute_matching_flow.si / input.q.si,
+        hm_design::NO_MATCHING_FLOW_RATIO,
+        1e-9,
+    );
+    assert!(result.transition_ratio < hm_design::NO_MATCHING_FLOW_RATIO);
 }
 
 #[test]
@@ -998,17 +1059,6 @@ fn no_spurious_transition_warning_at_high_nq() {
         result.transition_ratio
     );
     assert!(!has(&result, "HM-DES-025"));
-}
-
-#[test]
-fn matching_flow_without_crossing_stays_finite() {
-    // nq ≈ 123: la voluta no cruza c3q = c2 (a² − 1 ≤ (τ2/tan β2B)²). Qc se
-    // toma como 10·Qd, finito para que el informe JSON lo escriba como número.
-    let input = input("1500 m3/h", "15 m", "1450 rpm");
-    let result = design(&input).unwrap();
-    assert!(result.volute_matching_flow.si.is_finite());
-    close(result.volute_matching_flow.si / input.q.si, 10.0, 1e-9);
-    assert!(result.transition_ratio < 10.0);
 }
 
 #[test]

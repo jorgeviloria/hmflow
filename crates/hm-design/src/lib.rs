@@ -1771,17 +1771,15 @@ pub fn design_with_options(
             ("eta_v", eta_v_quantity.clone()),
         ],
     )?;
-    // Qc de Gülich 6.22a (con c2m): caudal del rodete en que c3q = c2. La
-    // garganta se dimensiona con c3q = c2, así que a caudal de diseño se
-    // cumple y Qc = Qd. `a = fq·A2·QLe/(zLe·A3q·QLa)` con fq = zLe = 1,
-    // QLe = Q (lo que pasa por la voluta) y QLa = Qth (lo que pasa por el
-    // rodete). QLa,c pasa al caudal de la bomba con QLe/QLa. Sin cruce
-    // (a² − 1 ≤ (τ2/tan β2B)²), la voluta no limita el NPSH y Qc se toma
-    // como `NO_MATCHING_FLOW_RATIO`·Qd.
+    // Qc de Gülich 6.22a (con c2m): caudal del rodete en que c3q = c2, con
+    // `a = fq·A2·QLe/(zLe·A3q·QLa)`, fq = zLe = 1, QLe = Q (lo que pasa por la
+    // voluta) y QLa = Qth (lo que pasa por el rodete). QLa,c pasa al caudal de
+    // la bomba con QLe/QLa. Existe siempre que a > 1; con a ≤ 1 la garganta es
+    // mayor que A2·ηv, c3q no llega a c2 en ningún caudal y Qc se toma como
+    // `NO_MATCHING_FLOW_RATIO`·Qd.
     let a2_outlet = std::f64::consts::PI * d2.si * b2.si;
     let a_ratio = a2_outlet * input.q.si / (volute.throat_area.si * qth.si);
-    let blade_slope = tau2 / selection.beta2_deg.to_radians().tan();
-    let volute_matching_flow = if a_ratio * a_ratio - 1.0 > blade_slope * blade_slope {
+    let volute_matching_flow = if a_ratio > 1.0 {
         let impeller_flow = evaluate(
             &registry,
             "design.volute_matching_flow_cm",

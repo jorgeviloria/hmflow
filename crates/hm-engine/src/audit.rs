@@ -109,11 +109,7 @@ fn design_audit(project: &Project) -> Diagnostics {
         return diagnostics;
     }
 
-    if project.design.pump_type == PumpType::EndSuction
-        && (project.design.method == METHOD || !project.params.is_empty())
-    {
-        validate_design_schema(project, &mut diagnostics);
-    }
+    diagnostics.extend(schema_diagnostics(project).into_vec());
 
     match recompute(project) {
         Ok(Some(design_diagnostics)) => {
@@ -156,6 +152,20 @@ fn recompute(project: &Project) -> Result<Option<Diagnostics>, crate::EngineErro
     let points = CurvePoints::new(2).expect("2 está entre 2 y 1000");
     let analysis = analyze(&case, points)?;
     Ok(Some(audit_analysis(project, Some(&case), &analysis)))
+}
+
+/// Parámetros que faltan, sobran o no son del tipo del método.
+///
+/// Solo se revisa un end-suction con el método actual o con parámetros ya
+/// guardados. El informe los incluye igual que `check`.
+pub(crate) fn schema_diagnostics(project: &Project) -> Diagnostics {
+    let mut diagnostics = Diagnostics::new();
+    if project.design.pump_type == PumpType::EndSuction
+        && (project.design.method == METHOD || !project.params.is_empty())
+    {
+        validate_design_schema(project, &mut diagnostics);
+    }
+    diagnostics
 }
 
 fn validate_design_schema(project: &Project, diagnostics: &mut Diagnostics) {

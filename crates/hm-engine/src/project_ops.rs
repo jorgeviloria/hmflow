@@ -6,7 +6,7 @@ use hm_formula::Registry;
 use hm_project::{Project, Suction};
 
 use crate::analysis::{Analysis, CurvePoints, require_stages};
-use crate::audit::audit_with_analysis;
+use crate::audit::{audit_with_analysis, schema_diagnostics};
 use crate::case::{Case, DensitySource, Entered, FluidKind, Intake, Temperature, Viscosity};
 use crate::convert::{ManualDefaults, case_from_project, design_params};
 use crate::dispatch::analyze;
@@ -51,8 +51,8 @@ pub fn new_project(name: &str, case: &Case, analysis: &Analysis) -> Result<Proje
 /// Informe de un proyecto end-suction con el método actual.
 ///
 /// El orden es el de hoy: validar, método y tipo, caso y análisis, etapas y
-/// solo entonces la auditoría. Los avisos de la auditoría van al informe y no
-/// lo bloquean. No reimplementa el cálculo: es `case_from_project`, `analyze`
+/// solo entonces la auditoría. Los avisos de la auditoría, con los del esquema
+/// de parámetros, van al informe y no lo bloquean. No reimplementa el cálculo: es `case_from_project`, `analyze`
 /// y `audit_with_analysis`.
 pub fn report(project: &Project, curve_points: CurvePoints) -> Result<DesignReport, EngineError> {
     let mut diagnostics = project.validate(&Registry::all());
@@ -64,6 +64,7 @@ pub fn report(project: &Project, curve_points: CurvePoints) -> Result<DesignRepo
     let case = case_from_project(project)?;
     let analysis = analyze(&case, curve_points)?;
     require_stages(&analysis)?;
+    diagnostics.extend(schema_diagnostics(project).into_vec());
     diagnostics.extend(audit_with_analysis(project, &analysis).into_vec());
 
     let geometry = analysis
@@ -111,6 +112,9 @@ fn ensure_reportable(project: &Project) -> Result<(), EngineError> {
     Ok(())
 }
 
+/// El agua se escribe con su nombre canónico, `water`, sea cual sea la grafía
+/// con que se pidió (`Water`, vacío): el proyecto la lee sin distinguir
+/// mayúsculas. Otro fluido conserva su nombre.
 fn fluid_name(kind: &FluidKind) -> String {
     match kind {
         FluidKind::Water => "water".to_string(),
@@ -167,11 +171,11 @@ fn entered_text(entered: &Option<Entered>) -> String {
 /// decimales, como la CLI cuando no le pasan `--rho`.
 fn rho_text(case: &Case, analysis: &Analysis) -> String {
     match &case.fluid.density.source {
-        DensitySource::Explicit { text } => text.clone(),
-        DensitySource::WaterAtTemperature
+        // Un texto vacío no es un `rho` escrito: se trata como derivado.
+        DensitySource::Explicit { text } if !text.trim().is_empty() => text.clone(),
+        DensitySource::Explicit { .. }
+        | DensitySource::WaterAtTemperature
         | DensitySource::WaterAtDefaultTemperature
-        | DensitySource::Fallback => {
-            format!("{:.3} kg/m3", analysis.input.rho.si)
-        }
+        | DensitySource::Fallback => format!("{:.3} kg/m3", analysis.input.rho.si),
     }
 }

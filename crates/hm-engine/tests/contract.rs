@@ -175,21 +175,18 @@ fn report_is_analyze_plus_audit() {
         );
     }
 
-    // El esquema (HM-PROJ-017) lo pone `audit`, no esta composición.
+    // Con el esquema roto, el informe suma sus diagnósticos a la composición.
     let mut missing = project.clone();
     missing.params.remove("k_eff");
     let audited = hm_engine::report(&missing, points()).unwrap();
-    assert!(
-        audited
-            .diagnostics
-            .iter()
-            .all(|diagnostic| diagnostic.code != "HM-PROJ-017")
-    );
+    let (schema, rest): (Vec<_>, Vec<_>) = audited
+        .diagnostics
+        .iter()
+        .cloned()
+        .partition(|diagnostic| diagnostic.code == "HM-PROJ-017");
+    assert_eq!(schema.len(), 1);
     let analysis = analyze(&case_from_project(&missing).unwrap(), points()).unwrap();
-    assert_eq!(
-        audited.diagnostics,
-        audit_with_analysis(&missing, &analysis).into_vec()
-    );
+    assert_eq!(rest, audit_with_analysis(&missing, &analysis).into_vec());
 }
 
 #[test]
@@ -252,4 +249,62 @@ fn report_includes_audit_warnings() {
     );
     assert!(report.geometry.is_some());
     assert!(report.mechanics.is_some());
+}
+
+#[test]
+fn report_includes_the_parameter_schema_diagnostics() {
+    // Un parámetro que falta es un error de esquema: el informe sale y lo
+    // lleva, antes de los avisos del diseño, como `check`.
+    let mut project = new_project("b1", &b1(), &analyze(&b1(), points()).unwrap()).unwrap();
+    project.params.remove("J");
+
+    let report = report(&project, points()).unwrap();
+    let codes: Vec<&str> = report
+        .diagnostics
+        .iter()
+        .map(|diagnostic| diagnostic.code.as_str())
+        .collect();
+    let schema = codes.iter().position(|code| *code == "HM-PROJ-017");
+    let design = codes.iter().position(|code| code.starts_with("HM-DES"));
+    assert!(schema.is_some(), "falta HM-PROJ-017 en {codes:?}");
+    if let (Some(schema), Some(design)) = (schema, design) {
+        assert!(schema < design, "el esquema va antes del diseño: {codes:?}");
+    }
+    assert_eq!(
+        codes.iter().filter(|code| **code == "HM-PROJ-017").count(),
+        1,
+        "{codes:?}"
+    );
+}
+
+#[test]
+fn an_empty_explicit_density_text_is_written_as_the_derived_one() {
+    let mut case = b1();
+    case.fluid.density.source = DensitySource::Explicit {
+        text: "  ".to_string(),
+    };
+    let analysis = analyze(&case, points()).unwrap();
+
+    let project = new_project("b1", &case, &analysis).unwrap();
+    match project.params.get("rho") {
+        Some(Param::Manual { value } | Param::Locked { value }) => {
+            assert_eq!(value, "998.200 kg/m3");
+        }
+        other => panic!("rho no quedó escrito: {other:?}"),
+    }
+}
+
+#[test]
+fn water_is_written_with_its_canonical_name() {
+    let project = new_project("b1", &b1(), &analyze(&b1(), points()).unwrap()).unwrap();
+    assert_eq!(project.operating.fluid, "water");
+
+    let mut oil = b1();
+    oil.fluid.kind = FluidKind::Custom("Aceite SAE 30".to_string());
+    oil.fluid.density.value = parse_quantity("880 kg/m3").unwrap();
+    oil.fluid.density.source = DensitySource::Explicit {
+        text: "880 kg/m3".to_string(),
+    };
+    let project = new_project("oil", &oil, &analyze(&oil, points()).unwrap()).unwrap();
+    assert_eq!(project.operating.fluid, "Aceite SAE 30");
 }

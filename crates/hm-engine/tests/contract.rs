@@ -335,3 +335,29 @@ fn new_project_rejects_a_text_that_does_not_give_the_calculated_value() {
     // Con los textos que corresponden, se escribe.
     assert!(new_project("b1", &case, &analysis).is_ok());
 }
+
+#[test]
+fn new_project_rejects_a_case_that_is_not_the_one_analyzed() {
+    let case = b1();
+    let analysis = analyze(&case, points()).unwrap();
+
+    // Un caso coherente consigo mismo (texto y cantidad) pero distinto del
+    // que se analizó: el `.hmf` diría otro punto de operación.
+    let mut other_duty = case.clone();
+    other_duty.duty.q = entered("60 m3/h");
+    let error = new_project("b1", &other_duty, &analysis).unwrap_err();
+    assert_eq!(error.field(), Some(CaseField::Q));
+
+    let mut other_efficiency = case.clone();
+    other_efficiency.mechanical_efficiency = Some(0.9);
+    let error = new_project("b1", &other_efficiency, &analysis).unwrap_err();
+    assert_eq!(error.field(), Some(CaseField::MechanicalEfficiency));
+
+    // Las opciones se notan en lo que dan.
+    let mut other_options = case.clone();
+    other_options.design.volute_ratio = Some(0.6);
+    let error = new_project("b1", &other_options, &analysis).unwrap_err();
+    assert_eq!(error.field(), Some(CaseField::Param("opciones")));
+
+    assert!(new_project("b1", &case, &analysis).is_ok());
+}

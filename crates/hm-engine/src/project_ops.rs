@@ -1,7 +1,7 @@
 //! Crear un proyecto y pedir su informe, sin imprimir ni guardar.
 
 use hm_core::PumpType;
-use hm_design::{DesignReport, LEGACY_METHODS, METHOD};
+use hm_design::{DesignInput, DesignReport, LEGACY_METHODS, METHOD, design_with_options};
 use hm_formula::Registry;
 use hm_project::{Project, Suction};
 
@@ -12,7 +12,7 @@ use crate::convert::{ManualDefaults, case_from_project, design_params};
 use crate::dispatch::analyze;
 use crate::error::{CaseField, EngineError, input_error};
 use crate::fluid::parse_temperature;
-use crate::validate::field_code;
+use crate::validate::{design_input, field_code};
 
 /// Crea un proyecto a partir de un caso y un análisis ya calculado.
 ///
@@ -22,7 +22,7 @@ use crate::validate::field_code;
 /// guardar. Exige geometría, mecánica y viscosidad correctas.
 pub fn new_project(name: &str, case: &Case, analysis: &Analysis) -> Result<Project, EngineError> {
     require_stages(analysis)?;
-    check_texts_match_values(case, analysis)?;
+    check_case_matches_analysis(case, analysis)?;
 
     let mut project = Project::new(name, case.pump_type);
     project.operating.q = case.duty.q.text.clone();
@@ -51,11 +51,75 @@ pub fn new_project(name: &str, case: &Case, analysis: &Analysis) -> Result<Proje
     Ok(project)
 }
 
-/// El texto que se escribe tiene que dar el valor que se calculó.
+/// El caso que se escribe tiene que ser el que se analizó, y cada texto tiene
+/// que dar su valor.
 ///
-/// `Entered` guarda el texto y la cantidad por separado; si quien armó el
-/// caso los dejó desacordes, el `.hmf` diría una cosa y el cálculo otra, y
-/// `check` lo marcaría como `HM-PROJ-015`. Se detecta aquí, al escribir.
+/// `Entered` guarda el texto y la cantidad por separado, y el análisis es un
+/// valor aparte. Si no coinciden, el `.hmf` diría una cosa y el cálculo otra,
+/// y `check` lo marcaría como `HM-PROJ-015`. Se detecta aquí, al escribir.
+fn check_case_matches_analysis(case: &Case, analysis: &Analysis) -> Result<(), EngineError> {
+    check_input_matches(case, &analysis.input)?;
+    check_texts_match_values(case, analysis)?;
+
+    // Las opciones no se ven en el análisis; sí en lo que dan.
+    let from_options = design_with_options(&analysis.input, &case.design)?;
+    if format!("{from_options:?}") != format!("{:?}", analysis.result) {
+        return Err(input_error(
+            CaseField::Param("opciones"),
+            field_code(CaseField::Param("opciones")),
+            "las opciones del caso no dan el diseño que se analizó",
+        ));
+    }
+    Ok(())
+}
+
+/// La entrada que da el caso es la del análisis, campo por campo.
+fn check_input_matches(case: &Case, analyzed: &DesignInput) -> Result<(), EngineError> {
+    let rebuilt = design_input(case)?;
+    let same_option = |a: &Option<hm_units::Quantity>, b: &Option<hm_units::Quantity>| match (a, b)
+    {
+        (Some(a), Some(b)) => same_value(a.si, b.si),
+        (None, None) => true,
+        _ => false,
+    };
+    let checks = [
+        (CaseField::Q, same_value(rebuilt.q.si, analyzed.q.si)),
+        (CaseField::H, same_value(rebuilt.h.si, analyzed.h.si)),
+        (CaseField::N, same_value(rebuilt.n.si, analyzed.n.si)),
+        (
+            CaseField::Density,
+            same_value(rebuilt.rho.si, analyzed.rho.si),
+        ),
+        (
+            CaseField::MechanicalEfficiency,
+            same_value(rebuilt.eta_m, analyzed.eta_m),
+        ),
+        (
+            CaseField::Npsha,
+            same_option(&rebuilt.npsha, &analyzed.npsha),
+        ),
+        (
+            CaseField::Viscosity,
+            match (rebuilt.nu, analyzed.nu) {
+                (Some(a), Some(b)) => same_value(a, b),
+                (None, None) => true,
+                _ => false,
+            },
+        ),
+    ];
+    for (field, agrees) in checks {
+        if !agrees {
+            return Err(input_error(
+                field,
+                field_code(field),
+                "el caso no es el que se analizó",
+            ));
+        }
+    }
+    Ok(())
+}
+
+/// Cada texto da la cantidad que lleva al lado.
 fn check_texts_match_values(case: &Case, analysis: &Analysis) -> Result<(), EngineError> {
     let mut entries: Vec<(CaseField, &Entered)> = vec![
         (CaseField::Q, &case.duty.q),

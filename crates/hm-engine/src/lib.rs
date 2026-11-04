@@ -21,9 +21,7 @@ pub use case::{
 };
 pub use changes::{ChangeKind, ParamChange};
 pub use convert::{
-    Decode, MANUAL_PARAMS, MAX_COUNT, ManualDefaults, ManualParam,
-    add_fluid_temperature_diagnostics, case_from_project, design_params, kinematic_viscosity_of,
-    project_viscosity_effect, suction_npsha,
+    Decode, MANUAL_PARAMS, MAX_COUNT, ManualDefaults, ManualParam, case_from_project, design_params,
 };
 pub use dispatch::analyze;
 pub use error::{CaseField, EngineError, Stage, cli_message};
@@ -32,7 +30,7 @@ pub use fluid::{
     npsha, parse_temperature, viscosity_effect, viscosity_from_text, water_density_at,
 };
 pub use hm_core::PumpType;
-pub use hm_design::{DesignReport, METHOD, PARAM_SPECS};
+pub use hm_design::{DesignOptions, DesignReport, METHOD, PARAM_SPECS, PREFERRED_OPERATING_REGION};
 pub use project_ops::{new_project, report};
 pub use recalc::{Recalculated, recalc};
 pub use validate::{design_input, validate_case};

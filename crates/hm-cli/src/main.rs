@@ -5,27 +5,15 @@ use std::path::PathBuf;
 use std::process::ExitCode;
 
 use clap::{Parser, Subcommand};
-use hm_core::Diagnostics;
-#[cfg(test)]
-use hm_design::METHOD;
-use hm_design::geometry::geometry;
-use hm_design::mechanics::{DEFAULT_SHAFT_SHEAR_STRESS, mechanics, mechanics_diagnostics};
-use hm_design::{
-    DesignInput, DesignOptions, DesignReport, default_mechanical_efficiency, design_with_options,
-    performance_curve,
-};
+use hm_core::{Diagnostic, Diagnostics};
 use hm_engine::{
-    ChangeKind, CurvePoints, Density, DensitySource, EngineError, Entered, Fluid, Intake,
-    ParamChange, audit, cli_message, fluid_diagnostics, fluid_kind, kinematic_viscosity,
-    looks_like_water, new_project, npsh_fluid_diagnostics, parse_temperature, report,
-    viscosity_effect, viscosity_from_text, water_density_at,
-};
-#[cfg(test)]
-use hm_engine::{
-    MAX_COUNT, ManualDefaults, Temperature, design_params, kinematic_viscosity_of, suction_npsha,
+    ChangeKind, CurvePoints, Density, DensitySource, DesignOptions, DesignReport, Duty,
+    EngineError, Entered, Fluid, Intake, PREFERRED_OPERATING_REGION, ParamChange, PumpType,
+    analyze, audit, cli_message, fluid_kind, looks_like_water, new_project, parse_temperature,
+    report, viscosity_from_text, water_density_at,
 };
 use hm_formula::{Registry, eval, infer, parse};
-use hm_project::{Param, Project, PumpType, Suction};
+use hm_project::{Param, Project};
 use hm_units::{Quantity, parse_quantity, parse_unit};
 
 #[derive(Parser)]
@@ -242,7 +230,7 @@ fn run(cli: Cli) -> Result<ExitCode, Box<dyn std::error::Error>> {
             if diagnostics.is_empty() {
                 println!("{}: sin diagnósticos", file.display());
             } else {
-                print_diagnostics(&diagnostics);
+                print_diagnostics(diagnostics.iter());
             }
 
             if diagnostics.has_errors() {
@@ -381,58 +369,31 @@ fn run(cli: Cli) -> Result<ExitCode, Box<dyn std::error::Error>> {
                     "custom".to_string()
                 }
             });
-            let suction = suction_pressure.map(|pressure| Suction {
-                pressure,
-                height: suction_height.unwrap_or_default(),
-                losses: suction_losses.unwrap_or_default(),
-                vapor_pressure: vapor_pressure.unwrap_or_default(),
-            });
-            let intake = match &suction {
-                Some(suction) => Intake::Installation {
-                    pressure: Entered::parse(&suction.pressure)?,
-                    height: optional_entered(&suction.height)?,
-                    losses: optional_entered(&suction.losses)?,
-                    vapor_pressure: optional_entered(&suction.vapor_pressure)?,
+            let from_installation = suction_pressure.is_some();
+            let intake = match suction_pressure {
+                Some(pressure) => Intake::Installation {
+                    pressure: Entered::parse(&pressure)?,
+                    height: optional_entered(&suction_height.unwrap_or_default())?,
+                    losses: optional_entered(&suction_losses.unwrap_or_default())?,
+                    vapor_pressure: optional_entered(&vapor_pressure.unwrap_or_default())?,
                 },
                 None => match npsha.as_deref() {
                     Some(text) => Intake::Available(Entered::parse(text)?),
                     None => Intake::None,
                 },
             };
-            let mut case_fluid = Fluid {
-                kind: fluid_kind(&fluid),
-                temperature: Some(temperature_value),
-                density: Density {
-                    value: rho_quantity.clone(),
-                    source: DensitySource::Explicit {
-                        text: rho_text.clone(),
-                    },
-                },
-                viscosity: None,
-            };
-            let npsha_quantity = hm_engine::npsha(&intake, &case_fluid).map_err(engine_text)?;
-            let q_quantity = parse_quantity(&q)?;
-            let n_quantity = parse_quantity(&n)?;
-            let eta_m = match eta_m {
-                Some(eta_m) => eta_m,
-                None => default_mechanical_efficiency(&q_quantity, &n_quantity)?,
-            };
-            let viscosity_text = viscosity.unwrap_or_default();
-            case_fluid.viscosity = viscosity_from_text(&viscosity_text).map_err(engine_text)?;
-            let nu = kinematic_viscosity(&case_fluid).map_err(engine_text)?;
-            let input = DesignInput {
-                q: q_quantity,
-                h: parse_quantity(&h)?,
-                n: n_quantity,
-                rho: rho_quantity,
-                eta_m,
-                npsha: npsha_quantity,
-                nu,
+            let viscosity =
+                viscosity_from_text(&viscosity.unwrap_or_default()).map_err(engine_text)?;
+            let duty = Duty {
+                q: Entered::parse(&q)?,
+                h: Entered::parse(&h)?,
+                n: Entered::parse(&n)?,
             };
 
-            if !(2..=1000).contains(&curve_points) {
+            // El rango se comprueba aquí, antes del análisis, con la misma frase.
+            let Some(points) = CurvePoints::new(curve_points) else {
                 return Err("--curve-points debe estar entre 2 y 1000".into());
-            }
+            };
 
             let options = DesignOptions {
                 eta_v,
@@ -455,7 +416,28 @@ fn run(cli: Cli) -> Result<ExitCode, Box<dyn std::error::Error>> {
                 incidence_deg: incidence,
                 ..DesignOptions::default()
             };
-            let result = design_with_options(&input, &options)?;
+            let case = hm_engine::Case {
+                pump_type: PumpType::EndSuction,
+                duty,
+                fluid: Fluid {
+                    kind: fluid_kind(&fluid),
+                    temperature: Some(temperature_value),
+                    density: Density {
+                        value: rho_quantity,
+                        source: DensitySource::Explicit { text: rho_text },
+                    },
+                    viscosity,
+                },
+                intake,
+                mechanical_efficiency: eta_m,
+                design: options,
+            };
+            let analysis = match analyze(&case, points) {
+                Ok(analysis) => analysis,
+                Err(error) => return design_failure(error),
+            };
+            let input = &analysis.input;
+            let result = &analysis.result;
 
             println!("Diseño preliminar end-suction OH1/OH2");
             println!("  Punto: Q = {q}, H = {h}, n = {n}");
@@ -544,7 +526,10 @@ fn run(cli: Cli) -> Result<ExitCode, Box<dyn std::error::Error>> {
                 input.eta_m,
                 result.eta
             );
-            let shape = geometry(&input, &result)?;
+            let shape = match &analysis.geometry {
+                Ok(shape) => shape,
+                Err(error) => return Err(error.to_string().into()),
+            };
             println!(
                 "  Álabe: β1B = {:.1} deg   envolvimiento = {:.1} deg",
                 shape.impeller.beta1b.to_degrees(),
@@ -557,7 +542,10 @@ fn run(cli: Cli) -> Result<ExitCode, Box<dyn std::error::Error>> {
                 shape.outlet.min_length,
                 shape.outlet.half_angle.to_degrees()
             );
-            let mech = mechanics(&input, &result, DEFAULT_SHAFT_SHEAR_STRESS)?;
+            let mech = match &analysis.mechanics {
+                Ok(mech) => mech,
+                Err(error) => return Err(error.to_string().into()),
+            };
             println!(
                 "  Eje: ds ≥ {:.1} mm (torsión, τ = {:.1} MPa)   cubo ≈ {:.1} mm",
                 mech.shaft_min_diameter * 1000.0,
@@ -573,7 +561,7 @@ fn run(cli: Cli) -> Result<ExitCode, Box<dyn std::error::Error>> {
                 mech.radial_thrust_shutoff,
                 mech.radial_thrust_design,
                 mech.radial_thrust_overload,
-                hm_design::PREFERRED_OPERATING_REGION.1,
+                PREFERRED_OPERATING_REGION.1,
                 mech.axial_thrust.0,
                 mech.axial_thrust.1
             );
@@ -600,16 +588,15 @@ fn run(cli: Cli) -> Result<ExitCode, Box<dyn std::error::Error>> {
                     mech.driver_power / 1000.0
                 ),
             }
-            if let (Some(npsha), Some(_)) = (&input.npsha, &suction) {
+            if let (Some(npsha), true) = (&input.npsha, from_installation) {
                 println!("  NPSHa de la instalación = {:.2} m", npsha.si);
             }
 
-            let mut shown = result.diagnostics.clone();
-            shown.extend(fluid_diagnostics(&case_fluid).into_vec());
-            shown.extend(npsh_fluid_diagnostics(&case_fluid, input.npsha.is_some()).into_vec());
-            let (viscous_diagnostics, correction) =
-                viscosity_effect(&case_fluid, &input, &result).map_err(engine_text)?;
-            if let Some(correction) = &correction {
+            let correction = match &analysis.viscous {
+                Ok(correction) => correction,
+                Err(error) => return Err(error.to_string().into()),
+            };
+            if let Some(correction) = correction {
                 println!(
                     "  Viscosidad: ν = {:.3} cSt   fQ = {:.3}   fH = {:.3}   fη = {:.3}",
                     correction.nu * 1e6,
@@ -618,21 +605,14 @@ fn run(cli: Cli) -> Result<ExitCode, Box<dyn std::error::Error>> {
                     correction.f_eta
                 );
             }
-            shown.extend(viscous_diagnostics.into_vec());
-            shown.extend(mechanics_diagnostics(&mech, &result).into_vec());
-            print_diagnostics(&shown);
+            print_diagnostics(&analysis.diagnostics);
 
-            if shown.has_errors() {
+            if analysis.diagnostics.iter().any(Diagnostic::is_error) {
                 return Err("el diseño tiene errores; no se escribió el proyecto".into());
             }
 
             let path = out.unwrap_or_else(|| PathBuf::from(format!("{name}.hmf")));
             let curve_path = curves_out;
-            let curve = if curves || curve_path.is_some() {
-                Some(performance_curve(&input, &result, curve_points))
-            } else {
-                None
-            };
 
             if path.exists() && !force {
                 return Err(format!(
@@ -652,38 +632,8 @@ fn run(cli: Cli) -> Result<ExitCode, Box<dyn std::error::Error>> {
                 .into());
             }
 
-            // El cálculo y la impresión ya ocurrieron. Aquí solo se escribe
+            // El análisis y la impresión ya ocurrieron. Aquí solo se escribe
             // el proyecto, con los mismos textos que se mostraron.
-            let analysis = hm_engine::Analysis {
-                input: input.clone(),
-                result: result.clone(),
-                curve: Vec::new(),
-                geometry: Ok(shape.clone()),
-                mechanics: Ok(mech.clone()),
-                viscous: Ok(correction.clone()),
-                diagnostics: Vec::new(),
-            };
-            let case = hm_engine::Case {
-                pump_type: PumpType::EndSuction,
-                duty: hm_engine::Duty {
-                    q: Entered {
-                        text: q,
-                        quantity: input.q.clone(),
-                    },
-                    h: Entered {
-                        text: h,
-                        quantity: input.h.clone(),
-                    },
-                    n: Entered {
-                        text: n,
-                        quantity: input.n.clone(),
-                    },
-                },
-                fluid: case_fluid,
-                intake,
-                mechanical_efficiency: Some(eta_m),
-                design: options,
-            };
             let project = match new_project(&name, &case, &analysis) {
                 Ok(project) => project,
                 Err(EngineError::Invalid { diagnostics }) => {
@@ -701,9 +651,9 @@ fn run(cli: Cli) -> Result<ExitCode, Box<dyn std::error::Error>> {
             project.save(&path)?;
             println!("escrito {}", path.display());
 
-            if let Some(curve) = &curve {
+            if curves || curve_path.is_some() {
                 println!("\n  Q (m3/h)   H (m)    eta     P_eje (kW)  NPSHr (m)");
-                for point in curve {
+                for point in &analysis.curve {
                     println!(
                         "  {:8.2}   {:6.3}   {:5.3}   {:9.3}   {:7.3}",
                         point.q.value(),
@@ -716,7 +666,7 @@ fn run(cli: Cli) -> Result<ExitCode, Box<dyn std::error::Error>> {
 
                 if let Some(curve_path) = &curve_path {
                     let mut csv = String::from("Q_m3h,H_m,eta,P_shaft_kW,NPSHr_m\n");
-                    for point in curve {
+                    for point in &analysis.curve {
                         csv.push_str(&format!(
                             "{:.3},{:.4},{:.4},{:.4},{:.4}\n",
                             point.q.value(),
@@ -736,61 +686,6 @@ fn run(cli: Cli) -> Result<ExitCode, Box<dyn std::error::Error>> {
     }
 }
 
-/// Entrada y selecciones del diseño tal como las guarda el proyecto.
-///
-/// Solo la usan las pruebas que leen las opciones desde el `.hmf`.
-#[cfg(test)]
-fn design_inputs(
-    project: &Project,
-) -> Result<(DesignInput, DesignOptions), Box<dyn std::error::Error>> {
-    let q = parse_quantity(&project.operating.q)?;
-    let h = parse_quantity(&project.operating.h)?;
-    let n = parse_quantity(&project.operating.n)?;
-    let rho_unit = parse_unit("kg/m3")?;
-    let rho = Quantity::from_si(
-        param_f64(project, "rho", "kg/m3")?.unwrap_or_else(|| default_density(project)),
-        rho_unit,
-    );
-    let eta_m = match param_f64(project, "eta_m", "1")? {
-        Some(eta_m) => eta_m,
-        None => default_mechanical_efficiency(&q, &n)?,
-    };
-    let npsha = match &project.suction {
-        Some(suction) => Some(
-            suction_npsha(
-                suction,
-                &project.operating.fluid,
-                &project.operating.temperature,
-                rho.si,
-            )
-            .map_err(engine_text)?,
-        ),
-        None if project.operating.npsha.trim().is_empty() => None,
-        None => Some(parse_quantity(&project.operating.npsha)?),
-    };
-    let options = design_options(project)?;
-    let nu = kinematic_viscosity_of(
-        &project.operating.viscosity,
-        &project.operating.fluid,
-        &project.operating.temperature,
-        rho.si,
-    )
-    .map_err(engine_text)?;
-
-    Ok((
-        DesignInput {
-            q,
-            h,
-            n,
-            rho,
-            eta_m,
-            npsha,
-            nu,
-        },
-        options,
-    ))
-}
-
 /// Recalcula los `auto` de un proyecto end-suction y lo reescribe.
 ///
 /// El motor migra, rellena y recalcula. Aquí solo se carga, se guarda y se
@@ -800,7 +695,7 @@ fn recalc(file: &std::path::Path, reselect: bool) -> Result<ExitCode, Box<dyn st
     let prior_invalid = project.validate(&Registry::all()).has_errors();
     match hm_engine::recalc(project, reselect) {
         Ok(done) => {
-            print_diagnostics(&done.diagnostics);
+            print_diagnostics(done.diagnostics.iter());
             done.project.save(file)?;
             print_recalc_changes(&done.changes, stored_nq(&done.project));
             println!("recalculado {}", file.display());
@@ -832,7 +727,7 @@ fn recalc_invalid(prior_invalid: bool, diagnostics: &Diagnostics) -> Box<dyn std
             .unwrap_or_default()
             .into();
     }
-    print_diagnostics(diagnostics);
+    print_diagnostics(diagnostics.iter());
     let sentence = if prior_invalid {
         "el proyecto tiene errores; no se recalculó"
     } else if diagnostics
@@ -902,7 +797,7 @@ fn design_report(
     match report(&project, points) {
         Ok(report) => Ok(report),
         Err(EngineError::Invalid { diagnostics }) => {
-            print_diagnostics(&diagnostics);
+            print_diagnostics(diagnostics.iter());
             Err("el proyecto tiene errores; no hay informe".into())
         }
         Err(EngineError::Unsupported(pump_type)) => {
@@ -916,8 +811,8 @@ fn design_report(
     }
 }
 
-fn print_diagnostics(diagnostics: &Diagnostics) {
-    for diagnostic in diagnostics.iter() {
+fn print_diagnostics<'a>(diagnostics: impl IntoIterator<Item = &'a Diagnostic>) {
+    for diagnostic in diagnostics {
         println!(
             "[{:?}] {}: {}",
             diagnostic.severity, diagnostic.code, diagnostic.message
@@ -926,109 +821,6 @@ fn print_diagnostics(diagnostics: &Diagnostics) {
             println!("        sugerencia: {hint}");
         }
     }
-}
-
-#[cfg(test)]
-fn design_options(project: &Project) -> Result<DesignOptions, Box<dyn std::error::Error>> {
-    Ok(DesignOptions {
-        psi: param_f64(project, "psi", "1")?,
-        phi: param_f64(project, "phi", "1")?,
-        beta2_rad: param_f64(project, "beta2", "deg")?,
-        blade_count: param_u32(project, "blade_count")?,
-        c0: param_f64(project, "c0", "m/s")?,
-        cm0: param_f64(project, "cm0", "m/s")?,
-        a: param_f64(project, "A", "1")?,
-        j: param_f64(project, "J", "1")?,
-        margin: param_f64(project, "margin", "1")?,
-        k3: param_f64(project, "k3", "1")?,
-        volute_width_factor: param_f64(project, "volute_c", "1")?,
-        k_eff: param_f64(project, "k_eff", "1")?,
-        // La holgura medida entrará como parámetro cuando se adopte.
-        seal_clearance: None,
-        // «0» significa sin dato: ηv estimado, rodete liso, voluta simple.
-        eta_v: param_f64(project, "eta_v_fixed", "1")?.filter(|value| *value != 0.0),
-        balance_holes: match param_f64(project, "balance_holes", "1")? {
-            None => false,
-            Some(value) if value == 0.0 || value == 1.0 => value == 1.0,
-            Some(_) => return Err("`balance_holes` debe ser 0 o 1".into()),
-        },
-        volute_ratio: param_f64(project, "volute_ratio", "1")?.filter(|value| *value != 0.0),
-        impeller_roughness: param_f64(project, "impeller_roughness", "m")?
-            .filter(|value| *value != 0.0),
-        // «0» = sin dato, como en las demás opciones numéricas.
-        volute_channels: if param_f64(project, "volute_channels", "1")? == Some(0.0) {
-            None
-        } else {
-            param_u32(project, "volute_channels")?
-        },
-        volute_wrap_deg: param_f64(project, "volute_wrap_deg", "deg")?
-            .filter(|value| *value != 0.0)
-            .map(f64::to_degrees),
-        incidence_deg: param_f64(project, "incidence_deg", "deg")?.map(f64::to_degrees),
-    })
-}
-
-#[cfg(test)]
-fn param_f64(
-    project: &Project,
-    name: &str,
-    unit_text: &str,
-) -> Result<Option<f64>, Box<dyn std::error::Error>> {
-    let Some(param) = project.params.get(name) else {
-        return Ok(None);
-    };
-    if matches!(param, Param::Override { .. }) {
-        return Err(format!("`{name}` está en override; la auditoría no evalúa overrides").into());
-    }
-    let Some(value) = param_value(param) else {
-        return Ok(None);
-    };
-    let quantity = parse_quantity(value)?;
-    let expected = parse_unit(unit_text)?;
-    if quantity.dim() != expected.dim {
-        return Err(format!("`{name}` debe ser {unit_text}").into());
-    }
-    Ok(Some(quantity.si))
-}
-
-#[cfg(test)]
-fn param_u32(project: &Project, name: &str) -> Result<Option<u32>, Box<dyn std::error::Error>> {
-    let Some(value) = param_f64(project, name, "1")? else {
-        return Ok(None);
-    };
-    if value.fract() != 0.0 || !(1.0..=MAX_COUNT).contains(&value) {
-        return Err(format!("`{name}` debe ser un entero entre 1 y {MAX_COUNT}").into());
-    }
-    Ok(Some(value as u32))
-}
-
-/// Densidad que se asume si el proyecto no guarda `rho`: la del agua a su
-/// temperatura (20 °C si no la indica), o 998,2 kg/m³ si no es agua o la
-/// temperatura cae fuera de la correlación.
-///
-/// Un texto de temperatura ilegible no aborta: se usa la densidad por defecto,
-/// igual que antes de pasar el cálculo al motor.
-#[cfg(test)]
-fn default_density(project: &Project) -> f64 {
-    let water =
-        project.operating.fluid.is_empty() || project.operating.fluid.eq_ignore_ascii_case("water");
-    if !water {
-        return 998.2;
-    }
-    let temperature = if project.operating.temperature.trim().is_empty() {
-        Temperature {
-            text: String::new(),
-            kelvin: 293.15,
-        }
-    } else {
-        match parse_temperature(&project.operating.temperature) {
-            Ok(temperature) => temperature,
-            Err(_) => return 998.2,
-        }
-    };
-    water_density_at(&temperature)
-        .map(|density| density.si)
-        .unwrap_or(998.2)
 }
 
 fn optional_entered(text: &str) -> Result<Option<Entered>, hm_units::UnitError> {
@@ -1044,6 +836,28 @@ fn engine_text(error: hm_engine::EngineError) -> Box<dyn std::error::Error> {
     cli_message(&error).into()
 }
 
+/// Fallo de `analyze` en `design`, antes de imprimir el bloque.
+///
+/// Un `Input` sale como diagnóstico y termina con código 1. El diseño, el
+/// proyecto y una etapa conservan el mensaje, sin el prefijo de la etapa.
+fn design_failure(error: EngineError) -> Result<ExitCode, Box<dyn std::error::Error>> {
+    match error {
+        EngineError::Invalid { diagnostics } => {
+            print_diagnostics(diagnostics.iter());
+            Err("el diseño tiene errores; no se escribió el proyecto".into())
+        }
+        EngineError::Input { diagnostic, .. } => {
+            print_diagnostics(std::slice::from_ref(&diagnostic));
+            Ok(ExitCode::FAILURE)
+        }
+        EngineError::Stage { source, .. } => Err(source.to_string().into()),
+        EngineError::Unsupported(pump_type) => {
+            Err(format!("solo hay motor para end-suction; el proyecto es {pump_type}").into())
+        }
+        error => Err(engine_text(error)),
+    }
+}
+
 fn param_value(param: &Param) -> Option<&str> {
     match param {
         Param::Manual { value } | Param::Locked { value } => Some(value),
@@ -1055,24 +869,6 @@ fn param_value(param: &Param) -> Option<&str> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use hm_design::{DesignResult, design};
-
-    fn manual(value: String) -> Param {
-        Param::Manual { value }
-    }
-
-    fn sample_design() -> DesignResult {
-        design(&DesignInput {
-            q: parse_quantity("120 m3/h").unwrap(),
-            h: parse_quantity("45 m").unwrap(),
-            n: parse_quantity("2900 rpm").unwrap(),
-            rho: parse_quantity("998.2 kg/m3").unwrap(),
-            eta_m: 0.96,
-            npsha: Some(parse_quantity("10 m").unwrap()),
-            nu: None,
-        })
-        .unwrap()
-    }
 
     #[test]
     fn negative_expressions_and_values_parse() {
@@ -1084,94 +880,5 @@ mod tests {
 
         let cli = Cli::try_parse_from(["hmflow-cli", "design", "--npsha", "-3 m"]).unwrap();
         assert!(matches!(cli.command, Command::Design { npsha: Some(text), .. } if text == "-3 m"));
-    }
-
-    #[test]
-    fn new_options_round_trip_through_the_project() {
-        // Un proyecto recién diseñado guarda las opciones del método v0.9 con
-        // su valor por defecto («0» = sin dato) y no cambia el diseño.
-        let mut project = designed_project();
-        let (_, defaults) = design_inputs(&project).unwrap();
-        assert_eq!(defaults.eta_v, None);
-        assert!(!defaults.balance_holes);
-        assert_eq!(defaults.volute_ratio, Some(hm_design::DEFAULT_VOLUTE_RATIO));
-        assert_eq!(defaults.impeller_roughness, None);
-        assert_eq!(defaults.volute_channels, Some(1));
-        assert_eq!(defaults.volute_wrap_deg, None);
-        assert!((defaults.incidence_deg.unwrap() - 2.0).abs() < 1e-9);
-
-        // Y con valores manuales, el motor los usa.
-        for (name, value) in [
-            ("eta_v_fixed", "0.95"),
-            ("balance_holes", "1"),
-            ("volute_ratio", "0.85"),
-            ("impeller_roughness", "0.00005 m"),
-            ("volute_channels", "2"),
-            ("volute_wrap_deg", "165 deg"),
-            ("incidence_deg", "4 deg"),
-        ] {
-            project
-                .params
-                .insert(name.to_string(), manual(value.to_string()));
-        }
-        let (input, options) = design_inputs(&project).unwrap();
-        assert_eq!(options.eta_v, Some(0.95));
-        assert!(options.balance_holes);
-        assert_eq!(options.volute_ratio, Some(0.85));
-        assert_eq!(options.impeller_roughness, Some(0.00005));
-        assert_eq!(options.volute_channels, Some(2));
-        assert!((options.volute_wrap_deg.unwrap() - 165.0).abs() < 1e-9);
-        assert!((options.incidence_deg.unwrap() - 4.0).abs() < 1e-9);
-
-        let result = design_with_options(&input, &options).unwrap();
-        assert_eq!(result.eta_v, 0.95);
-        assert_eq!(result.selection.blade_count % 2, 1);
-        assert!((result.volute.wrap_deg.unwrap() - 165.0).abs() < 1e-9);
-        let c2 = result.volute.inlet_velocity.si;
-        assert!((result.volute.throat_area.si - input.q.si / (0.85 * c2)).abs() < 1e-12);
-    }
-
-    #[test]
-    fn zero_means_no_data_for_every_option_and_balance_holes_is_strict() {
-        let mut project = designed_project();
-        for (name, value) in [("volute_ratio", "0"), ("volute_channels", "0")] {
-            project
-                .params
-                .insert(name.to_string(), manual(value.to_string()));
-        }
-        let (_, options) = design_inputs(&project).unwrap();
-        assert_eq!(options.volute_ratio, None);
-        assert_eq!(options.volute_channels, None);
-
-        project
-            .params
-            .insert("balance_holes".to_string(), manual("0.5".to_string()));
-        let error = design_inputs(&project).unwrap_err().to_string();
-        assert!(error.contains("balance_holes"), "{error}");
-    }
-
-    #[test]
-    fn npsha_and_suction_pressure_exclude_each_other() {
-        let result = Cli::try_parse_from([
-            "hmflow-cli",
-            "design",
-            "--npsha",
-            "10 m",
-            "--suction-pressure",
-            "1 atm",
-        ]);
-        assert!(result.is_err());
-        assert!(Cli::try_parse_from(["hmflow-cli", "design", "--suction-height", "2 m"]).is_err());
-    }
-
-    /// Proyecto completo tal como lo escribe `design` para la duty de ejemplo.
-    fn designed_project() -> Project {
-        let result = sample_design();
-        let mut project = Project::new("demo", PumpType::EndSuction);
-        project.design.method = METHOD.to_string();
-        project.operating.npsha = "15 m".to_string();
-        let defaults = ManualDefaults::engine("998.2 kg/m3".to_string(), "0.96".to_string());
-        project.params = design_params(&result, None, &defaults).unwrap().0;
-        project
     }
 }

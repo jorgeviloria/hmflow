@@ -230,10 +230,12 @@ fn recalc_without_reselect_keeps_the_old_selections() {
 
 fn error_codes(error: &EngineError) -> Vec<String> {
     match error {
-        EngineError::Invalid { diagnostics } => diagnostics
-            .iter()
-            .map(|diagnostic| diagnostic.code.clone())
-            .collect(),
+        EngineError::Invalid { diagnostics } | EngineError::DesignHasErrors { diagnostics } => {
+            diagnostics
+                .iter()
+                .map(|diagnostic| diagnostic.code.clone())
+                .collect()
+        }
         other => panic!("se esperaba Invalid, llegó {other:?}"),
     }
 }
@@ -279,8 +281,14 @@ fn an_unknown_parameter_stops_the_recalculation() {
     let mut project = designed_project();
     project.params.insert("inventado".to_string(), manual("1"));
 
-    let error = recalc(project, false).unwrap_err();
-    assert!(error_codes(&error).contains(&"HM-PROJ-023".to_string()));
+    match recalc(project, false).unwrap_err() {
+        EngineError::UnknownParameter { name } => assert_eq!(name, "inventado"),
+        // La validación del proyecto también conoce los parámetros.
+        error @ EngineError::Invalid { .. } => {
+            assert!(error_codes(&error).contains(&"HM-PROJ-023".to_string()));
+        }
+        other => panic!("{other:?}"),
+    }
 }
 
 #[test]
@@ -289,6 +297,10 @@ fn a_design_with_errors_is_not_written() {
     project.operating.npsha = "0.1 m".to_string();
 
     let error = recalc(project, false).unwrap_err();
+    assert!(
+        matches!(error, EngineError::DesignHasErrors { .. }),
+        "{error:?}"
+    );
     assert!(error_codes(&error).contains(&"HM-DES-007".to_string()));
 }
 

@@ -5,7 +5,7 @@ use std::path::PathBuf;
 use std::process::ExitCode;
 
 use clap::{Parser, Subcommand};
-use hm_core::{Diagnostic, Diagnostics};
+use hm_core::Diagnostic;
 use hm_engine::{
     ChangeKind, CurvePoints, Density, DensitySource, DesignOptions, DesignReport, Duty,
     EngineError, Entered, Fluid, Intake, PREFERRED_OPERATING_REGION, ParamChange, PumpType,
@@ -692,7 +692,6 @@ fn run(cli: Cli) -> Result<ExitCode, Box<dyn std::error::Error>> {
 /// imprimen los mismos avisos de antes.
 fn recalc(file: &std::path::Path, reselect: bool) -> Result<ExitCode, Box<dyn std::error::Error>> {
     let project = Project::load(file)?;
-    let prior_invalid = project.validate(&Registry::all()).has_errors();
     match hm_engine::recalc(project, reselect) {
         Ok(done) => {
             print_diagnostics(done.diagnostics.iter());
@@ -702,43 +701,23 @@ fn recalc(file: &std::path::Path, reselect: bool) -> Result<ExitCode, Box<dyn st
             Ok(ExitCode::SUCCESS)
         }
         Err(EngineError::Invalid { diagnostics }) => {
-            Err(recalc_invalid(prior_invalid, &diagnostics))
+            print_diagnostics(diagnostics.iter());
+            Err("el proyecto tiene errores; no se recalculó".into())
         }
+        Err(EngineError::DesignHasErrors { diagnostics }) => {
+            print_diagnostics(diagnostics.iter());
+            Err("el diseño tiene errores; no se escribió el proyecto".into())
+        }
+        Err(EngineError::RecalculatedInvalid { diagnostics }) => {
+            print_diagnostics(diagnostics.iter());
+            Err("el proyecto recalculado no valida; no se escribió".into())
+        }
+        Err(error @ EngineError::UnknownParameter { .. }) => Err(error.to_string().into()),
         Err(EngineError::Unsupported(pump_type)) => {
             Err(format!("recalc solo admite end-suction; el proyecto es {pump_type}").into())
         }
         Err(error) => Err(engine_text(error)),
     }
-}
-
-/// Las tres frases con las que `recalc` se niega a escribir, más el
-/// parámetro desconocido, que sale solo como mensaje.
-fn recalc_invalid(prior_invalid: bool, diagnostics: &Diagnostics) -> Box<dyn std::error::Error> {
-    if !prior_invalid
-        && diagnostics.len() == 1
-        && diagnostics
-            .iter()
-            .any(|diagnostic| diagnostic.code == "HM-PROJ-023")
-    {
-        return diagnostics
-            .iter()
-            .next()
-            .map(|diagnostic| diagnostic.message.clone())
-            .unwrap_or_default()
-            .into();
-    }
-    print_diagnostics(diagnostics.iter());
-    let sentence = if prior_invalid {
-        "el proyecto tiene errores; no se recalculó"
-    } else if diagnostics
-        .iter()
-        .any(|diagnostic| diagnostic.is_error() && diagnostic.code.starts_with("HM-DES"))
-    {
-        "el diseño tiene errores; no se escribió el proyecto"
-    } else {
-        "el proyecto recalculado no valida; no se escribió"
-    };
-    sentence.into()
 }
 
 fn print_recalc_changes(changes: &[ParamChange], nq: f64) {

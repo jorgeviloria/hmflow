@@ -1,6 +1,6 @@
 //! Recálculo de un proyecto end-suction: migra el método y reescribe los `auto`.
 
-use hm_core::{Diagnostic, Diagnostics, PumpType};
+use hm_core::{Diagnostics, PumpType};
 use hm_design::{LEGACY_METHODS, METHOD, param_spec};
 use hm_formula::Registry;
 use hm_project::{Param, Project};
@@ -75,7 +75,7 @@ pub fn recalc(mut project: Project, reselect: bool) -> Result<Recalculated, Engi
 
     let diagnostics = recalc_diagnostics(&project, &case, &analysis);
     if diagnostics.has_errors() {
-        return Err(EngineError::Invalid { diagnostics });
+        return Err(EngineError::DesignHasErrors { diagnostics });
     }
 
     let defaults = ManualDefaults::engine(
@@ -88,7 +88,7 @@ pub fn recalc(mut project: Project, reselect: bool) -> Result<Recalculated, Engi
 
     let validation = project.validate(&Registry::all());
     if validation.has_errors() {
-        return Err(EngineError::Invalid {
+        return Err(EngineError::RecalculatedInvalid {
             diagnostics: validation,
         });
     }
@@ -122,12 +122,9 @@ fn migrated_method(method: &str) -> Result<Option<String>, EngineError> {
 }
 
 fn unknown_param(name: &str) -> EngineError {
-    let mut diagnostics = Diagnostics::new();
-    diagnostics.push(Diagnostic::error(
-        "HM-PROJ-023",
-        format!("parámetro desconocido: `{name}`; corrígelo antes de recalcular"),
-    ));
-    EngineError::Invalid { diagnostics }
+    EngineError::UnknownParameter {
+        name: name.to_string(),
+    }
 }
 
 /// Quita las selecciones manuales del punto y devuelve su texto anterior.

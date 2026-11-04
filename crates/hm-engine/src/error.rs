@@ -71,8 +71,20 @@ pub enum EngineError {
     #[error("solo hay motor para end-suction; el proyecto es {0}")]
     Unsupported(PumpType),
 
+    /// El proyecto no valida: no se calcula, no se informa, no se escribe.
     #[error("el proyecto o el diseño tienen errores")]
     Invalid { diagnostics: Diagnostics },
+
+    /// El diseño salió con diagnósticos de error: `recalc` no reescribe.
+    #[error("el diseño tiene errores")]
+    DesignHasErrors { diagnostics: Diagnostics },
+
+    /// El proyecto recalculado no valida: `recalc` no lo entrega.
+    #[error("el proyecto recalculado no valida")]
+    RecalculatedInvalid { diagnostics: Diagnostics },
+
+    #[error("parámetro desconocido: `{name}`; corrígelo antes de recalcular")]
+    UnknownParameter { name: String },
 
     #[error("falló la etapa {stage:?}: {source}")]
     Stage {
@@ -91,6 +103,9 @@ impl EngineError {
             | Self::UnknownMethod { .. }
             | Self::Unsupported(_)
             | Self::Invalid { .. }
+            | Self::DesignHasErrors { .. }
+            | Self::RecalculatedInvalid { .. }
+            | Self::UnknownParameter { .. }
             | Self::Stage { .. } => None,
         }
     }
@@ -104,6 +119,9 @@ impl EngineError {
             | Self::UnknownMethod { .. }
             | Self::Unsupported(_)
             | Self::Invalid { .. }
+            | Self::DesignHasErrors { .. }
+            | Self::RecalculatedInvalid { .. }
+            | Self::UnknownParameter { .. }
             | Self::Stage { .. } => None,
         }
     }
@@ -113,10 +131,13 @@ impl EngineError {
             Self::Input { diagnostic, .. } => Some(diagnostic.code.as_str()),
             Self::LegacyMethod { .. } => Some("HM-PROJ-025"),
             Self::UnknownMethod { .. } => Some("HM-PROJ-016"),
+            Self::UnknownParameter { .. } => Some("HM-PROJ-023"),
             Self::Design(_)
             | Self::Project(_)
             | Self::Unsupported(_)
             | Self::Invalid { .. }
+            | Self::DesignHasErrors { .. }
+            | Self::RecalculatedInvalid { .. }
             | Self::Stage { .. } => None,
         }
     }
@@ -164,5 +185,26 @@ mod tests {
 
         assert_eq!(legacy.code(), Some("HM-PROJ-025"));
         assert_eq!(unknown.code(), Some("HM-PROJ-016"));
+    }
+
+    #[test]
+    fn recalc_refusals_are_distinct_errors() {
+        let unknown = EngineError::UnknownParameter {
+            name: "inventado".to_string(),
+        };
+        assert_eq!(unknown.code(), Some("HM-PROJ-023"));
+        assert_eq!(
+            unknown.to_string(),
+            "parámetro desconocido: `inventado`; corrígelo antes de recalcular"
+        );
+
+        let design = EngineError::DesignHasErrors {
+            diagnostics: Diagnostics::new(),
+        };
+        let written = EngineError::RecalculatedInvalid {
+            diagnostics: Diagnostics::new(),
+        };
+        assert_ne!(design.to_string(), written.to_string());
+        assert_eq!(design.field(), None);
     }
 }

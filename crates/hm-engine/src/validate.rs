@@ -27,7 +27,15 @@ pub fn design_input(case: &Case) -> Result<DesignInput, EngineError> {
     let nu = kinematic_viscosity(&case.fluid)?;
     let eta_m = match case.mechanical_efficiency {
         Some(eta_m) => eta_m,
-        None => default_mechanical_efficiency(&case.duty.q.quantity, &case.duty.n.quantity)?,
+        // Si la estimación no sale, es la de ηm que el usuario no escribió.
+        None => default_mechanical_efficiency(&case.duty.q.quantity, &case.duty.n.quantity)
+            .map_err(|error| {
+                input_error(
+                    CaseField::MechanicalEfficiency,
+                    field_code(CaseField::MechanicalEfficiency),
+                    error.to_string(),
+                )
+            })?,
     };
 
     Ok(DesignInput {

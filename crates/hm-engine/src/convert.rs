@@ -516,6 +516,17 @@ fn param_quantity<'a>(
     name: &'static str,
     unit_text: &'static str,
 ) -> Result<Option<(&'a str, Quantity)>, EngineError> {
+    param_quantity_shown(project, name, unit_text, unit_text)
+}
+
+/// Como `param_quantity`, con otra unidad en el mensaje de dimensión
+/// incorrecta (`deg` en vez de `1` para un ángulo).
+fn param_quantity_shown<'a>(
+    project: &'a Project,
+    name: &'static str,
+    unit_text: &'static str,
+    shown: &'static str,
+) -> Result<Option<(&'a str, Quantity)>, EngineError> {
     let Some(text) = param_text(project, name)? else {
         return Ok(None);
     };
@@ -533,7 +544,7 @@ fn param_quantity<'a>(
         return Err(input_error(
             CaseField::Param(name),
             "HM-PROJ-020",
-            format!("`{name}` debe ser {unit_text}"),
+            format!("`{name}` debe ser {shown}"),
         ));
     }
 
@@ -552,7 +563,7 @@ fn param_f64(
 /// adimensionales y un número solo se leería como radianes. En grados se usa
 /// el número escrito, sin el viaje a radianes y de vuelta.
 fn param_angle(project: &Project, name: &'static str) -> Result<Option<f64>, EngineError> {
-    let Some((text, quantity)) = param_quantity(project, name, "1")? else {
+    let Some((text, quantity)) = param_quantity_shown(project, name, "1", "deg")? else {
         return Ok(None);
     };
     match quantity.unit.symbol.as_str() {

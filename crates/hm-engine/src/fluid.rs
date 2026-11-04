@@ -102,7 +102,7 @@ pub fn viscosity_from_text(text: &str) -> Result<Option<Viscosity>, EngineError>
         return Err(input_error(
             CaseField::Viscosity,
             "HM-PROJ-026",
-            format!("la viscosidad debe ser positiva: {text}"),
+            format!("entrada inválida: la viscosidad debe ser positiva: {text}"),
         ));
     }
     if entered.quantity.dim() == kinematic.dim {
@@ -211,10 +211,13 @@ pub fn npsha(intake: &Intake, fluid: &Fluid) -> Result<Option<Quantity>, EngineE
             .into_iter()
             .map(|(name, value)| (name.to_string(), value))
             .collect::<BTreeMap<_, _>>();
+            // Un dato de `[suction]` con la dimensión mala sale de la fórmula.
             Ok(Some(
                 Registry::all()
                     .evaluate("npsh.npsha", &inputs)
-                    .map_err(design_error)?,
+                    .map_err(|error| {
+                        input_error(CaseField::Suction, "HM-PROJ-027", error.to_string())
+                    })?,
             ))
         }
     }

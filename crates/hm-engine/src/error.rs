@@ -108,6 +108,7 @@ impl EngineError {
     pub fn field(&self) -> Option<CaseField> {
         match self {
             Self::Input { field, .. } => Some(*field),
+            Self::AfterDesign { source, .. } => source.field(),
             Self::Design(_)
             | Self::Project(_)
             | Self::LegacyMethod { .. }
@@ -117,7 +118,6 @@ impl EngineError {
             | Self::DesignHasErrors { .. }
             | Self::RecalculatedInvalid { .. }
             | Self::UnknownParameter { .. }
-            | Self::AfterDesign { .. }
             | Self::Stage { .. } => None,
         }
     }
@@ -125,6 +125,7 @@ impl EngineError {
     pub fn diagnostic(&self) -> Option<&Diagnostic> {
         match self {
             Self::Input { diagnostic, .. } => Some(diagnostic),
+            Self::AfterDesign { source, .. } => source.diagnostic(),
             Self::Design(_)
             | Self::Project(_)
             | Self::LegacyMethod { .. }
@@ -134,7 +135,6 @@ impl EngineError {
             | Self::DesignHasErrors { .. }
             | Self::RecalculatedInvalid { .. }
             | Self::UnknownParameter { .. }
-            | Self::AfterDesign { .. }
             | Self::Stage { .. } => None,
         }
     }
@@ -142,6 +142,7 @@ impl EngineError {
     pub fn code(&self) -> Option<&str> {
         match self {
             Self::Input { diagnostic, .. } => Some(diagnostic.code.as_str()),
+            Self::AfterDesign { source, .. } => source.code(),
             Self::LegacyMethod { .. } => Some("HM-PROJ-025"),
             Self::UnknownMethod { .. } => Some("HM-PROJ-016"),
             Self::UnknownParameter { .. } => Some("HM-PROJ-023"),
@@ -151,7 +152,6 @@ impl EngineError {
             | Self::Invalid { .. }
             | Self::DesignHasErrors { .. }
             | Self::RecalculatedInvalid { .. }
-            | Self::AfterDesign { .. }
             | Self::Stage { .. } => None,
         }
     }
@@ -235,5 +235,21 @@ mod tests {
             source: Box::new(stage),
         };
         assert_eq!(cli_message(&after), "entrada inválida: la garganta no cabe");
+    }
+
+    #[test]
+    fn after_design_shows_the_field_and_code_of_its_cause() {
+        let cause = EngineError::Input {
+            field: CaseField::Param("psi"),
+            diagnostic: Diagnostic::error("HM-PROJ-018", "psi debe ser manual"),
+        };
+        let wrapped = EngineError::AfterDesign {
+            design: Diagnostics::new(),
+            source: Box::new(cause),
+        };
+
+        assert_eq!(wrapped.code(), Some("HM-PROJ-018"));
+        assert_eq!(wrapped.field(), Some(CaseField::Param("psi")));
+        assert!(wrapped.diagnostic().is_some());
     }
 }

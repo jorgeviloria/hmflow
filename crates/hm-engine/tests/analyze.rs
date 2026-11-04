@@ -237,6 +237,21 @@ fn non_end_suction_is_unsupported() {
 }
 
 #[test]
+fn a_suction_value_with_the_wrong_unit_is_an_input_error_on_suction() {
+    let mut case = b1();
+    case.intake = Intake::Installation {
+        pressure: entered("1 m"),
+        height: None,
+        losses: None,
+        vapor_pressure: None,
+    };
+
+    let error = analyze(&case, points()).unwrap_err();
+    assert_eq!(error.field(), Some(CaseField::Suction), "{error}");
+    assert_eq!(error.code(), Some("HM-PROJ-027"));
+}
+
+#[test]
 fn the_pump_type_is_checked_before_the_input() {
     // Un tipo sin motor no se valida con las reglas del end-suction.
     let mut case = b1();

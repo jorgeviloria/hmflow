@@ -450,3 +450,22 @@ fn a_bare_zero_angle_needs_no_unit() {
     set(&mut project, "volute_wrap_deg", "150");
     assert!(case_from_project(&project).is_err());
 }
+
+#[test]
+fn an_angle_with_the_wrong_unit_says_deg() {
+    for name in ["beta2", "volute_wrap_deg", "incidence_deg"] {
+        let mut project = project();
+        set(&mut project, name, "20 m");
+
+        let error = case_from_project(&project).unwrap_err();
+        assert_eq!(error.code(), Some("HM-PROJ-020"), "{name}");
+        assert!(
+            error
+                .diagnostic()
+                .unwrap()
+                .message
+                .ends_with("debe ser deg"),
+            "{name}: {error}"
+        );
+    }
+}

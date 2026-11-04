@@ -181,6 +181,17 @@ fn check_deps(graph: &Graph) -> Vec<String> {
                 ));
             }
         }
+
+        // Solo `hm-engine` junta el diseño con el proyecto para calcular. Un
+        // adaptador que dependa de los dos estaría rehaciendo ese trabajo.
+        if name != "hm-engine"
+            && dependencies.contains("hm-design")
+            && dependencies.contains("hm-project")
+        {
+            issues.push(format!(
+                "`{name}` depende de `hm-design` y de `hm-project`: solo `hm-engine` junta el diseño con el proyecto"
+            ));
+        }
     }
 
     issues
@@ -700,7 +711,7 @@ mod tests {
             ),
             ("hm-project", &["hm-core", "hm-formula", "hm-units"]),
             (
-                "hmflow-cli",
+                "hm-engine",
                 &[
                     "hm-core",
                     "hm-design",
@@ -710,8 +721,24 @@ mod tests {
                 ],
             ),
             (
+                "hmflow-cli",
+                &[
+                    "hm-core",
+                    "hm-engine",
+                    "hm-formula",
+                    "hm-project",
+                    "hm-units",
+                ],
+            ),
+            (
                 "hm-ui-egui",
-                &["hm-core", "hm-design", "hm-formula", "hm-units"],
+                &[
+                    "hm-core",
+                    "hm-design",
+                    "hm-engine",
+                    "hm-formula",
+                    "hm-units",
+                ],
             ),
             ("xtask", &["hm-core", "hm-formula", "hm-units"]),
         ]);
@@ -732,6 +759,26 @@ mod tests {
         let issues = check_deps(&graph(&[("hm-formula", &["hm-design"])]));
         assert_eq!(issues.len(), 1);
         assert!(issues[0].contains("hm-formula") && issues[0].contains("hm-design"));
+    }
+
+    #[test]
+    fn only_the_engine_joins_design_and_project() {
+        let issues = check_deps(&graph(&[(
+            "hmflow-cli",
+            &["hm-engine", "hm-design", "hm-project"],
+        )]));
+        assert_eq!(issues.len(), 1, "{issues:?}");
+        assert!(issues[0].contains("hmflow-cli") && issues[0].contains("hm-engine"));
+
+        let engine = check_deps(&graph(&[("hm-engine", &["hm-design", "hm-project"])]));
+        assert!(engine.is_empty(), "{engine:?}");
+
+        // Cada uno por separado sí puede.
+        let separate = check_deps(&graph(&[
+            ("hmflow-cli", &["hm-engine", "hm-project"]),
+            ("hm-ui-egui", &["hm-engine", "hm-design"]),
+        ]));
+        assert!(separate.is_empty(), "{separate:?}");
     }
 
     #[test]

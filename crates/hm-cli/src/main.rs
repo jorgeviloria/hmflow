@@ -387,8 +387,9 @@ fn run(cli: Cli) -> Result<ExitCode, Box<dyn std::error::Error>> {
                 h: Entered::parse(&h)?,
                 n: Entered::parse(&n)?,
             };
-            let viscosity =
-                viscosity_from_text(&viscosity.unwrap_or_default()).map_err(engine_text)?;
+            // El error de la viscosidad se guarda: sale después de los de Q, H, n,
+            // NPSHa y --curve-points, que son los que salían antes.
+            let viscosity = viscosity_from_text(&viscosity.unwrap_or_default());
 
             // El rango se comprueba aquí, antes del análisis, con la misma frase.
             let Some(points) = CurvePoints::new(curve_points) else {
@@ -426,7 +427,7 @@ fn run(cli: Cli) -> Result<ExitCode, Box<dyn std::error::Error>> {
                         value: rho_quantity,
                         source: DensitySource::Explicit { text: rho_text },
                     },
-                    viscosity,
+                    viscosity: viscosity.as_ref().ok().cloned().flatten(),
                 },
                 intake,
                 mechanical_efficiency: eta_m,
@@ -436,6 +437,9 @@ fn run(cli: Cli) -> Result<ExitCode, Box<dyn std::error::Error>> {
                 Ok(analysis) => analysis,
                 Err(error) => return design_failure(error),
             };
+            if let Err(error) = viscosity {
+                return Err(engine_text(error));
+            }
             let input = &analysis.input;
             let result = &analysis.result;
 

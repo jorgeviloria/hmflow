@@ -3,8 +3,8 @@
 use hm_core::Diagnostics;
 use hm_design::{DesignInput, default_mechanical_efficiency, design};
 use hm_engine::{
-    ChangeKind, METHOD, ManualDefaults, PumpType, audit, case_from_project, cli_message,
-    design_input, design_params, recalc,
+    ChangeKind, EngineError, METHOD, ManualDefaults, PumpType, Stage, audit, case_from_project,
+    cli_message, design_input, design_params, recalc,
 };
 use hm_project::{Param, Project};
 use hm_units::parse_quantity;
@@ -226,4 +226,88 @@ fn recalc_without_reselect_keeps_the_old_selections() {
 
     assert_eq!(param_text(&done.project, "psi"), Some(psi_before.as_str()));
     assert!(codes(&audit(&done.project)).contains(&"HM-DES-013"));
+}
+
+fn error_codes(error: &EngineError) -> Vec<String> {
+    match error {
+        EngineError::Invalid { diagnostics } => diagnostics
+            .iter()
+            .map(|diagnostic| diagnostic.code.clone())
+            .collect(),
+        other => panic!("se esperaba Invalid, llegó {other:?}"),
+    }
+}
+
+#[test]
+fn a_project_with_format_errors_is_not_recalculated() {
+    let mut project = designed_project();
+    project.operating.q = "mucho".to_string();
+
+    let error = recalc(project, false).unwrap_err();
+    assert!(error_codes(&error).contains(&"HM-PROJ-002".to_string()));
+}
+
+#[test]
+fn only_end_suction_is_recalculated() {
+    let mut project = Project::new("demo", PumpType::Inline);
+    project.design.method = METHOD.to_string();
+
+    let error = recalc(project, false).unwrap_err();
+    assert!(
+        matches!(error, EngineError::Unsupported(PumpType::Inline)),
+        "{error:?}"
+    );
+}
+
+#[test]
+fn an_unknown_method_is_rejected_with_its_name() {
+    let mut project = designed_project();
+    project.design.method = "end_suction_v9".to_string();
+
+    match recalc(project, false).unwrap_err() {
+        EngineError::UnknownMethod { method } => assert_eq!(method, "end_suction_v9"),
+        // La validación del proyecto también conoce los métodos.
+        error @ EngineError::Invalid { .. } => {
+            assert!(error_codes(&error).contains(&"HM-PROJ-016".to_string()));
+        }
+        other => panic!("{other:?}"),
+    }
+}
+
+#[test]
+fn an_unknown_parameter_stops_the_recalculation() {
+    let mut project = designed_project();
+    project.params.insert("inventado".to_string(), manual("1"));
+
+    let error = recalc(project, false).unwrap_err();
+    assert!(error_codes(&error).contains(&"HM-PROJ-023".to_string()));
+}
+
+#[test]
+fn a_design_with_errors_is_not_written() {
+    let mut project = designed_project();
+    project.operating.npsha = "0.1 m".to_string();
+
+    let error = recalc(project, false).unwrap_err();
+    assert!(error_codes(&error).contains(&"HM-DES-007".to_string()));
+}
+
+#[test]
+fn a_stage_that_does_not_come_out_stops_the_recalculation() {
+    // Caudal enorme y garganta baja: el DN tabulado no alcanza y la geometría
+    // no sale, aunque el diseño base sí.
+    let mut project = designed_project();
+    project.operating.q = "14400 m3/h".to_string();
+    project.operating.h = "30 m".to_string();
+    project.operating.n = "500 rpm".to_string();
+    project.operating.npsha = String::new();
+    project
+        .params
+        .insert("volute_ratio".to_string(), manual("0.5"));
+
+    // Con `reselect`, las selecciones del punto viejo vuelven a salir del motor.
+    match recalc(project, true).unwrap_err() {
+        EngineError::Stage { stage, .. } => assert_eq!(stage, Stage::Geometry),
+        other => panic!("se esperaba Stage::Geometry, llegó {other:?}"),
+    }
 }

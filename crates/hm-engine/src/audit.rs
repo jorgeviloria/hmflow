@@ -149,8 +149,7 @@ fn recompute(project: &Project) -> Result<Option<Diagnostics>, crate::EngineErro
 
     let case = case_from_project(project)?;
     // Los diagnósticos no dependen de cuántos puntos tenga la curva.
-    let points = CurvePoints::new(2).expect("2 está entre 2 y 1000");
-    let analysis = analyze(&case, points)?;
+    let analysis = analyze(&case, CurvePoints::MINIMUM)?;
     Ok(Some(audit_analysis(project, Some(&case), &analysis)))
 }
 

@@ -69,8 +69,7 @@ pub fn recalc(mut project: Project, reselect: bool) -> Result<Recalculated, Engi
     };
 
     let case = case_from_project(&project)?;
-    let points = CurvePoints::new(2).expect("2 está entre 2 y 1000");
-    let analysis = analyze(&case, points)?;
+    let analysis = analyze(&case, CurvePoints::MINIMUM)?;
     require_stages(&analysis)?;
 
     let diagnostics = recalc_diagnostics(&project, &case, &analysis);

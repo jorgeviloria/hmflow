@@ -101,18 +101,16 @@ fn case_from_inputs(inputs: &Inputs) -> Result<Case, FieldErrors> {
     let eta_m = read_eta_m(inputs, &mut errors);
     let intake = read_intake(inputs, &mut errors);
 
-    if !errors.is_empty() {
+    // Los `Option` solo son `None` si hay un error en `errors`.
+    let (Some(q), Some(h), Some(n), Some((temperature, rho)), Some(eta_m), Some(intake)) =
+        (q, h, n, temperature, eta_m, intake)
+    else {
         return Err(errors);
-    }
+    };
 
-    let (temperature, rho) = temperature.expect("sin errores de temperatura");
     Ok(Case {
         pump_type: PumpType::EndSuction,
-        duty: Duty {
-            q: q.expect("sin errores de caudal"),
-            h: h.expect("sin errores de altura"),
-            n: n.expect("sin errores de velocidad"),
-        },
+        duty: Duty { q, h, n },
         fluid: Fluid {
             kind: FluidKind::Water,
             temperature: Some(temperature),
@@ -122,8 +120,8 @@ fn case_from_inputs(inputs: &Inputs) -> Result<Case, FieldErrors> {
             },
             viscosity: None,
         },
-        intake: intake.expect("sin errores de NPSHa"),
-        mechanical_efficiency: eta_m.expect("sin errores de ηm"),
+        intake,
+        mechanical_efficiency: eta_m,
         design: DesignOptions::default(),
     })
 }
@@ -191,8 +189,8 @@ fn read_intake(inputs: &Inputs, errors: &mut FieldErrors) -> Option<Intake> {
 /// de etapa no descarta el resto: queda en el `Result` de `Outcome`.
 pub fn compute(inputs: &Inputs) -> Result<Outcome, FieldErrors> {
     let case = case_from_inputs(inputs)?;
-    let points = CurvePoints::new(CURVE_POINTS).expect("61 está entre 2 y 1000");
-    let analysis = analyze(&case, points).map_err(|error| vec![engine_error_field(error)])?;
+    let analysis = analyze(&case, CurvePoints::clamped(CURVE_POINTS))
+        .map_err(|error| vec![engine_error_field(error)])?;
     Ok(outcome_from(inputs, analysis))
 }
 

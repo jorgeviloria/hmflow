@@ -768,11 +768,10 @@ fn design_report(
     file: &std::path::Path,
     curve_points: usize,
 ) -> Result<DesignReport, Box<dyn std::error::Error>> {
-    if !(2..=1000).contains(&curve_points) {
+    let Some(points) = CurvePoints::new(curve_points) else {
         return Err("--curve-points debe estar entre 2 y 1000".into());
-    }
+    };
     let project = Project::load(file)?;
-    let points = CurvePoints::new(curve_points).expect("2..=1000 ya se comprobó");
     match report(&project, points) {
         Ok(report) => Ok(report),
         Err(EngineError::Invalid { diagnostics }) => {

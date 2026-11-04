@@ -63,31 +63,19 @@ pub fn report(project: &Project, curve_points: CurvePoints) -> Result<DesignRepo
 
     let case = case_from_project(project)?;
     let analysis = analyze(&case, curve_points)?;
-    require_stages(&analysis)?;
+    let stages = require_stages(&analysis)?;
     diagnostics.extend(schema_diagnostics(project).into_vec());
     diagnostics.extend(audit_with_analysis(project, &analysis).into_vec());
 
-    let geometry = analysis
-        .geometry
-        .as_ref()
-        .expect("require_stages ya rechazó la geometría");
-    let mechanics = analysis
-        .mechanics
-        .as_ref()
-        .expect("require_stages ya rechazó la mecánica");
     let mut report = DesignReport::new(
         &analysis.input,
         &analysis.result,
         curve_points.get(),
         diagnostics.into_vec(),
     )
-    .with_geometry(geometry)
-    .with_mechanics(mechanics);
-    if let Some(correction) = analysis
-        .viscous
-        .as_ref()
-        .expect("require_stages ya rechazó la viscosidad")
-    {
+    .with_geometry(stages.geometry)
+    .with_mechanics(stages.mechanics);
+    if let Some(correction) = stages.viscous {
         report = report.with_viscous(correction);
     }
     Ok(report)

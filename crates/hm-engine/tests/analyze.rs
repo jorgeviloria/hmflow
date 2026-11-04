@@ -285,6 +285,14 @@ fn curve_points_rejects_out_of_range() {
 }
 
 #[test]
+fn curve_points_can_be_clamped_into_range() {
+    assert_eq!(CurvePoints::MINIMUM.get(), 2);
+    assert_eq!(CurvePoints::clamped(0).get(), 2);
+    assert_eq!(CurvePoints::clamped(61).get(), 61);
+    assert_eq!(CurvePoints::clamped(5000).get(), 1000);
+}
+
+#[test]
 fn design_errors_come_back_typed() {
     let mut case = b1();
     case.design.psi = Some(-1.0);

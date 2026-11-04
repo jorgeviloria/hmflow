@@ -176,7 +176,8 @@ pub fn npsh_fluid_diagnostics(fluid: &Fluid, npsh_checked: bool) -> Diagnostics 
 /// `Intake::None` no tiene NPSHa. `Available` devuelve el valor escrito.
 /// En la instalación, la altura y las pérdidas ausentes valen cero y la
 /// presión de vapor ausente es la del agua a la temperatura (20 °C si no se
-/// indicó). Si el fluido no es agua y falta, el error es `HM-PROJ-029`.
+/// indicó). Si el fluido no es agua y falta, el error es `HM-PROJ-029`; si la
+/// temperatura cae fuera de IAPWS, `HM-PROJ-027` sobre `[suction]`.
 pub fn npsha(intake: &Intake, fluid: &Fluid) -> Result<Option<Quantity>, EngineError> {
     match intake {
         Intake::None => Ok(None),
@@ -269,9 +270,8 @@ fn water_vapor(fluid: &Fluid) -> Result<Quantity, EngineError> {
             .as_ref()
             .map(|temperature| temperature.kelvin)
             .unwrap_or(DEFAULT_WATER_TEMPERATURE_K);
-        let pascal = water_vapor_pressure(temperature_k).ok_or_else(|| {
-            EngineError::Design(DesignError::Input(VAPOR_PRESSURE_RANGE.to_string()))
-        })?;
+        let pascal = water_vapor_pressure(temperature_k)
+            .ok_or_else(|| input_error(CaseField::Suction, "HM-PROJ-027", VAPOR_PRESSURE_RANGE))?;
         return si_quantity(pascal, "Pa");
     };
     Err(input_error(

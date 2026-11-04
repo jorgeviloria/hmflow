@@ -198,6 +198,8 @@ fn suction_npsha_uses_iapws_vapor_pressure_for_water() {
 fn vapor_pressure_outside_the_correlation_keeps_the_cli_sentence() {
     let suction = installation("1 atm", Some("-3 m"), Some("0.5 m"), None);
     let error = npsha(&suction, &water(Some("400 degC"), "865 kg/m3")).unwrap_err();
+    assert_eq!(error.field(), Some(CaseField::Suction));
+    assert_eq!(error.code(), Some("HM-PROJ-027"));
     assert_eq!(
         cli_message(&error),
         "la temperatura está fuera del intervalo de la presión de vapor del agua"
@@ -344,4 +346,64 @@ fn suction_errors_through_the_text_adapter_carry_field_and_code() {
     assert_eq!(error.field(), Some(CaseField::Suction));
     assert_eq!(error.code(), Some("HM-PROJ-027"));
     assert!(error.to_string().contains("pressure"), "{error}");
+}
+
+fn design_input_for(rho: &str) -> DesignInput {
+    DesignInput {
+        q: parse_quantity("120 m3/h").unwrap(),
+        h: parse_quantity("45 m").unwrap(),
+        n: parse_quantity("2900 rpm").unwrap(),
+        rho: parse_quantity(rho).unwrap(),
+        eta_m: 0.96,
+        npsha: None,
+        nu: None,
+    }
+}
+
+#[test]
+fn dynamic_viscosity_is_divided_by_the_density_in_the_effect() {
+    // 50 cP con ρ = 800 kg/m3 son 62.5 cSt: el mismo efecto que 62.5 cSt.
+    let input = design_input_for("800 kg/m3");
+    let result = design(&input).unwrap();
+    let dynamic = fluid(
+        FluidKind::Custom("aceite".to_string()),
+        None,
+        "800 kg/m3",
+        Some(viscosity("50 cP")),
+    );
+    let kinematic = fluid(
+        FluidKind::Custom("aceite".to_string()),
+        None,
+        "800 kg/m3",
+        Some(viscosity("62.5 cSt")),
+    );
+
+    assert!((kinematic_viscosity(&dynamic).unwrap().unwrap() - 62.5e-6).abs() < 1e-12);
+    let (_, by_dynamic) = viscosity_effect(&dynamic, &input, &result).unwrap();
+    let (_, by_kinematic) = viscosity_effect(&kinematic, &input, &result).unwrap();
+    let (by_dynamic, by_kinematic) = (by_dynamic.unwrap(), by_kinematic.unwrap());
+    assert!(by_dynamic.f_h < 1.0, "la corrección tiene que notarse");
+    assert!((by_dynamic.f_h - by_kinematic.f_h).abs() < 1e-12);
+    assert!((by_dynamic.f_eta - by_kinematic.f_eta).abs() < 1e-12);
+}
+
+#[test]
+fn water_viscosity_is_unknown_outside_the_correlation() {
+    assert!(
+        kinematic_viscosity(&water(Some("400 degC"), "998.2 kg/m3"))
+            .unwrap()
+            .is_none()
+    );
+    // Sin temperatura, 20 °C: hay valor.
+    assert!(
+        kinematic_viscosity(&water(None, "998.2 kg/m3"))
+            .unwrap()
+            .is_some()
+    );
+    // Otro fluido sin viscosidad escrita: no se conoce.
+    assert!(
+        kinematic_viscosity(&custom("aceite", None, "850 kg/m3"))
+            .unwrap()
+            .is_none()
+    );
 }

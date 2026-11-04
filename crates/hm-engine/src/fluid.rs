@@ -90,16 +90,25 @@ pub fn viscosity_from_text(text: &str) -> Result<Option<Viscosity>, EngineError>
     let dynamic = parse_unit("Pa*s")
         .map_err(|error| input_error(CaseField::Viscosity, "HM-PROJ-026", error.to_string()))?;
 
-    if entered.quantity.dim() == kinematic.dim {
-        Ok(Some(Viscosity::Kinematic(entered)))
-    } else if entered.quantity.dim() == dynamic.dim {
-        Ok(Some(Viscosity::Dynamic(entered)))
-    } else {
-        Err(input_error(
+    let positive = entered.quantity.si.is_finite() && entered.quantity.si > 0.0;
+    if entered.quantity.dim() != kinematic.dim && entered.quantity.dim() != dynamic.dim {
+        return Err(input_error(
             CaseField::Viscosity,
             "HM-PROJ-026",
             format!("la viscosidad debe ser m2/s (cSt) o Pa*s (cP): {text}"),
-        ))
+        ));
+    }
+    if !positive {
+        return Err(input_error(
+            CaseField::Viscosity,
+            "HM-PROJ-026",
+            format!("la viscosidad debe ser positiva: {text}"),
+        ));
+    }
+    if entered.quantity.dim() == kinematic.dim {
+        Ok(Some(Viscosity::Kinematic(entered)))
+    } else {
+        Ok(Some(Viscosity::Dynamic(entered)))
     }
 }
 

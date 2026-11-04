@@ -402,3 +402,19 @@ fn counts_outside_one_to_one_hundred_are_rejected() {
         );
     }
 }
+
+#[test]
+fn a_non_positive_viscosity_is_a_case_error_with_its_code() {
+    for text in ["-1 cSt", "0 cSt", "0 cP", "-5 cP"] {
+        let mut project = project();
+        project.operating.viscosity = text.to_string();
+
+        let error = case_from_project(&project).unwrap_err();
+        assert_eq!(error.field(), Some(CaseField::Viscosity), "{text}");
+        assert_eq!(error.code(), Some("HM-PROJ-026"), "{text}");
+        assert!(
+            error.diagnostic().unwrap().message.contains("positiva"),
+            "{text}"
+        );
+    }
+}

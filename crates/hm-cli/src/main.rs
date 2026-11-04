@@ -14,11 +14,11 @@ use hm_design::{
     design_with_options, designed_si, param_spec, performance_curve,
 };
 use hm_engine::{
-    Density, DensitySource, Entered, Fluid, Intake, Temperature, add_fluid_temperature_diagnostics,
-    add_selection_diagnostics, audit, cli_message, fluid_diagnostics, fluid_kind,
-    kinematic_viscosity, kinematic_viscosity_of, looks_like_water, npsh_fluid_diagnostics,
-    parse_temperature, project_viscosity_effect, suction_npsha, viscosity_effect,
-    viscosity_from_text, water_density_at,
+    Density, DensitySource, Entered, Fluid, Intake, MAX_COUNT, NQ_SELECTIONS, Temperature,
+    add_fluid_temperature_diagnostics, add_selection_diagnostics, audit, cli_message,
+    fluid_diagnostics, fluid_kind, kinematic_viscosity, kinematic_viscosity_of, looks_like_water,
+    npsh_fluid_diagnostics, parse_temperature, project_viscosity_effect, suction_npsha,
+    viscosity_effect, viscosity_from_text, water_density_at,
 };
 use hm_formula::{Registry, eval, infer, parse};
 use hm_project::{Param, Project, PumpType, Suction};
@@ -767,13 +767,6 @@ fn design_inputs(
     ))
 }
 
-/// Selecciones que `recalc --reselect` vuelve a tomar del motor para el punto.
-///
-/// J entra porque el ojo automático lo fija junto con c0 y cm0. Si se deja
-/// el J de otro punto, el motor no minimiza el NPSH y c0 queda distinto.
-/// La auditoría del motor repite esta lista para detectar las que quedaron viejas.
-const NQ_SELECTIONS: [&str; 7] = ["psi", "phi", "beta2", "blade_count", "c0", "cm0", "J"];
-
 /// Recalcula los `auto` de un proyecto end-suction y lo reescribe.
 ///
 /// Conserva los parámetros manuales y bloqueados; los que falten se rellenan
@@ -1169,8 +1162,8 @@ fn param_u32(project: &Project, name: &str) -> Result<Option<u32>, Box<dyn std::
     let Some(value) = param_f64(project, name, "1")? else {
         return Ok(None);
     };
-    if value.fract() != 0.0 || !(1.0..=100.0).contains(&value) {
-        return Err(format!("`{name}` debe ser un entero entre 1 y 100").into());
+    if value.fract() != 0.0 || !(1.0..=MAX_COUNT).contains(&value) {
+        return Err(format!("`{name}` debe ser un entero entre 1 y {MAX_COUNT}").into());
     }
     Ok(Some(value as u32))
 }

@@ -12,13 +12,13 @@ mod fluid;
 mod validate;
 
 pub use analysis::{Analysis, CurvePoints};
-pub use audit::{add_selection_diagnostics, audit, audit_with_analysis};
+pub use audit::{NQ_SELECTIONS, add_selection_diagnostics, audit, audit_with_analysis};
 pub use case::{
     Case, Density, DensitySource, Duty, Entered, Fluid, FluidKind, Intake, Temperature, Viscosity,
 };
 pub use convert::{
-    Decode, MANUAL_PARAMS, ManualParam, add_fluid_temperature_diagnostics, case_from_project,
-    kinematic_viscosity_of, project_viscosity_effect, suction_npsha,
+    Decode, MANUAL_PARAMS, MAX_COUNT, ManualParam, add_fluid_temperature_diagnostics,
+    case_from_project, kinematic_viscosity_of, project_viscosity_effect, suction_npsha,
 };
 pub use dispatch::analyze;
 pub use error::{CaseField, EngineError, Stage, cli_message};

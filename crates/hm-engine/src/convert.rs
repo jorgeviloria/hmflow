@@ -15,8 +15,8 @@ use crate::fluid::{
 };
 
 /// Mayor conteo entero aceptado (álabes, canales de voluta); el mismo límite
-/// que aplica la CLI.
-const MAX_COUNT: f64 = 100.0;
+/// que aplica la CLI y la auditoría.
+pub const MAX_COUNT: f64 = 100.0;
 
 /// Densidad cuando no se puede derivar ni está escrita, kg/m3.
 const FALLBACK_DENSITY: f64 = 998.2;

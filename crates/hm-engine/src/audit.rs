@@ -5,15 +5,16 @@
 
 use hm_core::{Diagnostic, Diagnostics, PumpType};
 use hm_design::{
-    DesignOptions, DesignResult, LEGACY_METHODS, METHOD, PARAM_SPECS, design_with_options,
-    designed_si, param_spec, stored_si_matches,
+    DesignInput, DesignOptions, DesignResult, LEGACY_METHODS, METHOD, PARAM_SPECS,
+    design_with_options, designed_si, param_spec, stored_si_matches,
 };
 use hm_formula::Registry;
 use hm_project::{Param, Project};
 use hm_units::{Quantity, parse_quantity, parse_unit};
 
 use crate::analysis::{Analysis, CurvePoints};
-use crate::convert::case_from_project;
+use crate::case::Case;
+use crate::convert::{MAX_COUNT, case_from_project};
 use crate::dispatch::analyze;
 use crate::error::cli_message;
 use crate::validate::design_input;
@@ -22,8 +23,7 @@ use crate::validate::design_input;
 ///
 /// J entra porque el ojo automático lo fija junto con c0 y cm0. Si se deja
 /// el J de otro punto, el motor no minimiza el NPSH y c0 queda distinto.
-/// La misma lista sigue en la CLI hasta que el recálculo pase al motor.
-const NQ_SELECTIONS: [&str; 7] = ["psi", "phi", "beta2", "blade_count", "c0", "cm0", "J"];
+pub const NQ_SELECTIONS: [&str; 7] = ["psi", "phi", "beta2", "blade_count", "c0", "cm0", "J"];
 
 /// Valida el proyecto y, si no hay errores, audita el diseño.
 ///
@@ -43,9 +43,23 @@ pub fn audit(project: &Project) -> Diagnostics {
 /// No repite el diseño: `analysis.diagnostics` ya va en el orden canónico.
 /// Una etapa fallida se queda en su campo y no se convierte en `HM-PROJ-014`.
 pub fn audit_with_analysis(project: &Project, analysis: &Analysis) -> Diagnostics {
+    let case = case_from_project(project).ok();
+    audit_analysis(project, case.as_ref(), analysis)
+}
+
+/// Lo mismo, con el caso que ya se construyó para el análisis.
+fn audit_analysis(project: &Project, case: Option<&Case>, analysis: &Analysis) -> Diagnostics {
     let mut diagnostics = Diagnostics::new();
     diagnostics.extend(analysis.diagnostics.iter().cloned());
-    add_selection_diagnostics(project, &analysis.result, &mut diagnostics);
+    if let Some(case) = case {
+        selection_diagnostics(
+            project,
+            case,
+            &analysis.input,
+            &analysis.result,
+            &mut diagnostics,
+        );
+    }
     compare_stored_autos(&analysis.result, project, &mut diagnostics);
     diagnostics
 }
@@ -141,7 +155,7 @@ fn recompute(project: &Project) -> Result<Option<Diagnostics>, crate::EngineErro
     // Los diagnósticos no dependen de cuántos puntos tenga la curva.
     let points = CurvePoints::new(2).expect("2 está entre 2 y 1000");
     let analysis = analyze(&case, points)?;
-    Ok(Some(audit_with_analysis(project, &analysis)))
+    Ok(Some(audit_analysis(project, Some(&case), &analysis)))
 }
 
 fn validate_design_schema(project: &Project, diagnostics: &mut Diagnostics) {
@@ -244,11 +258,11 @@ fn check_parameter_unit(diagnostics: &mut Diagnostics, spec: &hm_design::ParamSp
 
 fn check_blade_count(diagnostics: &mut Diagnostics, text: &str) {
     if let Ok(quantity) = parse_quantity(text)
-        && (quantity.si.fract() != 0.0 || !(1.0..=100.0).contains(&quantity.si))
+        && (quantity.si.fract() != 0.0 || !(1.0..=MAX_COUNT).contains(&quantity.si))
     {
         diagnostics.push(Diagnostic::error(
             "HM-PROJ-020",
-            format!("`blade_count` debe ser un entero entre 1 y 100: {text}"),
+            format!("`blade_count` debe ser un entero entre 1 y {MAX_COUNT}: {text}"),
         ));
     }
 }
@@ -328,13 +342,7 @@ fn fresh_selection_si(result: &DesignResult, name: &str) -> Option<f64> {
 /// Selecciones `manual` que ya no coinciden con lo que el motor elegiría
 /// para el punto actual, con el fluido del proyecto y sin otras selecciones
 /// manuales. Las `locked` son decisiones explícitas y no se señalan.
-fn stale_selections(project: &Project) -> Vec<&'static str> {
-    let Ok(case) = case_from_project(project) else {
-        return Vec::new();
-    };
-    let Ok(input) = design_input(&case) else {
-        return Vec::new();
-    };
+fn stale_selections(project: &Project, case: &Case, input: &DesignInput) -> Vec<&'static str> {
     // Sin otras selecciones manuales, pero con los datos del proyecto (ηv,
     // rugosidad, razón de la garganta, voluta…): no son selecciones del motor.
     let data_only = DesignOptions {
@@ -347,7 +355,7 @@ fn stale_selections(project: &Project) -> Vec<&'static str> {
         incidence_deg: case.design.incidence_deg,
         ..DesignOptions::default()
     };
-    let Ok(fresh) = design_with_options(&input, &data_only) else {
+    let Ok(fresh) = design_with_options(input, &data_only) else {
         return Vec::new();
     };
     NQ_SELECTIONS
@@ -375,7 +383,23 @@ pub fn add_selection_diagnostics(
     result: &DesignResult,
     diagnostics: &mut Diagnostics,
 ) {
-    let stale = stale_selections(project);
+    let Ok(case) = case_from_project(project) else {
+        return;
+    };
+    let Ok(input) = design_input(&case) else {
+        return;
+    };
+    selection_diagnostics(project, &case, &input, result, diagnostics);
+}
+
+fn selection_diagnostics(
+    project: &Project,
+    case: &Case,
+    input: &DesignInput,
+    result: &DesignResult,
+    diagnostics: &mut Diagnostics,
+) {
+    let stale = stale_selections(project, case, input);
     if stale.is_empty() {
         return;
     }

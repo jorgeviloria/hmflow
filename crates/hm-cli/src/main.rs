@@ -5,19 +5,20 @@ use std::path::PathBuf;
 use std::process::ExitCode;
 
 use clap::{Parser, Subcommand};
-use hm_core::{Diagnostic, Diagnostics};
+use hm_core::Diagnostics;
 use hm_design::geometry::geometry;
 use hm_design::mechanics::{DEFAULT_SHAFT_SHEAR_STRESS, mechanics, mechanics_diagnostics};
 use hm_design::{
     DEFAULT_K_EFF, DEFAULT_VOLUTE_C, DesignInput, DesignOptions, DesignReport, DesignResult,
     LEGACY_METHODS, METHOD, PARAM_SPECS, ParamSpec, default_mechanical_efficiency,
-    design_with_options, designed_si, param_spec, performance_curve, stored_si_matches,
+    design_with_options, designed_si, param_spec, performance_curve,
 };
 use hm_engine::{
     Density, DensitySource, Entered, Fluid, Intake, Temperature, add_fluid_temperature_diagnostics,
-    cli_message, fluid_diagnostics, fluid_kind, kinematic_viscosity, kinematic_viscosity_of,
-    looks_like_water, npsh_fluid_diagnostics, parse_temperature, project_viscosity_effect,
-    suction_npsha, viscosity_effect, viscosity_from_text, water_density_at,
+    add_selection_diagnostics, audit, cli_message, fluid_diagnostics, fluid_kind,
+    kinematic_viscosity, kinematic_viscosity_of, looks_like_water, npsh_fluid_diagnostics,
+    parse_temperature, project_viscosity_effect, suction_npsha, viscosity_effect,
+    viscosity_from_text, water_density_at,
 };
 use hm_formula::{Registry, eval, infer, parse};
 use hm_project::{Param, Project, PumpType, Suction};
@@ -233,39 +234,14 @@ fn run(cli: Cli) -> Result<ExitCode, Box<dyn std::error::Error>> {
 
         Command::Check { file } => {
             let project = Project::load(&file)?;
-            let diagnostics = project.validate(&Registry::all());
-            let design_diagnostics = if diagnostics.has_errors() {
-                Diagnostics::new()
-            } else {
-                design_audit(&project)
-            };
-
-            let mut printed = false;
-            for diagnostic in diagnostics.iter() {
-                println!(
-                    "[{:?}] {}: {}",
-                    diagnostic.severity, diagnostic.code, diagnostic.message
-                );
-                if let Some(hint) = &diagnostic.hint {
-                    println!("        sugerencia: {hint}");
-                }
-                printed = true;
-            }
-            for diagnostic in design_diagnostics.iter() {
-                println!(
-                    "[{:?}] {}: {}",
-                    diagnostic.severity, diagnostic.code, diagnostic.message
-                );
-                if let Some(hint) = &diagnostic.hint {
-                    println!("        sugerencia: {hint}");
-                }
-                printed = true;
-            }
-            if !printed {
+            let diagnostics = audit(&project);
+            if diagnostics.is_empty() {
                 println!("{}: sin diagnósticos", file.display());
+            } else {
+                print_diagnostics(&diagnostics);
             }
 
-            if diagnostics.has_errors() || design_diagnostics.has_errors() {
+            if diagnostics.has_errors() {
                 Ok(ExitCode::FAILURE)
             } else {
                 Ok(ExitCode::SUCCESS)
@@ -791,119 +767,12 @@ fn design_inputs(
     ))
 }
 
-fn recompute_design_diagnostics(
-    project: &Project,
-) -> Result<Option<hm_core::Diagnostics>, Box<dyn std::error::Error>> {
-    if project.design.pump_type != PumpType::EndSuction {
-        return Ok(None);
-    }
-
-    let (input, options) = design_inputs(project)?;
-    let result = design_with_options(&input, &options)?;
-    let mut diagnostics = result.diagnostics.clone();
-    add_fluid_temperature_diagnostics(project, &input, &mut diagnostics);
-    diagnostics.extend(
-        project_viscosity_effect(project, &input, &result)
-            .map_err(engine_text)?
-            .0
-            .into_vec(),
-    );
-    let mech = mechanics(&input, &result, DEFAULT_SHAFT_SHEAR_STRESS)?;
-    diagnostics.extend(mechanics_diagnostics(&mech, &result).into_vec());
-    add_selection_diagnostics(project, &result, &mut diagnostics);
-    compare_stored_autos(&result, project, &mut diagnostics);
-    Ok(Some(diagnostics))
-}
-
 /// Selecciones que `recalc --reselect` vuelve a tomar del motor para el punto.
 ///
 /// J entra porque el ojo automático lo fija junto con c0 y cm0. Si se deja
 /// el J de otro punto, el motor no minimiza el NPSH y c0 queda distinto.
+/// La auditoría del motor repite esta lista para detectar las que quedaron viejas.
 const NQ_SELECTIONS: [&str; 7] = ["psi", "phi", "beta2", "blade_count", "c0", "cm0", "J"];
-
-/// Valor, en SI, de la selección que el motor haría para este punto.
-///
-/// β2 no se compara: sale de Euler con el Z del proyecto. Si no cuadra con
-/// la altura, lo señala `HM-DES-019`.
-fn fresh_selection_si(result: &DesignResult, name: &str) -> Option<f64> {
-    Some(match name {
-        "psi" => result.selection.psi,
-        "phi" => result.selection.phi,
-        "blade_count" => f64::from(result.selection.blade_count),
-        "c0" => result.selection.c0,
-        "cm0" => result.selection.cm0,
-        "J" => result.selection.j,
-        _ => return None,
-    })
-}
-
-/// Selecciones `manual` que ya no coinciden con lo que el motor elegiría
-/// para el punto actual, con el fluido del proyecto y sin otras selecciones
-/// manuales. Las `locked` son decisiones explícitas y no se señalan.
-fn stale_selections(project: &Project) -> Vec<&'static str> {
-    let Ok((input, options)) = design_inputs(project) else {
-        return Vec::new();
-    };
-    // Sin otras selecciones manuales, pero con los datos del proyecto (ηv,
-    // rugosidad, razón de la garganta, voluta…): no son selecciones del motor.
-    let data_only = DesignOptions {
-        eta_v: options.eta_v,
-        balance_holes: options.balance_holes,
-        volute_ratio: options.volute_ratio,
-        impeller_roughness: options.impeller_roughness,
-        volute_channels: options.volute_channels,
-        volute_wrap_deg: options.volute_wrap_deg,
-        incidence_deg: options.incidence_deg,
-        ..DesignOptions::default()
-    };
-    let Ok(fresh) = design_with_options(&input, &data_only) else {
-        return Vec::new();
-    };
-    NQ_SELECTIONS
-        .into_iter()
-        .filter(|name| {
-            let Some(Param::Manual { value }) = project.params.get(*name) else {
-                return false;
-            };
-            let (Ok(quantity), Some(expected)) =
-                (parse_quantity(value), fresh_selection_si(&fresh, name))
-            else {
-                return false;
-            };
-            !stored_si_matches(expected, quantity.si)
-        })
-        .collect()
-}
-
-fn add_selection_diagnostics(
-    project: &Project,
-    result: &DesignResult,
-    diagnostics: &mut Diagnostics,
-) {
-    let stale = stale_selections(project);
-    if stale.is_empty() {
-        return;
-    }
-    let names = stale
-        .iter()
-        .map(|name| format!("`{name}`"))
-        .collect::<Vec<_>>()
-        .join(", ");
-    diagnostics.push(
-        Diagnostic::warning(
-            "HM-DES-013",
-            format!(
-                "{names} no {} con la selección del motor para nq = {:.2}; puede venir de otro punto de operación",
-                if stale.len() == 1 { "coincide" } else { "coinciden" },
-                result.nq
-            ),
-        )
-        .with_hint(
-            "Usa `hmflow-cli recalc --reselect <archivo>` para volver a la selección \
-             del motor en este punto, o márcalas como locked si son decisiones tuyas.",
-        ),
-    );
-}
 
 /// Recalcula los `auto` de un proyecto end-suction y lo reescribe.
 ///
@@ -1071,7 +940,7 @@ fn design_report(
     let (input, options) = design_inputs(&project)?;
     let result = design_with_options(&input, &options)?;
     let mut diagnostics = validation.into_vec();
-    diagnostics.extend(design_audit(&project).into_vec());
+    diagnostics.extend(audit(&project).into_vec());
     let report = DesignReport::new(&input, &result, curve_points, diagnostics)
         .with_geometry(&geometry(&input, &result)?)
         .with_mechanics(&mechanics(&input, &result, DEFAULT_SHAFT_SHEAR_STRESS)?);
@@ -1347,247 +1216,6 @@ fn engine_text(error: hm_engine::EngineError) -> Box<dyn std::error::Error> {
     cli_message(&error).into()
 }
 
-fn design_audit(project: &Project) -> Diagnostics {
-    let mut diagnostics = Diagnostics::new();
-
-    if LEGACY_METHODS.contains(&project.design.method.as_str()) {
-        diagnostics.push(
-            Diagnostic::error(
-                "HM-PROJ-025",
-                format!(
-                    "el proyecto se diseñó con {}; el motor actual es {METHOD} y puede dar otros resultados",
-                    project.design.method
-                ),
-            )
-            .with_hint(
-                "Ejecuta `hmflow-cli recalc --reselect <archivo>` para migrarlo con las \
-                 selecciones nuevas, o `recalc` sin --reselect para conservar las tuyas.",
-            ),
-        );
-        return diagnostics;
-    }
-
-    if !project.design.method.is_empty() && project.design.method != METHOD {
-        diagnostics.push(
-            Diagnostic::error(
-                "HM-PROJ-016",
-                format!("método de diseño desconocido: {}", project.design.method),
-            )
-            .with_hint(format!("Métodos conocidos: {METHOD}.")),
-        );
-        return diagnostics;
-    }
-
-    if project.design.method == METHOD && project.design.pump_type != PumpType::EndSuction {
-        diagnostics.push(
-            Diagnostic::error(
-                "HM-PROJ-016",
-                format!(
-                    "el método {METHOD} no aplica a {}",
-                    project.design.pump_type
-                ),
-            )
-            .with_hint("Corrige el tipo de bomba o el método de diseño."),
-        );
-        return diagnostics;
-    }
-
-    if project.design.pump_type == PumpType::EndSuction
-        && (project.design.method == METHOD || !project.params.is_empty())
-    {
-        validate_design_schema(project, &mut diagnostics);
-    }
-
-    match recompute_design_diagnostics(project) {
-        Ok(Some(design_diagnostics)) => {
-            diagnostics.extend(design_diagnostics.into_vec());
-        }
-        Ok(None) => diagnostics.push(Diagnostic::info(
-            "HM-PROJ-021",
-            format!(
-                "{} todavía no tiene motor de diseño; solo se validó el formato del proyecto",
-                project.design.pump_type
-            ),
-        )),
-        Err(error) => {
-            diagnostics.push(
-                Diagnostic::error(
-                    "HM-PROJ-014",
-                    format!("no se pudo recalcular el diseño: {error}"),
-                )
-                .with_hint("Revisa la densidad, la eficiencia mecánica y el punto de operación."),
-            );
-        }
-    }
-
-    diagnostics
-}
-
-fn validate_design_schema(project: &Project, diagnostics: &mut Diagnostics) {
-    for name in project.params.keys() {
-        if param_spec(name).is_none() {
-            diagnostics.push(
-                Diagnostic::error("HM-PROJ-023", format!("parámetro desconocido: `{name}`"))
-                    .with_hint("Revisa el nombre o vuelve a generar el diseño."),
-            );
-        }
-    }
-
-    for spec in PARAM_SPECS {
-        let Some(param) = project.params.get(spec.name) else {
-            diagnostics.push(
-                Diagnostic::error("HM-PROJ-017", format!("falta el parámetro `{}`", spec.name))
-                    .with_hint("Vuelve a ejecutar el diseño."),
-            );
-            continue;
-        };
-
-        match (spec.formula, param) {
-            (Some(expected), Param::Auto { formula, value }) => {
-                if formula != expected {
-                    diagnostics.push(Diagnostic::error(
-                        "HM-PROJ-018",
-                        format!("`{}` usa `{formula}`; se esperaba `{expected}`", spec.name),
-                    ));
-                }
-                match value {
-                    Some(value) => check_parameter_unit(diagnostics, spec, value),
-                    None => diagnostics.push(Diagnostic::error(
-                        "HM-PROJ-017",
-                        format!("`{}` no guarda su valor calculado", spec.name),
-                    )),
-                }
-            }
-            (Some(_), _) => diagnostics.push(
-                Diagnostic::error("HM-PROJ-018", format!("`{}` debe ser auto", spec.name))
-                    .with_hint(
-                        "Ejecuta `hmflow-cli recalc <archivo>`: lo convierte y calcula su valor.",
-                    ),
-            ),
-            (None, Param::Manual { value } | Param::Locked { value }) => {
-                check_parameter_unit(diagnostics, spec, value);
-                if spec.name == "blade_count" {
-                    check_blade_count(diagnostics, value);
-                }
-            }
-            (None, Param::Override { .. }) => diagnostics.push(
-                Diagnostic::error(
-                    "HM-PROJ-019",
-                    format!(
-                        "`{}` está en override; la auditoría no evalúa overrides",
-                        spec.name
-                    ),
-                )
-                .with_hint("Usa manual o locked."),
-            ),
-            (None, Param::Auto { .. }) => diagnostics.push(Diagnostic::error(
-                "HM-PROJ-018",
-                format!("`{}` debe ser manual o locked", spec.name),
-            )),
-        }
-    }
-}
-
-fn check_parameter_unit(diagnostics: &mut Diagnostics, spec: &hm_design::ParamSpec, text: &str) {
-    let expected = match parse_unit(spec.unit) {
-        Ok(unit) => unit,
-        Err(error) => {
-            diagnostics.push(Diagnostic::error(
-                "HM-PROJ-020",
-                format!("unidad esperada inválida para `{}`: {error}", spec.name),
-            ));
-            return;
-        }
-    };
-
-    match parse_quantity(text) {
-        Ok(quantity) => {
-            if !quantity.si.is_finite() {
-                diagnostics.push(Diagnostic::error(
-                    "HM-PROJ-020",
-                    format!("`{}` debe ser finito: {text}", spec.name),
-                ));
-            } else if quantity.dim() != expected.dim {
-                diagnostics.push(Diagnostic::error(
-                    "HM-PROJ-020",
-                    format!("`{}` debe ser {}: {text}", spec.name, spec.unit),
-                ));
-            }
-        }
-        Err(error) => diagnostics.push(Diagnostic::error(
-            "HM-PROJ-020",
-            format!("`{}` no se puede interpretar: {text} ({error})", spec.name),
-        )),
-    }
-}
-
-fn check_blade_count(diagnostics: &mut Diagnostics, text: &str) {
-    if let Ok(quantity) = parse_quantity(text)
-        && (quantity.si.fract() != 0.0 || !(1.0..=100.0).contains(&quantity.si))
-    {
-        diagnostics.push(Diagnostic::error(
-            "HM-PROJ-020",
-            format!("`blade_count` debe ser un entero entre 1 y 100: {text}"),
-        ));
-    }
-}
-
-fn compare_stored_autos(result: &DesignResult, project: &Project, diagnostics: &mut Diagnostics) {
-    for (name, param) in &project.params {
-        let Param::Auto {
-            value: Some(text), ..
-        } = param
-        else {
-            continue;
-        };
-        let Some(expected) = designed_si(result, name) else {
-            continue;
-        };
-
-        match parse_quantity(text) {
-            Ok(actual) if stored_si_matches(expected, actual.si) => {}
-            Ok(actual) => {
-                let shown = Quantity::from_si(expected, actual.unit);
-                diagnostics.push(
-                    Diagnostic::error(
-                        "HM-PROJ-015",
-                        format!(
-                            "`{name}` guardado como «{text}» no coincide con el diseño recalculado ({:.6}{})",
-                            shown.value(),
-                            unit_suffix(&shown.unit.symbol)
-                        ),
-                    )
-                    .with_hint(
-                        "Ejecuta `hmflow-cli recalc <archivo>` para regenerar los parámetros automáticos.",
-                    ),
-                );
-            }
-            Err(error) => {
-                diagnostics.push(
-                    Diagnostic::error(
-                        "HM-PROJ-015",
-                        format!(
-                            "`{name}` guardado como «{text}» no se puede comparar con el diseño ({error})"
-                        ),
-                    )
-                    .with_hint(
-                        "Ejecuta `hmflow-cli recalc <archivo>` para regenerar los parámetros automáticos.",
-                    ),
-                );
-            }
-        }
-    }
-}
-
-/// Unidad para mostrar detrás de un número; vacía si es adimensional.
-fn unit_suffix(symbol: &str) -> String {
-    if symbol == "1" {
-        String::new()
-    } else {
-        format!(" {symbol}")
-    }
-}
-
 fn param_value(param: &Param) -> Option<&str> {
     match param {
         Param::Manual { value } | Param::Locked { value } => Some(value),
@@ -1619,23 +1247,6 @@ mod tests {
             .collect()
     }
 
-    #[test]
-    fn fresh_end_suction_clears_the_design_check() {
-        let diagnostics = design_audit(&Project::new("demo", PumpType::EndSuction));
-        assert!(
-            !diagnostics.has_errors(),
-            "códigos: {:?}",
-            codes(&diagnostics)
-        );
-    }
-
-    #[test]
-    fn other_pump_types_skip_the_end_suction_recompute() {
-        let diagnostics = design_audit(&Project::new("demo", PumpType::Barrel));
-        assert_eq!(codes(&diagnostics), ["HM-PROJ-021"]);
-        assert!(!diagnostics.has_errors());
-    }
-
     fn sample_design() -> DesignResult {
         design(&DesignInput {
             q: parse_quantity("120 m3/h").unwrap(),
@@ -1650,135 +1261,6 @@ mod tests {
     }
 
     #[test]
-    fn end_suction_method_on_barrel_is_reported() {
-        let mut project = Project::new("demo", PumpType::Barrel);
-        project.design.method = METHOD.to_string();
-
-        let diagnostics = design_audit(&project);
-        assert!(codes(&diagnostics).contains(&"HM-PROJ-016"));
-    }
-
-    #[test]
-    fn unknown_method_is_reported() {
-        let mut project = Project::new("demo", PumpType::EndSuction);
-        project.design.method = "end_suction_v9".to_string();
-
-        let diagnostics = design_audit(&project);
-        assert!(codes(&diagnostics).contains(&"HM-PROJ-016"));
-    }
-
-    #[test]
-    fn unknown_only_parameter_is_reported() {
-        let mut project = Project::new("demo", PumpType::EndSuction);
-        project
-            .params
-            .insert("d22".to_string(), manual("0.2 m".to_string()));
-
-        let diagnostics = design_audit(&project);
-        assert!(codes(&diagnostics).contains(&"HM-PROJ-023"));
-    }
-
-    #[test]
-    fn unknown_parameter_is_reported() {
-        let mut project = Project::new("demo", PumpType::EndSuction);
-        project.design.method = METHOD.to_string();
-        project
-            .params
-            .insert("d22".to_string(), manual("0.2 m".to_string()));
-
-        let mut diagnostics = Diagnostics::new();
-        validate_design_schema(&project, &mut diagnostics);
-        assert!(codes(&diagnostics).contains(&"HM-PROJ-023"));
-    }
-
-    #[test]
-    fn missing_parameter_is_reported() {
-        let mut project = Project::new("demo", PumpType::EndSuction);
-        project.design.method = METHOD.to_string();
-
-        let mut diagnostics = Diagnostics::new();
-        validate_design_schema(&project, &mut diagnostics);
-        assert!(codes(&diagnostics).contains(&"HM-PROJ-017"));
-    }
-
-    #[test]
-    fn wrong_formula_is_reported() {
-        let mut project = Project::new("demo", PumpType::EndSuction);
-        project.design.method = METHOD.to_string();
-        project
-            .params
-            .insert("d2".to_string(), auto("design.d1", "0.2 m".to_string()));
-
-        let mut diagnostics = Diagnostics::new();
-        validate_design_schema(&project, &mut diagnostics);
-        assert!(codes(&diagnostics).contains(&"HM-PROJ-018"));
-    }
-
-    #[test]
-    fn override_is_not_audited() {
-        let mut project = Project::new("demo", PumpType::EndSuction);
-        project.design.method = METHOD.to_string();
-        project.params.insert(
-            "psi".to_string(),
-            Param::Override {
-                expr: "0.8".to_string(),
-                author: "test".to_string(),
-                date: "2026-11-01".to_string(),
-                reason: "prueba".to_string(),
-            },
-        );
-
-        let mut diagnostics = Diagnostics::new();
-        validate_design_schema(&project, &mut diagnostics);
-        assert!(codes(&diagnostics).contains(&"HM-PROJ-019"));
-    }
-
-    #[test]
-    fn blade_count_must_be_an_integer() {
-        let mut project = Project::new("demo", PumpType::EndSuction);
-        project.design.method = METHOD.to_string();
-        project
-            .params
-            .insert("blade_count".to_string(), manual("7.5".to_string()));
-
-        let mut diagnostics = Diagnostics::new();
-        validate_design_schema(&project, &mut diagnostics);
-        assert!(codes(&diagnostics).contains(&"HM-PROJ-020"));
-    }
-
-    #[test]
-    fn manual_psi_changes_the_recomputed_design() {
-        let designed = sample_design();
-        let mut project = Project::new("demo", PumpType::EndSuction);
-        project
-            .params
-            .insert("psi".to_string(), manual("0.5".to_string()));
-        project.params.insert(
-            "d2".to_string(),
-            auto("design.d2", format!("{} m", designed.d2.value())),
-        );
-
-        let diagnostics = design_audit(&project);
-        assert!(codes(&diagnostics).contains(&"HM-PROJ-015"));
-    }
-
-    #[test]
-    fn old_manual_slip_points_to_recalc() {
-        let mut project = designed_project();
-        project
-            .params
-            .insert("slip".to_string(), manual("0.84".to_string()));
-        let mut diagnostics = Diagnostics::new();
-        validate_design_schema(&project, &mut diagnostics);
-        let hint = diagnostics
-            .iter()
-            .find(|diagnostic| diagnostic.code == "HM-PROJ-018")
-            .and_then(|diagnostic| diagnostic.hint.clone())
-            .unwrap_or_default();
-        assert!(hint.contains("recalc"), "{hint}");
-    }
-
-    #[test]
     fn negative_expressions_and_values_parse() {
         let cli = Cli::try_parse_from(["hmflow-cli", "eval", "-2^2"]).unwrap();
         assert!(matches!(cli.command, Command::Eval { expr, .. } if expr == "-2^2"));
@@ -1788,14 +1270,6 @@ mod tests {
 
         let cli = Cli::try_parse_from(["hmflow-cli", "design", "--npsha", "-3 m"]).unwrap();
         assert!(matches!(cli.command, Command::Design { npsha: Some(text), .. } if text == "-3 m"));
-    }
-
-    #[test]
-    fn legacy_method_gets_a_single_migration_error() {
-        let mut project = designed_project();
-        project.design.method = "end_suction_v0.1".to_string();
-        let diagnostics = design_audit(&project);
-        assert_eq!(codes(&diagnostics), ["HM-PROJ-025"]);
     }
 
     #[test]
@@ -1863,35 +1337,6 @@ mod tests {
     }
 
     #[test]
-    fn project_options_do_not_make_selections_look_stale() {
-        // ηv, rugosidad, razón de la garganta… son datos del proyecto, no
-        // selecciones: un proyecto diseñado con ellos no debe avisar HM-DES-013
-        // al compararlo con la selección del motor.
-        let options = DesignOptions {
-            eta_v: Some(0.93),
-            volute_ratio: Some(0.85),
-            ..DesignOptions::default()
-        };
-        let input = DesignInput {
-            q: parse_quantity("120 m3/h").unwrap(),
-            h: parse_quantity("45 m").unwrap(),
-            n: parse_quantity("2900 rpm").unwrap(),
-            rho: parse_quantity("998.2 kg/m3").unwrap(),
-            eta_m: 0.96,
-            npsha: Some(parse_quantity("15 m").unwrap()),
-            nu: None,
-        };
-        let result = design_with_options(&input, &options).unwrap();
-        let mut project = Project::new("demo", PumpType::EndSuction);
-        project.design.method = METHOD.to_string();
-        project.operating.npsha = "15 m".to_string();
-        let defaults =
-            ManualDefaults::with_options("998.2 kg/m3".to_string(), "0.96".to_string(), &options);
-        project.params = design_params(&result, None, &defaults).unwrap().0;
-        assert_eq!(stale_selections(&project), Vec::<&str>::new());
-    }
-
-    #[test]
     fn recalc_migrates_a_v08_project() {
         // El .hmf de referencia de la v0.8, con A y J manuales. `recalc`
         // lo lleva a la v0.9 y conserva las selecciones manuales.
@@ -1915,7 +1360,7 @@ mod tests {
             format!("{:?}", project.params["J"]),
             format!("{:?}", before.params["J"])
         );
-        let diagnostics = design_audit(&project);
+        let diagnostics = audit(&project);
         assert!(
             !diagnostics.has_errors(),
             "códigos: {:?}",
@@ -1950,7 +1395,7 @@ mod tests {
             "eta_m {} frente a la estimación {expected}",
             input.eta_m
         );
-        let diagnostics = design_audit(&project);
+        let diagnostics = audit(&project);
         assert!(
             !diagnostics.has_errors(),
             "códigos: {:?}",
@@ -2021,69 +1466,6 @@ mod tests {
         assert!((report.results["d2"].value - stored).abs() < 1e-12);
     }
 
-    /// Guarda de versionado: el `.hmf` de referencia se escribió con
-    /// `end_suction_v0.9`. Si el motor cambia sus resultados sin cambiar
-    /// `METHOD`, sus valores `auto` dejan de cuadrar y este test falla. La
-    /// salida correcta es subir `METHOD`, añadir el anterior a
-    /// `LEGACY_METHODS` y regenerar el archivo con `design`.
-    #[test]
-    fn reference_project_of_the_current_method_audits_clean() {
-        let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
-            .join("../hm-project/tests/fixtures/end_suction_v0.9.hmf");
-        let project = Project::load(&path).unwrap();
-        assert_eq!(
-            project.design.method, METHOD,
-            "METHOD cambió: regenera el .hmf de referencia y añade el método anterior a LEGACY_METHODS"
-        );
-        let diagnostics = design_audit(&project);
-        assert!(
-            !diagnostics.has_errors(),
-            "códigos: {:?}",
-            codes(&diagnostics)
-        );
-    }
-
-    #[test]
-    fn project_with_suction_audits_and_reports() {
-        let mut project = designed_project();
-        project.operating.npsha = String::new();
-        project.suction = Some(Suction {
-            pressure: "1 atm".to_string(),
-            height: "6 m".to_string(),
-            losses: String::new(),
-            vapor_pressure: String::new(),
-        });
-        project.operating.viscosity = "20 cSt".to_string();
-        // El proyecto se dimensionó con agua. ν entra en discos y anillo, así
-        // que los auto guardados ya no cuadran (HM-PROJ-015) hasta un recalc.
-        // Lo que no puede pasar es que el anillo deje el diseño sin resultado.
-        let diagnostics = design_audit(&project);
-        assert!(
-            !codes(&diagnostics).contains(&"HM-PROJ-014"),
-            "códigos: {:?}",
-            codes(&diagnostics)
-        );
-        assert!(codes(&diagnostics).contains(&"HM-PROJ-015"));
-
-        let path = std::env::temp_dir().join(format!(
-            "hmflow-suction-{}-{:?}.hmf",
-            std::process::id(),
-            std::thread::current().id()
-        ));
-        project.save(&path).unwrap();
-        let report = design_report(&path, 5);
-        std::fs::remove_file(&path).unwrap();
-        let report = report.unwrap();
-        let npsha = report.input["npsha"].value;
-        assert!(
-            (npsha - (101_325.0 - 2339.2) / (998.204 * 9.80665) - 6.0).abs() < 0.01,
-            "{npsha}"
-        );
-        let viscous = report.viscous.expect("con viscosidad hay corrección");
-        assert!((viscous.nu.value - 20e-6).abs() < 1e-15);
-        assert!(viscous.f_h.value < 1.0);
-    }
-
     #[test]
     fn npsha_and_suction_pressure_exclude_each_other() {
         let result = Cli::try_parse_from([
@@ -2096,86 +1478,6 @@ mod tests {
         ]);
         assert!(result.is_err());
         assert!(Cli::try_parse_from(["hmflow-cli", "design", "--suction-height", "2 m"]).is_err());
-    }
-
-    #[test]
-    fn dimensionless_mismatch_has_no_unit_suffix() {
-        assert_eq!(unit_suffix("1"), "");
-        assert_eq!(unit_suffix("m3/h"), " m3/h");
-    }
-
-    #[test]
-    fn a_density_with_the_wrong_dimension_fails_the_check() {
-        let mut project = Project::new("demo", PumpType::EndSuction);
-        project
-            .params
-            .insert("rho".to_string(), manual("1200 kg".to_string()));
-        let diagnostics = design_audit(&project);
-        assert!(codes(&diagnostics).contains(&"HM-PROJ-014"));
-        assert!(diagnostics.has_errors());
-    }
-
-    #[test]
-    fn an_efficiency_outside_the_open_interval_fails_the_check() {
-        let mut project = Project::new("demo", PumpType::EndSuction);
-        project
-            .params
-            .insert("eta_m".to_string(), manual("2".to_string()));
-        let diagnostics = design_audit(&project);
-        assert!(codes(&diagnostics).contains(&"HM-PROJ-014"));
-    }
-
-    #[test]
-    fn a_tampered_auto_value_fails_the_check() {
-        let mut project = Project::new("demo", PumpType::EndSuction);
-        project
-            .params
-            .insert("d2".to_string(), auto("design.d2", "9 m".to_string()));
-        let diagnostics = design_audit(&project);
-        assert!(
-            codes(&diagnostics).contains(&"HM-PROJ-015"),
-            "códigos: {:?}",
-            codes(&diagnostics)
-        );
-    }
-
-    #[test]
-    fn a_rounded_auto_value_matches_the_recomputed_design() {
-        let project = Project::new("demo", PumpType::EndSuction);
-        let result = recompute_design_diagnostics(&project)
-            .unwrap()
-            .expect("end-suction recalcula");
-        assert!(!result.has_errors());
-
-        let designed = design(&DesignInput {
-            q: parse_quantity("120 m3/h").unwrap(),
-            h: parse_quantity("45 m").unwrap(),
-            n: parse_quantity("2900 rpm").unwrap(),
-            rho: parse_quantity("998.2 kg/m3").unwrap(),
-            eta_m: 0.96,
-            npsha: Some(parse_quantity("10 m").unwrap()),
-            nu: None,
-        })
-        .unwrap();
-
-        let mut project = project;
-        project.params.insert(
-            "d2".to_string(),
-            auto("design.d2", format!("{} m", designed.d2.value())),
-        );
-        project.params.insert(
-            "dn".to_string(),
-            auto(
-                "design.specific_diameter",
-                format!("{:.4}", designed.specific_diameter_mm),
-            ),
-        );
-        let diagnostics = design_audit(&project);
-        assert!(
-            !codes(&diagnostics).contains(&"HM-PROJ-015"),
-            "códigos: {:?}",
-            codes(&diagnostics)
-        );
     }
 
     /// Proyecto completo tal como lo escribe `design` para la duty de ejemplo.
@@ -2201,52 +1503,15 @@ mod tests {
     }
 
     #[test]
-    fn a_designed_project_passes_the_check() {
-        let diagnostics = design_audit(&designed_project());
-        assert!(
-            !diagnostics.has_errors(),
-            "códigos: {:?}",
-            codes(&diagnostics)
-        );
-    }
-
-    #[test]
-    fn slip_and_cu2_are_stored_as_auto() {
-        let project = designed_project();
-        for name in ["slip", "cu2"] {
-            assert!(
-                matches!(project.params.get(name), Some(Param::Auto { .. })),
-                "`{name}` debe ser auto"
-            );
-        }
-    }
-
-    #[test]
-    fn editing_beta2_or_blade_count_is_detected() {
-        for (name, value) in [("beta2", "35 deg"), ("blade_count", "4")] {
-            let mut project = designed_project();
-            project
-                .params
-                .insert(name.to_string(), manual(value.to_string()));
-            let diagnostics = design_audit(&project);
-            assert!(
-                codes(&diagnostics).contains(&"HM-PROJ-015"),
-                "editar `{name}` no se detectó: {:?}",
-                codes(&diagnostics)
-            );
-        }
-    }
-
-    #[test]
     fn recalc_keeps_manual_edits_and_clears_the_check() {
         let mut project = designed_project();
         project
             .params
             .insert("beta2".to_string(), manual("30 deg".to_string()));
-        assert!(design_audit(&project).has_errors());
+        assert!(audit(&project).has_errors());
 
         let project = recalculated(&project);
-        let diagnostics = design_audit(&project);
+        let diagnostics = audit(&project);
         assert!(
             !diagnostics.has_errors(),
             "códigos: {:?}",
@@ -2287,22 +1552,6 @@ mod tests {
         assert!(design_params(&result, Some(&project.params), &defaults).is_err());
     }
 
-    #[test]
-    fn selections_outside_their_domain_fail_the_check() {
-        for (name, value) in [("margin", "0.5"), ("k_eff", "0"), ("k3", "1")] {
-            let mut project = designed_project();
-            project
-                .params
-                .insert(name.to_string(), manual(value.to_string()));
-            let diagnostics = design_audit(&project);
-            assert!(
-                codes(&diagnostics).contains(&"HM-PROJ-014"),
-                "`{name}` = {value} no se rechazó: {:?}",
-                codes(&diagnostics)
-            );
-        }
-    }
-
     /// Proyecto diseñado para 120 m3/h cuyo caudal pasa a 250 m3/h: nq sube
     /// de 30,5 a 44 y cambia de tramo en la tabla.
     fn moved_duty_project() -> Project {
@@ -2310,33 +1559,6 @@ mod tests {
         project.operating.q = "250 m3/h".to_string();
         project.operating.npsha = "25 m".to_string();
         project
-    }
-
-    #[test]
-    fn selections_from_another_duty_are_flagged() {
-        let diagnostics = design_audit(&moved_duty_project());
-        assert!(
-            codes(&diagnostics).contains(&"HM-DES-013"),
-            "códigos: {:?}",
-            codes(&diagnostics)
-        );
-        assert!(!codes(&designed_project_diagnostics()).contains(&"HM-DES-013"));
-    }
-
-    fn designed_project_diagnostics() -> Diagnostics {
-        design_audit(&designed_project())
-    }
-
-    #[test]
-    fn locked_selections_are_not_flagged() {
-        let mut project = moved_duty_project();
-        for name in NQ_SELECTIONS {
-            let value = param_value(&project.params[name]).unwrap().to_string();
-            project
-                .params
-                .insert(name.to_string(), Param::Locked { value });
-        }
-        assert_eq!(stale_selections(&project), Vec::<&str>::new());
     }
 
     #[test]
@@ -2376,7 +1598,7 @@ mod tests {
             Some("7"),
             "una selección locked no se toca"
         );
-        let diagnostics = design_audit(&project);
+        let diagnostics = audit(&project);
         assert!(
             !diagnostics.has_errors(),
             "códigos: {:?}",
@@ -2409,6 +1631,6 @@ mod tests {
             project.params.get("psi").and_then(param_value),
             Some(psi_before.as_str())
         );
-        assert!(codes(&design_audit(&project)).contains(&"HM-DES-013"));
+        assert!(codes(&audit(&project)).contains(&"HM-DES-013"));
     }
 }

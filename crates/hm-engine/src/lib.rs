@@ -3,6 +3,7 @@
 #![deny(clippy::print_stdout, clippy::print_stderr, clippy::exit)]
 
 mod analysis;
+mod audit;
 mod case;
 mod convert;
 mod dispatch;
@@ -11,6 +12,7 @@ mod fluid;
 mod validate;
 
 pub use analysis::{Analysis, CurvePoints};
+pub use audit::{add_selection_diagnostics, audit, audit_with_analysis};
 pub use case::{
     Case, Density, DensitySource, Duty, Entered, Fluid, FluidKind, Intake, Temperature, Viscosity,
 };

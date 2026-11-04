@@ -24,6 +24,13 @@ allow = [
     "MPL-2.0",
     "CC0-1.0",
     "Unlicense",
+    # Dos crates del portapapeles de Windows que trae la interfaz egui
+    # (clipboard-win, error-code); licencia permisiva, ADR-0004.
+    "BSL-1.0",
+    # Las fuentes que incrusta egui (epaint_default_fonts): son fuentes, no
+    # código, y se redistribuyen con su licencia.
+    "OFL-1.1",
+    "Ubuntu-font-1.0",
 ]
 # LGPL se permite solo para OCCT y netgen, enlazados como bibliotecas
 # separadas y declarados en ATTRIBUTION.md. Nunca en crates propios.

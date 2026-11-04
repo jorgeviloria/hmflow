@@ -1473,6 +1473,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "hm-engine"
+version = "0.0.1"
+dependencies = [
+ "hm-core",
+ "hm-design",
+ "hm-formula",
+ "hm-project",
+ "hm-units",
+ "thiserror 2.0.21",
+]
+
+[[package]]
 name = "hm-formula"
 version = "0.0.1"
 dependencies = [
@@ -1490,6 +1502,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "hm-project"
+version = "0.0.1"
+dependencies = [
+ "hm-core",
+ "hm-formula",
+ "hm-units",
+ "serde",
+ "thiserror 2.0.21",
+ "toml",
+]
+
+[[package]]
 name = "hm-ui-egui"
 version = "0.0.1"
 dependencies = [
@@ -1497,6 +1521,7 @@ dependencies = [
  "egui_plot",
  "hm-core",
  "hm-design",
+ "hm-engine",
  "hm-formula",
  "hm-units",
 ]

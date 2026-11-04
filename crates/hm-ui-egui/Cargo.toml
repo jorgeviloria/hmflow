@@ -20,5 +20,6 @@ eframe = "0.37"
 egui_plot = "0.38"
 hm-core = { path = "../hm-core" }
 hm-design = { path = "../hm-design" }
+hm-engine = { path = "../hm-engine" }
 hm-formula = { path = "../hm-formula" }
 hm-units = { path = "../hm-units" }

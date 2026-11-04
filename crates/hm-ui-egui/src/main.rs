@@ -9,7 +9,10 @@ use eframe::egui;
 use egui::{Color32, RichText};
 use egui_plot::{Corner, HLine, Legend, Line, Plot, PlotPoints, Points, Polygon, VLine};
 use hm_core::Severity;
-use hm_design::{PARAM_SPECS, PREFERRED_OPERATING_REGION, designed_si};
+// `designed_si` no está en la fachada: es el valor calculado de un parámetro
+// y la tabla lo muestra junto a su fórmula.
+use hm_design::designed_si;
+use hm_engine::{METHOD, PARAM_SPECS, PREFERRED_OPERATING_REGION};
 use hm_formula::Registry;
 
 use model::{Field, FieldErrors, Inputs, Outcome, compute};
@@ -137,11 +140,7 @@ fn top_bar(ui: &mut egui::Ui, app: &App) {
         ui.horizontal(|ui| {
             ui.heading("HidroMac Flow");
             ui.label(
-                RichText::new(format!(
-                    "Diseño preliminar end-suction · método {}",
-                    hm_design::METHOD
-                ))
-                .weak(),
+                RichText::new(format!("Diseño preliminar end-suction · método {}", METHOD)).weak(),
             );
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                 let (text, color) = status(ui, app);
@@ -204,6 +203,7 @@ fn inputs_panel(ui: &mut egui::Ui, app: &mut App) {
                     Field::Temperature => &mut app.inputs.temperature_c,
                     Field::EtaM => &mut app.inputs.eta_m,
                     Field::Npsha => &mut app.inputs.npsha,
+                    Field::General => continue,
                 };
                 ui.label(label);
                 let error = errors.iter().find(|(which, _)| *which == field);
@@ -220,6 +220,13 @@ fn inputs_panel(ui: &mut egui::Ui, app: &mut App) {
                     );
                 }
                 ui.add_space(4.0);
+            }
+            for (_, message) in errors.iter().filter(|(field, _)| *field == Field::General) {
+                ui.label(
+                    RichText::new(message)
+                        .small()
+                        .color(ui.visuals().error_fg_color),
+                );
             }
             if changed {
                 app.recompute();
@@ -239,7 +246,7 @@ fn inputs_panel(ui: &mut egui::Ui, app: &mut App) {
                         .small()
                         .weak(),
                 );
-                if let Some(viscous) = &outcome.viscous {
+                if let Ok(Some(viscous)) = &outcome.viscous {
                     ui.label(
                         RichText::new(format!(
                             "ν = {:.3} cSt · fH = {:.3} · fη = {:.3}",
@@ -344,7 +351,7 @@ fn rows(outcome: &Outcome) -> Vec<(&'static str, Vec<Row>)> {
     ];
 
     let mut mechanics = Vec::new();
-    if let Some(mech) = &outcome.mechanics {
+    if let Ok(mech) = &outcome.mechanics {
         let double_volute = mech.volute_wrap_deg.is_some();
         let items: [(&'static str, &'static str, String, Option<&'static str>); 10] = [
             (
@@ -568,11 +575,17 @@ fn diagnostics_panel(ui: &mut egui::Ui, app: &App) {
                 ));
             });
             egui::ScrollArea::vertical().show(ui, |ui| {
-                if let Some(error) = &outcome.geometry_error {
-                    ui.label(
-                        RichText::new(format!("geometría no disponible: {error}"))
-                            .color(ui.visuals().warn_fg_color),
-                    );
+                for (name, error) in [
+                    ("geometría", outcome.geometry.as_ref().err()),
+                    ("mecánica", outcome.mechanics.as_ref().err()),
+                    ("viscosidad", outcome.viscous.as_ref().err()),
+                ] {
+                    if let Some(error) = error {
+                        ui.label(
+                            RichText::new(format!("{name} no disponible: {error}"))
+                                .color(ui.visuals().warn_fg_color),
+                        );
+                    }
                 }
                 for diagnostic in &outcome.diagnostics {
                     let color = match diagnostic.severity {
@@ -707,6 +720,7 @@ fn curves(ui: &mut egui::Ui, outcome: &Outcome) {
             if let Some(rating) = outcome
                 .mechanics
                 .as_ref()
+                .ok()
                 .and_then(|mech| mech.motor_rating)
             {
                 plot_ui.hline(HLine::new("Motor IEC", rating / 1000.0).color(Color32::RED));
@@ -726,7 +740,7 @@ fn circle(radius: f64) -> Vec<[f64; 2]> {
 }
 
 fn plan_view(ui: &mut egui::Ui, outcome: &Outcome) {
-    let Some(shape) = &outcome.geometry else {
+    let Ok(shape) = &outcome.geometry else {
         ui.label("Sin geometría para este punto.");
         return;
     };

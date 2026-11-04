@@ -5,6 +5,8 @@ use hm_design::geometry::Geometry;
 use hm_design::mechanics::Mechanics;
 use hm_design::{CurvePoint, DesignError, DesignInput, DesignResult, ViscousCorrection};
 
+use crate::error::{EngineError, Stage};
+
 /// Número de puntos de la curva, comprobado una sola vez.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct CurvePoints(usize);
@@ -38,4 +40,28 @@ pub struct Analysis {
     pub mechanics: Result<Mechanics, DesignError>,
     pub viscous: Result<Option<ViscousCorrection>, DesignError>,
     pub diagnostics: Vec<Diagnostic>,
+}
+
+/// Geometría, mecánica y viscosidad tienen que haber salido.
+///
+/// `Ok(None)` en la viscosidad es éxito: no había nada que aplicar. El orden
+/// es el de la CLI: la primera etapa que falla es la que se devuelve.
+pub(crate) fn require_stages(analysis: &Analysis) -> Result<(), EngineError> {
+    if let Err(error) = &analysis.geometry {
+        return Err(stage_error(Stage::Geometry, error));
+    }
+    if let Err(error) = &analysis.mechanics {
+        return Err(stage_error(Stage::Mechanics, error));
+    }
+    if let Err(error) = &analysis.viscous {
+        return Err(stage_error(Stage::Viscous, error));
+    }
+    Ok(())
+}
+
+fn stage_error(stage: Stage, error: &DesignError) -> EngineError {
+    EngineError::Stage {
+        stage,
+        source: error.clone(),
+    }
 }

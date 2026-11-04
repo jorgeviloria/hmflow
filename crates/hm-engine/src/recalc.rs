@@ -1,17 +1,17 @@
 //! Recálculo de un proyecto end-suction: migra el método y reescribe los `auto`.
 
 use hm_core::{Diagnostic, Diagnostics, PumpType};
-use hm_design::{DesignError, LEGACY_METHODS, METHOD, param_spec};
+use hm_design::{LEGACY_METHODS, METHOD, param_spec};
 use hm_formula::Registry;
 use hm_project::{Param, Project};
 
-use crate::analysis::{Analysis, CurvePoints};
+use crate::analysis::{Analysis, CurvePoints, require_stages};
 use crate::audit::{NQ_SELECTIONS, selection_diagnostics};
 use crate::case::Case;
 use crate::changes::{ChangeKind, ParamChange};
 use crate::convert::{ManualDefaults, case_from_project, design_params, param_value};
 use crate::dispatch::analyze;
-use crate::error::{EngineError, Stage};
+use crate::error::EngineError;
 
 /// Proyecto reescrito, con los cambios y los diagnósticos del diseño.
 ///
@@ -142,26 +142,6 @@ fn take_manual_selections(project: &mut Project) -> Vec<(&'static str, String)> 
         project.params.remove(*name);
     }
     reselected
-}
-
-fn require_stages(analysis: &Analysis) -> Result<(), EngineError> {
-    if let Err(error) = &analysis.geometry {
-        return Err(stage_error(Stage::Geometry, error));
-    }
-    if let Err(error) = &analysis.mechanics {
-        return Err(stage_error(Stage::Mechanics, error));
-    }
-    if let Err(error) = &analysis.viscous {
-        return Err(stage_error(Stage::Viscous, error));
-    }
-    Ok(())
-}
-
-fn stage_error(stage: Stage, error: &DesignError) -> EngineError {
-    EngineError::Stage {
-        stage,
-        source: error.clone(),
-    }
 }
 
 fn recalc_diagnostics(project: &Project, case: &Case, analysis: &Analysis) -> Diagnostics {

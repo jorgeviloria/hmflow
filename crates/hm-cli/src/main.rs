@@ -6,18 +6,23 @@ use std::process::ExitCode;
 
 use clap::{Parser, Subcommand};
 use hm_core::Diagnostics;
+#[cfg(test)]
+use hm_design::METHOD;
 use hm_design::geometry::geometry;
 use hm_design::mechanics::{DEFAULT_SHAFT_SHEAR_STRESS, mechanics, mechanics_diagnostics};
 use hm_design::{
-    DesignInput, DesignOptions, DesignReport, LEGACY_METHODS, METHOD,
-    default_mechanical_efficiency, design_with_options, performance_curve,
+    DesignInput, DesignOptions, DesignReport, default_mechanical_efficiency, design_with_options,
+    performance_curve,
 };
 use hm_engine::{
-    ChangeKind, Density, DensitySource, EngineError, Entered, Fluid, Intake, MAX_COUNT,
-    ManualDefaults, ParamChange, Temperature, audit, cli_message, design_params, fluid_diagnostics,
-    fluid_kind, kinematic_viscosity, kinematic_viscosity_of, looks_like_water,
-    npsh_fluid_diagnostics, parse_temperature, project_viscosity_effect, suction_npsha,
+    ChangeKind, CurvePoints, Density, DensitySource, EngineError, Entered, Fluid, Intake,
+    ParamChange, audit, cli_message, fluid_diagnostics, fluid_kind, kinematic_viscosity,
+    looks_like_water, new_project, npsh_fluid_diagnostics, parse_temperature, report,
     viscosity_effect, viscosity_from_text, water_density_at,
+};
+#[cfg(test)]
+use hm_engine::{
+    MAX_COUNT, ManualDefaults, Temperature, design_params, kinematic_viscosity_of, suction_npsha,
 };
 use hm_formula::{Registry, eval, infer, parse};
 use hm_project::{Param, Project, PumpType, Suction};
@@ -352,7 +357,6 @@ fn run(cli: Cli) -> Result<ExitCode, Box<dyn std::error::Error>> {
                 return Err("el nombre no puede contener separadores de ruta".into());
             }
 
-            let npsha_text = npsha.clone();
             let temperature_value = parse_temperature(&temperature).map_err(engine_text)?;
             let rho_text = match rho {
                 Some(text) => text,
@@ -648,35 +652,51 @@ fn run(cli: Cli) -> Result<ExitCode, Box<dyn std::error::Error>> {
                 .into());
             }
 
-            let mut project = Project::new(&name, PumpType::EndSuction);
-            project.operating.q = q;
-            project.operating.h = h;
-            project.operating.n = n;
-            project.operating.fluid = fluid;
-            project.operating.temperature = temperature;
-            project.operating.viscosity = viscosity_text;
-            if suction.is_some() {
-                project.suction = suction;
-            } else {
-                project.operating.npsha = npsha_text.unwrap_or_default();
-            }
-            project.design.method = METHOD.to_string();
-
-            let defaults = ManualDefaults::with_options(rho_text, eta_m.to_string(), &options);
-            project.params = design_params(&result, None, &defaults)
-                .map_err(engine_text)?
-                .0;
-
-            let diagnostics = project.validate(&Registry::all());
-            if diagnostics.has_errors() {
-                for diagnostic in diagnostics.iter() {
-                    eprintln!(
-                        "[{:?}] {}: {}",
-                        diagnostic.severity, diagnostic.code, diagnostic.message
-                    );
+            // El cálculo y la impresión ya ocurrieron. Aquí solo se escribe
+            // el proyecto, con los mismos textos que se mostraron.
+            let analysis = hm_engine::Analysis {
+                input: input.clone(),
+                result: result.clone(),
+                curve: Vec::new(),
+                geometry: Ok(shape.clone()),
+                mechanics: Ok(mech.clone()),
+                viscous: Ok(correction.clone()),
+                diagnostics: Vec::new(),
+            };
+            let case = hm_engine::Case {
+                pump_type: PumpType::EndSuction,
+                duty: hm_engine::Duty {
+                    q: Entered {
+                        text: q,
+                        quantity: input.q.clone(),
+                    },
+                    h: Entered {
+                        text: h,
+                        quantity: input.h.clone(),
+                    },
+                    n: Entered {
+                        text: n,
+                        quantity: input.n.clone(),
+                    },
+                },
+                fluid: case_fluid,
+                intake,
+                mechanical_efficiency: Some(eta_m),
+                design: options,
+            };
+            let project = match new_project(&name, &case, &analysis) {
+                Ok(project) => project,
+                Err(EngineError::Invalid { diagnostics }) => {
+                    for diagnostic in diagnostics.iter() {
+                        eprintln!(
+                            "[{:?}] {}: {}",
+                            diagnostic.severity, diagnostic.code, diagnostic.message
+                        );
+                    }
+                    return Err("el proyecto generado no valida; no se escribió".into());
                 }
-                return Err("el proyecto generado no valida; no se escribió".into());
-            }
+                Err(error) => return Err(engine_text(error)),
+            };
 
             project.save(&path)?;
             println!("escrito {}", path.display());
@@ -717,6 +737,9 @@ fn run(cli: Cli) -> Result<ExitCode, Box<dyn std::error::Error>> {
 }
 
 /// Entrada y selecciones del diseño tal como las guarda el proyecto.
+///
+/// Solo la usan las pruebas que leen las opciones desde el `.hmf`.
+#[cfg(test)]
 fn design_inputs(
     project: &Project,
 ) -> Result<(DesignInput, DesignOptions), Box<dyn std::error::Error>> {
@@ -875,45 +898,22 @@ fn design_report(
         return Err("--curve-points debe estar entre 2 y 1000".into());
     }
     let project = Project::load(file)?;
-    let validation = project.validate(&Registry::all());
-    if validation.has_errors() {
-        print_diagnostics(&validation);
-        return Err("el proyecto tiene errores; no hay informe".into());
-    }
-    if project.design.pump_type != PumpType::EndSuction {
-        return Err(format!(
-            "solo hay informe de end-suction; el proyecto es {}",
-            project.design.pump_type
+    let points = CurvePoints::new(curve_points).expect("2..=1000 ya se comprobó");
+    match report(&project, points) {
+        Ok(report) => Ok(report),
+        Err(EngineError::Invalid { diagnostics }) => {
+            print_diagnostics(&diagnostics);
+            Err("el proyecto tiene errores; no hay informe".into())
+        }
+        Err(EngineError::Unsupported(pump_type)) => {
+            Err(format!("solo hay informe de end-suction; el proyecto es {pump_type}").into())
+        }
+        Err(EngineError::LegacyMethod { method }) => Err(format!(
+            "el proyecto es de {method}; migra con `hmflow-cli recalc` antes de pedir el informe"
         )
-        .into());
+        .into()),
+        Err(error) => Err(engine_text(error)),
     }
-    if LEGACY_METHODS.contains(&project.design.method.as_str()) {
-        return Err(format!(
-            "el proyecto es de {}; migra con `hmflow-cli recalc` antes de pedir el informe",
-            project.design.method
-        )
-        .into());
-    }
-    if !project.design.method.is_empty() && project.design.method != METHOD {
-        return Err(format!("método de diseño desconocido: {}", project.design.method).into());
-    }
-
-    let (input, options) = design_inputs(&project)?;
-    let result = design_with_options(&input, &options)?;
-    let mut diagnostics = validation.into_vec();
-    diagnostics.extend(audit(&project).into_vec());
-    let report = DesignReport::new(&input, &result, curve_points, diagnostics)
-        .with_geometry(&geometry(&input, &result)?)
-        .with_mechanics(&mechanics(&input, &result, DEFAULT_SHAFT_SHEAR_STRESS)?);
-    Ok(
-        match project_viscosity_effect(&project, &input, &result)
-            .map_err(engine_text)?
-            .1
-        {
-            Some(correction) => report.with_viscous(&correction),
-            None => report,
-        },
-    )
 }
 
 fn print_diagnostics(diagnostics: &Diagnostics) {
@@ -928,6 +928,7 @@ fn print_diagnostics(diagnostics: &Diagnostics) {
     }
 }
 
+#[cfg(test)]
 fn design_options(project: &Project) -> Result<DesignOptions, Box<dyn std::error::Error>> {
     Ok(DesignOptions {
         psi: param_f64(project, "psi", "1")?,
@@ -967,6 +968,7 @@ fn design_options(project: &Project) -> Result<DesignOptions, Box<dyn std::error
     })
 }
 
+#[cfg(test)]
 fn param_f64(
     project: &Project,
     name: &str,
@@ -989,6 +991,7 @@ fn param_f64(
     Ok(Some(quantity.si))
 }
 
+#[cfg(test)]
 fn param_u32(project: &Project, name: &str) -> Result<Option<u32>, Box<dyn std::error::Error>> {
     let Some(value) = param_f64(project, name, "1")? else {
         return Ok(None);
@@ -1005,6 +1008,7 @@ fn param_u32(project: &Project, name: &str) -> Result<Option<u32>, Box<dyn std::
 ///
 /// Un texto de temperatura ilegible no aborta: se usa la densidad por defecto,
 /// igual que antes de pasar el cálculo al motor.
+#[cfg(test)]
 fn default_density(project: &Project) -> f64 {
     let water =
         project.operating.fluid.is_empty() || project.operating.fluid.eq_ignore_ascii_case("water");
@@ -1144,45 +1148,6 @@ mod tests {
             .insert("balance_holes".to_string(), manual("0.5".to_string()));
         let error = design_inputs(&project).unwrap_err().to_string();
         assert!(error.contains("balance_holes"), "{error}");
-    }
-
-    #[test]
-    fn report_of_a_designed_project_matches_its_stored_values() {
-        let path = std::env::temp_dir().join(format!(
-            "hmflow-report-{}-{:?}.hmf",
-            std::process::id(),
-            std::thread::current().id()
-        ));
-        let project = designed_project();
-        project.save(&path).unwrap();
-        let report = design_report(&path, 11);
-        std::fs::remove_file(&path).unwrap();
-        let report = report.unwrap();
-
-        assert_eq!(report.method, METHOD);
-        assert!(report.diagnostics.iter().all(|d| !d.is_error()));
-        let geometry = report
-            .geometry
-            .as_ref()
-            .expect("el informe lleva geometría");
-        assert_eq!(
-            geometry.impeller.blade.len(),
-            hm_design::geometry::BLADE_STEPS + 1
-        );
-        assert!(geometry.volute_outlet.nominal_diameter.value > 0.0);
-        let mechanics = report
-            .mechanics
-            .as_ref()
-            .expect("el informe lleva mecánica");
-        assert_eq!(
-            mechanics.shaft_shear_stress.value,
-            DEFAULT_SHAFT_SHEAR_STRESS
-        );
-        assert!(mechanics.shaft_min_diameter.value > 0.0);
-        let stored = parse_quantity(param_value(&project.params["d2"]).unwrap())
-            .unwrap()
-            .si;
-        assert!((report.results["d2"].value - stored).abs() < 1e-12);
     }
 
     #[test]

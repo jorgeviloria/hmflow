@@ -10,6 +10,7 @@ mod convert;
 mod dispatch;
 mod error;
 mod fluid;
+mod project_ops;
 mod recalc;
 mod validate;
 
@@ -32,5 +33,6 @@ pub use fluid::{
 };
 pub use hm_core::PumpType;
 pub use hm_design::{DesignReport, METHOD, PARAM_SPECS};
+pub use project_ops::{new_project, report};
 pub use recalc::{Recalculated, recalc};
 pub use validate::{design_input, validate_case};

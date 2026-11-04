@@ -18,9 +18,6 @@ use crate::fluid::{
 /// que aplica la CLI.
 const MAX_COUNT: f64 = 100.0;
 
-/// Temperatura del agua cuando el proyecto no escribe ninguna, K (20 °C).
-const DEFAULT_WATER_TEMPERATURE_K: f64 = fluid::DEFAULT_WATER_TEMPERATURE_K;
-
 /// Densidad cuando no se puede derivar ni está escrita, kg/m3.
 const FALLBACK_DENSITY: f64 = 998.2;
 
@@ -406,7 +403,7 @@ fn default_density(
     let (kelvin, water_source) = match temperature {
         Some(temperature) => (temperature.kelvin, DensitySource::WaterAtTemperature),
         None => (
-            DEFAULT_WATER_TEMPERATURE_K,
+            fluid::DEFAULT_WATER_TEMPERATURE_K,
             DensitySource::WaterAtDefaultTemperature,
         ),
     };
@@ -598,7 +595,7 @@ pub fn suction_npsha(
     temperature: &str,
     rho: f64,
 ) -> Result<Quantity, EngineError> {
-    let vapor_pressure = optional_entered(&suction.vapor_pressure)?;
+    let vapor_pressure = parse_optional_suction("vapor_pressure", &suction.vapor_pressure)?;
     let kind = fluid::fluid_kind(fluid);
     // La temperatura solo se lee cuando hace falta para la presión de vapor.
     let temperature = if vapor_pressure.is_none() && matches!(kind, FluidKind::Water) {
@@ -607,9 +604,9 @@ pub fn suction_npsha(
         None
     };
     let intake = Intake::Installation {
-        pressure: required_entered(&suction.pressure)?,
-        height: optional_entered(&suction.height)?,
-        losses: optional_entered(&suction.losses)?,
+        pressure: parse_suction("pressure", &suction.pressure)?,
+        height: parse_optional_suction("height", &suction.height)?,
+        losses: parse_optional_suction("losses", &suction.losses)?,
         vapor_pressure,
     };
     let fluid = Fluid {
@@ -734,16 +731,4 @@ fn density_from_si(si: f64) -> Result<Density, EngineError> {
     let unit = parse_unit("kg/m3")
         .map_err(|error| EngineError::Design(hm_design::DesignError::from(error)))?;
     Ok(density_from(Quantity::from_si(si, unit)))
-}
-
-fn required_entered(text: &str) -> Result<Entered, EngineError> {
-    Entered::parse(text).map_err(|error| EngineError::Design(hm_design::DesignError::from(error)))
-}
-
-fn optional_entered(text: &str) -> Result<Option<Entered>, EngineError> {
-    if text.trim().is_empty() {
-        Ok(None)
-    } else {
-        Ok(Some(required_entered(text)?))
-    }
 }

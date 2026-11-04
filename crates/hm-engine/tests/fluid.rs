@@ -317,3 +317,31 @@ fn empty_fluid_is_water() {
         FluidKind::Custom("glycol".to_string())
     );
 }
+
+#[test]
+fn an_empty_fluid_name_is_water_for_every_diagnostic() {
+    // El proyecto y la densidad por defecto ya tratan «» como agua; los
+    // diagnósticos también: avisan de una densidad que no es de agua y no
+    // dicen que el fluido «no es agua».
+    let empty = fluid_kind("");
+    assert_eq!(empty, FluidKind::Water);
+
+    let heavy = fluid(empty, Some("20 degC"), "1200 kg/m3", None);
+    assert!(codes(&fluid_diagnostics(&heavy)).contains(&"HM-DES-009"));
+    assert!(npsh_fluid_diagnostics(&heavy, true).is_empty());
+}
+
+#[test]
+fn suction_errors_through_the_text_adapter_carry_field_and_code() {
+    let suction = Suction {
+        pressure: "abc".to_string(),
+        height: String::new(),
+        losses: String::new(),
+        vapor_pressure: String::new(),
+    };
+
+    let error = hm_engine::suction_npsha(&suction, "water", "20 degC", 998.2).unwrap_err();
+    assert_eq!(error.field(), Some(CaseField::Suction));
+    assert_eq!(error.code(), Some("HM-PROJ-027"));
+    assert!(error.to_string().contains("pressure"), "{error}");
+}

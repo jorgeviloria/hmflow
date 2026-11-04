@@ -10,6 +10,12 @@ use crate::case::{
 };
 use crate::error::{CaseField, EngineError};
 
+/// Temperatura del agua cuando el proyecto no escribe ninguna, K (20 °C).
+const DEFAULT_WATER_TEMPERATURE_K: f64 = 293.15;
+
+/// Densidad cuando no se puede derivar ni está escrita, kg/m3.
+const FALLBACK_DENSITY: f64 = 998.2;
+
 /// Cómo se lee el texto del proyecto. `set` recibe el valor en la unidad
 /// de la tabla.
 pub enum Decode {
@@ -366,10 +372,18 @@ fn parse_viscosity(project: &Project) -> Result<Option<Viscosity>, EngineError> 
 
 fn parse_intake(project: &Project) -> Result<Intake, EngineError> {
     if let Some(suction) = &project.suction {
-        let pressure = parse_suction(&suction.pressure)?;
-        let height = parse_optional_suction(&suction.height)?;
-        let losses = parse_optional_suction(&suction.losses)?;
-        let vapor_pressure = parse_optional_suction(&suction.vapor_pressure)?;
+        // Un NPSHa en [operating] y otro calculado con [suction] se contradicen.
+        if !project.operating.npsha.trim().is_empty() {
+            return Err(input_error(
+                CaseField::Npsha,
+                "HM-PROJ-028",
+                "el NPSHa está en [operating] y también se calcula con [suction]; deja solo uno de los dos",
+            ));
+        }
+        let pressure = parse_suction("pressure", &suction.pressure)?;
+        let height = parse_optional_suction("height", &suction.height)?;
+        let losses = parse_optional_suction("losses", &suction.losses)?;
+        let vapor_pressure = parse_optional_suction("vapor_pressure", &suction.vapor_pressure)?;
 
         return Ok(Intake::Installation {
             pressure,
@@ -390,15 +404,23 @@ fn parse_intake(project: &Project) -> Result<Intake, EngineError> {
     }
 }
 
-fn parse_suction(text: &str) -> Result<Entered, EngineError> {
-    parse_entered(CaseField::Suction, "HM-PROJ-027", text)
+/// Lee un dato de `[suction]`. `CaseField::Suction` agrupa los cuatro, así
+/// que el mensaje nombra cuál falló.
+fn parse_suction(name: &str, text: &str) -> Result<Entered, EngineError> {
+    Entered::parse(text).map_err(|error| {
+        input_error(
+            CaseField::Suction,
+            "HM-PROJ-027",
+            format!("[suction] `{name}`: {error}"),
+        )
+    })
 }
 
-fn parse_optional_suction(text: &str) -> Result<Option<Entered>, EngineError> {
+fn parse_optional_suction(name: &str, text: &str) -> Result<Option<Entered>, EngineError> {
     if text.trim().is_empty() {
         Ok(None)
     } else {
-        Ok(Some(parse_suction(text)?))
+        Ok(Some(parse_suction(name, text)?))
     }
 }
 
@@ -426,21 +448,23 @@ fn default_density(
         });
     }
 
-    // Sin temperatura escrita, el agua se toma a 20 °C.
+    // Sin temperatura escrita, el agua se toma a 20 °C y la densidad lo dice.
+    let (kelvin, water_source) = match temperature {
+        Some(temperature) => (temperature.kelvin, DensitySource::WaterAtTemperature),
+        None => (
+            DEFAULT_WATER_TEMPERATURE_K,
+            DensitySource::WaterAtDefaultTemperature,
+        ),
+    };
     let derived = if matches!(kind, FluidKind::Water) {
-        water_density(
-            temperature
-                .map(|temperature| temperature.kelvin)
-                .unwrap_or(293.15),
-        )
+        water_density(kelvin).map(|value| (value, water_source))
     } else {
         None
     };
 
-    let (value, source) = match derived {
-        Some(value) => (value, DensitySource::WaterAtTemperature),
-        None => (998.2, DensitySource::Fallback),
-    };
+    // Fuera de 0..150 °C, o con otro fluido sin `rho`, queda la densidad por
+    // defecto; el aviso lo da el diagnóstico del fluido.
+    let (value, source) = derived.unwrap_or((FALLBACK_DENSITY, DensitySource::Fallback));
 
     Ok(Density {
         value: Quantity::from_si(value, kg_m3),
@@ -465,7 +489,7 @@ fn decode(project: &Project, param: &ManualParam) -> Result<Option<f64>, EngineE
             zero_is_none,
         )),
         Decode::Degrees { zero_is_none } => Ok(without_zero(
-            param_f64(project, param.name, param.unit)?.map(f64::to_degrees),
+            param_angle(project, param.name)?.map(f64::to_degrees),
             zero_is_none,
         )),
         Decode::Count { zero_is_none } => {
@@ -505,6 +529,29 @@ fn param_text<'a>(
         return Err(override_error(name));
     }
     Ok(param_value(param))
+}
+
+/// Un ángulo debe escribirse con unidad (`deg` o `rad`): `deg` y `rad` son
+/// adimensionales y un número solo se leería como radianes.
+fn param_angle(project: &Project, name: &'static str) -> Result<Option<f64>, EngineError> {
+    let Some(text) = param_text(project, name)? else {
+        return Ok(None);
+    };
+    let quantity = parse_quantity(text).map_err(|error| {
+        input_error(
+            CaseField::Param(name),
+            "HM-PROJ-012",
+            format!("`{name}`: {error}"),
+        )
+    })?;
+    if !matches!(quantity.unit.symbol.as_str(), "deg" | "rad") {
+        return Err(input_error(
+            CaseField::Param(name),
+            "HM-PROJ-020",
+            format!("`{name}` debe llevar unidad de ángulo (deg o rad): {text}"),
+        ));
+    }
+    Ok(Some(quantity.si))
 }
 
 fn param_f64(

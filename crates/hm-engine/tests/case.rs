@@ -259,3 +259,105 @@ fn available_npsha_keeps_its_text() {
         other => panic!("se esperaba NPSHa disponible, llegó {other:?}"),
     }
 }
+
+#[test]
+fn an_angle_without_a_unit_is_rejected_instead_of_read_as_radians() {
+    for name in ["beta2", "volute_wrap_deg", "incidence_deg"] {
+        let mut project = project();
+        set(&mut project, name, "20");
+
+        let error = case_from_project(&project).unwrap_err();
+        assert_eq!(
+            error.field(),
+            Some(CaseField::Param(match name {
+                "beta2" => "beta2",
+                "volute_wrap_deg" => "volute_wrap_deg",
+                _ => "incidence_deg",
+            }))
+        );
+        assert_eq!(error.code(), Some("HM-PROJ-020"), "{name}");
+    }
+}
+
+#[test]
+fn an_angle_in_radians_or_degrees_is_accepted() {
+    let mut project = project();
+    set(&mut project, "beta2", "0.3490658503988659 rad");
+    set(&mut project, "incidence_deg", "3 deg");
+
+    let case = case_from_project(&project).unwrap();
+    assert!((case.design.beta2_rad.unwrap().to_degrees() - 20.0).abs() < 1e-9);
+    assert!((case.design.incidence_deg.unwrap() - 3.0).abs() < 1e-9);
+}
+
+#[test]
+fn water_without_a_temperature_says_it_used_the_default() {
+    let mut project = project();
+    project.operating.temperature = String::new();
+
+    let case = case_from_project(&project).unwrap();
+
+    assert!(case.fluid.temperature.is_none());
+    assert!(matches!(
+        case.fluid.density.source,
+        DensitySource::WaterAtDefaultTemperature
+    ));
+    assert!((case.fluid.density.value.value() - 998.2).abs() < 0.1);
+}
+
+#[test]
+fn water_outside_the_density_correlation_falls_back_and_says_so() {
+    let mut project = project();
+    project.operating.temperature = "200 degC".to_string();
+
+    let case = case_from_project(&project).unwrap();
+    assert!(matches!(case.fluid.density.source, DensitySource::Fallback));
+    assert!((case.fluid.density.value.value() - 998.2).abs() < 1e-12);
+    assert!(case.fluid.temperature.is_some());
+}
+
+#[test]
+fn npsha_in_operating_and_in_suction_is_an_error() {
+    let mut project = project();
+    project.operating.npsha = "6 m".to_string();
+    project.suction = Some(Suction {
+        pressure: "1 atm".to_string(),
+        height: String::new(),
+        losses: String::new(),
+        vapor_pressure: String::new(),
+    });
+
+    let error = case_from_project(&project).unwrap_err();
+    assert_eq!(error.field(), Some(CaseField::Npsha));
+    assert_eq!(error.code(), Some("HM-PROJ-028"));
+}
+
+#[test]
+fn a_bad_suction_value_names_which_one() {
+    for (field, expected) in [
+        ("pressure", "pressure"),
+        ("height", "height"),
+        ("losses", "losses"),
+        ("vapor_pressure", "vapor_pressure"),
+    ] {
+        let mut suction = Suction {
+            pressure: "1 atm".to_string(),
+            height: String::new(),
+            losses: String::new(),
+            vapor_pressure: String::new(),
+        };
+        match field {
+            "pressure" => suction.pressure = "abc".to_string(),
+            "height" => suction.height = "abc".to_string(),
+            "losses" => suction.losses = "abc".to_string(),
+            _ => suction.vapor_pressure = "abc".to_string(),
+        }
+        let mut project = project();
+        project.suction = Some(suction);
+
+        let error = case_from_project(&project).unwrap_err();
+        assert_eq!(error.field(), Some(CaseField::Suction));
+        assert_eq!(error.code(), Some("HM-PROJ-027"));
+        assert!(error.to_string().contains(expected), "{field}: {error}");
+    }
+}

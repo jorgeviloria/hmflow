@@ -43,8 +43,14 @@ pub enum FluidKind {
 
 #[derive(Debug, Clone)]
 pub enum DensitySource {
-    Explicit { text: String },
+    Explicit {
+        text: String,
+    },
+    /// Agua a la temperatura que escribió el usuario.
     WaterAtTemperature,
+    /// Agua sin temperatura escrita: se toma a 20 °C.
+    WaterAtDefaultTemperature,
+    /// No se pudo derivar ni está escrita: 998,2 kg/m3.
     Fallback,
 }
 

@@ -57,7 +57,10 @@ pub fn new_project(name: &str, case: &Case, analysis: &Analysis) -> Result<Proje
 /// `Entered` guarda el texto y la cantidad por separado, y el análisis es un
 /// valor aparte. Si no coinciden, el `.hmf` diría una cosa y el cálculo otra,
 /// y `check` lo marcaría como `HM-PROJ-015`. Se detecta aquí, al escribir.
-fn check_case_matches_analysis(case: &Case, analysis: &Analysis) -> Result<(), EngineError> {
+pub(crate) fn check_case_matches_analysis(
+    case: &Case,
+    analysis: &Analysis,
+) -> Result<(), EngineError> {
     check_input_matches(case, &analysis.input)?;
     check_texts_match_values(case, analysis)?;
 
@@ -240,20 +243,20 @@ fn ensure_reportable(project: &Project) -> Result<(), EngineError> {
 /// El agua se escribe con su nombre canónico, `water`, sea cual sea la grafía
 /// con que se pidió (`Water`, vacío): el proyecto la lee sin distinguir
 /// mayúsculas. Otro fluido conserva su nombre.
-fn fluid_name(kind: &FluidKind) -> String {
+pub(crate) fn fluid_name(kind: &FluidKind) -> String {
     match kind {
         FluidKind::Water => "water".to_string(),
         FluidKind::Custom(name) => name.clone(),
     }
 }
 
-fn temperature_text(temperature: Option<&Temperature>) -> String {
+pub(crate) fn temperature_text(temperature: Option<&Temperature>) -> String {
     temperature
         .map(|temperature| temperature.text.clone())
         .unwrap_or_default()
 }
 
-fn viscosity_text(viscosity: Option<&Viscosity>) -> String {
+pub(crate) fn viscosity_text(viscosity: Option<&Viscosity>) -> String {
     match viscosity {
         Some(Viscosity::Kinematic(entered) | Viscosity::Dynamic(entered)) => entered.text.clone(),
         None => String::new(),
@@ -261,14 +264,14 @@ fn viscosity_text(viscosity: Option<&Viscosity>) -> String {
 }
 
 /// El NPSHa de la instalación no se copia a `[operating]`: vive en `[suction]`.
-fn npsha_text(intake: &Intake) -> String {
+pub(crate) fn npsha_text(intake: &Intake) -> String {
     match intake {
         Intake::Available(entered) => entered.text.clone(),
         Intake::None | Intake::Installation { .. } => String::new(),
     }
 }
 
-fn suction_from(intake: &Intake) -> Option<Suction> {
+pub(crate) fn suction_from(intake: &Intake) -> Option<Suction> {
     match intake {
         Intake::Installation {
             pressure,
@@ -294,7 +297,7 @@ fn entered_text(entered: &Option<Entered>) -> String {
 
 /// El texto explícito se conserva. Si la densidad se derivó, queda con tres
 /// decimales, como la CLI cuando no le pasan `--rho`.
-fn rho_text(case: &Case, analysis: &Analysis) -> String {
+pub(crate) fn rho_text(case: &Case, analysis: &Analysis) -> String {
     match &case.fluid.density.source {
         // Un texto vacío no es un `rho` escrito: se trata como derivado.
         DensitySource::Explicit { text } if !text.trim().is_empty() => text.clone(),

@@ -599,7 +599,7 @@ pub(crate) fn param_value(param: &Param) -> Option<&str> {
     }
 }
 
-fn override_error(name: &'static str) -> EngineError {
+pub(crate) fn override_error(name: &'static str) -> EngineError {
     input_error(
         CaseField::Param(name),
         "HM-PROJ-019",

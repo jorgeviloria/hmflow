@@ -8,6 +8,7 @@ mod case;
 mod changes;
 mod convert;
 mod dispatch;
+mod editor;
 mod error;
 mod fluid;
 mod project_ops;
@@ -24,6 +25,7 @@ pub use convert::{
     Decode, MANUAL_PARAMS, MAX_COUNT, ManualDefaults, ManualParam, case_from_project, design_params,
 };
 pub use dispatch::analyze;
+pub use editor::{EditorError, Opened, open_project, update_point};
 pub use error::{CaseField, EngineError, Stage, cli_message};
 pub use fluid::{
     fluid_diagnostics, fluid_kind, kinematic_viscosity, looks_like_water, npsh_fluid_diagnostics,

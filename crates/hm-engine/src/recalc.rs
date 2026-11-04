@@ -158,12 +158,10 @@ fn require_stages(analysis: &Analysis) -> Result<(), EngineError> {
 }
 
 fn stage_error(stage: Stage, error: &DesignError) -> EngineError {
-    let source = match error {
-        DesignError::Formula(error) => DesignError::Formula(error.clone()),
-        DesignError::Unit(error) => DesignError::Unit(error.clone()),
-        DesignError::Input(message) => DesignError::Input(message.clone()),
-    };
-    EngineError::Stage { stage, source }
+    EngineError::Stage {
+        stage,
+        source: error.clone(),
+    }
 }
 
 fn recalc_diagnostics(project: &Project, case: &Case, analysis: &Analysis) -> Diagnostics {

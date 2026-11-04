@@ -32,7 +32,7 @@ use hm_formula::{FormulaError, Registry};
 use hm_units::{Dimension, Quantity, Unit, UnitError, parse_unit};
 use thiserror::Error;
 
-#[derive(Debug, Error)]
+#[derive(Debug, Clone, Error)]
 pub enum DesignError {
     #[error(transparent)]
     Formula(#[from] FormulaError),

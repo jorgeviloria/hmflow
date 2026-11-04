@@ -2,6 +2,36 @@
 
 use hm_core::{Diagnostic, Diagnostics, PumpType};
 
+/// Frase de la CLI cuando la temperatura cae fuera de IAPWS. No tiene código:
+/// la correlación simplemente no aplica.
+pub(crate) const VAPOR_PRESSURE_RANGE: &str =
+    "la temperatura está fuera del intervalo de la presión de vapor del agua";
+
+pub(crate) fn input_error(
+    field: CaseField,
+    code: &'static str,
+    message: impl Into<String>,
+) -> EngineError {
+    EngineError::Input {
+        field,
+        diagnostic: Diagnostic::error(code, message),
+    }
+}
+
+/// Texto que ya mostraba la CLI. Un `Input` no antepone su código, y la frase
+/// de la presión de vapor fuera de intervalo se queda como estaba.
+pub fn cli_message(error: &EngineError) -> String {
+    match error {
+        EngineError::Input { diagnostic, .. } => diagnostic.message.clone(),
+        EngineError::Design(hm_design::DesignError::Input(message))
+            if message == VAPOR_PRESSURE_RANGE =>
+        {
+            message.clone()
+        }
+        other => other.to_string(),
+    }
+}
+
 /// Campo del caso al que pertenece un error de entrada.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum CaseField {

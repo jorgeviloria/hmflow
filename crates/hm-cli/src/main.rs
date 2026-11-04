@@ -6,19 +6,22 @@ use std::process::ExitCode;
 
 use clap::{Parser, Subcommand};
 use hm_core::{Diagnostic, Diagnostics};
-use hm_design::fluid::{water_kinematic_viscosity, water_vapor_pressure};
 use hm_design::geometry::geometry;
 use hm_design::mechanics::{DEFAULT_SHAFT_SHEAR_STRESS, mechanics, mechanics_diagnostics};
 use hm_design::{
     DEFAULT_K_EFF, DEFAULT_VOLUTE_C, DesignInput, DesignOptions, DesignReport, DesignResult,
-    LEGACY_METHODS, METHOD, PARAM_SPECS, ParamSpec, WATER_DENSITY_RANGE_C,
-    default_mechanical_efficiency, design_with_options, designed_si, param_spec, performance_curve,
-    stored_si_matches, water_density,
+    LEGACY_METHODS, METHOD, PARAM_SPECS, ParamSpec, default_mechanical_efficiency,
+    design_with_options, designed_si, param_spec, performance_curve, stored_si_matches,
 };
-use hm_design::{ViscousCorrection, viscous_correction, viscous_diagnostics};
+use hm_engine::{
+    Density, DensitySource, Entered, Fluid, Intake, Temperature, add_fluid_temperature_diagnostics,
+    cli_message, fluid_diagnostics, fluid_kind, kinematic_viscosity, kinematic_viscosity_of,
+    looks_like_water, npsh_fluid_diagnostics, parse_temperature, project_viscosity_effect,
+    suction_npsha, viscosity_effect, viscosity_from_text, water_density_at,
+};
 use hm_formula::{Registry, eval, infer, parse};
 use hm_project::{Param, Project, PumpType, Suction};
-use hm_units::{Dimension, Quantity, parse_quantity, parse_unit};
+use hm_units::{Quantity, parse_quantity, parse_unit};
 
 #[derive(Parser)]
 #[command(
@@ -375,7 +378,7 @@ fn run(cli: Cli) -> Result<ExitCode, Box<dyn std::error::Error>> {
             }
 
             let npsha_text = npsha.clone();
-            let temperature_k = parse_temperature(&temperature)?;
+            let temperature_value = parse_temperature(&temperature).map_err(engine_text)?;
             let rho_text = match rho {
                 Some(text) => text,
                 None => {
@@ -385,10 +388,10 @@ fn run(cli: Cli) -> Result<ExitCode, Box<dyn std::error::Error>> {
                     {
                         return Err("indica --rho: solo se conoce la densidad del agua".into());
                     }
-                    let density = water_density(temperature_k).ok_or(
+                    let density = water_density_at(&temperature_value).ok_or(
                         "la temperatura está fuera de 0..150 °C, el intervalo de la densidad del agua; indica --rho",
                     )?;
-                    format!("{density:.3} kg/m3")
+                    format!("{:.3} kg/m3", density.si)
                 }
             };
             let rho_quantity = parse_quantity(&rho_text)?;
@@ -405,15 +408,30 @@ fn run(cli: Cli) -> Result<ExitCode, Box<dyn std::error::Error>> {
                 losses: suction_losses.unwrap_or_default(),
                 vapor_pressure: vapor_pressure.unwrap_or_default(),
             });
-            let npsha_quantity = match &suction {
-                Some(suction) => Some(suction_npsha(
-                    suction,
-                    &fluid,
-                    &temperature,
-                    rho_quantity.si,
-                )?),
-                None => npsha.as_deref().map(parse_quantity).transpose()?,
+            let intake = match &suction {
+                Some(suction) => Intake::Installation {
+                    pressure: Entered::parse(&suction.pressure)?,
+                    height: optional_entered(&suction.height)?,
+                    losses: optional_entered(&suction.losses)?,
+                    vapor_pressure: optional_entered(&suction.vapor_pressure)?,
+                },
+                None => match npsha.as_deref() {
+                    Some(text) => Intake::Available(Entered::parse(text)?),
+                    None => Intake::None,
+                },
             };
+            let mut case_fluid = Fluid {
+                kind: fluid_kind(&fluid),
+                temperature: Some(temperature_value),
+                density: Density {
+                    value: rho_quantity.clone(),
+                    source: DensitySource::Explicit {
+                        text: rho_text.clone(),
+                    },
+                },
+                viscosity: None,
+            };
+            let npsha_quantity = hm_engine::npsha(&intake, &case_fluid).map_err(engine_text)?;
             let q_quantity = parse_quantity(&q)?;
             let n_quantity = parse_quantity(&n)?;
             let eta_m = match eta_m {
@@ -421,7 +439,8 @@ fn run(cli: Cli) -> Result<ExitCode, Box<dyn std::error::Error>> {
                 None => default_mechanical_efficiency(&q_quantity, &n_quantity)?,
             };
             let viscosity_text = viscosity.unwrap_or_default();
-            let nu = kinematic_viscosity(&viscosity_text, &fluid, &temperature, rho_quantity.si)?;
+            case_fluid.viscosity = viscosity_from_text(&viscosity_text).map_err(engine_text)?;
+            let nu = kinematic_viscosity(&case_fluid).map_err(engine_text)?;
             let input = DesignInput {
                 q: q_quantity,
                 h: parse_quantity(&h)?,
@@ -607,10 +626,10 @@ fn run(cli: Cli) -> Result<ExitCode, Box<dyn std::error::Error>> {
             }
 
             let mut shown = result.diagnostics.clone();
-            shown.extend(fluid_diagnostics(&fluid, &temperature, input.rho.si).into_vec());
-            shown.extend(npsh_fluid_diagnostics(&fluid, input.npsha.is_some()).into_vec());
+            shown.extend(fluid_diagnostics(&case_fluid).into_vec());
+            shown.extend(npsh_fluid_diagnostics(&case_fluid, input.npsha.is_some()).into_vec());
             let (viscous_diagnostics, correction) =
-                viscosity_effect(&fluid, &temperature, &viscosity_text, &input, &result)?;
+                viscosity_effect(&case_fluid, &input, &result).map_err(engine_text)?;
             if let Some(correction) = &correction {
                 println!(
                     "  Viscosidad: ν = {:.3} cSt   fQ = {:.3}   fH = {:.3}   fη = {:.3}",
@@ -737,22 +756,26 @@ fn design_inputs(
         None => default_mechanical_efficiency(&q, &n)?,
     };
     let npsha = match &project.suction {
-        Some(suction) => Some(suction_npsha(
-            suction,
-            &project.operating.fluid,
-            &project.operating.temperature,
-            rho.si,
-        )?),
+        Some(suction) => Some(
+            suction_npsha(
+                suction,
+                &project.operating.fluid,
+                &project.operating.temperature,
+                rho.si,
+            )
+            .map_err(engine_text)?,
+        ),
         None if project.operating.npsha.trim().is_empty() => None,
         None => Some(parse_quantity(&project.operating.npsha)?),
     };
     let options = design_options(project)?;
-    let nu = kinematic_viscosity(
+    let nu = kinematic_viscosity_of(
         &project.operating.viscosity,
         &project.operating.fluid,
         &project.operating.temperature,
         rho.si,
-    )?;
+    )
+    .map_err(engine_text)?;
 
     Ok((
         DesignInput {
@@ -780,7 +803,8 @@ fn recompute_design_diagnostics(
     let mut diagnostics = result.diagnostics.clone();
     add_fluid_temperature_diagnostics(project, &input, &mut diagnostics);
     diagnostics.extend(
-        project_viscosity_effect(project, &input, &result)?
+        project_viscosity_effect(project, &input, &result)
+            .map_err(engine_text)?
             .0
             .into_vec(),
     );
@@ -948,7 +972,8 @@ fn recalc(file: &std::path::Path, reselect: bool) -> Result<ExitCode, Box<dyn st
     let mut diagnostics = result.diagnostics.clone();
     add_fluid_temperature_diagnostics(&project, &input, &mut diagnostics);
     diagnostics.extend(
-        project_viscosity_effect(&project, &input, &result)?
+        project_viscosity_effect(&project, &input, &result)
+            .map_err(engine_text)?
             .0
             .into_vec(),
     );
@@ -1051,140 +1076,13 @@ fn design_report(
         .with_geometry(&geometry(&input, &result)?)
         .with_mechanics(&mechanics(&input, &result, DEFAULT_SHAFT_SHEAR_STRESS)?);
     Ok(
-        match project_viscosity_effect(&project, &input, &result)?.1 {
+        match project_viscosity_effect(&project, &input, &result)
+            .map_err(engine_text)?
+            .1
+        {
             Some(correction) => report.with_viscous(&correction),
             None => report,
         },
-    )
-}
-
-/// NPSHa de una instalación de aspiración con la fórmula `npsh.npsha`.
-///
-/// La presión de vapor es la de `[suction]` o, si falta y el fluido es agua,
-/// la de IAPWS-IF97 a la temperatura del proyecto (20 °C si no se indica).
-fn suction_npsha(
-    suction: &Suction,
-    fluid: &str,
-    temperature: &str,
-    rho: f64,
-) -> Result<Quantity, Box<dyn std::error::Error>> {
-    let text_or_zero = |text: &str| -> Result<Quantity, Box<dyn std::error::Error>> {
-        Ok(if text.trim().is_empty() {
-            parse_quantity("0 m")?
-        } else {
-            parse_quantity(text)?
-        })
-    };
-    let pressure = parse_quantity(&suction.pressure)?;
-    let vapor = if suction.vapor_pressure.trim().is_empty() {
-        let water = fluid.is_empty() || fluid.eq_ignore_ascii_case("water");
-        if !water {
-            return Err(format!(
-                "el fluido es `{fluid}`: indica la presión de vapor de la aspiración"
-            )
-            .into());
-        }
-        let temperature_k = if temperature.trim().is_empty() {
-            293.15
-        } else {
-            parse_temperature(temperature)?
-        };
-        let pascal = water_vapor_pressure(temperature_k)
-            .ok_or("la temperatura está fuera del intervalo de la presión de vapor del agua")?;
-        Quantity::from_si(pascal, parse_unit("Pa")?)
-    } else {
-        parse_quantity(&suction.vapor_pressure)?
-    };
-    let inputs: BTreeMap<String, Quantity> = [
-        ("p_s", pressure),
-        ("p_v", vapor),
-        ("rho", Quantity::from_si(rho, parse_unit("kg/m3")?)),
-        ("z", text_or_zero(&suction.height)?),
-        ("hf", text_or_zero(&suction.losses)?),
-    ]
-    .into_iter()
-    .map(|(name, value)| (name.to_string(), value))
-    .collect();
-    Ok(Registry::all().evaluate("npsh.npsha", &inputs)?)
-}
-
-/// Viscosidad cinemática del fluido en m²/s: la indicada (cinemática, o
-/// dinámica dividida por ρ) o la del agua a la temperatura del proyecto.
-/// `None` si el fluido no es agua y no se indicó, o si la temperatura cae
-/// fuera de la correlación del agua.
-fn kinematic_viscosity(
-    viscosity: &str,
-    fluid: &str,
-    temperature: &str,
-    rho: f64,
-) -> Result<Option<f64>, Box<dyn std::error::Error>> {
-    if !viscosity.trim().is_empty() {
-        let quantity = parse_quantity(viscosity)?;
-        if quantity.dim() == parse_unit("m2/s")?.dim {
-            return Ok(Some(quantity.si));
-        }
-        if quantity.dim() == parse_unit("Pa*s")?.dim {
-            return Ok(Some(quantity.si / rho));
-        }
-        return Err(format!("la viscosidad debe ser m2/s (cSt) o Pa*s (cP): {viscosity}").into());
-    }
-    let water = fluid.is_empty() || fluid.eq_ignore_ascii_case("water");
-    if !water {
-        return Ok(None);
-    }
-    let temperature_k = if temperature.trim().is_empty() {
-        293.15
-    } else {
-        parse_temperature(temperature)?
-    };
-    Ok(water_kinematic_viscosity(temperature_k))
-}
-
-/// Corrección por viscosidad y sus avisos. Sin viscosidad conocida de un
-/// fluido que no es agua, informa de que no se evaluó (`HM-DES-022`).
-fn viscosity_effect(
-    fluid: &str,
-    temperature: &str,
-    viscosity: &str,
-    input: &DesignInput,
-    result: &DesignResult,
-) -> Result<(Diagnostics, Option<ViscousCorrection>), Box<dyn std::error::Error>> {
-    let mut diagnostics = Diagnostics::new();
-    match kinematic_viscosity(viscosity, fluid, temperature, input.rho.si)? {
-        Some(nu) => {
-            let correction = viscous_correction(input, result, nu)?;
-            diagnostics.extend(viscous_diagnostics(&correction, result.nq).into_vec());
-            Ok((diagnostics, Some(correction)))
-        }
-        None => {
-            let water = fluid.is_empty() || fluid.eq_ignore_ascii_case("water");
-            if !water {
-                diagnostics.push(
-                    Diagnostic::info(
-                        "HM-DES-022",
-                        format!(
-                            "el fluido es `{fluid}` y no tiene viscosidad: no se evaluó su efecto"
-                        ),
-                    )
-                    .with_hint("Indica la viscosidad en [operating] (viscosity = \"30 cSt\")."),
-                );
-            }
-            Ok((diagnostics, None))
-        }
-    }
-}
-
-fn project_viscosity_effect(
-    project: &Project,
-    input: &DesignInput,
-    result: &DesignResult,
-) -> Result<(Diagnostics, Option<ViscousCorrection>), Box<dyn std::error::Error>> {
-    viscosity_effect(
-        &project.operating.fluid,
-        &project.operating.temperature,
-        &project.operating.viscosity,
-        input,
-        result,
     )
 }
 
@@ -1408,132 +1306,45 @@ fn param_u32(project: &Project, name: &str) -> Result<Option<u32>, Box<dyn std::
     Ok(Some(value as u32))
 }
 
-/// Diferencia relativa admitida entre `rho` y la densidad del agua.
-const WATER_DENSITY_TOLERANCE: f64 = 0.005;
-
-/// Densidad dentro del rango del agua líquida entre 0 y 150 °C.
-///
-/// Sirve para suponer el fluido cuando no se indica: una densidad de agua a
-/// otra temperatura se trata como agua, para que `HM-DES-009` la señale.
-fn looks_like_water(rho_si: f64) -> bool {
-    // El agua es más densa a 4 °C y más ligera en el extremo caliente.
-    let hottest = WATER_DENSITY_RANGE_C.1 + 273.15;
-    let (Some(lightest), Some(densest)) = (water_density(hottest), water_density(277.15)) else {
-        return false;
-    };
-    (lightest * (1.0 - WATER_DENSITY_TOLERANCE)..=densest * (1.0 + WATER_DENSITY_TOLERANCE))
-        .contains(&rho_si)
-}
-
-/// Temperatura en kelvin a partir del texto del proyecto o de la CLI.
-fn parse_temperature(text: &str) -> Result<f64, Box<dyn std::error::Error>> {
-    let quantity = parse_quantity(text)?;
-    if quantity.dim() != Dimension::TEMPERATURE {
-        return Err(format!("la temperatura debe ser una temperatura: {text}").into());
-    }
-    Ok(quantity.si)
-}
-
 /// Densidad que se asume si el proyecto no guarda `rho`: la del agua a su
 /// temperatura (20 °C si no la indica), o 998,2 kg/m³ si no es agua o la
 /// temperatura cae fuera de la correlación.
+///
+/// Un texto de temperatura ilegible no aborta: se usa la densidad por defecto,
+/// igual que antes de pasar el cálculo al motor.
 fn default_density(project: &Project) -> f64 {
-    let temperature = if project.operating.temperature.trim().is_empty() {
-        Some(293.15)
-    } else {
-        parse_temperature(&project.operating.temperature).ok()
-    };
     let water =
         project.operating.fluid.is_empty() || project.operating.fluid.eq_ignore_ascii_case("water");
-    temperature
-        .filter(|_| water)
-        .and_then(water_density)
+    if !water {
+        return 998.2;
+    }
+    let temperature = if project.operating.temperature.trim().is_empty() {
+        Temperature {
+            text: String::new(),
+            kelvin: 293.15,
+        }
+    } else {
+        match parse_temperature(&project.operating.temperature) {
+            Ok(temperature) => temperature,
+            Err(_) => return 998.2,
+        }
+    };
+    water_density_at(&temperature)
+        .map(|density| density.si)
         .unwrap_or(998.2)
 }
 
-/// Coherencia entre fluido, temperatura y densidad.
-///
-/// Solo se puede comprobar el agua: su densidad se calcula con Kell (1975)
-/// entre 0 y 150 °C. Un texto de temperatura inválido lo señala la
-/// validación del proyecto, no esta función.
-fn fluid_diagnostics(fluid: &str, temperature: &str, rho_si: f64) -> Diagnostics {
-    let mut diagnostics = Diagnostics::new();
-    if !fluid.eq_ignore_ascii_case("water") {
-        return diagnostics;
-    }
-    let temperature_k = if temperature.trim().is_empty() {
-        293.15
+fn optional_entered(text: &str) -> Result<Option<Entered>, hm_units::UnitError> {
+    if text.trim().is_empty() {
+        Ok(None)
     } else {
-        match parse_temperature(temperature) {
-            Ok(value) => value,
-            Err(_) => return diagnostics,
-        }
-    };
-    let celsius = temperature_k - 273.15;
-
-    match water_density(temperature_k) {
-        None => diagnostics.push(
-            Diagnostic::warning(
-                "HM-DES-010",
-                format!(
-                    "el agua a {celsius:.1} °C queda fuera de la correlación de densidad (0..150 °C); \
-                     no se comprobó rho"
-                ),
-            )
-            .with_hint("Comprueba que rho corresponda a la temperatura de operación."),
-        ),
-        Some(expected) if ((rho_si - expected) / expected).abs() > WATER_DENSITY_TOLERANCE => {
-            diagnostics.push(
-                Diagnostic::warning(
-                    "HM-DES-009",
-                    format!(
-                        "rho = {rho_si:.1} kg/m3 no es la densidad del agua a {celsius:.1} °C \
-                         ({expected:.1} kg/m3)"
-                    ),
-                )
-                .with_hint("Corrige rho o, si el fluido no es agua, usa fluid = \"custom\"."),
-            );
-        }
-        Some(_) => {}
+        Ok(Some(Entered::parse(text)?))
     }
-    diagnostics
 }
 
-fn add_fluid_temperature_diagnostics(
-    project: &Project,
-    input: &DesignInput,
-    diagnostics: &mut Diagnostics,
-) {
-    diagnostics.extend(
-        fluid_diagnostics(
-            &project.operating.fluid,
-            &project.operating.temperature,
-            input.rho.si,
-        )
-        .into_vec(),
-    );
-    diagnostics
-        .extend(npsh_fluid_diagnostics(&project.operating.fluid, input.npsha.is_some()).into_vec());
-}
-
-/// El NPSHA necesario de `hm-design` usa el factor de fluido del agua
-/// (FF = 1, Gülich 2020, tabla 6.2). Con otro fluido se avisa.
-fn npsh_fluid_diagnostics(fluid: &str, npsh_checked: bool) -> Diagnostics {
-    let mut diagnostics = Diagnostics::new();
-    if npsh_checked && !fluid.eq_ignore_ascii_case("water") {
-        diagnostics.push(
-            Diagnostic::warning(
-                "HM-DES-018",
-                format!(
-                    "el NPSHA necesario supone agua (FF = 1) y el fluido es `{fluid}`; \
-                     la tabla 6.2 de Gülich pide FF ≥ 1,15 con agua de mar o fluidos corrosivos \
-                     y otros criterios con hidrocarburos"
-                ),
-            )
-            .with_hint("Aumenta el NPSHA en consecuencia o confirma el NPSHR con el fabricante."),
-        );
-    }
-    diagnostics
+/// La CLI sigue mostrando la frase de antes. El código queda en el motor.
+fn engine_text(error: hm_engine::EngineError) -> Box<dyn std::error::Error> {
+    cli_message(&error).into()
 }
 
 fn design_audit(project: &Project) -> Diagnostics {
@@ -1952,64 +1763,6 @@ mod tests {
     }
 
     #[test]
-    fn water_with_high_density_warns() {
-        let mut project = Project::new("demo", PumpType::EndSuction);
-        project
-            .params
-            .insert("rho".to_string(), manual("1200 kg/m3".to_string()));
-
-        let diagnostics = design_audit(&project);
-        assert!(codes(&diagnostics).contains(&"HM-DES-009"));
-    }
-
-    #[test]
-    fn hot_water_with_cold_density_warns() {
-        let mut project = Project::new("demo", PumpType::EndSuction);
-        project.operating.temperature = "80 degC".to_string();
-        project
-            .params
-            .insert("rho".to_string(), manual("998.2 kg/m3".to_string()));
-
-        let diagnostics = design_audit(&project);
-        assert!(codes(&diagnostics).contains(&"HM-DES-009"));
-    }
-
-    #[test]
-    fn hot_water_with_its_density_is_quiet() {
-        let mut project = Project::new("demo", PumpType::EndSuction);
-        project.operating.temperature = "80 degC".to_string();
-        project
-            .params
-            .insert("rho".to_string(), manual("971.8 kg/m3".to_string()));
-
-        let diagnostics = design_audit(&project);
-        assert!(!codes(&diagnostics).contains(&"HM-DES-009"));
-        assert!(!codes(&diagnostics).contains(&"HM-DES-010"));
-    }
-
-    #[test]
-    fn missing_density_follows_the_water_temperature() {
-        let mut project = Project::new("demo", PumpType::EndSuction);
-        project.operating.temperature = "80 degC".to_string();
-        assert!((default_density(&project) - 971.8).abs() < 0.01);
-
-        project.operating.fluid = "custom".to_string();
-        assert!((default_density(&project) - 998.2).abs() < 1e-9);
-    }
-
-    #[test]
-    fn water_outside_the_correlation_warns() {
-        let diagnostics = fluid_diagnostics("water", "200 degC", 865.0);
-        assert_eq!(codes(&diagnostics), ["HM-DES-010"]);
-    }
-
-    #[test]
-    fn other_fluids_are_not_checked() {
-        assert!(fluid_diagnostics("custom", "20 degC", 1200.0).is_empty());
-        assert!(fluid_diagnostics("glycol", "80 degC", 1050.0).is_empty());
-    }
-
-    #[test]
     fn old_manual_slip_points_to_recalc() {
         let mut project = designed_project();
         project
@@ -2035,16 +1788,6 @@ mod tests {
 
         let cli = Cli::try_parse_from(["hmflow-cli", "design", "--npsha", "-3 m"]).unwrap();
         assert!(matches!(cli.command, Command::Design { npsha: Some(text), .. } if text == "-3 m"));
-    }
-
-    #[test]
-    fn npsh_criterion_warns_for_fluids_other_than_water() {
-        assert_eq!(
-            codes(&npsh_fluid_diagnostics("custom", true)),
-            ["HM-DES-018"]
-        );
-        assert!(npsh_fluid_diagnostics("water", true).is_empty());
-        assert!(npsh_fluid_diagnostics("custom", false).is_empty());
     }
 
     #[test]
@@ -2301,70 +2044,6 @@ mod tests {
     }
 
     #[test]
-    fn suction_npsha_uses_iapws_vapor_pressure_for_water() {
-        let suction = Suction {
-            pressure: "1 atm".to_string(),
-            height: "-3 m".to_string(),
-            losses: "0.5 m".to_string(),
-            vapor_pressure: String::new(),
-        };
-        // (101325 − 2339,2)/(998,2·9,80665) − 3 − 0,5
-        let npsha = suction_npsha(&suction, "water", "20 degC", 998.2).unwrap();
-        assert!((npsha.si - 6.612).abs() < 1e-3, "{}", npsha.si);
-
-        // Más caliente, más presión de vapor y menos NPSHa.
-        let hot = suction_npsha(&suction, "water", "80 degC", 971.8).unwrap();
-        assert!(hot.si < npsha.si - 4.0, "{}", hot.si);
-
-        assert!(suction_npsha(&suction, "glycol", "20 degC", 1050.0).is_err());
-        let mut given = suction.clone();
-        given.vapor_pressure = "0 Pa".to_string();
-        let no_vapor = suction_npsha(&given, "glycol", "20 degC", 1000.0).unwrap();
-        assert!((no_vapor.si - (101_325.0 / (1000.0 * 9.80665) - 3.5)).abs() < 1e-9);
-    }
-
-    #[test]
-    fn viscosity_can_be_kinematic_or_dynamic() {
-        let cst = kinematic_viscosity("30 cSt", "oil", "", 900.0)
-            .unwrap()
-            .unwrap();
-        assert!((cst - 30e-6).abs() < 1e-15);
-        let cp = kinematic_viscosity("27 cP", "oil", "", 900.0)
-            .unwrap()
-            .unwrap();
-        assert!((cp - 30e-6).abs() < 1e-15);
-        let water = kinematic_viscosity("", "water", "20 degC", 998.2)
-            .unwrap()
-            .unwrap();
-        assert!((water - 1.0034e-6).abs() < 1e-9);
-        assert_eq!(kinematic_viscosity("", "oil", "", 900.0).unwrap(), None);
-        assert!(kinematic_viscosity("3 m", "oil", "", 900.0).is_err());
-    }
-
-    #[test]
-    fn viscosity_effect_reports_missing_and_large_effects() {
-        let result = sample_design();
-        let input = DesignInput {
-            q: parse_quantity("120 m3/h").unwrap(),
-            h: parse_quantity("45 m").unwrap(),
-            n: parse_quantity("2900 rpm").unwrap(),
-            rho: parse_quantity("900 kg/m3").unwrap(),
-            eta_m: 0.96,
-            npsha: None,
-            nu: None,
-        };
-        let (diagnostics, correction) =
-            viscosity_effect("oil", "20 degC", "", &input, &result).unwrap();
-        assert_eq!(codes(&diagnostics), ["HM-DES-022"]);
-        assert!(correction.is_none());
-
-        let (diagnostics, correction) =
-            viscosity_effect("oil", "20 degC", "100 cSt", &input, &result).unwrap();
-        assert_eq!(codes(&diagnostics), ["HM-DES-020"]);
-        assert!(correction.unwrap().f_eta < 0.85);
-    }
-
-    #[test]
     fn project_with_suction_audits_and_reports() {
         let mut project = designed_project();
         project.operating.npsha = String::new();
@@ -2417,15 +2096,6 @@ mod tests {
         ]);
         assert!(result.is_err());
         assert!(Cli::try_parse_from(["hmflow-cli", "design", "--suction-height", "2 m"]).is_err());
-    }
-
-    #[test]
-    fn densities_of_liquid_water_are_recognised() {
-        assert!(looks_like_water(998.2));
-        assert!(looks_like_water(971.8));
-        assert!(looks_like_water(917.0));
-        assert!(!looks_like_water(1200.0));
-        assert!(!looks_like_water(850.0));
     }
 
     #[test]

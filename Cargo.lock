@@ -191,6 +191,7 @@ dependencies = [
  "clap",
  "hm-core",
  "hm-design",
+ "hm-engine",
  "hm-formula",
  "hm-project",
  "hm-units",

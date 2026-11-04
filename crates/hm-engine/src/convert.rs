@@ -1,21 +1,25 @@
 //! Lectura del proyecto `.hmf` hacia el modelo `Case`.
 
-use hm_core::Diagnostic;
-use hm_design::{DesignOptions, water_density};
-use hm_project::{Param, Project};
-use hm_units::{Dimension, Quantity, parse_quantity, parse_unit};
+use hm_core::Diagnostics;
+use hm_design::{DesignInput, DesignOptions, DesignResult, ViscousCorrection, water_density};
+use hm_project::{Param, Project, Suction};
+use hm_units::{Quantity, parse_quantity, parse_unit};
 
 use crate::case::{
     Case, Density, DensitySource, Duty, Entered, Fluid, FluidKind, Intake, Temperature, Viscosity,
 };
-use crate::error::{CaseField, EngineError};
+use crate::error::{CaseField, EngineError, input_error};
+use crate::fluid::{
+    self, fluid_diagnostics, kinematic_viscosity, npsh_fluid_diagnostics, npsha, viscosity_effect,
+    viscosity_from_text,
+};
 
 /// Mayor conteo entero aceptado (álabes, canales de voluta); el mismo límite
 /// que aplica la CLI.
 const MAX_COUNT: f64 = 100.0;
 
 /// Temperatura del agua cuando el proyecto no escribe ninguna, K (20 °C).
-const DEFAULT_WATER_TEMPERATURE_K: f64 = 293.15;
+const DEFAULT_WATER_TEMPERATURE_K: f64 = fluid::DEFAULT_WATER_TEMPERATURE_K;
 
 /// Densidad cuando no se puede derivar ni está escrita, kg/m3.
 const FALLBACK_DENSITY: f64 = 998.2;
@@ -292,7 +296,7 @@ pub fn case_from_project(project: &Project) -> Result<Case, EngineError> {
     let h = parse_entered(CaseField::H, "HM-PROJ-003", &project.operating.h)?;
     let n = parse_entered(CaseField::N, "HM-PROJ-004", &project.operating.n)?;
 
-    let kind = fluid_kind(&project.operating.fluid);
+    let kind = fluid::fluid_kind(&project.operating.fluid);
     let temperature = parse_temperature(project)?;
     let density = default_density(project, &kind, temperature.as_ref())?;
     let mechanical_efficiency = param_f64(project, "eta_m", "1")?;
@@ -315,64 +319,16 @@ pub fn case_from_project(project: &Project) -> Result<Case, EngineError> {
     })
 }
 
-fn fluid_kind(fluid: &str) -> FluidKind {
-    if fluid.is_empty() || fluid.eq_ignore_ascii_case("water") {
-        FluidKind::Water
-    } else {
-        FluidKind::Custom(fluid.to_string())
-    }
-}
-
 fn parse_entered(field: CaseField, code: &'static str, text: &str) -> Result<Entered, EngineError> {
     Entered::parse(text).map_err(|error| input_error(field, code, error.to_string()))
 }
 
 fn parse_temperature(project: &Project) -> Result<Option<Temperature>, EngineError> {
-    let text = &project.operating.temperature;
-    if text.trim().is_empty() {
-        return Ok(None);
-    }
-
-    let quantity = parse_quantity(text)
-        .map_err(|error| input_error(CaseField::Temperature, "HM-PROJ-006", error.to_string()))?;
-    if quantity.dim() != Dimension::TEMPERATURE {
-        return Err(input_error(
-            CaseField::Temperature,
-            "HM-PROJ-006",
-            format!("la temperatura debe ser una temperatura: {text}"),
-        ));
-    }
-
-    Ok(Some(Temperature {
-        text: text.clone(),
-        kelvin: quantity.si,
-    }))
+    read_temperature(&project.operating.temperature)
 }
 
 fn parse_viscosity(project: &Project) -> Result<Option<Viscosity>, EngineError> {
-    let text = &project.operating.viscosity;
-    if text.trim().is_empty() {
-        return Ok(None);
-    }
-
-    let entered = Entered::parse(text)
-        .map_err(|error| input_error(CaseField::Viscosity, "HM-PROJ-026", error.to_string()))?;
-    let kinematic = parse_unit("m2/s")
-        .map_err(|error| input_error(CaseField::Viscosity, "HM-PROJ-026", error.to_string()))?;
-    let dynamic = parse_unit("Pa*s")
-        .map_err(|error| input_error(CaseField::Viscosity, "HM-PROJ-026", error.to_string()))?;
-
-    if entered.quantity.dim() == kinematic.dim {
-        Ok(Some(Viscosity::Kinematic(entered)))
-    } else if entered.quantity.dim() == dynamic.dim {
-        Ok(Some(Viscosity::Dynamic(entered)))
-    } else {
-        Err(input_error(
-            CaseField::Viscosity,
-            "HM-PROJ-026",
-            format!("la viscosidad debe ser m2/s (cSt) o Pa*s (cP): {text}"),
-        ))
-    }
+    viscosity_from_text(&project.operating.viscosity)
 }
 
 fn parse_intake(project: &Project) -> Result<Intake, EngineError> {
@@ -632,9 +588,162 @@ fn override_error(name: &'static str) -> EngineError {
     )
 }
 
-fn input_error(field: CaseField, code: &'static str, message: impl Into<String>) -> EngineError {
-    EngineError::Input {
-        field,
-        diagnostic: Diagnostic::error(code, message),
+/// NPSHa de una instalación de aspiración con la fórmula `npsh.npsha`.
+///
+/// La presión de vapor es la de `[suction]` o, si falta y el fluido es agua,
+/// la de IAPWS-IF97 a la temperatura del proyecto (20 °C si no se indica).
+pub fn suction_npsha(
+    suction: &Suction,
+    fluid: &str,
+    temperature: &str,
+    rho: f64,
+) -> Result<Quantity, EngineError> {
+    let vapor_pressure = optional_entered(&suction.vapor_pressure)?;
+    let kind = fluid::fluid_kind(fluid);
+    // La temperatura solo se lee cuando hace falta para la presión de vapor.
+    let temperature = if vapor_pressure.is_none() && matches!(kind, FluidKind::Water) {
+        read_temperature(temperature)?
+    } else {
+        None
+    };
+    let intake = Intake::Installation {
+        pressure: required_entered(&suction.pressure)?,
+        height: optional_entered(&suction.height)?,
+        losses: optional_entered(&suction.losses)?,
+        vapor_pressure,
+    };
+    let fluid = Fluid {
+        kind,
+        temperature,
+        density: density_from_si(rho)?,
+        viscosity: None,
+    };
+    match npsha(&intake, &fluid)? {
+        Some(quantity) => Ok(quantity),
+        None => Err(EngineError::Design(hm_design::DesignError::Input(
+            "la instalación no produjo NPSHa".into(),
+        ))),
+    }
+}
+
+/// Viscosidad cinemática a partir del texto de operación.
+///
+/// Un texto de viscosidad se interpreta antes que la temperatura: si la
+/// viscosidad está escrita, una temperatura ilegible no impide el cálculo.
+pub fn kinematic_viscosity_of(
+    viscosity: &str,
+    fluid: &str,
+    temperature: &str,
+    rho: f64,
+) -> Result<Option<f64>, EngineError> {
+    kinematic_viscosity(&fluid_from_text(viscosity, fluid, temperature, rho)?)
+}
+
+/// Avisos de densidad y de criterio NPSH del fluido, en ese orden.
+///
+/// Una temperatura ilegible no añade el aviso de densidad: la validación del
+/// proyecto ya la señala.
+pub fn add_fluid_temperature_diagnostics(
+    project: &Project,
+    input: &DesignInput,
+    diagnostics: &mut Diagnostics,
+) {
+    let kind = fluid::fluid_kind(&project.operating.fluid);
+    let temperature = match read_temperature(&project.operating.temperature) {
+        Ok(temperature) => temperature,
+        Err(_) => {
+            diagnostics.extend(
+                npsh_fluid_diagnostics(&bare_fluid(kind, input.rho.clone()), input.npsha.is_some())
+                    .into_vec(),
+            );
+            return;
+        }
+    };
+    let fluid = Fluid {
+        kind,
+        temperature,
+        density: density_from(input.rho.clone()),
+        viscosity: None,
+    };
+    diagnostics.extend(fluid_diagnostics(&fluid).into_vec());
+    diagnostics.extend(npsh_fluid_diagnostics(&fluid, input.npsha.is_some()).into_vec());
+}
+
+pub fn project_viscosity_effect(
+    project: &Project,
+    input: &DesignInput,
+    result: &DesignResult,
+) -> Result<(Diagnostics, Option<ViscousCorrection>), EngineError> {
+    let fluid = fluid_from_text(
+        &project.operating.viscosity,
+        &project.operating.fluid,
+        &project.operating.temperature,
+        input.rho.si,
+    )?;
+    viscosity_effect(&fluid, input, result)
+}
+
+fn fluid_from_text(
+    viscosity: &str,
+    fluid: &str,
+    temperature: &str,
+    rho: f64,
+) -> Result<Fluid, EngineError> {
+    let viscosity = viscosity_from_text(viscosity)?;
+    let kind = fluid::fluid_kind(fluid);
+    let temperature = if viscosity.is_none() && matches!(kind, FluidKind::Water) {
+        read_temperature(temperature)?
+    } else {
+        None
+    };
+    Ok(Fluid {
+        kind,
+        temperature,
+        density: density_from_si(rho)?,
+        viscosity,
+    })
+}
+
+fn read_temperature(text: &str) -> Result<Option<Temperature>, EngineError> {
+    if text.trim().is_empty() {
+        Ok(None)
+    } else {
+        Ok(Some(fluid::parse_temperature(text)?))
+    }
+}
+
+fn bare_fluid(kind: FluidKind, rho: Quantity) -> Fluid {
+    Fluid {
+        kind,
+        temperature: None,
+        density: density_from(rho),
+        viscosity: None,
+    }
+}
+
+fn density_from(value: Quantity) -> Density {
+    Density {
+        value,
+        source: DensitySource::Explicit {
+            text: String::new(),
+        },
+    }
+}
+
+fn density_from_si(si: f64) -> Result<Density, EngineError> {
+    let unit = parse_unit("kg/m3")
+        .map_err(|error| EngineError::Design(hm_design::DesignError::from(error)))?;
+    Ok(density_from(Quantity::from_si(si, unit)))
+}
+
+fn required_entered(text: &str) -> Result<Entered, EngineError> {
+    Entered::parse(text).map_err(|error| EngineError::Design(hm_design::DesignError::from(error)))
+}
+
+fn optional_entered(text: &str) -> Result<Option<Entered>, EngineError> {
+    if text.trim().is_empty() {
+        Ok(None)
+    } else {
+        Ok(Some(required_entered(text)?))
     }
 }

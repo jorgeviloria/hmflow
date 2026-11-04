@@ -15,7 +15,7 @@ use hm_design::designed_si;
 use hm_engine::{METHOD, PARAM_SPECS, PREFERRED_OPERATING_REGION};
 use hm_formula::Registry;
 
-use model::{Field, FieldErrors, Inputs, Outcome, compute};
+use model::{Field, FieldErrors, Inputs, IntakeMode, Outcome, compute};
 
 fn main() -> eframe::Result {
     let options = eframe::NativeOptions {
@@ -190,11 +190,6 @@ fn inputs_panel(ui: &mut egui::Ui, app: &mut App) {
                 (Field::N, "Velocidad n", "2900 rpm"),
                 (Field::Temperature, "Temperatura del agua, °C", "20"),
                 (Field::EtaM, "ηm cojinetes y cierre (vacío: Gülich)", "auto"),
-                (
-                    Field::Npsha,
-                    "NPSH disponible (opcional)",
-                    "vacío si no se conoce",
-                ),
             ] {
                 let value = match field {
                     Field::Q => &mut app.inputs.q,
@@ -202,24 +197,64 @@ fn inputs_panel(ui: &mut egui::Ui, app: &mut App) {
                     Field::N => &mut app.inputs.n,
                     Field::Temperature => &mut app.inputs.temperature_c,
                     Field::EtaM => &mut app.inputs.eta_m,
-                    Field::Npsha => &mut app.inputs.npsha,
-                    Field::General => continue,
+                    Field::Npsha | Field::Suction | Field::General => continue,
                 };
-                ui.label(label);
-                let error = errors.iter().find(|(which, _)| *which == field);
-                let mut edit = egui::TextEdit::singleline(value).hint_text(hint);
-                if error.is_some() {
-                    edit = edit.text_color(ui.visuals().error_fg_color);
-                }
-                changed |= ui.add(edit).changed();
-                if let Some((_, message)) = error {
-                    ui.label(
-                        RichText::new(message)
-                            .small()
-                            .color(ui.visuals().error_fg_color),
+                changed |= text_box(ui, label, value, hint, error_of(&errors, field));
+            }
+
+            ui.label("NPSH disponible");
+            ui.horizontal(|ui| {
+                changed |= ui
+                    .selectable_value(&mut app.inputs.intake, IntakeMode::Written, "escrito")
+                    .changed();
+                changed |= ui
+                    .selectable_value(
+                        &mut app.inputs.intake,
+                        IntakeMode::Installation,
+                        "instalación",
+                    )
+                    .changed();
+            });
+            match app.inputs.intake {
+                IntakeMode::Written => {
+                    changed |= text_box(
+                        ui,
+                        "NPSHa (opcional)",
+                        &mut app.inputs.npsha,
+                        "vacío si no se conoce",
+                        error_of(&errors, Field::Npsha),
                     );
                 }
-                ui.add_space(4.0);
+                IntakeMode::Installation => {
+                    let error = error_of(&errors, Field::Suction);
+                    for (label, value, hint) in [
+                        (
+                            "Presión en la aspiración",
+                            &mut app.inputs.suction_pressure,
+                            "1 atm",
+                        ),
+                        ("Altura (opcional)", &mut app.inputs.suction_height, "2 m"),
+                        (
+                            "Pérdidas (opcional)",
+                            &mut app.inputs.suction_losses,
+                            "0.5 m",
+                        ),
+                        (
+                            "Presión de vapor (opcional)",
+                            &mut app.inputs.suction_vapor,
+                            "vacío: la del agua",
+                        ),
+                    ] {
+                        changed |= text_box(ui, label, value, hint, None);
+                    }
+                    if let Some(message) = error {
+                        ui.label(
+                            RichText::new(message)
+                                .small()
+                                .color(ui.visuals().error_fg_color),
+                        );
+                    }
+                }
             }
             for (_, message) in errors.iter().filter(|(field, _)| *field == Field::General) {
                 ui.label(
@@ -260,6 +295,39 @@ fn inputs_panel(ui: &mut egui::Ui, app: &mut App) {
                 }
             }
         });
+}
+
+/// El mensaje de error de un campo, si lo hay.
+fn error_of(errors: &FieldErrors, field: Field) -> Option<&str> {
+    errors
+        .iter()
+        .find(|(which, _)| *which == field)
+        .map(|(_, message)| message.as_str())
+}
+
+/// Etiqueta, caja de texto y su error debajo. Devuelve si el texto cambió.
+fn text_box(
+    ui: &mut egui::Ui,
+    label: &str,
+    value: &mut String,
+    hint: &str,
+    error: Option<&str>,
+) -> bool {
+    ui.label(label);
+    let mut edit = egui::TextEdit::singleline(value).hint_text(hint);
+    if error.is_some() {
+        edit = edit.text_color(ui.visuals().error_fg_color);
+    }
+    let changed = ui.add(edit).changed();
+    if let Some(message) = error {
+        ui.label(
+            RichText::new(message)
+                .small()
+                .color(ui.visuals().error_fg_color),
+        );
+    }
+    ui.add_space(4.0);
+    changed
 }
 
 // ---------------------------------------------------------------- resumen

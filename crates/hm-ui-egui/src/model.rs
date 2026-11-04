@@ -18,6 +18,15 @@ use hm_units::Quantity;
 /// Puntos de la curva que se dibujan.
 pub const CURVE_POINTS: usize = 61;
 
+/// De dónde sale el NPSHa: un valor escrito o la instalación de aspiración.
+/// Son excluyentes, como en el `.hmf`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum IntakeMode {
+    #[default]
+    Written,
+    Installation,
+}
+
 /// Campos de entrada, tal como los escribe el usuario.
 #[derive(Debug, Clone, PartialEq)]
 pub struct Inputs {
@@ -27,8 +36,15 @@ pub struct Inputs {
     /// Temperatura del agua en °C; fija ρ y ν.
     pub temperature_c: String,
     pub eta_m: String,
-    /// NPSH disponible; vacío si no se conoce.
+    /// NPSH disponible; vacío si no se conoce. Solo cuenta con `Written`.
     pub npsha: String,
+    pub intake: IntakeMode,
+    /// Instalación de aspiración. Solo cuentan con `Installation`. La presión
+    /// es obligatoria; los otros tres pueden quedar vacíos (vacío no es cero).
+    pub suction_pressure: String,
+    pub suction_height: String,
+    pub suction_losses: String,
+    pub suction_vapor: String,
 }
 
 impl Default for Inputs {
@@ -40,6 +56,11 @@ impl Default for Inputs {
             temperature_c: "20".into(),
             eta_m: String::new(),
             npsha: "15 m".into(),
+            intake: IntakeMode::Written,
+            suction_pressure: String::new(),
+            suction_height: String::new(),
+            suction_losses: String::new(),
+            suction_vapor: String::new(),
         }
     }
 }
@@ -56,6 +77,8 @@ pub enum Field {
     Temperature,
     EtaM,
     Npsha,
+    /// El grupo de las cuatro cajas de la instalación de aspiración.
+    Suction,
     General,
 }
 
@@ -177,10 +200,60 @@ fn read_eta_m(inputs: &Inputs, errors: &mut FieldErrors) -> Option<Option<f64>> 
 }
 
 fn read_intake(inputs: &Inputs, errors: &mut FieldErrors) -> Option<Intake> {
-    if inputs.npsha.trim().is_empty() {
-        Some(Intake::None)
+    match inputs.intake {
+        IntakeMode::Written => {
+            if inputs.npsha.trim().is_empty() {
+                Some(Intake::None)
+            } else {
+                entered(Field::Npsha, &inputs.npsha, errors).map(Intake::Available)
+            }
+        }
+        IntakeMode::Installation => read_installation(inputs, errors),
+    }
+}
+
+/// La presión es obligatoria; altura, pérdidas y presión de vapor vacías
+/// quedan en `None` (no en `0 m`). Cada error nombra el dato, como el motor.
+fn read_installation(inputs: &Inputs, errors: &mut FieldErrors) -> Option<Intake> {
+    let before = errors.len();
+    let pressure = if inputs.suction_pressure.trim().is_empty() {
+        errors.push((
+            Field::Suction,
+            "[suction] pressure: la presión es obligatoria en la instalación".into(),
+        ));
+        None
     } else {
-        entered(Field::Npsha, &inputs.npsha, errors).map(Intake::Available)
+        suction_entered("pressure", &inputs.suction_pressure, errors)
+    };
+    let height = optional_suction("height", &inputs.suction_height, errors);
+    let losses = optional_suction("losses", &inputs.suction_losses, errors);
+    let vapor_pressure = optional_suction("vapor_pressure", &inputs.suction_vapor, errors);
+    if errors.len() > before {
+        return None;
+    }
+    Some(Intake::Installation {
+        pressure: pressure?,
+        height,
+        losses,
+        vapor_pressure,
+    })
+}
+
+fn suction_entered(name: &str, text: &str, errors: &mut FieldErrors) -> Option<Entered> {
+    match Entered::parse(text) {
+        Ok(value) => Some(value),
+        Err(error) => {
+            errors.push((Field::Suction, format!("[suction] {name}: {error}")));
+            None
+        }
+    }
+}
+
+fn optional_suction(name: &str, text: &str, errors: &mut FieldErrors) -> Option<Entered> {
+    if text.trim().is_empty() {
+        None
+    } else {
+        suction_entered(name, text, errors)
     }
 }
 
@@ -219,7 +292,8 @@ fn engine_error_field(error: EngineError, eta_m_typed: bool) -> (Field, String) 
         Some(CaseField::N) => Field::N,
         Some(CaseField::Temperature | CaseField::Density) => Field::Temperature,
         Some(CaseField::MechanicalEfficiency) if eta_m_typed => Field::EtaM,
-        Some(CaseField::Npsha | CaseField::Suction) => Field::Npsha,
+        Some(CaseField::Npsha) => Field::Npsha,
+        Some(CaseField::Suction) => Field::Suction,
         Some(CaseField::MechanicalEfficiency | CaseField::Viscosity | CaseField::Param(_))
         | None => Field::General,
     };
@@ -487,5 +561,112 @@ mod tests {
 
         assert_eq!(format!("{:?}", outcome.result), format!("{result:?}"));
         assert_eq!(format!("{:?}", outcome.curve), format!("{curve:?}"));
+    }
+
+    fn installation(pressure: &str, height: &str, losses: &str, vapor: &str) -> Inputs {
+        Inputs {
+            intake: IntakeMode::Installation,
+            suction_pressure: pressure.into(),
+            suction_height: height.into(),
+            suction_losses: losses.into(),
+            suction_vapor: vapor.into(),
+            ..Inputs::default()
+        }
+    }
+
+    #[test]
+    fn installation_intake_computes_the_npsha() {
+        let outcome = compute(&installation("1 atm", "", "", "")).unwrap();
+        let npsha = outcome
+            .input
+            .npsha
+            .as_ref()
+            .expect("la instalación da NPSHa");
+        // Agua a 20 °C a 1 atm: unos 10 m, no los 15 m de la caja escrita.
+        assert!((9.0..11.0).contains(&npsha.si), "{}", npsha.si);
+        assert!(!outcome.has_errors());
+    }
+
+    #[test]
+    fn empty_height_is_not_zero() {
+        let empty = case_from_inputs(&installation("1 atm", "", "", "")).unwrap();
+        let zero = case_from_inputs(&installation("1 atm", "0 m", "0 m", "")).unwrap();
+        match (&empty.intake, &zero.intake) {
+            (
+                Intake::Installation {
+                    height: a,
+                    losses: b,
+                    ..
+                },
+                Intake::Installation {
+                    height: c,
+                    losses: d,
+                    ..
+                },
+            ) => {
+                assert!(a.is_none() && b.is_none(), "vacío no se escribe como 0");
+                assert!(c.is_some() && d.is_some());
+            }
+            other => panic!("se esperaba la instalación: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn empty_vapor_pressure_uses_water() {
+        let case = case_from_inputs(&installation("1 atm", "", "", "")).unwrap();
+        match case.intake {
+            Intake::Installation { vapor_pressure, .. } => assert!(vapor_pressure.is_none()),
+            other => panic!("{other:?}"),
+        }
+        let with_vapor = compute(&installation("1 atm", "", "", "50 kPa")).unwrap();
+        let without = compute(&installation("1 atm", "", "", "")).unwrap();
+        // Con una presión de vapor mayor queda menos NPSHa.
+        assert!(
+            with_vapor.input.npsha.as_ref().unwrap().si < without.input.npsha.as_ref().unwrap().si
+        );
+    }
+
+    #[test]
+    fn a_missing_pressure_is_an_error_on_the_group() {
+        let errors = compute(&installation("", "2 m", "", "")).unwrap_err();
+        assert!(
+            errors.iter().any(|(field, _)| *field == Field::Suction),
+            "{errors:?}"
+        );
+    }
+
+    #[test]
+    fn bad_suction_value_lands_under_the_suction_group() {
+        let errors = compute(&installation("mucho", "", "", "")).unwrap_err();
+        let (field, message) = &errors[0];
+        assert_eq!(*field, Field::Suction);
+        assert!(message.contains("pressure"), "{message}");
+
+        let errors = compute(&installation("1 atm", "abc", "", "")).unwrap_err();
+        assert!(errors[0].1.contains("height"), "{errors:?}");
+    }
+
+    #[test]
+    fn a_suction_value_with_the_wrong_unit_lands_on_the_group() {
+        let errors = compute(&installation("1 m", "", "", "")).unwrap_err();
+        assert!(
+            errors.iter().all(|(field, _)| *field == Field::Suction),
+            "{errors:?}"
+        );
+    }
+
+    #[test]
+    fn written_and_installation_ignore_each_other() {
+        // En «instalación» la caja escrita no cuenta, aunque tenga basura.
+        let mut inputs = installation("1 atm", "", "", "");
+        inputs.npsha = "basura".into();
+        assert!(compute(&inputs).is_ok());
+
+        // En «escrito» las cajas de la instalación no cuentan.
+        let inputs = Inputs {
+            suction_pressure: "basura".into(),
+            ..Inputs::default()
+        };
+        assert!(compute(&inputs).is_ok());
     }
 }

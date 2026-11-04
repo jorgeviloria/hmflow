@@ -9,8 +9,9 @@ use hm_design::geometry::Geometry;
 use hm_design::mechanics::Mechanics;
 use hm_design::{CurvePoint, DesignError, DesignInput, DesignResult, ViscousCorrection};
 use hm_engine::{
-    Case, CaseField, CurvePoints, Density, DensitySource, DesignOptions, Duty, EngineError,
-    Entered, Fluid, FluidKind, Intake, PumpType, Temperature, analyze, water_density_at,
+    Analysis, Case, CaseField, CurvePoints, Density, DensitySource, DesignOptions, Duty,
+    EngineError, Entered, Fluid, FluidKind, Intake, PumpType, Temperature, analyze,
+    water_density_at,
 };
 use hm_units::Quantity;
 
@@ -78,8 +79,13 @@ pub struct Outcome {
 }
 
 impl Outcome {
+    /// Hay errores si un diagnóstico lo es o si una etapa no salió: la CLI
+    /// termina con error en ambos casos y la interfaz no debe decir «válido».
     pub fn has_errors(&self) -> bool {
         self.diagnostics.iter().any(Diagnostic::is_error)
+            || self.geometry.is_err()
+            || self.mechanics.is_err()
+            || self.viscous.is_err()
     }
 }
 
@@ -187,7 +193,12 @@ pub fn compute(inputs: &Inputs) -> Result<Outcome, FieldErrors> {
     let case = case_from_inputs(inputs)?;
     let points = CurvePoints::new(CURVE_POINTS).expect("61 está entre 2 y 1000");
     let analysis = analyze(&case, points).map_err(|error| vec![engine_error_field(error)])?;
-    Ok(Outcome {
+    Ok(outcome_from(inputs, analysis))
+}
+
+/// El análisis tal cual: la interfaz no reordena ni descarta nada.
+fn outcome_from(inputs: &Inputs, analysis: Analysis) -> Outcome {
+    Outcome {
         inputs: inputs.clone(),
         input: analysis.input,
         result: analysis.result,
@@ -196,7 +207,7 @@ pub fn compute(inputs: &Inputs) -> Result<Outcome, FieldErrors> {
         mechanics: analysis.mechanics,
         viscous: analysis.viscous,
         diagnostics: analysis.diagnostics,
-    })
+    }
 }
 
 /// Campo y frase de un error del motor. Los de etapa y los que no tienen
@@ -373,29 +384,56 @@ mod tests {
 
     #[test]
     fn diagnostics_follow_the_canonical_order() {
+        // El agua de la interfaz no dispara avisos de viscosidad; con un
+        // aceite sí, y la mecánica tiene que quedar después de ella.
         let inputs = Inputs {
             q: "3000 m3/h".into(),
             h: "150 m".into(),
             n: "1450 rpm".into(),
             ..Inputs::default()
         };
-        let outcome = compute(&inputs).unwrap();
-        let case = case_from_inputs(&inputs).unwrap();
+        let mut case = case_from_inputs(&inputs).unwrap();
+        case.fluid.viscosity = Some(hm_engine::Viscosity::Kinematic(
+            Entered::parse("300 cSt").unwrap(),
+        ));
         let analysis = analyze(&case, CurvePoints::new(CURVE_POINTS).unwrap()).unwrap();
-        assert_eq!(codes(&outcome.diagnostics), codes(&analysis.diagnostics));
-        let mechanics = codes(&outcome.diagnostics)
+        let expected = codes(&analysis.diagnostics)
+            .into_iter()
+            .map(str::to_string)
+            .collect::<Vec<_>>();
+
+        let outcome = outcome_from(&inputs, analysis);
+        let shown = codes(&outcome.diagnostics);
+        assert_eq!(shown, expected);
+
+        let viscous = shown
+            .iter()
+            .position(|code| matches!(*code, "HM-DES-020" | "HM-DES-021" | "HM-DES-022"))
+            .expect("el aceite dispara un aviso de viscosidad");
+        let mechanics = shown
             .iter()
             .position(|code| *code == "HM-DES-030")
             .expect("el aviso mecánico está");
-        let viscous = codes(&outcome.diagnostics)
-            .iter()
-            .position(|code| matches!(*code, "HM-DES-020" | "HM-DES-021" | "HM-DES-022"));
-        if let Some(viscous) = viscous {
-            assert!(
-                mechanics > viscous,
-                "la mecánica queda después de la viscosidad: {:?}",
-                codes(&outcome.diagnostics)
-            );
+        assert!(
+            viscous < mechanics,
+            "la mecánica queda después de la viscosidad: {shown:?}"
+        );
+    }
+
+    #[test]
+    fn a_failed_stage_counts_as_an_error() {
+        let ok = compute(&Inputs::default()).unwrap();
+        assert!(!ok.has_errors());
+
+        for stage in ["geometry", "mechanics", "viscous"] {
+            let mut outcome = ok.clone();
+            let failure = DesignError::Input("la etapa no salió".into());
+            match stage {
+                "geometry" => outcome.geometry = Err(failure),
+                "mechanics" => outcome.mechanics = Err(failure),
+                _ => outcome.viscous = Err(failure),
+            }
+            assert!(outcome.has_errors(), "{stage}");
         }
     }
 

@@ -15,7 +15,10 @@ use hm_design::designed_si;
 use hm_engine::{METHOD, PARAM_SPECS, PREFERRED_OPERATING_REGION};
 use hm_formula::Registry;
 
-use model::{Field, FieldErrors, Inputs, IntakeMode, Outcome, compute};
+use model::{
+    Field, FieldErrors, Inputs, IntakeMode, Outcome, SUCTION_BOXES, compute, suction_box_error,
+    suction_group_errors,
+};
 
 fn main() -> eframe::Result {
     let options = eframe::NativeOptions {
@@ -199,7 +202,7 @@ fn inputs_panel(ui: &mut egui::Ui, app: &mut App) {
                     Field::EtaM => &mut app.inputs.eta_m,
                     Field::Npsha | Field::Suction | Field::General => continue,
                 };
-                changed |= text_box(ui, label, value, hint, error_of(&errors, field));
+                changed |= text_box(ui, label, value, hint, error_of(&errors, field), label);
             }
 
             ui.label("NPSH disponible");
@@ -223,31 +226,33 @@ fn inputs_panel(ui: &mut egui::Ui, app: &mut App) {
                         &mut app.inputs.npsha,
                         "vacío si no se conoce",
                         error_of(&errors, Field::Npsha),
+                        "npsha",
                     );
                 }
                 IntakeMode::Installation => {
-                    let error = error_of(&errors, Field::Suction);
-                    for (label, value, hint) in [
+                    let boxes = [
                         (
-                            "Presión en la aspiración",
                             &mut app.inputs.suction_pressure,
+                            "Presión en la aspiración",
                             "1 atm",
                         ),
-                        ("Altura (opcional)", &mut app.inputs.suction_height, "2 m"),
+                        (&mut app.inputs.suction_height, "Altura (opcional)", "2 m"),
                         (
-                            "Pérdidas (opcional)",
                             &mut app.inputs.suction_losses,
+                            "Pérdidas (opcional)",
                             "0.5 m",
                         ),
                         (
-                            "Presión de vapor (opcional)",
                             &mut app.inputs.suction_vapor,
+                            "Presión de vapor (opcional)",
                             "vacío: la del agua",
                         ),
-                    ] {
-                        changed |= text_box(ui, label, value, hint, None);
+                    ];
+                    for ((value, label, hint), (_, name)) in boxes.into_iter().zip(SUCTION_BOXES) {
+                        let error = suction_box_error(&errors, name);
+                        changed |= text_box(ui, label, value, hint, error, label);
                     }
-                    if let Some(message) = error {
+                    for message in suction_group_errors(&errors) {
                         ui.label(
                             RichText::new(message)
                                 .small()
@@ -306,15 +311,21 @@ fn error_of(errors: &FieldErrors, field: Field) -> Option<&str> {
 }
 
 /// Etiqueta, caja de texto y su error debajo. Devuelve si el texto cambió.
+///
+/// `id` fija la identidad de la caja: sin él egui la saca de su posición y dos
+/// cajas de modos distintos en el mismo lugar se pasarían el foco.
 fn text_box(
     ui: &mut egui::Ui,
     label: &str,
     value: &mut String,
     hint: &str,
     error: Option<&str>,
+    id: &str,
 ) -> bool {
     ui.label(label);
-    let mut edit = egui::TextEdit::singleline(value).hint_text(hint);
+    let mut edit = egui::TextEdit::singleline(value)
+        .id_salt(id)
+        .hint_text(hint);
     if error.is_some() {
         edit = edit.text_color(ui.visuals().error_fg_color);
     }

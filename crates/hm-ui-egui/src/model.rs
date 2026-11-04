@@ -57,7 +57,7 @@ impl Default for Inputs {
             eta_m: String::new(),
             npsha: "15 m".into(),
             intake: IntakeMode::Written,
-            suction_pressure: String::new(),
+            suction_pressure: "1 atm".into(),
             suction_height: String::new(),
             suction_losses: String::new(),
             suction_vapor: String::new(),
@@ -150,10 +150,16 @@ fn case_from_inputs(inputs: &Inputs) -> Result<Case, FieldErrors> {
 }
 
 fn entered(field: Field, text: &str, errors: &mut FieldErrors) -> Option<Entered> {
+    entered_as(field, "", text, errors)
+}
+
+/// Como `entered`, pero el error empieza por `prefix` (para las cajas que
+/// comparten campo y hay que distinguirlas).
+fn entered_as(field: Field, prefix: &str, text: &str, errors: &mut FieldErrors) -> Option<Entered> {
     match Entered::parse(text) {
         Ok(value) => Some(value),
         Err(error) => {
-            errors.push((field, error.to_string()));
+            errors.push((field, format!("{prefix}{error}")));
             None
         }
     }
@@ -212,18 +218,66 @@ fn read_intake(inputs: &Inputs, errors: &mut FieldErrors) -> Option<Intake> {
     }
 }
 
+/// Las cuatro cajas de la instalación: su nombre en el proyecto y la palabra
+/// con que empiezan sus errores (`presión: ...`), que es lo que une un error
+/// con su caja.
+pub const SUCTION_BOXES: [(&str, &str); 4] = [
+    ("pressure", "presión"),
+    ("height", "altura"),
+    ("losses", "pérdidas"),
+    ("vapor_pressure", "presión de vapor"),
+];
+
+fn suction_prefix(name: &str) -> String {
+    let label = SUCTION_BOXES
+        .iter()
+        .find(|(key, _)| *key == name)
+        .map_or(name, |(_, label)| label);
+    format!("{label}: ")
+}
+
+/// El error de una caja de la instalación (sin su encabezado), si lo hay.
+pub fn suction_box_error<'a>(errors: &'a FieldErrors, label: &str) -> Option<&'a str> {
+    let prefix = format!("{label}: ");
+    errors
+        .iter()
+        .filter(|(field, _)| *field == Field::Suction)
+        .find_map(|(_, message)| message.strip_prefix(&prefix))
+}
+
+/// Los errores de la instalación que no son de ninguna caja concreta.
+pub fn suction_group_errors(errors: &FieldErrors) -> impl Iterator<Item = &str> {
+    errors
+        .iter()
+        .filter(|(field, _)| *field == Field::Suction)
+        .map(|(_, message)| message.as_str())
+        .filter(|message| {
+            !SUCTION_BOXES
+                .iter()
+                .any(|(_, label)| message.starts_with(&format!("{label}: ")))
+        })
+}
+
 /// La presión es obligatoria; altura, pérdidas y presión de vapor vacías
-/// quedan en `None` (no en `0 m`). Cada error nombra el dato, como el motor.
+/// quedan en `None` (no en `0 m`). Cada error empieza por el nombre de su caja.
 fn read_installation(inputs: &Inputs, errors: &mut FieldErrors) -> Option<Intake> {
     let before = errors.len();
     let pressure = if inputs.suction_pressure.trim().is_empty() {
         errors.push((
             Field::Suction,
-            "[suction] pressure: la presión es obligatoria en la instalación".into(),
+            format!(
+                "{}es obligatoria en la instalación",
+                suction_prefix("pressure")
+            ),
         ));
         None
     } else {
-        suction_entered("pressure", &inputs.suction_pressure, errors)
+        entered_as(
+            Field::Suction,
+            &suction_prefix("pressure"),
+            &inputs.suction_pressure,
+            errors,
+        )
     };
     let height = optional_suction("height", &inputs.suction_height, errors);
     let losses = optional_suction("losses", &inputs.suction_losses, errors);
@@ -239,21 +293,11 @@ fn read_installation(inputs: &Inputs, errors: &mut FieldErrors) -> Option<Intake
     })
 }
 
-fn suction_entered(name: &str, text: &str, errors: &mut FieldErrors) -> Option<Entered> {
-    match Entered::parse(text) {
-        Ok(value) => Some(value),
-        Err(error) => {
-            errors.push((Field::Suction, format!("[suction] {name}: {error}")));
-            None
-        }
-    }
-}
-
 fn optional_suction(name: &str, text: &str, errors: &mut FieldErrors) -> Option<Entered> {
     if text.trim().is_empty() {
         None
     } else {
-        suction_entered(name, text, errors)
+        entered_as(Field::Suction, &suction_prefix(name), text, errors)
     }
 }
 
@@ -302,6 +346,14 @@ fn engine_error_field(error: EngineError, eta_m_typed: bool) -> (Field, String) 
     let message = message
         .strip_prefix("entrada inválida: ")
         .map_or_else(|| message.clone(), str::to_string);
+    let message = if field == Field::Suction {
+        // «[suction] `pressure`: ...» del motor -> «presión: ...», como las cajas.
+        SUCTION_BOXES.iter().fold(message, |message, (name, _)| {
+            message.replace(&format!("[suction] `{name}`: "), &suction_prefix(name))
+        })
+    } else {
+        message
+    };
     (field, message)
 }
 
@@ -588,6 +640,17 @@ mod tests {
     }
 
     #[test]
+    fn switching_to_installation_with_the_default_pressure_computes() {
+        // Al pulsar «instalación» sin tocar nada no debe aparecer un error.
+        let inputs = Inputs {
+            intake: IntakeMode::Installation,
+            ..Inputs::default()
+        };
+        let outcome = compute(&inputs).expect("la presión por defecto basta");
+        assert!(outcome.input.npsha.is_some());
+    }
+
+    #[test]
     fn empty_height_is_not_zero() {
         let empty = case_from_inputs(&installation("1 atm", "", "", "")).unwrap();
         let zero = case_from_inputs(&installation("1 atm", "0 m", "0 m", "")).unwrap();
@@ -640,10 +703,42 @@ mod tests {
         let errors = compute(&installation("mucho", "", "", "")).unwrap_err();
         let (field, message) = &errors[0];
         assert_eq!(*field, Field::Suction);
-        assert!(message.contains("pressure"), "{message}");
+        assert!(message.starts_with("presión: "), "{message}");
 
         let errors = compute(&installation("1 atm", "abc", "", "")).unwrap_err();
-        assert!(errors[0].1.contains("height"), "{errors:?}");
+        assert!(errors[0].1.starts_with("altura: "), "{errors:?}");
+    }
+
+    #[test]
+    fn every_bad_suction_box_has_its_own_error() {
+        let errors = compute(&installation("mucho", "abc", "", "")).unwrap_err();
+        assert!(
+            suction_box_error(&errors, "presión").is_some(),
+            "{errors:?}"
+        );
+        assert!(suction_box_error(&errors, "altura").is_some(), "{errors:?}");
+        assert!(
+            suction_box_error(&errors, "pérdidas").is_none(),
+            "{errors:?}"
+        );
+        assert_eq!(suction_group_errors(&errors).count(), 0, "{errors:?}");
+    }
+
+    #[test]
+    fn an_engine_error_without_a_box_shows_under_the_group() {
+        // El motor no dice de qué caja es un error de unidades: va bajo el grupo.
+        let errors = compute(&installation("1 m", "", "", "")).unwrap_err();
+        assert!(
+            suction_box_error(&errors, "presión").is_none(),
+            "{errors:?}"
+        );
+        assert_eq!(suction_group_errors(&errors).count(), 1, "{errors:?}");
+        assert!(
+            errors
+                .iter()
+                .all(|(_, message)| !message.contains("[suction]")),
+            "{errors:?}"
+        );
     }
 
     #[test]

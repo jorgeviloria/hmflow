@@ -354,7 +354,7 @@ mod tests {
     }
 
     #[test]
-    fn stage_errors_are_shown_as_general() {
+    fn base_design_errors_are_shown_as_general() {
         // El diseño base no sale: el error no tiene campo.
         let errors = compute(&Inputs {
             q: "5 m3/h".into(),
@@ -368,7 +368,9 @@ mod tests {
     }
 
     #[test]
-    fn an_estimation_failure_is_not_blamed_on_an_empty_eta_m_box() {
+    fn an_estimated_eta_m_error_is_not_blamed_on_an_empty_eta_m_box() {
+        // Prueba el reparto de campos con un error del motor construido a mano:
+        // no hay una entrada de la interfaz que haga fallar la estimación.
         let error = |typed| {
             engine_error_field(
                 EngineError::Input {
@@ -419,9 +421,15 @@ mod tests {
         ));
         let analysis = analyze(&case, CurvePoints::new(CURVE_POINTS).unwrap()).unwrap();
 
+        let from_engine: Vec<String> = analysis
+            .diagnostics
+            .iter()
+            .map(|diagnostic| diagnostic.code.clone())
+            .collect();
         let outcome = outcome_from(&inputs, analysis);
         let shown = codes(&outcome.diagnostics);
-        assert!(!shown.is_empty());
+        // La interfaz no reordena lo que da el motor.
+        assert_eq!(shown, from_engine);
 
         let viscous = shown
             .iter()
@@ -463,12 +471,14 @@ mod tests {
             hm_design::water_density(293.15).unwrap()
         ))
         .unwrap();
+        let q = hm_units::parse_quantity("120 m3/h").unwrap();
+        let n = hm_units::parse_quantity("2900 rpm").unwrap();
         let input = DesignInput {
-            q: hm_units::parse_quantity("120 m3/h").unwrap(),
+            eta_m: hm_design::default_mechanical_efficiency(&q, &n).unwrap(),
+            q,
+            n,
             h: hm_units::parse_quantity("45 m").unwrap(),
-            n: hm_units::parse_quantity("2900 rpm").unwrap(),
             rho,
-            eta_m: outcome.input.eta_m,
             npsha: Some(hm_units::parse_quantity("15 m").unwrap()),
             nu: hm_design::fluid::water_kinematic_viscosity(293.15),
         };

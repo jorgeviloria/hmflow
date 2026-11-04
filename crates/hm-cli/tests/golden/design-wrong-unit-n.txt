@@ -1,0 +1,8 @@
+# command
+$ hmflow-cli design --name design-wrong-unit-n --q 120 m3/h --h 45 m --n 2900 m
+# stdout
+# stderr
+error: entrada inválida: n debe tener dimensiones de 1/s
+# status
+1
+# absent design-wrong-unit-n.hmf

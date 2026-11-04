@@ -382,13 +382,13 @@ fn run(cli: Cli) -> Result<ExitCode, Box<dyn std::error::Error>> {
                     None => Intake::None,
                 },
             };
-            let viscosity =
-                viscosity_from_text(&viscosity.unwrap_or_default()).map_err(engine_text)?;
             let duty = Duty {
                 q: Entered::parse(&q)?,
                 h: Entered::parse(&h)?,
                 n: Entered::parse(&n)?,
             };
+            let viscosity =
+                viscosity_from_text(&viscosity.unwrap_or_default()).map_err(engine_text)?;
 
             // El rango se comprueba aquí, antes del análisis, con la misma frase.
             let Some(points) = CurvePoints::new(curve_points) else {
@@ -712,6 +712,17 @@ fn recalc(file: &std::path::Path, reselect: bool) -> Result<ExitCode, Box<dyn st
             print_diagnostics(diagnostics.iter());
             Err("el proyecto recalculado no valida; no se escribió".into())
         }
+        // Los avisos del diseño salen antes de la causa, como siempre.
+        Err(EngineError::AfterDesign { design, source }) => {
+            print_diagnostics(design.iter());
+            match *source {
+                EngineError::RecalculatedInvalid { diagnostics } => {
+                    print_diagnostics(diagnostics.iter());
+                    Err("el proyecto recalculado no valida; no se escribió".into())
+                }
+                other => Err(engine_text(other)),
+            }
+        }
         Err(error @ EngineError::UnknownParameter { .. }) => Err(error.to_string().into()),
         Err(EngineError::Unsupported(pump_type)) => {
             Err(format!("recalc solo admite end-suction; el proyecto es {pump_type}").into())
@@ -816,19 +827,15 @@ fn engine_text(error: hm_engine::EngineError) -> Box<dyn std::error::Error> {
 
 /// Fallo de `analyze` en `design`, antes de imprimir el bloque.
 ///
-/// Un `Input` sale como diagnóstico y termina con código 1. El diseño, el
-/// proyecto y una etapa conservan el mensaje, sin el prefijo de la etapa.
+/// Todo sale por stderr con la frase de antes (`error: entrada inválida: …`),
+/// como el resto de los errores de la CLI. El código del diagnóstico queda en
+/// el motor para quien lo necesite.
 fn design_failure(error: EngineError) -> Result<ExitCode, Box<dyn std::error::Error>> {
     match error {
         EngineError::Invalid { diagnostics } => {
             print_diagnostics(diagnostics.iter());
             Err("el diseño tiene errores; no se escribió el proyecto".into())
         }
-        EngineError::Input { diagnostic, .. } => {
-            print_diagnostics(std::slice::from_ref(&diagnostic));
-            Ok(ExitCode::FAILURE)
-        }
-        EngineError::Stage { source, .. } => Err(source.to_string().into()),
         EngineError::Unsupported(pump_type) => {
             Err(format!("solo hay motor para end-suction; el proyecto es {pump_type}").into())
         }

@@ -1,0 +1,8 @@
+# command
+$ hmflow-cli design --name design-oil-without-vapor-pressure --q 120 m3/h --h 45 m --n 2900 rpm --fluid oil --rho 850 kg/m3 --suction-pressure 1 atm
+# stdout
+# stderr
+error: el fluido es `oil`: indica la presión de vapor de la aspiración
+# status
+1
+# absent design-oil-without-vapor-pressure.hmf

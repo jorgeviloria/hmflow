@@ -1,8 +1,8 @@
 # command
 $ hmflow-cli design --name invalid --q -1 m3/h --h 45 m --n 2900 rpm
 # stdout
-[Error] HM-PROJ-002: Q debe ser finito y positivo
 # stderr
+error: entrada inválida: Q debe ser finito y positivo
 # status
 1
 # absent invalid.hmf

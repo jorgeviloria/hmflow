@@ -192,6 +192,26 @@ macro_rules! recalc_case {
     };
 }
 
+/// `design` que falla por una entrada inválida: stdout vacío, el motivo por
+/// stderr, estado 1 y ningún `.hmf`.
+macro_rules! design_fails {
+    ($name:literal, $($arg:literal),+ $(,)?) => {
+        Scenario {
+            name: $name,
+            fixtures: NONE_FIXTURES,
+            files: NONE_FILES,
+            commands: &[CommandSpec {
+                args: &["design", "--name", $name, $($arg),+],
+                status: 1,
+                files: NONE,
+                present: NONE,
+                absent: &[concat!($name, ".hmf")],
+                capture: Capture::Transcript,
+            }],
+        }
+    };
+}
+
 const SCENARIOS: &[Scenario] = &[
     design_case!(
         "b1", "--q", "1060 gpm", "--h", "83 m", "--n", "1750 rpm", "--npsha", "10 m",
@@ -489,6 +509,74 @@ const SCENARIOS: &[Scenario] = &[
             capture: Capture::Transcript,
         }],
     },
+    design_fails!(
+        "design-invalid-eta-m",
+        "--q",
+        "120 m3/h",
+        "--h",
+        "45 m",
+        "--n",
+        "2900 rpm",
+        "--eta-m",
+        "1.5"
+    ),
+    design_fails!(
+        "design-invalid-volute-wrap",
+        "--q",
+        "120 m3/h",
+        "--h",
+        "45 m",
+        "--n",
+        "2900 rpm",
+        "--volute-wrap",
+        "200"
+    ),
+    design_fails!(
+        "design-wrong-unit-n",
+        "--q",
+        "120 m3/h",
+        "--h",
+        "45 m",
+        "--n",
+        "2900 m"
+    ),
+    design_fails!(
+        "design-npsha-wrong-unit",
+        "--q",
+        "120 m3/h",
+        "--h",
+        "45 m",
+        "--n",
+        "2900 rpm",
+        "--npsha",
+        "3 kg"
+    ),
+    design_fails!(
+        "design-oil-without-vapor-pressure",
+        "--q",
+        "120 m3/h",
+        "--h",
+        "45 m",
+        "--n",
+        "2900 rpm",
+        "--fluid",
+        "oil",
+        "--rho",
+        "850 kg/m3",
+        "--suction-pressure",
+        "1 atm"
+    ),
+    design_fails!(
+        "design-negative-viscosity",
+        "--q",
+        "120 m3/h",
+        "--h",
+        "45 m",
+        "--n",
+        "2900 rpm",
+        "--viscosity",
+        "-5 cSt"
+    ),
 ];
 
 macro_rules! cases {
@@ -526,6 +614,12 @@ cases! {
     report_override = "report-override",
     curve_points = "curve-points",
     design_with_errors = "design-with-errors",
+    design_invalid_eta_m = "design-invalid-eta-m",
+    design_invalid_volute_wrap = "design-invalid-volute-wrap",
+    design_wrong_unit_n = "design-wrong-unit-n",
+    design_npsha_wrong_unit = "design-npsha-wrong-unit",
+    design_oil_without_vapor_pressure = "design-oil-without-vapor-pressure",
+    design_negative_viscosity = "design-negative-viscosity",
 }
 
 #[test]

@@ -1,0 +1,8 @@
+# command
+$ hmflow-cli design --name design-invalid-volute-wrap --q 120 m3/h --h 45 m --n 2900 rpm --volute-wrap 200
+# stdout
+# stderr
+error: entrada inválida: `volute_wrap_deg` = 200 no es válido; debe estar entre 90 y 180 grados
+# status
+1
+# absent design-invalid-volute-wrap.hmf

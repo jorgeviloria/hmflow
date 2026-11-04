@@ -1,0 +1,8 @@
+# command
+$ hmflow-cli design --name design-invalid-eta-m --q 120 m3/h --h 45 m --n 2900 rpm --eta-m 1.5
+# stdout
+# stderr
+error: entrada inválida: la eficiencia mecánica debe ser mayor que 0 y menor que 1
+# status
+1
+# absent design-invalid-eta-m.hmf

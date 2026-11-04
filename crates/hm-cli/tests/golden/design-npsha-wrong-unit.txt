@@ -1,0 +1,8 @@
+# command
+$ hmflow-cli design --name design-npsha-wrong-unit --q 120 m3/h --h 45 m --n 2900 rpm --npsha 3 kg
+# stdout
+# stderr
+error: entrada inválida: NPSHa debe tener dimensiones de m
+# status
+1
+# absent design-npsha-wrong-unit.hmf

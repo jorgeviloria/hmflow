@@ -17,10 +17,13 @@ pub(crate) fn input_error(
     }
 }
 
-/// Texto que ya mostraba la CLI. Un `Input` no antepone su código.
+/// Texto que ya mostraba la CLI. Un `Input` no antepone su código y un fallo
+/// de etapa no antepone el nombre de la etapa: la CLI da la causa.
 pub fn cli_message(error: &EngineError) -> String {
     match error {
         EngineError::Input { diagnostic, .. } => diagnostic.message.clone(),
+        EngineError::Stage { source, .. } => source.to_string(),
+        EngineError::AfterDesign { source, .. } => cli_message(source),
         other => other.to_string(),
     }
 }
@@ -83,6 +86,14 @@ pub enum EngineError {
     #[error("el proyecto recalculado no valida")]
     RecalculatedInvalid { diagnostics: Diagnostics },
 
+    /// Algo falló después de que el diseño saliera. Lleva los avisos del
+    /// diseño para que quien informa los muestre antes de la causa.
+    #[error("{source}")]
+    AfterDesign {
+        design: Diagnostics,
+        source: Box<EngineError>,
+    },
+
     #[error("parámetro desconocido: `{name}`; corrígelo antes de recalcular")]
     UnknownParameter { name: String },
 
@@ -106,6 +117,7 @@ impl EngineError {
             | Self::DesignHasErrors { .. }
             | Self::RecalculatedInvalid { .. }
             | Self::UnknownParameter { .. }
+            | Self::AfterDesign { .. }
             | Self::Stage { .. } => None,
         }
     }
@@ -122,6 +134,7 @@ impl EngineError {
             | Self::DesignHasErrors { .. }
             | Self::RecalculatedInvalid { .. }
             | Self::UnknownParameter { .. }
+            | Self::AfterDesign { .. }
             | Self::Stage { .. } => None,
         }
     }
@@ -138,6 +151,7 @@ impl EngineError {
             | Self::Invalid { .. }
             | Self::DesignHasErrors { .. }
             | Self::RecalculatedInvalid { .. }
+            | Self::AfterDesign { .. }
             | Self::Stage { .. } => None,
         }
     }
@@ -206,5 +220,20 @@ mod tests {
         };
         assert_ne!(design.to_string(), written.to_string());
         assert_eq!(design.field(), None);
+    }
+
+    #[test]
+    fn the_cli_message_gives_the_cause_and_not_the_wrapper() {
+        let stage = EngineError::Stage {
+            stage: Stage::Geometry,
+            source: hm_design::DesignError::Input("la garganta no cabe".into()),
+        };
+        assert_eq!(cli_message(&stage), "entrada inválida: la garganta no cabe");
+
+        let after = EngineError::AfterDesign {
+            design: Diagnostics::new(),
+            source: Box::new(stage),
+        };
+        assert_eq!(cli_message(&after), "entrada inválida: la garganta no cabe");
     }
 }

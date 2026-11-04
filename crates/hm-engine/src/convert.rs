@@ -475,12 +475,17 @@ fn flag(project: &Project, name: &'static str) -> Result<Option<f64>, EngineErro
             format!("`{name}` debe ser 0 o 1"),
         )
     };
-    let Some(text) = param_text(project, name)? else {
-        return Ok(Some(0.0));
-    };
-    match parse_quantity(text) {
-        Ok(quantity) if quantity.si == 0.0 || quantity.si == 1.0 => Ok(Some(quantity.si)),
-        _ => Err(wrong()),
+    // Una unidad (`1 m`) no es una bandera: se rechaza igual que un texto.
+    match param_quantity(project, name, "1") {
+        Ok(None) => Ok(Some(0.0)),
+        Ok(Some((_, quantity))) if quantity.si == 0.0 || quantity.si == 1.0 => {
+            Ok(Some(quantity.si))
+        }
+        Ok(Some(_)) => Err(wrong()),
+        Err(EngineError::Input { diagnostic, .. }) if diagnostic.code == "HM-PROJ-019" => {
+            Err(override_error(name))
+        }
+        Err(_) => Err(wrong()),
     }
 }
 
@@ -551,6 +556,8 @@ fn param_angle(project: &Project, name: &'static str) -> Result<Option<f64>, Eng
         return Ok(None);
     };
     match quantity.unit.symbol.as_str() {
+        // Un cero no necesita unidad: es «sin dato» o 0°, sea cual sea.
+        "1" if quantity.si == 0.0 => Ok(Some(0.0)),
         "deg" => Ok(Some(
             leading_number(text).unwrap_or_else(|| quantity.si.to_degrees()),
         )),

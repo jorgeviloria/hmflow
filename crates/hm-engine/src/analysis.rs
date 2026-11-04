@@ -81,9 +81,67 @@ pub(crate) fn require_stages(analysis: &Analysis) -> Result<Stages<'_>, EngineEr
     })
 }
 
+/// Mecánica y viscosidad: lo que exigen `check` y `recalc`. La geometría no.
+pub(crate) fn require_mechanics_and_viscosity(analysis: &Analysis) -> Result<(), EngineError> {
+    if let Err(error) = &analysis.mechanics {
+        return Err(stage_error(Stage::Mechanics, error));
+    }
+    if let Err(error) = &analysis.viscous {
+        return Err(stage_error(Stage::Viscous, error));
+    }
+    Ok(())
+}
+
 fn stage_error(stage: Stage, error: &DesignError) -> EngineError {
     EngineError::Stage {
         stage,
         source: error.clone(),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use hm_project::Project;
+
+    use super::*;
+    use crate::convert::case_from_project;
+    use crate::dispatch::analyze;
+    use hm_core::PumpType;
+
+    fn analysis() -> Analysis {
+        let project = Project::new("demo", PumpType::EndSuction);
+        let case = case_from_project(&project).unwrap();
+        analyze(&case, CurvePoints::MINIMUM).unwrap()
+    }
+
+    #[test]
+    fn check_and_recalc_need_mechanics_and_viscosity_but_not_geometry() {
+        let ok = analysis();
+        assert!(require_mechanics_and_viscosity(&ok).is_ok());
+
+        let mut no_geometry = analysis();
+        no_geometry.geometry = Err(DesignError::Input("sin geometría".into()));
+        assert!(require_mechanics_and_viscosity(&no_geometry).is_ok());
+        assert!(require_stages(&no_geometry).is_err());
+
+        let mut no_mechanics = analysis();
+        no_mechanics.mechanics = Err(DesignError::Input("sin eje".into()));
+        assert!(matches!(
+            require_mechanics_and_viscosity(&no_mechanics),
+            Err(EngineError::Stage {
+                stage: Stage::Mechanics,
+                ..
+            })
+        ));
+
+        let mut no_viscosity = analysis();
+        no_viscosity.viscous = Err(DesignError::Input("sin ν".into()));
+        assert!(matches!(
+            require_mechanics_and_viscosity(&no_viscosity),
+            Err(EngineError::Stage {
+                stage: Stage::Viscous,
+                ..
+            })
+        ));
     }
 }

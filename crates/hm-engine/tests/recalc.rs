@@ -3,7 +3,7 @@
 use hm_core::Diagnostics;
 use hm_design::{DesignInput, default_mechanical_efficiency, design};
 use hm_engine::{
-    ChangeKind, EngineError, METHOD, ManualDefaults, PumpType, Stage, audit, case_from_project,
+    ChangeKind, EngineError, METHOD, ManualDefaults, PumpType, audit, case_from_project,
     cli_message, design_input, design_params, recalc,
 };
 use hm_project::{Param, Project};
@@ -305,9 +305,9 @@ fn a_design_with_errors_is_not_written() {
 }
 
 #[test]
-fn a_stage_that_does_not_come_out_stops_the_recalculation() {
+fn a_geometry_that_does_not_come_out_does_not_stop_the_recalculation() {
     // Caudal enorme y garganta baja: el DN tabulado no alcanza y la geometría
-    // no sale, aunque el diseño base sí.
+    // no sale. `recalc` no usa la geometría, así que, como antes, recalcula.
     let mut project = designed_project();
     project.operating.q = "14400 m3/h".to_string();
     project.operating.h = "30 m".to_string();
@@ -318,8 +318,6 @@ fn a_stage_that_does_not_come_out_stops_the_recalculation() {
         .insert("volute_ratio".to_string(), manual("0.5"));
 
     // Con `reselect`, las selecciones del punto viejo vuelven a salir del motor.
-    match recalc(project, true).unwrap_err() {
-        EngineError::Stage { stage, .. } => assert_eq!(stage, Stage::Geometry),
-        other => panic!("se esperaba Stage::Geometry, llegó {other:?}"),
-    }
+    let done = recalc(project, true).expect("la geometría no bloquea el recálculo");
+    assert_eq!(done.project.design.method, METHOD);
 }

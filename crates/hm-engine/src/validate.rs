@@ -64,10 +64,15 @@ fn invalid_field(error: FieldError) -> EngineError {
         "eta_m" => CaseField::MechanicalEfficiency,
         name => CaseField::Param(name),
     };
-    input_error(field, field_code(field), error.message)
+    // La misma frase que daba `DesignError::Input` antes de tener campo.
+    input_error(
+        field,
+        field_code(field),
+        format!("entrada inválida: {}", error.message),
+    )
 }
 
-fn field_code(field: CaseField) -> &'static str {
+pub(crate) fn field_code(field: CaseField) -> &'static str {
     match field {
         CaseField::Q => "HM-PROJ-002",
         CaseField::H => "HM-PROJ-003",

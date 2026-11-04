@@ -418,3 +418,35 @@ fn a_non_positive_viscosity_is_a_case_error_with_its_code() {
         );
     }
 }
+
+#[test]
+fn balance_holes_with_a_unit_is_not_a_flag() {
+    for text in ["1 m", "1000 mm", "1 kg"] {
+        let mut project = project();
+        set(&mut project, "balance_holes", text);
+
+        let error = case_from_project(&project).unwrap_err();
+        assert_eq!(
+            error.field(),
+            Some(CaseField::Param("balance_holes")),
+            "{text}"
+        );
+        assert_eq!(error.code(), Some("HM-PROJ-020"), "{text}");
+    }
+}
+
+#[test]
+fn a_bare_zero_angle_needs_no_unit() {
+    let mut project = project();
+    set(&mut project, "volute_wrap_deg", "0");
+    set(&mut project, "incidence_deg", "0");
+
+    let case = case_from_project(&project).unwrap();
+    // 0 es «sin dato» para la envolvente y 0° válido para la incidencia.
+    assert_eq!(case.design.volute_wrap_deg, None);
+    assert_eq!(case.design.incidence_deg, Some(0.0));
+
+    // Cualquier otro número sin unidad sigue rechazado.
+    set(&mut project, "volute_wrap_deg", "150");
+    assert!(case_from_project(&project).is_err());
+}

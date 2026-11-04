@@ -5,7 +5,7 @@ use hm_design::{LEGACY_METHODS, METHOD, param_spec};
 use hm_formula::Registry;
 use hm_project::{Param, Project};
 
-use crate::analysis::{Analysis, CurvePoints, require_stages};
+use crate::analysis::{Analysis, CurvePoints, require_mechanics_and_viscosity};
 use crate::audit::{NQ_SELECTIONS, selection_diagnostics};
 use crate::case::Case;
 use crate::changes::{ChangeKind, ParamChange};
@@ -70,7 +70,7 @@ pub fn recalc(mut project: Project, reselect: bool) -> Result<Recalculated, Engi
 
     let case = case_from_project(&project)?;
     let analysis = analyze(&case, CurvePoints::MINIMUM)?;
-    require_stages(&analysis)?;
+    require_mechanics_and_viscosity(&analysis)?;
 
     let diagnostics = recalc_diagnostics(&project, &case, &analysis);
     if diagnostics.has_errors() {
@@ -81,15 +81,19 @@ pub fn recalc(mut project: Project, reselect: bool) -> Result<Recalculated, Engi
         format!("{} kg/m3", analysis.input.rho.si),
         analysis.input.eta_m.to_string(),
     );
-    let (params, filled) = design_params(&analysis.result, Some(&project.params), &defaults)?;
+    let (params, filled) = design_params(&analysis.result, Some(&project.params), &defaults)
+        .map_err(|error| after_design(&diagnostics, error))?;
     project.params = params;
     project.design.method = METHOD.to_string();
 
     let validation = project.validate(&Registry::all());
     if validation.has_errors() {
-        return Err(EngineError::RecalculatedInvalid {
-            diagnostics: validation,
-        });
+        return Err(after_design(
+            &diagnostics,
+            EngineError::RecalculatedInvalid {
+                diagnostics: validation,
+            },
+        ));
     }
 
     let changes = assemble_changes(
@@ -105,6 +109,14 @@ pub fn recalc(mut project: Project, reselect: bool) -> Result<Recalculated, Engi
         changes,
         diagnostics,
     })
+}
+
+/// Un fallo posterior al diseño, con los avisos que el diseño ya dio.
+fn after_design(design: &Diagnostics, source: EngineError) -> EngineError {
+    EngineError::AfterDesign {
+        design: design.clone(),
+        source: Box::new(source),
+    }
 }
 
 /// `Some` si el método es anterior y se puede migrar.

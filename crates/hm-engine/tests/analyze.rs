@@ -237,6 +237,20 @@ fn non_end_suction_is_unsupported() {
 }
 
 #[test]
+fn the_pump_type_is_checked_before_the_input() {
+    // Un tipo sin motor no se valida con las reglas del end-suction.
+    let mut case = b1();
+    case.pump_type = PumpType::Inline;
+    case.duty.q = entered("-1 m3/h");
+
+    let error = analyze(&case, points()).unwrap_err();
+    assert!(
+        matches!(error, EngineError::Unsupported(PumpType::Inline)),
+        "{error:?}"
+    );
+}
+
+#[test]
 fn stage_errors_are_preserved() {
     let mut viscous = b1();
     viscous.fluid.viscosity = Some(Viscosity::Kinematic(entered("-1 cSt")));
@@ -327,9 +341,10 @@ fn assert_field(case: &Case, field: CaseField, code: &str, message: &str) {
     let error = validate_case(case).unwrap_err();
     assert_eq!(error.field(), Some(field), "{error}");
     assert_eq!(error.code(), Some(code));
+    // La frase de antes: `entrada inválida: ` y el texto del campo.
     assert_eq!(
-        error.diagnostic().map(|d| d.message.as_str()),
-        Some(message)
+        error.diagnostic().map(|d| d.message.clone()),
+        Some(format!("entrada inválida: {message}"))
     );
 }
 

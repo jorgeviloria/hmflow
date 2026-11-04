@@ -12,7 +12,7 @@ use hm_formula::Registry;
 use hm_project::{Param, Project};
 use hm_units::{Quantity, parse_quantity, parse_unit};
 
-use crate::analysis::{Analysis, CurvePoints};
+use crate::analysis::{Analysis, CurvePoints, require_mechanics_and_viscosity};
 use crate::case::Case;
 use crate::convert::{MAX_COUNT, case_from_project};
 use crate::dispatch::analyze;
@@ -140,8 +140,8 @@ fn design_audit(project: &Project) -> Diagnostics {
 
 /// Recalcula un end-suction. `Ok(None)` si el tipo no tiene motor.
 ///
-/// Geometría, mecánica y viscosidad que no salen se quedan en el análisis.
-/// Solo la entrada y el diseño base devuelven error, y `audit` lo resume.
+/// Sin mecánica o sin viscosidad devuelve error, como el `check` de antes; la
+/// geometría no se exige. `audit` resume el error en `HM-PROJ-014`.
 fn recompute(project: &Project) -> Result<Option<Diagnostics>, crate::EngineError> {
     if project.design.pump_type != PumpType::EndSuction {
         return Ok(None);
@@ -150,6 +150,8 @@ fn recompute(project: &Project) -> Result<Option<Diagnostics>, crate::EngineErro
     let case = case_from_project(project)?;
     // Los diagnósticos no dependen de cuántos puntos tenga la curva.
     let analysis = analyze(&case, CurvePoints::MINIMUM)?;
+    // Como antes: sin mecánica o sin viscosidad no hay recálculo que auditar.
+    require_mechanics_and_viscosity(&analysis)?;
     Ok(Some(audit_analysis(project, Some(&case), &analysis)))
 }
 

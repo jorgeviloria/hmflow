@@ -23,9 +23,13 @@ use crate::validate::validated_input;
 /// en su campo. Los avisos siguen el orden de la CLI: diseño, fluido, NPSH
 /// del fluido, viscosidad y mecánica.
 pub fn analyze(case: &Case, curve_points: CurvePoints) -> Result<Analysis, EngineError> {
-    let input = validated_input(case)?;
+    // El tipo se mira antes que la entrada: un tipo sin motor no se valida con
+    // las reglas del end-suction.
     match case.pump_type {
-        PumpType::EndSuction => analyze_end_suction(case, input, curve_points),
+        PumpType::EndSuction => {
+            let input = validated_input(case)?;
+            analyze_end_suction(case, input, curve_points)
+        }
         other => Err(EngineError::Unsupported(other)),
     }
 }

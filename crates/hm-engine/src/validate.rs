@@ -43,10 +43,15 @@ pub fn design_input(case: &Case) -> Result<DesignInput, EngineError> {
 
 /// `design_input`, la entrada del diseño y las opciones. Sin reglas propias.
 pub fn validate_case(case: &Case) -> Result<(), EngineError> {
+    validated_input(case).map(|_| ())
+}
+
+/// La entrada del diseño ya validada, para no construirla dos veces.
+pub(crate) fn validated_input(case: &Case) -> Result<DesignInput, EngineError> {
     let input = design_input(case)?;
     input.validate().map_err(invalid_field)?;
     case.design.validate().map_err(invalid_field)?;
-    Ok(())
+    Ok(input)
 }
 
 fn invalid_field(error: FieldError) -> EngineError {

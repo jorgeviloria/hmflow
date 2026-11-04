@@ -15,7 +15,7 @@ use crate::analysis::{Analysis, CurvePoints};
 use crate::case::{Case, Fluid};
 use crate::error::EngineError;
 use crate::fluid::{fluid_diagnostics, npsh_fluid_diagnostics, viscosity_effect};
-use crate::validate::{design_input, validate_case};
+use crate::validate::validated_input;
 
 /// Diseño, curva, geometría, mecánica, viscosidad y avisos.
 ///
@@ -23,15 +23,18 @@ use crate::validate::{design_input, validate_case};
 /// en su campo. Los avisos siguen el orden de la CLI: diseño, fluido, NPSH
 /// del fluido, viscosidad y mecánica.
 pub fn analyze(case: &Case, curve_points: CurvePoints) -> Result<Analysis, EngineError> {
-    validate_case(case)?;
+    let input = validated_input(case)?;
     match case.pump_type {
-        PumpType::EndSuction => analyze_end_suction(case, curve_points),
+        PumpType::EndSuction => analyze_end_suction(case, input, curve_points),
         other => Err(EngineError::Unsupported(other)),
     }
 }
 
-fn analyze_end_suction(case: &Case, curve_points: CurvePoints) -> Result<Analysis, EngineError> {
-    let input = design_input(case)?;
+fn analyze_end_suction(
+    case: &Case,
+    input: DesignInput,
+    curve_points: CurvePoints,
+) -> Result<Analysis, EngineError> {
     let result = design_with_options(&input, &case.design)?;
     let curve = performance_curve(&input, &result, curve_points.get());
     let geometry = geometry(&input, &result);

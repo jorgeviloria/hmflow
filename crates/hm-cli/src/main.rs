@@ -9,14 +9,13 @@ use hm_core::Diagnostics;
 use hm_design::geometry::geometry;
 use hm_design::mechanics::{DEFAULT_SHAFT_SHEAR_STRESS, mechanics, mechanics_diagnostics};
 use hm_design::{
-    DEFAULT_K_EFF, DEFAULT_VOLUTE_C, DesignInput, DesignOptions, DesignReport, DesignResult,
-    LEGACY_METHODS, METHOD, PARAM_SPECS, ParamSpec, default_mechanical_efficiency,
-    design_with_options, designed_si, param_spec, performance_curve,
+    DesignInput, DesignOptions, DesignReport, LEGACY_METHODS, METHOD,
+    default_mechanical_efficiency, design_with_options, performance_curve,
 };
 use hm_engine::{
-    Density, DensitySource, Entered, Fluid, Intake, MAX_COUNT, NQ_SELECTIONS, Temperature,
-    add_fluid_temperature_diagnostics, add_selection_diagnostics, audit, cli_message,
-    fluid_diagnostics, fluid_kind, kinematic_viscosity, kinematic_viscosity_of, looks_like_water,
+    ChangeKind, Density, DensitySource, EngineError, Entered, Fluid, Intake, MAX_COUNT,
+    ManualDefaults, ParamChange, Temperature, audit, cli_message, design_params, fluid_diagnostics,
+    fluid_kind, kinematic_viscosity, kinematic_viscosity_of, looks_like_water,
     npsh_fluid_diagnostics, parse_temperature, project_viscosity_effect, suction_npsha,
     viscosity_effect, viscosity_from_text, water_density_at,
 };
@@ -664,7 +663,9 @@ fn run(cli: Cli) -> Result<ExitCode, Box<dyn std::error::Error>> {
             project.design.method = METHOD.to_string();
 
             let defaults = ManualDefaults::with_options(rho_text, eta_m.to_string(), &options);
-            project.params = design_params(&result, None, &defaults)?.0;
+            project.params = design_params(&result, None, &defaults)
+                .map_err(engine_text)?
+                .0;
 
             let diagnostics = project.validate(&Registry::all());
             if diagnostics.has_errors() {
@@ -769,129 +770,96 @@ fn design_inputs(
 
 /// Recalcula los `auto` de un proyecto end-suction y lo reescribe.
 ///
-/// Conserva los parámetros manuales y bloqueados; los que falten se rellenan
-/// con la selección del motor y se informa de cada uno. Con `reselect`, las
-/// selecciones `manual` que dependen del punto se vuelven a tomar del motor.
+/// El motor migra, rellena y recalcula. Aquí solo se carga, se guarda y se
+/// imprimen los mismos avisos de antes.
 fn recalc(file: &std::path::Path, reselect: bool) -> Result<ExitCode, Box<dyn std::error::Error>> {
-    let mut project = Project::load(file)?;
+    let project = Project::load(file)?;
+    let prior_invalid = project.validate(&Registry::all()).has_errors();
+    match hm_engine::recalc(project, reselect) {
+        Ok(done) => {
+            print_diagnostics(&done.diagnostics);
+            done.project.save(file)?;
+            print_recalc_changes(&done.changes, stored_nq(&done.project));
+            println!("recalculado {}", file.display());
+            Ok(ExitCode::SUCCESS)
+        }
+        Err(EngineError::Invalid { diagnostics }) => {
+            Err(recalc_invalid(prior_invalid, &diagnostics))
+        }
+        Err(EngineError::Unsupported(pump_type)) => {
+            Err(format!("recalc solo admite end-suction; el proyecto es {pump_type}").into())
+        }
+        Err(error) => Err(engine_text(error)),
+    }
+}
 
-    let diagnostics = project.validate(&Registry::all());
-    if diagnostics.has_errors() {
-        print_diagnostics(&diagnostics);
-        return Err("el proyecto tiene errores; no se recalculó".into());
-    }
-    if project.design.pump_type != PumpType::EndSuction {
-        return Err(format!(
-            "recalc solo admite end-suction; el proyecto es {}",
-            project.design.pump_type
-        )
-        .into());
-    }
-    let legacy = LEGACY_METHODS.contains(&project.design.method.as_str());
-    if !project.design.method.is_empty() && project.design.method != METHOD && !legacy {
-        return Err(format!("método de diseño desconocido: {}", project.design.method).into());
-    }
-    let migrated_from = legacy.then(|| project.design.method.clone());
-    if let Some(name) = project
-        .params
-        .keys()
-        .find(|name| param_spec(name).is_none())
+/// Las tres frases con las que `recalc` se niega a escribir, más el
+/// parámetro desconocido, que sale solo como mensaje.
+fn recalc_invalid(prior_invalid: bool, diagnostics: &Diagnostics) -> Box<dyn std::error::Error> {
+    if !prior_invalid
+        && diagnostics.len() == 1
+        && diagnostics
+            .iter()
+            .any(|diagnostic| diagnostic.code == "HM-PROJ-023")
     {
-        return Err(
-            format!("parámetro desconocido: `{name}`; corrígelo antes de recalcular").into(),
-        );
+        return diagnostics
+            .iter()
+            .next()
+            .map(|diagnostic| diagnostic.message.clone())
+            .unwrap_or_default()
+            .into();
     }
-
-    // Hasta end_suction_v0.3, ηm incluía el rozamiento de discos; desde la
-    // v0.4 va aparte, así que el ηm guardado ya no significa lo mismo.
-    let lumped_eta_m = matches!(
-        migrated_from.as_deref(),
-        Some("end_suction_v0.1" | "end_suction_v0.2" | "end_suction_v0.3")
-    );
-    let old_eta_m = if lumped_eta_m {
-        project
-            .params
-            .remove("eta_m")
-            .as_ref()
-            .and_then(param_value)
-            .map(str::to_string)
-    } else {
-        None
-    };
-
-    let mut reselected = Vec::new();
-    if reselect {
-        for name in NQ_SELECTIONS {
-            if let Some(Param::Manual { value }) = project.params.get(name) {
-                reselected.push((name, value.clone()));
-                project.params.remove(name);
-            }
-        }
-    }
-
-    let (input, options) = design_inputs(&project)?;
-    let result = design_with_options(&input, &options)?;
-    let mut diagnostics = result.diagnostics.clone();
-    add_fluid_temperature_diagnostics(&project, &input, &mut diagnostics);
-    diagnostics.extend(
-        project_viscosity_effect(&project, &input, &result)
-            .map_err(engine_text)?
-            .0
-            .into_vec(),
-    );
-    let mech = mechanics(&input, &result, DEFAULT_SHAFT_SHEAR_STRESS)?;
-    diagnostics.extend(mechanics_diagnostics(&mech, &result).into_vec());
-    add_selection_diagnostics(&project, &result, &mut diagnostics);
-    print_diagnostics(&diagnostics);
-    if diagnostics.has_errors() {
-        return Err("el diseño tiene errores; no se escribió el proyecto".into());
-    }
-
-    let defaults =
-        ManualDefaults::engine(format!("{} kg/m3", input.rho.si), input.eta_m.to_string());
-    let (params, filled) = design_params(&result, Some(&project.params), &defaults)?;
-    project.params = params;
-    project.design.method = METHOD.to_string();
-
-    let diagnostics = project.validate(&Registry::all());
-    if diagnostics.has_errors() {
-        print_diagnostics(&diagnostics);
-        return Err("el proyecto recalculado no valida; no se escribió".into());
-    }
-
-    project.save(file)?;
-    for (name, old) in &reselected {
-        let value = project
-            .params
-            .get(*name)
-            .and_then(param_value)
-            .unwrap_or("");
-        if old != value {
-            println!(
-                "  `{name}`: {old} → {value} (selección por defecto para nq = {:.2})",
-                result.nq
-            );
-        }
-    }
-    for name in filled
+    print_diagnostics(diagnostics);
+    let sentence = if prior_invalid {
+        "el proyecto tiene errores; no se recalculó"
+    } else if diagnostics
         .iter()
-        .filter(|name| !reselected.iter().any(|(old, _)| old == name))
-        .filter(|name| !(old_eta_m.is_some() && name.as_str() == "eta_m"))
+        .any(|diagnostic| diagnostic.is_error() && diagnostic.code.starts_with("HM-DES"))
     {
-        let value = project.params.get(name).and_then(param_value).unwrap_or("");
-        println!("  `{name}` no estaba en el proyecto; se usó {value}");
-    }
-    if let Some(old) = migrated_from {
-        if let Some(old_eta_m) = old_eta_m {
-            println!(
-                "  `eta_m`: {old_eta_m} → {} (desde end_suction_v0.4 no incluye el rozamiento de discos)",
-                input.eta_m
-            );
+        "el diseño tiene errores; no se escribió el proyecto"
+    } else {
+        "el proyecto recalculado no valida; no se escribió"
+    };
+    sentence.into()
+}
+
+fn print_recalc_changes(changes: &[ParamChange], nq: f64) {
+    for change in changes {
+        match change.kind {
+            ChangeKind::Reselected => println!(
+                "  `{}`: {} → {} (selección por defecto para nq = {nq:.2})",
+                change.name,
+                change.before.as_deref().unwrap_or(""),
+                change.after
+            ),
+            ChangeKind::Filled => println!(
+                "  `{}` no estaba en el proyecto; se usó {}",
+                change.name, change.after
+            ),
+            ChangeKind::MechanicalEfficiency => println!(
+                "  `eta_m`: {} → {} (desde end_suction_v0.4 no incluye el rozamiento de discos)",
+                change.before.as_deref().unwrap_or(""),
+                change.after
+            ),
+            ChangeKind::MethodMigrated => println!(
+                "  método migrado de {} a {}",
+                change.before.as_deref().unwrap_or(""),
+                change.after
+            ),
         }
-        println!("  método migrado de {old} a {METHOD}");
     }
-    println!("recalculado {}", file.display());
-    Ok(ExitCode::SUCCESS)
+}
+
+/// nq guardado por el recálculo. La línea de `--reselect` lo imprime con dos
+/// decimales; el texto adimensional da la misma vuelta que el número del motor.
+fn stored_nq(project: &Project) -> f64 {
+    project
+        .params
+        .get("nq")
+        .and_then(param_value)
+        .and_then(|text| parse_quantity(text).ok())
+        .map(|quantity| quantity.si)
+        .unwrap_or(f64::NAN)
 }
 
 /// Informe del diseño de un proyecto end-suction con el método actual.
@@ -958,143 +926,6 @@ fn print_diagnostics(diagnostics: &Diagnostics) {
             println!("        sugerencia: {hint}");
         }
     }
-}
-
-/// Texto de los parámetros manuales que no salen de la selección del motor.
-struct ManualDefaults {
-    rho: String,
-    eta_m: String,
-    /// Opciones del método v0.9 (tarea 12), como texto de su parámetro.
-    eta_v_fixed: String,
-    balance_holes: String,
-    volute_ratio: String,
-    impeller_roughness: String,
-    volute_channels: String,
-    volute_wrap_deg: String,
-    incidence_deg: String,
-}
-
-impl ManualDefaults {
-    /// Con las opciones por defecto del motor.
-    fn engine(rho: String, eta_m: String) -> Self {
-        Self::with_options(rho, eta_m, &DesignOptions::default())
-    }
-
-    /// Con los valores de `options`; «0» donde no hay dato.
-    fn with_options(rho: String, eta_m: String, options: &DesignOptions) -> Self {
-        Self {
-            rho,
-            eta_m,
-            eta_v_fixed: options.eta_v.unwrap_or(0.0).to_string(),
-            balance_holes: u8::from(options.balance_holes).to_string(),
-            volute_ratio: options
-                .volute_ratio
-                .unwrap_or(hm_design::DEFAULT_VOLUTE_RATIO)
-                .to_string(),
-            impeller_roughness: format!("{} m", options.impeller_roughness.unwrap_or(0.0)),
-            volute_channels: options.volute_channels.unwrap_or(1).to_string(),
-            volute_wrap_deg: format!("{} deg", options.volute_wrap_deg.unwrap_or(0.0)),
-            incidence_deg: format!(
-                "{} deg",
-                options
-                    .incidence_deg
-                    .unwrap_or(hm_design::geometry::DEFAULT_INCIDENCE_DEG)
-            ),
-        }
-    }
-}
-
-/// Valor manual que usó el motor para `name`.
-fn default_manual_text(
-    name: &str,
-    result: &DesignResult,
-    defaults: &ManualDefaults,
-) -> Option<String> {
-    let selection = &result.selection;
-    Some(match name {
-        "rho" => defaults.rho.clone(),
-        "eta_m" => defaults.eta_m.clone(),
-        "mm" => "0.001 m".to_string(),
-        "psi" => selection.psi.to_string(),
-        "phi" => selection.phi.to_string(),
-        "beta2" => format!("{} deg", selection.beta2_deg),
-        "blade_count" => selection.blade_count.to_string(),
-        "c0" => format!("{} m/s", selection.c0),
-        "cm0" => format!("{} m/s", selection.cm0),
-        "A" => selection.a.to_string(),
-        "J" => selection.j.to_string(),
-        "margin" => selection.margin.to_string(),
-        "k3" => (result.volute.base_radius.si / (result.d2.si / 2.0)).to_string(),
-        "volute_c" => DEFAULT_VOLUTE_C.to_string(),
-        "k_eff" => DEFAULT_K_EFF.to_string(),
-        "eta_v_fixed" => defaults.eta_v_fixed.clone(),
-        "balance_holes" => defaults.balance_holes.clone(),
-        "volute_ratio" => defaults.volute_ratio.clone(),
-        "impeller_roughness" => defaults.impeller_roughness.clone(),
-        "volute_channels" => defaults.volute_channels.clone(),
-        "volute_wrap_deg" => defaults.volute_wrap_deg.clone(),
-        "incidence_deg" => defaults.incidence_deg.clone(),
-        _ => return None,
-    })
-}
-
-/// Valor calculado de un parámetro `auto`, en la unidad de su especificación.
-fn auto_text(
-    result: &DesignResult,
-    spec: &ParamSpec,
-) -> Result<String, Box<dyn std::error::Error>> {
-    let si = designed_si(result, spec.name)
-        .ok_or_else(|| format!("el diseño no calcula `{}`", spec.name))?;
-    if spec.unit == "1" {
-        return Ok(si.to_string());
-    }
-    let value = Quantity::from_si(si, parse_unit(spec.unit)?).value();
-    Ok(format!("{value} {}", spec.unit))
-}
-
-/// Parámetros generados y nombres de los manuales que se rellenaron.
-type GeneratedParams = (BTreeMap<String, Param>, Vec<String>);
-
-/// Parámetros del método [`METHOD`] para `result`.
-///
-/// Los `auto` se escriben siempre con el valor recalculado. Los manuales y
-/// bloqueados de `existing` se conservan; los que faltan se rellenan con el
-/// valor que usó el motor y se devuelven en la segunda lista.
-fn design_params(
-    result: &DesignResult,
-    existing: Option<&BTreeMap<String, Param>>,
-    defaults: &ManualDefaults,
-) -> Result<GeneratedParams, Box<dyn std::error::Error>> {
-    let mut params = BTreeMap::new();
-    let mut filled = Vec::new();
-
-    for spec in PARAM_SPECS {
-        let param = if let Some(formula) = spec.formula {
-            auto(formula, auto_text(result, spec)?)
-        } else {
-            match existing.and_then(|params| params.get(spec.name)) {
-                Some(param @ (Param::Manual { .. } | Param::Locked { .. })) => param.clone(),
-                Some(_) => {
-                    return Err(format!(
-                        "`{}` debe ser manual o locked para recalcular",
-                        spec.name
-                    )
-                    .into());
-                }
-                None => {
-                    let value = default_manual_text(spec.name, result, defaults)
-                        .ok_or_else(|| format!("sin valor por defecto para `{}`", spec.name))?;
-                    if existing.is_some() {
-                        filled.push(spec.name.to_string());
-                    }
-                    manual(value)
-                }
-            }
-        };
-        params.insert(spec.name.to_string(), param);
-    }
-
-    Ok((params, filled))
 }
 
 fn design_options(project: &Project) -> Result<DesignOptions, Box<dyn std::error::Error>> {
@@ -1217,27 +1048,13 @@ fn param_value(param: &Param) -> Option<&str> {
     }
 }
 
-fn manual(value: String) -> Param {
-    Param::Manual { value }
-}
-
-fn auto(formula: &str, value: String) -> Param {
-    Param::Auto {
-        formula: formula.to_string(),
-        value: Some(value),
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
-    use hm_design::design;
+    use hm_design::{DesignResult, design};
 
-    fn codes(diagnostics: &Diagnostics) -> Vec<&str> {
-        diagnostics
-            .iter()
-            .map(|diagnostic| diagnostic.code.as_str())
-            .collect()
+    fn manual(value: String) -> Param {
+        Param::Manual { value }
     }
 
     fn sample_design() -> DesignResult {
@@ -1330,97 +1147,6 @@ mod tests {
     }
 
     #[test]
-    fn recalc_migrates_a_v08_project() {
-        // El .hmf de referencia de la v0.8, con A y J manuales. `recalc`
-        // lo lleva a la v0.9 y conserva las selecciones manuales.
-        let fixture = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
-            .join("../hm-project/tests/fixtures/end_suction_v0.8.hmf");
-        let path = std::env::temp_dir().join(format!(
-            "hmflow-v08-{}-{:?}.hmf",
-            std::process::id(),
-            std::thread::current().id()
-        ));
-        std::fs::copy(&fixture, &path).unwrap();
-        let before = Project::load(&path).unwrap();
-        assert_eq!(before.design.method, "end_suction_v0.8");
-
-        recalc(&path, false).unwrap();
-        let project = Project::load(&path).unwrap();
-        std::fs::remove_file(&path).unwrap();
-
-        assert_eq!(project.design.method, "end_suction_v0.9");
-        assert_eq!(
-            format!("{:?}", project.params["J"]),
-            format!("{:?}", before.params["J"])
-        );
-        let diagnostics = audit(&project);
-        assert!(
-            !diagnostics.has_errors(),
-            "códigos: {:?}",
-            codes(&diagnostics)
-        );
-    }
-
-    #[test]
-    fn recalc_migrates_a_legacy_project() {
-        let path = std::env::temp_dir().join(format!(
-            "hmflow-legacy-{}-{:?}.hmf",
-            std::process::id(),
-            std::thread::current().id()
-        ));
-        let mut project = designed_project();
-        project.design.method = "end_suction_v0.3".to_string();
-        // Hasta la v0.3, ηm incluía el rozamiento de discos.
-        project
-            .params
-            .insert("eta_m".to_string(), manual("0.96".to_string()));
-        project.save(&path).unwrap();
-
-        recalc(&path, true).unwrap();
-        let project = Project::load(&path).unwrap();
-        std::fs::remove_file(&path).unwrap();
-
-        assert_eq!(project.design.method, METHOD);
-        let (input, _) = design_inputs(&project).unwrap();
-        let expected = default_mechanical_efficiency(&input.q, &input.n).unwrap();
-        assert!(
-            (input.eta_m - expected).abs() < 1e-12,
-            "eta_m {} frente a la estimación {expected}",
-            input.eta_m
-        );
-        let diagnostics = audit(&project);
-        assert!(
-            !diagnostics.has_errors(),
-            "códigos: {:?}",
-            codes(&diagnostics)
-        );
-    }
-
-    #[test]
-    fn recalc_from_v04_keeps_the_mechanical_efficiency() {
-        // En la v0.4 ηm ya no incluía los discos: migrar a la v0.5 no lo toca.
-        let path = std::env::temp_dir().join(format!(
-            "hmflow-v04-{}-{:?}.hmf",
-            std::process::id(),
-            std::thread::current().id()
-        ));
-        let mut project = designed_project();
-        project.design.method = "end_suction_v0.4".to_string();
-        project
-            .params
-            .insert("eta_m".to_string(), manual("0.975".to_string()));
-        project.save(&path).unwrap();
-
-        recalc(&path, false).unwrap();
-        let project = Project::load(&path).unwrap();
-        std::fs::remove_file(&path).unwrap();
-
-        assert_eq!(project.design.method, METHOD);
-        let (input, _) = design_inputs(&project).unwrap();
-        assert!((input.eta_m - 0.975).abs() < 1e-12, "eta_m {}", input.eta_m);
-    }
-
-    #[test]
     fn report_of_a_designed_project_matches_its_stored_values() {
         let path = std::env::temp_dir().join(format!(
             "hmflow-report-{}-{:?}.hmf",
@@ -1482,148 +1208,5 @@ mod tests {
         let defaults = ManualDefaults::engine("998.2 kg/m3".to_string(), "0.96".to_string());
         project.params = design_params(&result, None, &defaults).unwrap().0;
         project
-    }
-
-    fn recalculated(project: &Project) -> Project {
-        let (input, options) = design_inputs(project).unwrap();
-        let result = design_with_options(&input, &options).unwrap();
-        let defaults = ManualDefaults::engine("998.2 kg/m3".to_string(), "0.96".to_string());
-        let mut project = project.clone();
-        project.params = design_params(&result, Some(&project.params), &defaults)
-            .unwrap()
-            .0;
-        project
-    }
-
-    #[test]
-    fn recalc_keeps_manual_edits_and_clears_the_check() {
-        let mut project = designed_project();
-        project
-            .params
-            .insert("beta2".to_string(), manual("30 deg".to_string()));
-        assert!(audit(&project).has_errors());
-
-        let project = recalculated(&project);
-        let diagnostics = audit(&project);
-        assert!(
-            !diagnostics.has_errors(),
-            "códigos: {:?}",
-            codes(&diagnostics)
-        );
-        assert_eq!(
-            project.params.get("beta2").and_then(param_value),
-            Some("30 deg")
-        );
-    }
-
-    #[test]
-    fn recalc_fills_missing_manual_parameters() {
-        let mut project = designed_project();
-        project.params.remove("k_eff");
-        let (input, options) = design_inputs(&project).unwrap();
-        let result = design_with_options(&input, &options).unwrap();
-        let defaults = ManualDefaults::engine("998.2 kg/m3".to_string(), "0.96".to_string());
-        let (params, filled) = design_params(&result, Some(&project.params), &defaults).unwrap();
-        assert_eq!(filled, ["k_eff"]);
-        assert!(params.contains_key("k_eff"));
-    }
-
-    #[test]
-    fn recalc_does_not_replace_an_override() {
-        let mut project = designed_project();
-        project.params.insert(
-            "mm".to_string(),
-            Param::Override {
-                expr: "0.001".to_string(),
-                author: "test".to_string(),
-                date: "2026-11-02".to_string(),
-                reason: "prueba".to_string(),
-            },
-        );
-        let result = sample_design();
-        let defaults = ManualDefaults::engine("998.2 kg/m3".to_string(), "0.96".to_string());
-        assert!(design_params(&result, Some(&project.params), &defaults).is_err());
-    }
-
-    /// Proyecto diseñado para 120 m3/h cuyo caudal pasa a 250 m3/h: nq sube
-    /// de 30,5 a 44 y cambia de tramo en la tabla.
-    fn moved_duty_project() -> Project {
-        let mut project = designed_project();
-        project.operating.q = "250 m3/h".to_string();
-        project.operating.npsha = "25 m".to_string();
-        project
-    }
-
-    #[test]
-    fn reselect_takes_the_table_for_the_new_nq() {
-        let path = std::env::temp_dir().join(format!(
-            "hmflow-reselect-{}-{:?}.hmf",
-            std::process::id(),
-            std::thread::current().id()
-        ));
-        let mut project = moved_duty_project();
-        project.params.insert(
-            "blade_count".to_string(),
-            Param::Locked {
-                value: "7".to_string(),
-            },
-        );
-        project.save(&path).unwrap();
-
-        recalc(&path, true).unwrap();
-        let project = Project::load(&path).unwrap();
-        std::fs::remove_file(&path).unwrap();
-
-        // ψ de Gülich (3.26) para nq = 44.
-        let psi: f64 = project
-            .params
-            .get("psi")
-            .and_then(param_value)
-            .unwrap()
-            .parse()
-            .unwrap();
-        assert!(
-            (psi - 1.21 * (-0.77f64 * 0.4398).exp()).abs() < 1e-3,
-            "ψ = {psi}"
-        );
-        assert_eq!(
-            project.params.get("blade_count").and_then(param_value),
-            Some("7"),
-            "una selección locked no se toca"
-        );
-        let diagnostics = audit(&project);
-        assert!(
-            !diagnostics.has_errors(),
-            "códigos: {:?}",
-            codes(&diagnostics)
-        );
-        assert!(!codes(&diagnostics).contains(&"HM-DES-013"));
-    }
-
-    #[test]
-    fn recalc_without_reselect_keeps_the_old_selections() {
-        let path = std::env::temp_dir().join(format!(
-            "hmflow-keep-{}-{:?}.hmf",
-            std::process::id(),
-            std::thread::current().id()
-        ));
-        let before = moved_duty_project();
-        let psi_before = before
-            .params
-            .get("psi")
-            .and_then(param_value)
-            .unwrap()
-            .to_string();
-        before.save(&path).unwrap();
-
-        recalc(&path, false).unwrap();
-        let project = Project::load(&path).unwrap();
-        std::fs::remove_file(&path).unwrap();
-
-        assert_eq!(
-            project.params.get("psi").and_then(param_value),
-            Some(psi_before.as_str())
-        );
-        assert!(codes(&audit(&project)).contains(&"HM-DES-013"));
     }
 }

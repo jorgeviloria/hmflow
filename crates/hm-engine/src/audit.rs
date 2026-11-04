@@ -17,13 +17,13 @@ use crate::case::Case;
 use crate::convert::{MAX_COUNT, case_from_project};
 use crate::dispatch::analyze;
 use crate::error::cli_message;
-use crate::validate::design_input;
 
 /// Selecciones que `recalc --reselect` vuelve a tomar del motor para el punto.
 ///
 /// J entra porque el ojo automático lo fija junto con c0 y cm0. Si se deja
 /// el J de otro punto, el motor no minimiza el NPSH y c0 queda distinto.
-pub const NQ_SELECTIONS: [&str; 7] = ["psi", "phi", "beta2", "blade_count", "c0", "cm0", "J"];
+pub(crate) const NQ_SELECTIONS: [&str; 7] =
+    ["psi", "phi", "beta2", "blade_count", "c0", "cm0", "J"];
 
 /// Valida el proyecto y, si no hay errores, audita el diseño.
 ///
@@ -376,23 +376,9 @@ fn stale_selections(project: &Project, case: &Case, input: &DesignInput) -> Vec<
 
 /// Añade `HM-DES-013` si una selección manual ya no es la del motor.
 ///
-/// `recalc` la llama hasta que el recálculo pase al motor. No compara los
-/// `auto`: eso lo hace `audit`, y meterlo en `recalc` cambiaría su salida.
-pub fn add_selection_diagnostics(
-    project: &Project,
-    result: &DesignResult,
-    diagnostics: &mut Diagnostics,
-) {
-    let Ok(case) = case_from_project(project) else {
-        return;
-    };
-    let Ok(input) = design_input(&case) else {
-        return;
-    };
-    selection_diagnostics(project, &case, &input, result, diagnostics);
-}
-
-fn selection_diagnostics(
+/// No compara los `auto`: eso lo hace `audit`, y meterlo en `recalc`
+/// cambiaría su salida.
+pub(crate) fn selection_diagnostics(
     project: &Project,
     case: &Case,
     input: &DesignInput,

@@ -5,20 +5,24 @@
 mod analysis;
 mod audit;
 mod case;
+mod changes;
 mod convert;
 mod dispatch;
 mod error;
 mod fluid;
+mod recalc;
 mod validate;
 
 pub use analysis::{Analysis, CurvePoints};
-pub use audit::{NQ_SELECTIONS, add_selection_diagnostics, audit, audit_with_analysis};
+pub use audit::{audit, audit_with_analysis};
 pub use case::{
     Case, Density, DensitySource, Duty, Entered, Fluid, FluidKind, Intake, Temperature, Viscosity,
 };
+pub use changes::{ChangeKind, ParamChange};
 pub use convert::{
-    Decode, MANUAL_PARAMS, MAX_COUNT, ManualParam, add_fluid_temperature_diagnostics,
-    case_from_project, kinematic_viscosity_of, project_viscosity_effect, suction_npsha,
+    Decode, MANUAL_PARAMS, MAX_COUNT, ManualDefaults, ManualParam,
+    add_fluid_temperature_diagnostics, case_from_project, design_params, kinematic_viscosity_of,
+    project_viscosity_effect, suction_npsha,
 };
 pub use dispatch::analyze;
 pub use error::{CaseField, EngineError, Stage, cli_message};
@@ -28,4 +32,5 @@ pub use fluid::{
 };
 pub use hm_core::PumpType;
 pub use hm_design::{DesignReport, METHOD, PARAM_SPECS};
+pub use recalc::{Recalculated, recalc};
 pub use validate::{design_input, validate_case};

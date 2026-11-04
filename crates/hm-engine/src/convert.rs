@@ -1,7 +1,14 @@
-//! Lectura del proyecto `.hmf` hacia el modelo `Case`.
+//! Lectura del proyecto `.hmf` hacia el modelo `Case`, y escritura de los
+//! parámetros por defecto del método.
+
+use std::collections::BTreeMap;
 
 use hm_core::Diagnostics;
-use hm_design::{DesignInput, DesignOptions, DesignResult, ViscousCorrection, water_density};
+use hm_design::geometry::DEFAULT_INCIDENCE_DEG;
+use hm_design::{
+    DEFAULT_K_EFF, DEFAULT_VOLUTE_C, DEFAULT_VOLUTE_RATIO, DesignError, DesignInput, DesignOptions,
+    DesignResult, PARAM_SPECS, ParamSpec, ViscousCorrection, designed_si, water_density,
+};
 use hm_project::{Param, Project, Suction};
 use hm_units::{Quantity, parse_quantity, parse_unit};
 
@@ -569,7 +576,8 @@ fn leading_number(text: &str) -> Option<f64> {
     text[..end].parse().ok()
 }
 
-fn param_value(param: &Param) -> Option<&str> {
+/// Texto guardado de un parámetro, si el modo lo tiene.
+pub(crate) fn param_value(param: &Param) -> Option<&str> {
     match param {
         Param::Manual { value } | Param::Locked { value } => Some(value),
         Param::Auto { value, .. } => value.as_deref(),
@@ -725,6 +733,157 @@ fn density_from(value: Quantity) -> Density {
             text: String::new(),
         },
     }
+}
+
+/// Texto de los parámetros manuales que no salen de la selección del motor.
+pub struct ManualDefaults {
+    rho: String,
+    eta_m: String,
+    /// Opciones del método v0.9, como texto de su parámetro.
+    eta_v_fixed: String,
+    balance_holes: String,
+    volute_ratio: String,
+    impeller_roughness: String,
+    volute_channels: String,
+    volute_wrap_deg: String,
+    incidence_deg: String,
+}
+
+impl ManualDefaults {
+    /// Con las opciones por defecto del motor.
+    pub fn engine(rho: String, eta_m: String) -> Self {
+        Self::with_options(rho, eta_m, &DesignOptions::default())
+    }
+
+    /// Con los valores de `options`; «0» donde no hay dato.
+    pub fn with_options(rho: String, eta_m: String, options: &DesignOptions) -> Self {
+        Self {
+            rho,
+            eta_m,
+            eta_v_fixed: options.eta_v.unwrap_or(0.0).to_string(),
+            balance_holes: u8::from(options.balance_holes).to_string(),
+            volute_ratio: options
+                .volute_ratio
+                .unwrap_or(DEFAULT_VOLUTE_RATIO)
+                .to_string(),
+            impeller_roughness: format!("{} m", options.impeller_roughness.unwrap_or(0.0)),
+            volute_channels: options.volute_channels.unwrap_or(1).to_string(),
+            volute_wrap_deg: format!("{} deg", options.volute_wrap_deg.unwrap_or(0.0)),
+            incidence_deg: format!(
+                "{} deg",
+                options.incidence_deg.unwrap_or(DEFAULT_INCIDENCE_DEG)
+            ),
+        }
+    }
+}
+
+/// Valor manual que usó el motor para `name`.
+fn default_manual_text(
+    name: &str,
+    result: &DesignResult,
+    defaults: &ManualDefaults,
+) -> Option<String> {
+    let selection = &result.selection;
+    Some(match name {
+        "rho" => defaults.rho.clone(),
+        "eta_m" => defaults.eta_m.clone(),
+        "mm" => "0.001 m".to_string(),
+        "psi" => selection.psi.to_string(),
+        "phi" => selection.phi.to_string(),
+        "beta2" => format!("{} deg", selection.beta2_deg),
+        "blade_count" => selection.blade_count.to_string(),
+        "c0" => format!("{} m/s", selection.c0),
+        "cm0" => format!("{} m/s", selection.cm0),
+        "A" => selection.a.to_string(),
+        "J" => selection.j.to_string(),
+        "margin" => selection.margin.to_string(),
+        "k3" => (result.volute.base_radius.si / (result.d2.si / 2.0)).to_string(),
+        "volute_c" => DEFAULT_VOLUTE_C.to_string(),
+        "k_eff" => DEFAULT_K_EFF.to_string(),
+        "eta_v_fixed" => defaults.eta_v_fixed.clone(),
+        "balance_holes" => defaults.balance_holes.clone(),
+        "volute_ratio" => defaults.volute_ratio.clone(),
+        "impeller_roughness" => defaults.impeller_roughness.clone(),
+        "volute_channels" => defaults.volute_channels.clone(),
+        "volute_wrap_deg" => defaults.volute_wrap_deg.clone(),
+        "incidence_deg" => defaults.incidence_deg.clone(),
+        _ => return None,
+    })
+}
+
+/// Valor calculado de un parámetro `auto`, en la unidad de su especificación.
+fn auto_text(result: &DesignResult, spec: &ParamSpec) -> Result<String, EngineError> {
+    let si = designed_si(result, spec.name).ok_or_else(|| {
+        EngineError::Design(DesignError::Input(format!(
+            "el diseño no calcula `{}`",
+            spec.name
+        )))
+    })?;
+    if spec.unit == "1" {
+        return Ok(si.to_string());
+    }
+    let unit = parse_unit(spec.unit).map_err(DesignError::from)?;
+    let value = Quantity::from_si(si, unit).value();
+    Ok(format!("{value} {}", spec.unit))
+}
+
+fn manual(value: String) -> Param {
+    Param::Manual { value }
+}
+
+fn auto(formula: &str, value: String) -> Param {
+    Param::Auto {
+        formula: formula.to_string(),
+        value: Some(value),
+    }
+}
+
+/// Parámetros del método actual para `result`.
+///
+/// Los `auto` se escriben siempre con el valor recalculado. Los manuales y
+/// bloqueados de `existing` se conservan; los que faltan se rellenan con el
+/// valor que usó el motor. Con `existing`, la segunda lista son esos
+/// rellenos; sin él (un proyecto nuevo) no se informan.
+pub fn design_params(
+    result: &DesignResult,
+    existing: Option<&BTreeMap<String, Param>>,
+    defaults: &ManualDefaults,
+) -> Result<(BTreeMap<String, Param>, Vec<String>), EngineError> {
+    let mut params = BTreeMap::new();
+    let mut filled = Vec::new();
+
+    for spec in PARAM_SPECS {
+        let param = if let Some(formula) = spec.formula {
+            auto(formula, auto_text(result, spec)?)
+        } else {
+            match existing.and_then(|params| params.get(spec.name)) {
+                Some(param @ (Param::Manual { .. } | Param::Locked { .. })) => param.clone(),
+                Some(_) => {
+                    return Err(input_error(
+                        CaseField::Param(spec.name),
+                        "HM-PROJ-018",
+                        format!("`{}` debe ser manual o locked para recalcular", spec.name),
+                    ));
+                }
+                None => {
+                    let value =
+                        default_manual_text(spec.name, result, defaults).ok_or_else(|| {
+                            EngineError::Design(DesignError::Input(format!(
+                                "sin valor por defecto para `{}`",
+                                spec.name
+                            )))
+                        })?;
+                    if existing.is_some() {
+                        filled.push(spec.name.to_string());
+                    }
+                    manual(value)
+                }
+            }
+        };
+        params.insert(spec.name.to_string(), param);
+    }
+
+    Ok((params, filled))
 }
 
 fn density_from_si(si: f64) -> Result<Density, EngineError> {

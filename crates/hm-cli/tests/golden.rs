@@ -567,6 +567,30 @@ const SCENARIOS: &[Scenario] = &[
         "1 atm"
     ),
     design_fails!(
+        "design-q-before-viscosity",
+        "--q",
+        "-1 m3/h",
+        "--h",
+        "45 m",
+        "--n",
+        "2900 rpm",
+        "--viscosity",
+        "-1 cSt"
+    ),
+    design_fails!(
+        "design-curve-points-before-viscosity",
+        "--q",
+        "120 m3/h",
+        "--h",
+        "45 m",
+        "--n",
+        "2900 rpm",
+        "--viscosity",
+        "-1 cSt",
+        "--curve-points",
+        "1"
+    ),
+    design_fails!(
         "design-negative-viscosity",
         "--q",
         "120 m3/h",
@@ -619,6 +643,8 @@ cases! {
     design_wrong_unit_n = "design-wrong-unit-n",
     design_npsha_wrong_unit = "design-npsha-wrong-unit",
     design_oil_without_vapor_pressure = "design-oil-without-vapor-pressure",
+    design_q_before_viscosity = "design-q-before-viscosity",
+    design_curve_points_before_viscosity = "design-curve-points-before-viscosity",
     design_negative_viscosity = "design-negative-viscosity",
 }
 
@@ -904,12 +930,12 @@ fn normalize_floats(text: &str) -> String {
                 let token: String = chars[start..end].iter().collect();
                 if let Ok(value) = token.parse::<f64>() {
                     if has_exponent {
-                        out.push_str(&format!("{value:.*e}", SIGNIFICANT_DIGITS - 1));
+                        out.push_str(&trim_zeros(&format!("{value:.*e}", SIGNIFICANT_DIGITS - 1)));
                     } else {
                         // Cifras decimales que dejan SIGNIFICANT_DIGITS en total.
                         let magnitude = value.abs().log10().floor() as i32;
                         let decimals = (SIGNIFICANT_DIGITS as i32 - 1 - magnitude).max(0);
-                        out.push_str(&format!("{value:.*}", decimals as usize));
+                        out.push_str(&trim_zeros(&format!("{value:.*}", decimals as usize)));
                     }
                     index = end;
                     continue;
@@ -926,6 +952,28 @@ fn normalize_floats(text: &str) -> String {
     }
 
     out
+}
+
+/// Quita los ceros finales de la parte decimal (y de la mantisa si hay
+/// exponente), dejando al menos un decimal: `0.100000000000` → `0.1`. Así un
+/// `0.1` y un `0.10000000000000002` de dos plataformas dan el mismo texto.
+fn trim_zeros(number: &str) -> String {
+    let (mantissa, exponent) = match number.split_once('e') {
+        Some((mantissa, exponent)) => (mantissa, Some(exponent)),
+        None => (number, None),
+    };
+    let mut mantissa = if mantissa.contains('.') {
+        mantissa.trim_end_matches('0').to_string()
+    } else {
+        mantissa.to_string()
+    };
+    if mantissa.ends_with('.') {
+        mantissa.push('0');
+    }
+    match exponent {
+        Some(exponent) => format!("{mantissa}e{exponent}"),
+        None => mantissa,
+    }
 }
 
 struct TempDirectory(PathBuf);
@@ -989,4 +1037,16 @@ fn long_floats_are_normalized() {
     assert_eq!(normalize_floats("1e-7"), "1e-7");
     assert_eq!(normalize_floats("0.999999999"), "0.999999999");
     assert_eq!(normalize_floats("2026-11-03"), "2026-11-03");
+}
+
+#[test]
+fn a_short_float_and_its_ulp_neighbour_normalize_equally() {
+    assert_eq!(normalize_floats("0.1"), "0.1");
+    assert_eq!(normalize_floats("0.10000000000000002"), "0.1");
+    assert_eq!(normalize_floats("0.30000000000000004"), "0.3");
+    assert_eq!(
+        normalize_floats("2.5"),
+        normalize_floats("2.5000000000000004")
+    );
+    assert_eq!(normalize_floats("1.0000000000000002"), "1.0");
 }

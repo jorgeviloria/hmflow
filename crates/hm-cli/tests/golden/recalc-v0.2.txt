@@ -119,7 +119,7 @@ value = "0.112910179008 m"
 [params.d2]
 mode = "auto"
 formula = "design.d2"
-value = "0.200007218610 m"
+value = "0.20000721861 m"
 
 [params.d360]
 mode = "auto"
@@ -157,7 +157,7 @@ value = "0"
 [params.h0]
 mode = "auto"
 formula = "design.shutoff_head"
-value = "53.6463264400 m"
+value = "53.64632644 m"
 
 [params.impeller_roughness]
 mode = "manual"
@@ -239,7 +239,7 @@ value = "0.956926548958"
 [params.qth]
 mode = "auto"
 formula = "design.qth"
-value = "0.0339769291510 m3/s"
+value = "0.033976929151 m3/s"
 
 [params.r3]
 mode = "auto"

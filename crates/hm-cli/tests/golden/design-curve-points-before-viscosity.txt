@@ -1,0 +1,8 @@
+# command
+$ hmflow-cli design --name design-curve-points-before-viscosity --q 120 m3/h --h 45 m --n 2900 rpm --viscosity -1 cSt --curve-points 1
+# stdout
+# stderr
+error: --curve-points debe estar entre 2 y 1000
+# status
+1
+# absent design-curve-points-before-viscosity.hmf

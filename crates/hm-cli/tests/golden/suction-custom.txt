@@ -84,7 +84,7 @@ value = "0.0242586165135 m"
 [params.b2]
 mode = "auto"
 formula = "design.b2"
-value = "0.0179357533200 m"
+value = "0.01793575332 m"
 
 [params.b3]
 mode = "auto"
@@ -139,7 +139,7 @@ value = "0.104918847682 m"
 [params.d2]
 mode = "auto"
 formula = "design.d2"
-value = "0.200007218610 m"
+value = "0.20000721861 m"
 
 [params.d360]
 mode = "auto"
@@ -177,7 +177,7 @@ value = "0"
 [params.h0]
 mode = "auto"
 formula = "design.shutoff_head"
-value = "53.6463264400 m"
+value = "53.64632644 m"
 
 [params.impeller_roughness]
 mode = "manual"
@@ -221,7 +221,7 @@ value = "545.763057636 W"
 [params.p_hyd]
 mode = "auto"
 formula = "perf.hydraulic_power"
-value = "12503.4787500 W"
+value = "12503.47875 W"
 
 [params.p_hyd_loss]
 mode = "auto"
@@ -259,7 +259,7 @@ value = "0.956926548958"
 [params.qth]
 mode = "auto"
 formula = "design.qth"
-value = "0.0339769291510 m3/s"
+value = "0.033976929151 m3/s"
 
 [params.r3]
 mode = "auto"
@@ -391,7 +391,7 @@ $ hmflow-cli report suction-custom.hmf --curve-points 11
       "unit": "m"
     },
     "b2": {
-      "value": 0.0179357533200,
+      "value": 0.01793575332,
       "unit": "m"
     },
     "b3": {
@@ -419,7 +419,7 @@ $ hmflow-cli report suction-custom.hmf --curve-points 11
       "unit": "m"
     },
     "d2": {
-      "value": 0.200007218610,
+      "value": 0.20000721861,
       "unit": "m"
     },
     "d360": {
@@ -443,7 +443,7 @@ $ hmflow-cli report suction-custom.hmf --curve-points 11
       "unit": "1"
     },
     "h0": {
-      "value": 53.6463264400,
+      "value": 53.64632644,
       "unit": "m"
     },
     "npshr_d": {
@@ -459,7 +459,7 @@ $ hmflow-cli report suction-custom.hmf --curve-points 11
       "unit": "W"
     },
     "p_hyd": {
-      "value": 12503.4787500,
+      "value": 12503.47875,
       "unit": "W"
     },
     "p_hyd_loss": {
@@ -483,7 +483,7 @@ $ hmflow-cli report suction-custom.hmf --curve-points 11
       "unit": "W"
     },
     "qth": {
-      "value": 0.0339769291510,
+      "value": 0.033976929151,
       "unit": "m3/s"
     },
     "r3": {
@@ -570,7 +570,7 @@ $ hmflow-cli report suction-custom.hmf --curve-points 11
         "unit": "rad"
       },
       "area": {
-        "value": 0.000636956121070,
+        "value": 0.00063695612107,
         "unit": "m2"
       },
       "diameter": {
@@ -628,7 +628,7 @@ $ hmflow-cli report suction-custom.hmf --curve-points 11
         "unit": "m2"
       },
       "diameter": {
-        "value": 0.0495304765560,
+        "value": 0.049530476556,
         "unit": "m"
       },
       "outer_radius": {
@@ -664,7 +664,7 @@ $ hmflow-cli report suction-custom.hmf --curve-points 11
         "unit": "m2"
       },
       "diameter": {
-        "value": 0.0586052502000,
+        "value": 0.0586052502,
         "unit": "m"
       },
       "outer_radius": {
@@ -750,7 +750,7 @@ $ hmflow-cli report suction-custom.hmf --curve-points 11
         "unit": "1"
       },
       "p_shaft": {
-        "value": 10431.6441970,
+        "value": 10431.644197,
         "unit": "W"
       },
       "npshr": {
@@ -826,7 +826,7 @@ $ hmflow-cli report suction-custom.hmf --curve-points 11
     },
     {
       "q": {
-        "value": 0.0300000000000,
+        "value": 0.03,
         "unit": "m3/s"
       },
       "h": {
@@ -908,7 +908,7 @@ $ hmflow-cli report suction-custom.hmf --curve-points 11
         "unit": "W"
       },
       "npshr": {
-        "value": 5.39650277030,
+        "value": 5.3965027703,
         "unit": "m"
       }
     },
@@ -1066,7 +1066,7 @@ $ hmflow-cli report suction-custom.hmf --curve-points 11
             "unit": "m"
           },
           "beta": {
-            "value": 0.352608287610,
+            "value": 0.35260828761,
             "unit": "rad"
           },
           "theta": {
@@ -1146,7 +1146,7 @@ $ hmflow-cli report suction-custom.hmf --curve-points 11
             "unit": "rad"
           },
           "width": {
-            "value": 0.0208937414390,
+            "value": 0.020893741439,
             "unit": "m"
           }
         },
@@ -1156,7 +1156,7 @@ $ hmflow-cli report suction-custom.hmf --curve-points 11
             "unit": "m"
           },
           "beta": {
-            "value": 0.345966691120,
+            "value": 0.34596669112,
             "unit": "rad"
           },
           "theta": {
@@ -1206,7 +1206,7 @@ $ hmflow-cli report suction-custom.hmf --curve-points 11
         },
         {
           "r": {
-            "value": 0.0762315165730,
+            "value": 0.076231516573,
             "unit": "m"
           },
           "beta": {
@@ -1214,7 +1214,7 @@ $ hmflow-cli report suction-custom.hmf --curve-points 11
             "unit": "rad"
           },
           "theta": {
-            "value": 1.02727536490,
+            "value": 1.0272753649,
             "unit": "rad"
           },
           "width": {
@@ -1246,7 +1246,7 @@ $ hmflow-cli report suction-custom.hmf --curve-points 11
             "unit": "m"
           },
           "beta": {
-            "value": 0.339325094630,
+            "value": 0.33932509463,
             "unit": "rad"
           },
           "theta": {
@@ -1272,7 +1272,7 @@ $ hmflow-cli report suction-custom.hmf --curve-points 11
             "unit": "rad"
           },
           "width": {
-            "value": 0.0188191433100,
+            "value": 0.01881914331,
             "unit": "m"
           }
         },
@@ -1296,7 +1296,7 @@ $ hmflow-cli report suction-custom.hmf --curve-points 11
         },
         {
           "r": {
-            "value": 0.0881175629390,
+            "value": 0.088117562939,
             "unit": "m"
           },
           "beta": {
@@ -1336,7 +1336,7 @@ $ hmflow-cli report suction-custom.hmf --curve-points 11
             "unit": "m"
           },
           "beta": {
-            "value": 0.332683498140,
+            "value": 0.33268349814,
             "unit": "rad"
           },
           "theta": {
@@ -1344,7 +1344,7 @@ $ hmflow-cli report suction-custom.hmf --curve-points 11
             "unit": "rad"
           },
           "width": {
-            "value": 0.0181955472890,
+            "value": 0.018195547289,
             "unit": "m"
           }
         },
@@ -1398,7 +1398,7 @@ $ hmflow-cli report suction-custom.hmf --curve-points 11
             "unit": "rad"
           },
           "width": {
-            "value": 0.0179357533200,
+            "value": 0.01793575332,
             "unit": "m"
           }
         }
@@ -1518,7 +1518,7 @@ $ hmflow-cli report suction-custom.hmf --curve-points 11
       "unit": "1"
     },
     "driver_power": {
-      "value": 18571.9727140,
+      "value": 18571.972714,
       "unit": "W"
     },
     "motor_rating": {

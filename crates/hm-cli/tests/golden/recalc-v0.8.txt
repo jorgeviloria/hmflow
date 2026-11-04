@@ -89,7 +89,7 @@ value = "4.26325298479 m/s"
 [params.c3]
 mode = "auto"
 formula = "design.volute_inlet_velocity"
-value = "16.3593512310 m/s"
+value = "16.359351231 m/s"
 
 [params.cm0]
 mode = "manual"
@@ -118,12 +118,12 @@ value = "0.105156875449 m"
 [params.d2]
 mode = "auto"
 formula = "design.d2"
-value = "0.200007218610 m"
+value = "0.20000721861 m"
 
 [params.d360]
 mode = "auto"
 formula = "design.volute_throat_diameter"
-value = "0.0626410581410 m"
+value = "0.062641058141 m"
 
 [params.dn]
 mode = "auto"
@@ -156,7 +156,7 @@ value = "0"
 [params.h0]
 mode = "auto"
 formula = "design.shutoff_head"
-value = "53.6463264400 m"
+value = "53.64632644 m"
 
 [params.impeller_roughness]
 mode = "manual"
@@ -238,17 +238,17 @@ value = "0.956926548958"
 [params.qth]
 mode = "auto"
 formula = "design.qth"
-value = "0.0339769291510 m3/s"
+value = "0.033976929151 m3/s"
 
 [params.r3]
 mode = "auto"
 formula = "design.volute_base_radius"
-value = "0.110936912240 m"
+value = "0.11093691224 m"
 
 [params.r4]
 mode = "auto"
 formula = "design.volute_outer_radius"
-value = "0.142257441310 m"
+value = "0.14225744131 m"
 
 [params.rho]
 mode = "manual"

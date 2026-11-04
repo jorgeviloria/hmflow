@@ -2,7 +2,7 @@
 $ hmflow-cli design --name design-negative-viscosity --q 120 m3/h --h 45 m --n 2900 rpm --viscosity -5 cSt
 # stdout
 # stderr
-error: la viscosidad debe ser positiva: -5 cSt
+error: entrada inválida: la viscosidad debe ser positiva: -5 cSt
 # status
 1
 # absent design-negative-viscosity.hmf

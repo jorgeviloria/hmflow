@@ -102,7 +102,7 @@ value = "0.0241561813435 m"
 [params.b2]
 mode = "auto"
 formula = "design.b2"
-value = "0.0179357533200 m"
+value = "0.01793575332 m"
 
 [params.b3]
 mode = "auto"
@@ -147,7 +147,7 @@ value = "16.0735191854 m/s"
 [params.d0]
 mode = "auto"
 formula = "design.d0"
-value = "0.100899674940 m"
+value = "0.10089967494 m"
 
 [params.d1]
 mode = "auto"
@@ -157,7 +157,7 @@ value = "0.105363760296 m"
 [params.d2]
 mode = "auto"
 formula = "design.d2"
-value = "0.200007218610 m"
+value = "0.20000721861 m"
 
 [params.d360]
 mode = "auto"
@@ -195,7 +195,7 @@ value = "0"
 [params.h0]
 mode = "auto"
 formula = "design.shutoff_head"
-value = "53.6463264400 m"
+value = "53.64632644 m"
 
 [params.impeller_roughness]
 mode = "manual"
@@ -277,12 +277,12 @@ value = "0.956926548958"
 [params.qth]
 mode = "auto"
 formula = "design.qth"
-value = "0.0339769291510 m3/s"
+value = "0.033976929151 m3/s"
 
 [params.r3]
 mode = "auto"
 formula = "design.volute_base_radius"
-value = "0.110936912240 m"
+value = "0.11093691224 m"
 
 [params.r4]
 mode = "auto"
@@ -409,7 +409,7 @@ $ hmflow-cli report ref.hmf --curve-points 11
       "unit": "m"
     },
     "b2": {
-      "value": 0.0179357533200,
+      "value": 0.01793575332,
       "unit": "m"
     },
     "b3": {
@@ -429,7 +429,7 @@ $ hmflow-cli report ref.hmf --curve-points 11
       "unit": "m/s"
     },
     "d0": {
-      "value": 0.100899674940,
+      "value": 0.10089967494,
       "unit": "m"
     },
     "d1": {
@@ -437,7 +437,7 @@ $ hmflow-cli report ref.hmf --curve-points 11
       "unit": "m"
     },
     "d2": {
-      "value": 0.200007218610,
+      "value": 0.20000721861,
       "unit": "m"
     },
     "d360": {
@@ -461,7 +461,7 @@ $ hmflow-cli report ref.hmf --curve-points 11
       "unit": "1"
     },
     "h0": {
-      "value": 53.6463264400,
+      "value": 53.64632644,
       "unit": "m"
     },
     "npshr_d": {
@@ -501,11 +501,11 @@ $ hmflow-cli report ref.hmf --curve-points 11
       "unit": "W"
     },
     "qth": {
-      "value": 0.0339769291510,
+      "value": 0.033976929151,
       "unit": "m3/s"
     },
     "r3": {
-      "value": 0.110936912240,
+      "value": 0.11093691224,
       "unit": "m"
     },
     "r4": {
@@ -560,7 +560,7 @@ $ hmflow-cli report ref.hmf --curve-points 11
         "unit": "m"
       },
       "outer_radius": {
-        "value": 0.110936912240,
+        "value": 0.11093691224,
         "unit": "m"
       }
     },
@@ -588,7 +588,7 @@ $ hmflow-cli report ref.hmf --curve-points 11
         "unit": "rad"
       },
       "area": {
-        "value": 0.000636956121070,
+        "value": 0.00063695612107,
         "unit": "m2"
       },
       "diameter": {
@@ -646,7 +646,7 @@ $ hmflow-cli report ref.hmf --curve-points 11
         "unit": "m2"
       },
       "diameter": {
-        "value": 0.0495304765560,
+        "value": 0.049530476556,
         "unit": "m"
       },
       "outer_radius": {
@@ -682,11 +682,11 @@ $ hmflow-cli report ref.hmf --curve-points 11
         "unit": "m2"
       },
       "diameter": {
-        "value": 0.0586052502000,
+        "value": 0.0586052502,
         "unit": "m"
       },
       "outer_radius": {
-        "value": 0.140239537340,
+        "value": 0.14023953734,
         "unit": "m"
       }
     },
@@ -724,7 +724,7 @@ $ hmflow-cli report ref.hmf --curve-points 11
         "unit": "1"
       },
       "p_shaft": {
-        "value": 9018.73174020,
+        "value": 9018.7317402,
         "unit": "W"
       },
       "npshr": {
@@ -750,7 +750,7 @@ $ hmflow-cli report ref.hmf --curve-points 11
         "unit": "W"
       },
       "npshr": {
-        "value": 1.72771084140,
+        "value": 1.7277108414,
         "unit": "m"
       }
     },
@@ -790,7 +790,7 @@ $ hmflow-cli report ref.hmf --curve-points 11
         "unit": "1"
       },
       "p_shaft": {
-        "value": 13554.7635650,
+        "value": 13554.763565,
         "unit": "W"
       },
       "npshr": {
@@ -838,13 +838,13 @@ $ hmflow-cli report ref.hmf --curve-points 11
         "unit": "W"
       },
       "npshr": {
-        "value": 3.05022993490,
+        "value": 3.0502299349,
         "unit": "m"
       }
     },
     {
       "q": {
-        "value": 0.0300000000000,
+        "value": 0.03,
         "unit": "m3/s"
       },
       "h": {
@@ -971,7 +971,7 @@ $ hmflow-cli report ref.hmf --curve-points 11
       "unit": "m3/s"
     },
     "transition_ratio": {
-      "value": 1.10558922290,
+      "value": 1.1055892229,
       "unit": "1"
     },
     "recirculation_onset": {
@@ -1065,7 +1065,7 @@ $ hmflow-cli report ref.hmf --curve-points 11
       "unit": "1"
     },
     "shaft_power": {
-      "value": 17448.1105720,
+      "value": 17448.110572,
       "unit": "W"
     }
   },
@@ -1122,7 +1122,7 @@ $ hmflow-cli report ref.hmf --curve-points 11
             "unit": "m"
           },
           "beta": {
-            "value": 0.351427047740,
+            "value": 0.35142704774,
             "unit": "rad"
           },
           "theta": {
@@ -1238,7 +1238,7 @@ $ hmflow-cli report ref.hmf --curve-points 11
             "unit": "rad"
           },
           "width": {
-            "value": 0.0201074878150,
+            "value": 0.020107487815,
             "unit": "m"
           }
         },
@@ -1338,7 +1338,7 @@ $ hmflow-cli report ref.hmf --curve-points 11
             "unit": "m"
           },
           "beta": {
-            "value": 0.336274709410,
+            "value": 0.33627470941,
             "unit": "rad"
           },
           "theta": {
@@ -1378,7 +1378,7 @@ $ hmflow-cli report ref.hmf --curve-points 11
             "unit": "rad"
           },
           "theta": {
-            "value": 1.50869776660,
+            "value": 1.5086977666,
             "unit": "rad"
           },
           "width": {
@@ -1396,7 +1396,7 @@ $ hmflow-cli report ref.hmf --curve-points 11
             "unit": "rad"
           },
           "theta": {
-            "value": 1.58326129070,
+            "value": 1.5832612907,
             "unit": "rad"
           },
           "width": {
@@ -1454,7 +1454,7 @@ $ hmflow-cli report ref.hmf --curve-points 11
             "unit": "rad"
           },
           "width": {
-            "value": 0.0179357533200,
+            "value": 0.01793575332,
             "unit": "m"
           }
         }
@@ -1462,11 +1462,11 @@ $ hmflow-cli report ref.hmf --curve-points 11
     },
     "volute_outlet": {
       "cutwater_radius": {
-        "value": 0.110936912240,
+        "value": 0.11093691224,
         "unit": "m"
       },
       "cutwater_min_radius": {
-        "value": 0.110936912240,
+        "value": 0.11093691224,
         "unit": "m"
       },
       "nominal_diameter": {
@@ -1518,7 +1518,7 @@ $ hmflow-cli report ref.hmf --curve-points 11
       "unit": "m"
     },
     "radial_thrust_shutoff": {
-      "value": 717.794636720,
+      "value": 717.79463672,
       "unit": "N"
     },
     "radial_thrust_design": {

@@ -70,12 +70,12 @@ value = "0.00254782448428 m2"
 [params.b1]
 mode = "auto"
 formula = "design.b1"
-value = "0.0241784473270 m"
+value = "0.024178447327 m"
 
 [params.b2]
 mode = "auto"
 formula = "design.b2"
-value = "0.0179357533200 m"
+value = "0.01793575332 m"
 
 [params.b3]
 mode = "auto"
@@ -130,7 +130,7 @@ value = "0.105266730783 m"
 [params.d2]
 mode = "auto"
 formula = "design.d2"
-value = "0.200007218610 m"
+value = "0.20000721861 m"
 
 [params.d360]
 mode = "auto"
@@ -168,7 +168,7 @@ value = "0"
 [params.h0]
 mode = "auto"
 formula = "design.shutoff_head"
-value = "53.6463264400 m"
+value = "53.64632644 m"
 
 [params.impeller_roughness]
 mode = "manual"
@@ -212,7 +212,7 @@ value = "509.524857952 W"
 [params.p_hyd]
 mode = "auto"
 formula = "perf.hydraulic_power"
-value = "14295.1242850 W"
+value = "14295.124285 W"
 
 [params.p_hyd_loss]
 mode = "auto"
@@ -250,7 +250,7 @@ value = "0.956926548958"
 [params.qth]
 mode = "auto"
 formula = "design.qth"
-value = "0.0339769291510 m3/s"
+value = "0.033976929151 m3/s"
 
 [params.r3]
 mode = "auto"

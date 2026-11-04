@@ -1,0 +1,8 @@
+# command
+$ hmflow-cli design --name design-q-before-viscosity --q -1 m3/h --h 45 m --n 2900 rpm --viscosity -1 cSt
+# stdout
+# stderr
+error: entrada inválida: Q debe ser finito y positivo
+# status
+1
+# absent design-q-before-viscosity.hmf

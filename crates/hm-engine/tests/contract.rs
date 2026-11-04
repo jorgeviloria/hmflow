@@ -99,17 +99,13 @@ fn assert_agrees(report: &hm_engine::DesignReport, analysis: &Analysis) {
         report.curve.len(),
         Vec::new(),
     );
-    let published = match &analysis.geometry {
-        Ok(geometry) => published.with_geometry(geometry),
-        Err(_) => published,
-    };
-    let published = match &analysis.mechanics {
-        Ok(mechanics) => published.with_mechanics(mechanics),
-        Err(_) => published,
-    };
-    let published = match &analysis.viscous {
-        Ok(Some(correction)) => published.with_viscous(correction),
-        _ => published,
+    // El informe exige las tres etapas: aquí todas salieron.
+    let published = published
+        .with_geometry(analysis.geometry.as_ref().unwrap())
+        .with_mechanics(analysis.mechanics.as_ref().unwrap());
+    let published = match analysis.viscous.as_ref().unwrap() {
+        Some(correction) => published.with_viscous(correction),
+        None => published,
     };
     assert_eq!(report.geometry, published.geometry);
     assert_eq!(report.mechanics, published.mechanics);
@@ -153,6 +149,8 @@ fn report_and_analysis_agree() {
     assert_agrees(&report, &analysis);
 }
 
+/// La composición del informe. Contra el comportamiento de la CLI anterior lo
+/// comprueba la golden de `hmflow-cli` (`ref`: el JSON completo).
 #[test]
 fn report_is_analyze_plus_audit() {
     let case = b1();
@@ -307,4 +305,33 @@ fn water_is_written_with_its_canonical_name() {
     };
     let project = new_project("oil", &oil, &analyze(&oil, points()).unwrap()).unwrap();
     assert_eq!(project.operating.fluid, "Aceite SAE 30");
+}
+
+#[test]
+fn new_project_rejects_a_text_that_does_not_give_the_calculated_value() {
+    let case = b1();
+    let analysis = analyze(&case, points()).unwrap();
+
+    let mut wrong_q = case.clone();
+    wrong_q.duty.q.text = "999 m3/h".to_string();
+    let error = new_project("b1", &wrong_q, &analysis).unwrap_err();
+    assert_eq!(error.field(), Some(CaseField::Q));
+    assert_eq!(error.code(), Some("HM-PROJ-002"));
+
+    let mut wrong_rho = case.clone();
+    wrong_rho.fluid.density.source = DensitySource::Explicit {
+        text: "1200 kg/m3".to_string(),
+    };
+    let error = new_project("b1", &wrong_rho, &analysis).unwrap_err();
+    assert_eq!(error.field(), Some(CaseField::Density));
+
+    let mut wrong_temperature = case.clone();
+    if let Some(temperature) = &mut wrong_temperature.fluid.temperature {
+        temperature.text = "80 degC".to_string();
+    }
+    let error = new_project("b1", &wrong_temperature, &analysis).unwrap_err();
+    assert_eq!(error.field(), Some(CaseField::Temperature));
+
+    // Con los textos que corresponden, se escribe.
+    assert!(new_project("b1", &case, &analysis).is_ok());
 }

@@ -10,7 +10,9 @@ use crate::audit::{audit_with_analysis, schema_diagnostics};
 use crate::case::{Case, DensitySource, Entered, FluidKind, Intake, Temperature, Viscosity};
 use crate::convert::{ManualDefaults, case_from_project, design_params};
 use crate::dispatch::analyze;
-use crate::error::EngineError;
+use crate::error::{CaseField, EngineError, input_error};
+use crate::fluid::parse_temperature;
+use crate::validate::field_code;
 
 /// Crea un proyecto a partir de un caso y un análisis ya calculado.
 ///
@@ -20,6 +22,7 @@ use crate::error::EngineError;
 /// guardar. Exige geometría, mecánica y viscosidad correctas.
 pub fn new_project(name: &str, case: &Case, analysis: &Analysis) -> Result<Project, EngineError> {
     require_stages(analysis)?;
+    check_texts_match_values(case, analysis)?;
 
     let mut project = Project::new(name, case.pump_type);
     project.operating.q = case.duty.q.text.clone();
@@ -46,6 +49,76 @@ pub fn new_project(name: &str, case: &Case, analysis: &Analysis) -> Result<Proje
         });
     }
     Ok(project)
+}
+
+/// El texto que se escribe tiene que dar el valor que se calculó.
+///
+/// `Entered` guarda el texto y la cantidad por separado; si quien armó el
+/// caso los dejó desacordes, el `.hmf` diría una cosa y el cálculo otra, y
+/// `check` lo marcaría como `HM-PROJ-015`. Se detecta aquí, al escribir.
+fn check_texts_match_values(case: &Case, analysis: &Analysis) -> Result<(), EngineError> {
+    let mut entries: Vec<(CaseField, &Entered)> = vec![
+        (CaseField::Q, &case.duty.q),
+        (CaseField::H, &case.duty.h),
+        (CaseField::N, &case.duty.n),
+    ];
+    match &case.intake {
+        Intake::None => {}
+        Intake::Available(npsha) => entries.push((CaseField::Npsha, npsha)),
+        Intake::Installation {
+            pressure,
+            height,
+            losses,
+            vapor_pressure,
+        } => {
+            entries.push((CaseField::Suction, pressure));
+            for entered in [height, losses, vapor_pressure].into_iter().flatten() {
+                entries.push((CaseField::Suction, entered));
+            }
+        }
+    }
+    if let Some(Viscosity::Kinematic(entered) | Viscosity::Dynamic(entered)) = &case.fluid.viscosity
+    {
+        entries.push((CaseField::Viscosity, entered));
+    }
+    for (field, entered) in entries {
+        let agrees = Entered::parse(&entered.text)
+            .is_ok_and(|parsed| same_value(parsed.quantity.si, entered.quantity.si));
+        if !agrees {
+            return Err(disagreement(field, &entered.text));
+        }
+    }
+
+    if let Some(temperature) = &case.fluid.temperature {
+        let agrees = parse_temperature(&temperature.text)
+            .is_ok_and(|parsed| same_value(parsed.kelvin, temperature.kelvin));
+        if !agrees {
+            return Err(disagreement(CaseField::Temperature, &temperature.text));
+        }
+    }
+
+    if let DensitySource::Explicit { text } = &case.fluid.density.source
+        && !text.trim().is_empty()
+    {
+        let agrees = Entered::parse(text)
+            .is_ok_and(|parsed| same_value(parsed.quantity.si, analysis.input.rho.si));
+        if !agrees {
+            return Err(disagreement(CaseField::Density, text));
+        }
+    }
+    Ok(())
+}
+
+fn same_value(a: f64, b: f64) -> bool {
+    (a - b).abs() <= 1e-9 * a.abs().max(b.abs())
+}
+
+fn disagreement(field: CaseField, text: &str) -> EngineError {
+    input_error(
+        field,
+        field_code(field),
+        format!("el texto «{text}» no da el valor con el que se calculó"),
+    )
 }
 
 /// Informe de un proyecto end-suction con el método actual.

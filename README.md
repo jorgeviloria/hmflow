@@ -2,11 +2,12 @@
 
 Suite open source de diseño de bombas centrífugas, escrita en Rust.
 
-> Estado: **Parte 0 — cimientos** y primer motor de diseño end-suction. El
-> repositorio compila, hay 81 fórmulas auditadas (50 piloto, 31 con referencia
-> de ejemplo resuelto; sin validación de banco) y `design` genera geometría,
-> voluta, pérdidas y curvas preliminares. Todavía no hay CAD ni interfaz
-> gráfica.
+> Estado: **Parte 0 — cimientos** y motor de diseño end-suction
+> (`end_suction_v0.9`). El repositorio compila, hay 89 fórmulas auditadas
+> (58 piloto, 31 con referencia de ejemplo resuelto, 0 de banco) y `design`
+> genera geometría, voluta, pérdidas y curvas preliminares. El cálculo lo
+> comparte `hm-engine`. Hay una interfaz de prueba con egui; todavía no abre
+> proyectos ni hay CAD.
 
 ## Qué es
 
@@ -21,7 +22,8 @@ doble aspiración y barrel. Solo bombas centrífugas.
 - No hay validación de banco todavía: es lo que cierra la Parte 0.
 - Las curvas H(Q), η(Q) y NPSHr(Q) son preliminares; falta el modelo de
   pérdidas detallado y su contraste con medidas.
-- No hay interfaz gráfica (llega en la Parte 1).
+- La ventana egui muestra un punto de diseño. Abrir y guardar el `.hmf`, y
+  exportar el informe, llegan con la interfaz mínima.
 - No hay geometría CAD (llega en la Parte 2).
 - No hay CFD.
 - No sustituye la revisión de un ingeniero.
@@ -72,6 +74,9 @@ cargo run -p hmflow-cli -- report bomba.hmf --out bomba.json
 # Ver las fórmulas disponibles
 cargo run -p hmflow-cli -- formulas
 
+# Interfaz de prueba (workspace aparte; no entra en `cargo build` del raíz)
+cargo run --manifest-path crates/hm-ui-egui/Cargo.toml
+
 # Evaluar una expresión con unidades
 cargo run -p hmflow-cli -- eval "Q/(pi*d2*b2)" --var "Q=120 m3/h" --var "d2=0.3 m" --var "b2=0.02 m"
 ```
@@ -80,14 +85,16 @@ cargo run -p hmflow-cli -- eval "Q/(pi*d2*b2)" --var "Q=120 m3/h" --var "d2=0.3 
 
 | Crate | Contenido |
 |---|---|
-| `hm-core` | Diagnósticos, severidad, revisión |
+| `hm-core` | Diagnósticos, severidad, revisión, tipo de bomba |
 | `hm-units` | Dimensiones, unidades, cantidades |
 | `hm-math` | Interpolación, raíces, utilidades |
 | `hm-formula` | AST, parser, análisis dimensional, evaluación, packs |
-| `hm-design` | Diseño preliminar, voluta y curvas end-suction |
+| `hm-design` | Diseño preliminar, voluta, curvas y validación end-suction |
 | `hm-project` | Formato `.hmf`, parámetros, validación |
+| `hm-engine` | Caso de uso compartido por la CLI y la interfaz |
 | `hmflow-cli` | CLI |
-| `xtask` | Puertas de calidad |
+| `hm-ui-egui` | Interfaz de prueba con egui (workspace propio) |
+| `xtask` | Puertas de calidad, incluidas las capas de dependencia |
 
 ## Licencia
 

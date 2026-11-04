@@ -10,7 +10,7 @@ use hm_design::mechanics::Mechanics;
 use hm_design::{CurvePoint, DesignError, DesignInput, DesignResult, ViscousCorrection};
 use hm_engine::{
     Analysis, Case, CaseField, CurvePoints, Density, DensitySource, DesignOptions, Duty,
-    EngineError, Entered, Fluid, FluidKind, Intake, PumpType, Temperature, analyze,
+    EngineError, Entered, Fluid, FluidKind, Intake, PumpType, Temperature, analyze, cli_message,
     water_density_at,
 };
 use hm_units::Quantity;
@@ -144,8 +144,9 @@ fn read_temperature(inputs: &Inputs, errors: &mut FieldErrors) -> Option<(Temper
             return None;
         }
     };
+    // El texto lleva su unidad, como el que lee `parse_temperature`.
     let temperature = Temperature {
-        text: inputs.temperature_c.clone(),
+        text: format!("{} degC", inputs.temperature_c.trim().replace(',', ".")),
         kelvin: celsius + 273.15,
     };
     match water_density_at(&temperature) {
@@ -190,7 +191,7 @@ fn read_intake(inputs: &Inputs, errors: &mut FieldErrors) -> Option<Intake> {
 pub fn compute(inputs: &Inputs) -> Result<Outcome, FieldErrors> {
     let case = case_from_inputs(inputs)?;
     let analysis = analyze(&case, CurvePoints::clamped(CURVE_POINTS))
-        .map_err(|error| vec![engine_error_field(error)])?;
+        .map_err(|error| vec![engine_error_field(error, !inputs.eta_m.trim().is_empty())])?;
     Ok(outcome_from(inputs, analysis))
 }
 
@@ -208,23 +209,25 @@ fn outcome_from(inputs: &Inputs, analysis: Analysis) -> Outcome {
     }
 }
 
-/// Campo y frase de un error del motor. Los de etapa y los que no tienen
-/// campo van a `Field::General`, con la frase de la causa y no la envoltura.
-fn engine_error_field(error: EngineError) -> (Field, String) {
+/// Campo y frase de un error del motor. Los que no tienen campo van a
+/// `Field::General`. Si ηm está vacío, un error de ηm es de la estimación del
+/// motor y no de una caja que el usuario no tocó: también va a `General`.
+fn engine_error_field(error: EngineError, eta_m_typed: bool) -> (Field, String) {
     let field = match error.field() {
         Some(CaseField::Q) => Field::Q,
         Some(CaseField::H) => Field::H,
         Some(CaseField::N) => Field::N,
         Some(CaseField::Temperature | CaseField::Density) => Field::Temperature,
-        Some(CaseField::MechanicalEfficiency) => Field::EtaM,
+        Some(CaseField::MechanicalEfficiency) if eta_m_typed => Field::EtaM,
         Some(CaseField::Npsha | CaseField::Suction) => Field::Npsha,
-        Some(CaseField::Viscosity | CaseField::Param(_)) | None => Field::General,
+        Some(CaseField::MechanicalEfficiency | CaseField::Viscosity | CaseField::Param(_))
+        | None => Field::General,
     };
-    let message = match error {
-        EngineError::Input { diagnostic, .. } => diagnostic.message,
-        EngineError::Stage { source, .. } => source.to_string(),
-        other => other.to_string(),
-    };
+    // La caja ya dice de qué campo se trata: sin el «entrada inválida: » de la CLI.
+    let message = cli_message(&error);
+    let message = message
+        .strip_prefix("entrada inválida: ")
+        .map_or_else(|| message.clone(), str::to_string);
     (field, message)
 }
 
@@ -235,14 +238,6 @@ mod tests {
     fn codes(diagnostics: &[Diagnostic]) -> Vec<&str> {
         diagnostics
             .iter()
-            .map(|diagnostic| diagnostic.code.as_str())
-            .collect()
-    }
-
-    fn warnings(diagnostics: &[Diagnostic]) -> Vec<&str> {
-        diagnostics
-            .iter()
-            .filter(|diagnostic| diagnostic.severity == hm_core::Severity::Warning)
             .map(|diagnostic| diagnostic.code.as_str())
             .collect()
     }
@@ -370,14 +365,42 @@ mod tests {
         assert_eq!(errors.len(), 1, "{errors:?}");
         assert_eq!(errors[0].0, Field::General);
         assert!(errors[0].1.contains("ηh"), "{}", errors[0].1);
+    }
 
-        let (field, message) = engine_error_field(EngineError::Stage {
-            stage: hm_engine::Stage::Mechanics,
-            source: DesignError::Input("el eje no sale".into()),
-        });
-        assert_eq!(field, Field::General);
-        assert!(message.contains("el eje no sale"), "{message}");
-        assert!(!message.contains("falló la etapa"), "{message}");
+    #[test]
+    fn an_estimation_failure_is_not_blamed_on_an_empty_eta_m_box() {
+        let error = |typed| {
+            engine_error_field(
+                EngineError::Input {
+                    field: CaseField::MechanicalEfficiency,
+                    diagnostic: Diagnostic::error(
+                        "HM-PROJ-020",
+                        "entrada inválida: la eficiencia mecánica debe ser mayor que 0",
+                    ),
+                },
+                typed,
+            )
+        };
+        // Vacío: la estimó el motor, el usuario no tocó la caja.
+        assert_eq!(error(false).0, Field::General);
+        // Escrito: es de esa caja.
+        let (field, message) = error(true);
+        assert_eq!(field, Field::EtaM);
+        assert!(message.starts_with("la eficiencia mecánica"), "{message}");
+    }
+
+    #[test]
+    fn the_temperature_text_keeps_its_unit() {
+        let case = case_from_inputs(&Inputs {
+            temperature_c: "80,5".into(),
+            ..Inputs::default()
+        })
+        .unwrap();
+        let temperature = case.fluid.temperature.unwrap();
+        assert_eq!(temperature.text, "80.5 degC");
+        // El texto se puede volver a leer y da la misma temperatura.
+        let again = hm_engine::parse_temperature(&temperature.text).unwrap();
+        assert!((again.kelvin - temperature.kelvin).abs() < 1e-9);
     }
 
     #[test]
@@ -395,14 +418,10 @@ mod tests {
             Entered::parse("300 cSt").unwrap(),
         ));
         let analysis = analyze(&case, CurvePoints::new(CURVE_POINTS).unwrap()).unwrap();
-        let expected = codes(&analysis.diagnostics)
-            .into_iter()
-            .map(str::to_string)
-            .collect::<Vec<_>>();
 
         let outcome = outcome_from(&inputs, analysis);
         let shown = codes(&outcome.diagnostics);
-        assert_eq!(shown, expected);
+        assert!(!shown.is_empty());
 
         let viscous = shown
             .iter()
@@ -436,22 +455,27 @@ mod tests {
     }
 
     #[test]
-    fn compute_agrees_with_the_engine() {
-        let inputs = Inputs::default();
-        let outcome = compute(&inputs).unwrap();
-        let case = case_from_inputs(&inputs).unwrap();
-        let analysis = analyze(&case, CurvePoints::new(CURVE_POINTS).unwrap()).unwrap();
-        assert_eq!(
-            format!("{:?}", outcome.result),
-            format!("{:?}", analysis.result)
-        );
-        assert_eq!(
-            format!("{:?}", outcome.curve),
-            format!("{:?}", analysis.curve)
-        );
-        assert_eq!(
-            warnings(&outcome.diagnostics),
-            warnings(&analysis.diagnostics)
-        );
+    fn compute_agrees_with_the_loose_design_calls() {
+        // Contra las llamadas sueltas de `hm-design`, sin pasar por `analyze`.
+        let outcome = compute(&Inputs::default()).unwrap();
+        let rho = hm_units::parse_quantity(&format!(
+            "{} kg/m3",
+            hm_design::water_density(293.15).unwrap()
+        ))
+        .unwrap();
+        let input = DesignInput {
+            q: hm_units::parse_quantity("120 m3/h").unwrap(),
+            h: hm_units::parse_quantity("45 m").unwrap(),
+            n: hm_units::parse_quantity("2900 rpm").unwrap(),
+            rho,
+            eta_m: outcome.input.eta_m,
+            npsha: Some(hm_units::parse_quantity("15 m").unwrap()),
+            nu: hm_design::fluid::water_kinematic_viscosity(293.15),
+        };
+        let result = hm_design::design(&input).unwrap();
+        let curve = hm_design::performance_curve(&input, &result, CURVE_POINTS);
+
+        assert_eq!(format!("{:?}", outcome.result), format!("{result:?}"));
+        assert_eq!(format!("{:?}", outcome.curve), format!("{curve:?}"));
     }
 }

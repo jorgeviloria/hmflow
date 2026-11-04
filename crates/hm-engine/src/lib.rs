@@ -30,7 +30,9 @@ pub use fluid::{
     npsha, parse_temperature, viscosity_effect, viscosity_from_text, water_density_at,
 };
 pub use hm_core::PumpType;
-pub use hm_design::{DesignOptions, DesignReport, METHOD, PARAM_SPECS, PREFERRED_OPERATING_REGION};
+pub use hm_design::{
+    DesignOptions, DesignReport, METHOD, PARAM_SPECS, PREFERRED_OPERATING_REGION, REPORT_FORMAT,
+};
 pub use project_ops::{new_project, report};
 pub use recalc::{Recalculated, recalc};
 pub use validate::{design_input, validate_case};

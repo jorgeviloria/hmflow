@@ -705,7 +705,7 @@ fn assert_report_json(scenario: &str, args: &str, stdout: &str) {
     let format = value.get("format").and_then(|value| value.as_str());
     assert_eq!(
         format,
-        Some(hm_design::REPORT_FORMAT),
+        Some(hm_engine::REPORT_FORMAT),
         "caso `{scenario}`: `hmflow-cli {args}` no escribió el informe de hmflow.\n{sample}"
     );
 }

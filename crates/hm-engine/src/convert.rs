@@ -10,6 +10,10 @@ use crate::case::{
 };
 use crate::error::{CaseField, EngineError};
 
+/// Mayor conteo entero aceptado (álabes, canales de voluta); el mismo límite
+/// que aplica la CLI.
+const MAX_COUNT: f64 = 100.0;
+
 /// Temperatura del agua cuando el proyecto no escribe ninguna, K (20 °C).
 const DEFAULT_WATER_TEMPERATURE_K: f64 = 293.15;
 
@@ -21,11 +25,12 @@ const FALLBACK_DENSITY: f64 = 998.2;
 pub enum Decode {
     /// Número en SI. Con `zero_is_none`, el cero es «sin dato».
     Float { zero_is_none: bool },
-    /// Ángulo. El texto se lee en radianes SI y aquí vuelve a grados.
+    /// Ángulo en grados. El texto debe llevar `deg` o `rad`.
     Degrees { zero_is_none: bool },
     /// Entero entre 1 y 100. Con `zero_is_none`, el cero es «sin dato».
     Count { zero_is_none: bool },
-    /// `balance_holes`: ausente o 0 es falso, 1 es verdadero.
+    /// `balance_holes`: ausente o 0 es falso, 1 es verdadero. Siempre da un
+    /// valor (0 por defecto): la tabla de defaults de `recalc` lo muestra así.
     Flag,
 }
 
@@ -432,16 +437,9 @@ fn default_density(
     let kg_m3 = parse_unit("kg/m3")
         .map_err(|error| input_error(CaseField::Density, "HM-PROJ-012", error.to_string()))?;
 
-    if let Some(text) = param_text(project, "rho")? {
-        let value = param_f64(project, "rho", "kg/m3")?.ok_or_else(|| {
-            input_error(
-                CaseField::Density,
-                "HM-PROJ-012",
-                "`rho` no tiene un valor calculado".to_string(),
-            )
-        })?;
+    if let Some((text, quantity)) = param_quantity(project, "rho", "kg/m3")? {
         return Ok(Density {
-            value: Quantity::from_si(value, kg_m3),
+            value: Quantity::from_si(quantity.si, kg_m3),
             source: DensitySource::Explicit {
                 text: text.to_string(),
             },
@@ -489,24 +487,44 @@ fn decode(project: &Project, param: &ManualParam) -> Result<Option<f64>, EngineE
             zero_is_none,
         )),
         Decode::Degrees { zero_is_none } => Ok(without_zero(
-            param_angle(project, param.name)?.map(f64::to_degrees),
+            param_angle(project, param.name)?,
             zero_is_none,
         )),
         Decode::Count { zero_is_none } => {
-            if zero_is_none && param_f64(project, param.name, "1")? == Some(0.0) {
-                return Ok(None);
-            }
-            Ok(param_u32(project, param.name)?.map(f64::from))
+            let value = without_zero(param_f64(project, param.name, "1")?, zero_is_none);
+            value.map(|value| count(param.name, value)).transpose()
         }
-        Decode::Flag => match param_f64(project, param.name, "1")? {
-            None => Ok(Some(0.0)),
-            Some(value) if value == 0.0 || value == 1.0 => Ok(Some(value)),
-            Some(_) => Err(input_error(
-                CaseField::Param(param.name),
-                "HM-PROJ-020",
-                format!("`{}` debe ser 0 o 1", param.name),
-            )),
-        },
+        Decode::Flag => flag(project, param.name),
+    }
+}
+
+/// Entero entre 1 y `MAX_COUNT`.
+fn count(name: &'static str, value: f64) -> Result<f64, EngineError> {
+    if value.fract() != 0.0 || !(1.0..=MAX_COUNT).contains(&value) {
+        return Err(input_error(
+            CaseField::Param(name),
+            "HM-PROJ-020",
+            format!("`{name}` debe ser un entero entre 1 y {MAX_COUNT}"),
+        ));
+    }
+    Ok(value)
+}
+
+/// `balance_holes`: ausente es falso; si está, 0 o 1.
+fn flag(project: &Project, name: &'static str) -> Result<Option<f64>, EngineError> {
+    let wrong = || {
+        input_error(
+            CaseField::Param(name),
+            "HM-PROJ-020",
+            format!("`{name}` debe ser 0 o 1"),
+        )
+    };
+    let Some(text) = param_text(project, name)? else {
+        return Ok(Some(0.0));
+    };
+    match parse_quantity(text) {
+        Ok(quantity) if quantity.si == 0.0 || quantity.si == 1.0 => Ok(Some(quantity.si)),
+        _ => Err(wrong()),
     }
 }
 
@@ -531,34 +549,12 @@ fn param_text<'a>(
     Ok(param_value(param))
 }
 
-/// Un ángulo debe escribirse con unidad (`deg` o `rad`): `deg` y `rad` son
-/// adimensionales y un número solo se leería como radianes.
-fn param_angle(project: &Project, name: &'static str) -> Result<Option<f64>, EngineError> {
-    let Some(text) = param_text(project, name)? else {
-        return Ok(None);
-    };
-    let quantity = parse_quantity(text).map_err(|error| {
-        input_error(
-            CaseField::Param(name),
-            "HM-PROJ-012",
-            format!("`{name}`: {error}"),
-        )
-    })?;
-    if !matches!(quantity.unit.symbol.as_str(), "deg" | "rad") {
-        return Err(input_error(
-            CaseField::Param(name),
-            "HM-PROJ-020",
-            format!("`{name}` debe llevar unidad de ángulo (deg o rad): {text}"),
-        ));
-    }
-    Ok(Some(quantity.si))
-}
-
-fn param_f64(
-    project: &Project,
+/// Texto y cantidad de un parámetro, con la dimensión de `unit_text`.
+fn param_quantity<'a>(
+    project: &'a Project,
     name: &'static str,
     unit_text: &'static str,
-) -> Result<Option<f64>, EngineError> {
+) -> Result<Option<(&'a str, Quantity)>, EngineError> {
     let Some(text) = param_text(project, name)? else {
         return Ok(None);
     };
@@ -580,21 +576,44 @@ fn param_f64(
         ));
     }
 
-    Ok(Some(quantity.si))
+    Ok(Some((text, quantity)))
 }
 
-fn param_u32(project: &Project, name: &'static str) -> Result<Option<u32>, EngineError> {
-    let Some(value) = param_f64(project, name, "1")? else {
+fn param_f64(
+    project: &Project,
+    name: &'static str,
+    unit_text: &'static str,
+) -> Result<Option<f64>, EngineError> {
+    Ok(param_quantity(project, name, unit_text)?.map(|(_, quantity)| quantity.si))
+}
+
+/// Un ángulo en grados. Debe escribirse con unidad (`deg` o `rad`): ambas son
+/// adimensionales y un número solo se leería como radianes. En grados se usa
+/// el número escrito, sin el viaje a radianes y de vuelta.
+fn param_angle(project: &Project, name: &'static str) -> Result<Option<f64>, EngineError> {
+    let Some((text, quantity)) = param_quantity(project, name, "1")? else {
         return Ok(None);
     };
-    if value.fract() != 0.0 || !(1.0..=100.0).contains(&value) {
-        return Err(input_error(
+    match quantity.unit.symbol.as_str() {
+        "deg" => Ok(Some(
+            leading_number(text).unwrap_or_else(|| quantity.si.to_degrees()),
+        )),
+        "rad" => Ok(Some(quantity.si.to_degrees())),
+        _ => Err(input_error(
             CaseField::Param(name),
             "HM-PROJ-020",
-            format!("`{name}` debe ser un entero entre 1 y 100"),
-        ));
+            format!("`{name}` debe llevar unidad de ángulo (deg o rad): {text}"),
+        )),
     }
-    Ok(Some(value as u32))
+}
+
+/// El número con el que empieza un texto como `"20 deg"`.
+fn leading_number(text: &str) -> Option<f64> {
+    let text = text.trim_start();
+    let end = text
+        .find(|c: char| !matches!(c, '0'..='9' | '.' | '+' | '-' | 'e' | 'E'))
+        .unwrap_or(text.len());
+    text[..end].parse().ok()
 }
 
 fn param_value(param: &Param) -> Option<&str> {

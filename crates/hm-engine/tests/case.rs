@@ -361,3 +361,44 @@ fn a_bad_suction_value_names_which_one() {
         assert!(error.to_string().contains(expected), "{field}: {error}");
     }
 }
+
+#[test]
+fn angles_in_degrees_keep_the_number_that_was_written() {
+    let mut project = project();
+    set(&mut project, "volute_wrap_deg", "120.975462 deg");
+    set(&mut project, "beta2", "20.3 deg");
+
+    let case = case_from_project(&project).unwrap();
+    // Sin viaje a radianes y de vuelta: igual bit a bit.
+    assert_eq!(case.design.volute_wrap_deg, Some(120.975462));
+    assert_eq!(
+        case.design.beta2_rad,
+        Some(hm_units::parse_quantity("20.3 deg").unwrap().si)
+    );
+}
+
+#[test]
+fn balance_holes_must_be_zero_or_one_even_when_written_as_text() {
+    let mut project = project();
+    set(&mut project, "balance_holes", "true");
+
+    let error = case_from_project(&project).unwrap_err();
+    assert_eq!(error.field(), Some(CaseField::Param("balance_holes")));
+    assert_eq!(error.code(), Some("HM-PROJ-020"));
+    assert!(error.to_string().contains("0 o 1"), "{error}");
+}
+
+#[test]
+fn counts_outside_one_to_one_hundred_are_rejected() {
+    for value in ["101", "2.5", "-1"] {
+        let mut project = project();
+        set(&mut project, "volute_channels", value);
+
+        let error = case_from_project(&project).unwrap_err();
+        assert_eq!(
+            error.field(),
+            Some(CaseField::Param("volute_channels")),
+            "{value}"
+        );
+    }
+}

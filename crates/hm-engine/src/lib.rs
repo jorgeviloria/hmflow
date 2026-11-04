@@ -9,7 +9,7 @@ mod error;
 pub use case::{
     Case, Density, DensitySource, Duty, Entered, Fluid, FluidKind, Intake, Temperature, Viscosity,
 };
-pub use convert::{MANUAL_PARAMS, ManualParam, case_from_project};
+pub use convert::{Decode, MANUAL_PARAMS, ManualParam, case_from_project};
 pub use error::{CaseField, EngineError, Stage};
 pub use hm_core::PumpType;
 pub use hm_design::{DesignReport, METHOD, PARAM_SPECS};

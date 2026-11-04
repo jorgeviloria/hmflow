@@ -10,14 +10,39 @@ use crate::case::{
 };
 use crate::error::{CaseField, EngineError};
 
+/// Cómo se lee el texto del proyecto. `set` recibe el valor en la unidad
+/// de la tabla.
+pub enum Decode {
+    /// Número en SI. Con `zero_is_none`, el cero es «sin dato».
+    Float { zero_is_none: bool },
+    /// Ángulo. El texto se lee en radianes SI y aquí vuelve a grados.
+    Degrees { zero_is_none: bool },
+    /// Entero entre 1 y 100. Con `zero_is_none`, el cero es «sin dato».
+    Count { zero_is_none: bool },
+    /// `balance_holes`: ausente o 0 es falso, 1 es verdadero.
+    Flag,
+}
+
 /// Descripción de una opción manual del proyecto y su traducción a
 /// `DesignOptions`. `get` y `set` usan la unidad de la tabla.
 pub struct ManualParam {
     pub name: &'static str,
     pub unit: &'static str,
-    pub zero_is_none: bool,
+    pub decode: Decode,
     pub get: fn(&DesignOptions) -> Option<f64>,
     pub set: fn(&mut DesignOptions, Option<f64>),
+}
+
+impl ManualParam {
+    /// El cero escrito en el proyecto significa «sin dato».
+    pub fn zero_is_none(&self) -> bool {
+        match self.decode {
+            Decode::Float { zero_is_none }
+            | Decode::Degrees { zero_is_none }
+            | Decode::Count { zero_is_none } => zero_is_none,
+            Decode::Flag => false,
+        }
+    }
 }
 
 macro_rules! direct_param {
@@ -90,133 +115,159 @@ pub const MANUAL_PARAMS: &[ManualParam] = &[
     ManualParam {
         name: "psi",
         unit: "1",
-        zero_is_none: false,
+        decode: Decode::Float {
+            zero_is_none: false,
+        },
         get: get_psi,
         set: set_psi,
     },
     ManualParam {
         name: "phi",
         unit: "1",
-        zero_is_none: false,
+        decode: Decode::Float {
+            zero_is_none: false,
+        },
         get: get_phi,
         set: set_phi,
     },
     ManualParam {
         name: "beta2",
         unit: "deg",
-        zero_is_none: false,
+        decode: Decode::Degrees {
+            zero_is_none: false,
+        },
         get: get_beta2,
         set: set_beta2,
     },
     ManualParam {
         name: "blade_count",
         unit: "1",
-        zero_is_none: false,
+        decode: Decode::Count {
+            zero_is_none: false,
+        },
         get: get_blade_count,
         set: set_blade_count,
     },
     ManualParam {
         name: "c0",
         unit: "m/s",
-        zero_is_none: false,
+        decode: Decode::Float {
+            zero_is_none: false,
+        },
         get: get_c0,
         set: set_c0,
     },
     ManualParam {
         name: "cm0",
         unit: "m/s",
-        zero_is_none: false,
+        decode: Decode::Float {
+            zero_is_none: false,
+        },
         get: get_cm0,
         set: set_cm0,
     },
     ManualParam {
         name: "A",
         unit: "1",
-        zero_is_none: false,
+        decode: Decode::Float {
+            zero_is_none: false,
+        },
         get: get_a,
         set: set_a,
     },
     ManualParam {
         name: "J",
         unit: "1",
-        zero_is_none: false,
+        decode: Decode::Float {
+            zero_is_none: false,
+        },
         get: get_j,
         set: set_j,
     },
     ManualParam {
         name: "margin",
         unit: "1",
-        zero_is_none: false,
+        decode: Decode::Float {
+            zero_is_none: false,
+        },
         get: get_margin,
         set: set_margin,
     },
     ManualParam {
         name: "k3",
         unit: "1",
-        zero_is_none: false,
+        decode: Decode::Float {
+            zero_is_none: false,
+        },
         get: get_k3,
         set: set_k3,
     },
     ManualParam {
         name: "volute_c",
         unit: "1",
-        zero_is_none: false,
+        decode: Decode::Float {
+            zero_is_none: false,
+        },
         get: get_volute_c,
         set: set_volute_c,
     },
     ManualParam {
         name: "k_eff",
         unit: "1",
-        zero_is_none: false,
+        decode: Decode::Float {
+            zero_is_none: false,
+        },
         get: get_k_eff,
         set: set_k_eff,
     },
     ManualParam {
         name: "eta_v_fixed",
         unit: "1",
-        zero_is_none: true,
+        decode: Decode::Float { zero_is_none: true },
         get: get_eta_v_fixed,
         set: set_eta_v_fixed,
     },
     ManualParam {
         name: "balance_holes",
         unit: "1",
-        zero_is_none: false,
+        decode: Decode::Flag,
         get: get_balance_holes,
         set: set_balance_holes,
     },
     ManualParam {
         name: "volute_ratio",
         unit: "1",
-        zero_is_none: true,
+        decode: Decode::Float { zero_is_none: true },
         get: get_volute_ratio,
         set: set_volute_ratio,
     },
     ManualParam {
         name: "impeller_roughness",
         unit: "m",
-        zero_is_none: true,
+        decode: Decode::Float { zero_is_none: true },
         get: get_impeller_roughness,
         set: set_impeller_roughness,
     },
     ManualParam {
         name: "volute_channels",
         unit: "1",
-        zero_is_none: true,
+        decode: Decode::Count { zero_is_none: true },
         get: get_volute_channels,
         set: set_volute_channels,
     },
     ManualParam {
         name: "volute_wrap_deg",
         unit: "deg",
-        zero_is_none: true,
+        decode: Decode::Degrees { zero_is_none: true },
         get: get_volute_wrap_deg,
         set: set_volute_wrap_deg,
     },
     ManualParam {
         name: "incidence_deg",
         unit: "deg",
-        zero_is_none: false,
+        decode: Decode::Degrees {
+            zero_is_none: false,
+        },
         get: get_incidence_deg,
         set: set_incidence_deg,
     },
@@ -230,20 +281,13 @@ pub fn case_from_project(project: &Project) -> Result<Case, EngineError> {
     let h = parse_entered(CaseField::H, "HM-PROJ-003", &project.operating.h)?;
     let n = parse_entered(CaseField::N, "HM-PROJ-004", &project.operating.n)?;
 
+    let kind = fluid_kind(&project.operating.fluid);
     let temperature = parse_temperature(project)?;
-    let density = default_density(project)?;
+    let density = default_density(project, &kind, temperature.as_ref())?;
     let mechanical_efficiency = param_f64(project, "eta_m", "1")?;
     let intake = parse_intake(project)?;
     let design = design_options(project)?;
     let viscosity = parse_viscosity(project)?;
-
-    let kind = if project.operating.fluid.is_empty()
-        || project.operating.fluid.eq_ignore_ascii_case("water")
-    {
-        FluidKind::Water
-    } else {
-        FluidKind::Custom(project.operating.fluid.clone())
-    };
 
     Ok(Case {
         pump_type: project.design.pump_type,
@@ -258,6 +302,14 @@ pub fn case_from_project(project: &Project) -> Result<Case, EngineError> {
         mechanical_efficiency,
         design,
     })
+}
+
+fn fluid_kind(fluid: &str) -> FluidKind {
+    if fluid.is_empty() || fluid.eq_ignore_ascii_case("water") {
+        FluidKind::Water
+    } else {
+        FluidKind::Custom(fluid.to_string())
+    }
 }
 
 fn parse_entered(field: CaseField, code: &'static str, text: &str) -> Result<Entered, EngineError> {
@@ -350,7 +402,11 @@ fn parse_optional_suction(text: &str) -> Result<Option<Entered>, EngineError> {
     }
 }
 
-fn default_density(project: &Project) -> Result<Density, EngineError> {
+fn default_density(
+    project: &Project,
+    kind: &FluidKind,
+    temperature: Option<&Temperature>,
+) -> Result<Density, EngineError> {
     let kg_m3 = parse_unit("kg/m3")
         .map_err(|error| input_error(CaseField::Density, "HM-PROJ-012", error.to_string()))?;
 
@@ -370,18 +426,13 @@ fn default_density(project: &Project) -> Result<Density, EngineError> {
         });
     }
 
-    let temperature = if project.operating.temperature.trim().is_empty() {
-        Some(293.15)
-    } else {
-        parse_quantity(&project.operating.temperature)
-            .ok()
-            .filter(|quantity| quantity.dim() == Dimension::TEMPERATURE)
-            .map(|quantity| quantity.si)
-    };
-    let water =
-        project.operating.fluid.is_empty() || project.operating.fluid.eq_ignore_ascii_case("water");
-    let derived = if water {
-        temperature.and_then(water_density)
+    // Sin temperatura escrita, el agua se toma a 20 °C.
+    let derived = if matches!(kind, FluidKind::Water) {
+        water_density(
+            temperature
+                .map(|temperature| temperature.kelvin)
+                .unwrap_or(293.15),
+        )
     } else {
         None
     };
@@ -401,46 +452,46 @@ fn design_options(project: &Project) -> Result<DesignOptions, EngineError> {
     let mut options = DesignOptions::default();
 
     for param in MANUAL_PARAMS {
-        let value = match param.name {
-            "blade_count" => param_u32(project, param.name)?.map(f64::from),
-            "volute_channels" => {
-                let value = param_f64(project, param.name, "1")?;
-                if value == Some(0.0) {
-                    None
-                } else {
-                    param_u32(project, param.name)?.map(f64::from)
-                }
-            }
-            "balance_holes" => match param_f64(project, param.name, "1")? {
-                None => Some(0.0),
-                Some(value) if value == 0.0 || value == 1.0 => Some(value),
-                Some(_) => {
-                    return Err(input_error(
-                        CaseField::Param(param.name),
-                        "HM-PROJ-020",
-                        format!("`{}` debe ser 0 o 1", param.name),
-                    ));
-                }
-            },
-            _ => {
-                let value = param_f64(project, param.name, param.unit)?;
-                let value = if param.unit == "deg" {
-                    value.map(f64::to_degrees)
-                } else {
-                    value
-                };
-                if param.zero_is_none {
-                    value.filter(|value| *value != 0.0)
-                } else {
-                    value
-                }
-            }
-        };
-
-        (param.set)(&mut options, value);
+        (param.set)(&mut options, decode(project, param)?);
     }
 
     Ok(options)
+}
+
+fn decode(project: &Project, param: &ManualParam) -> Result<Option<f64>, EngineError> {
+    match param.decode {
+        Decode::Float { zero_is_none } => Ok(without_zero(
+            param_f64(project, param.name, param.unit)?,
+            zero_is_none,
+        )),
+        Decode::Degrees { zero_is_none } => Ok(without_zero(
+            param_f64(project, param.name, param.unit)?.map(f64::to_degrees),
+            zero_is_none,
+        )),
+        Decode::Count { zero_is_none } => {
+            if zero_is_none && param_f64(project, param.name, "1")? == Some(0.0) {
+                return Ok(None);
+            }
+            Ok(param_u32(project, param.name)?.map(f64::from))
+        }
+        Decode::Flag => match param_f64(project, param.name, "1")? {
+            None => Ok(Some(0.0)),
+            Some(value) if value == 0.0 || value == 1.0 => Ok(Some(value)),
+            Some(_) => Err(input_error(
+                CaseField::Param(param.name),
+                "HM-PROJ-020",
+                format!("`{}` debe ser 0 o 1", param.name),
+            )),
+        },
+    }
+}
+
+fn without_zero(value: Option<f64>, zero_is_none: bool) -> Option<f64> {
+    if zero_is_none {
+        value.filter(|value| *value != 0.0)
+    } else {
+        value
+    }
 }
 
 fn param_text<'a>(

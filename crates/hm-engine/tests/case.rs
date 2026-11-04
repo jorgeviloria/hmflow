@@ -83,7 +83,7 @@ fn case_from_project_reads_every_manual_option() {
 #[test]
 fn zero_means_no_data_for_every_option_and_balance_holes_is_strict() {
     let mut project = project();
-    for param in MANUAL_PARAMS.iter().filter(|param| param.zero_is_none) {
+    for param in MANUAL_PARAMS.iter().filter(|param| param.zero_is_none()) {
         let value = if param.unit == "1" {
             "0".to_string()
         } else {
@@ -93,7 +93,7 @@ fn zero_means_no_data_for_every_option_and_balance_holes_is_strict() {
     }
 
     let case = case_from_project(&project).unwrap();
-    for param in MANUAL_PARAMS.iter().filter(|param| param.zero_is_none) {
+    for param in MANUAL_PARAMS.iter().filter(|param| param.zero_is_none()) {
         assert_eq!(
             (param.get)(&case.design),
             None,
@@ -242,7 +242,7 @@ fn manual_params_match_param_specs() {
         .iter()
         .find(|param| param.name == "incidence_deg")
         .unwrap();
-    assert!(!incidence.zero_is_none);
+    assert!(!incidence.zero_is_none());
 }
 
 #[test]

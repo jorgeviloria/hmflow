@@ -13,8 +13,8 @@ use hm_design::mechanics::Mechanics;
 use hm_design::{CurvePoint, DesignError, DesignInput, DesignResult, ViscousCorrection};
 use hm_engine::{
     Analysis, Case, CaseField, CurvePoints, Density, DensitySource, DesignOptions, Duty,
-    EditorError, EngineError, Entered, Fluid, FluidKind, Intake, PumpType, Temperature, analyze,
-    cli_message, open_project, water_density_at,
+    EditorError, EngineError, Entered, Fluid, FluidKind, Intake, Opened, PumpType, Temperature,
+    analyze, cli_message, new_project, open_project, recalc, update_point, water_density_at,
 };
 use hm_project::Project;
 use hm_units::Quantity;
@@ -369,26 +369,38 @@ fn engine_error_field(error: EngineError, eta_m_typed: bool) -> (Field, String) 
 pub struct Basis {
     pub design: DesignOptions,
     /// Densidad escrita en el archivo y la caja de temperatura con que se
-    /// abrió. Solo vale mientras esa caja no cambie.
+    /// abrió. Solo vale mientras esa caja no cambie, salvo si está bloqueada.
     pub density: Option<(String, Density)>,
+    pub rho_locked: bool,
+    /// El texto de una ηm bloqueada: al guardar, la caja no la pisa.
+    pub locked_eta_m: Option<String>,
 }
 
 impl Basis {
-    fn from_opened(case: &Case, inputs: &Inputs) -> Self {
+    fn from_opened(opened: &Opened, inputs: &Inputs) -> Self {
+        let density = &opened.case.fluid.density;
         let written = matches!(
-            &case.fluid.density.source,
+            &density.source,
             DensitySource::Explicit { text } if !text.trim().is_empty()
         );
         Self {
-            design: case.design.clone(),
-            density: written.then(|| (inputs.temperature_c.clone(), case.fluid.density.clone())),
+            design: opened.case.design.clone(),
+            density: written.then(|| (inputs.temperature_c.clone(), density.clone())),
+            rho_locked: opened.rho_locked,
+            locked_eta_m: if opened.eta_m_locked {
+                opened.eta_m_text.clone()
+            } else {
+                None
+            },
         }
     }
 
     fn density_for(&self, inputs: &Inputs) -> Option<Density> {
         self.density
             .as_ref()
-            .filter(|(box_text, _)| box_text.trim() == inputs.temperature_c.trim())
+            .filter(|(box_text, _)| {
+                self.rho_locked || box_text.trim() == inputs.temperature_c.trim()
+            })
             .map(|(_, density)| density.clone())
     }
 }
@@ -469,17 +481,22 @@ pub fn case_to_inputs(case: &Case) -> Inputs {
 /// El rechazo es la frase de `Unsupported` o los diagnósticos, un aviso por
 /// línea. No escribe nada.
 pub fn open_file(path: &Path) -> Result<OpenedFile, String> {
-    let project = Project::load(path).map_err(|error| error.to_string())?;
+    open_loaded(Project::load(path).map_err(|error| error.to_string())?)
+}
+
+/// Lo mismo con un proyecto en memoria: las cajas de lo recién guardado salen
+/// por aquí, igual que al abrirlo.
+pub fn open_loaded(project: Project) -> Result<OpenedFile, String> {
     let opened = match open_project(&project) {
         Ok(opened) => opened,
         Err(EditorError::Unsupported { reason }) => return Err(reason),
         Err(EditorError::Invalid { diagnostics }) => return Err(format_diagnostics(&diagnostics)),
     };
     let mut inputs = case_to_inputs(&opened.case);
-    if let Some(text) = opened.eta_m_text {
-        inputs.eta_m = text;
+    if let Some(text) = &opened.eta_m_text {
+        inputs.eta_m.clone_from(text);
     }
-    let basis = Basis::from_opened(&opened.case, &inputs);
+    let basis = Basis::from_opened(&opened, &inputs);
     Ok(OpenedFile {
         project,
         inputs,
@@ -524,6 +541,99 @@ fn format_celsius(celsius: f64) -> String {
         .trim_end_matches('0')
         .trim_end_matches('.')
         .to_string()
+}
+
+/// Proyecto listo para escribir, con los avisos que debe mostrar el panel.
+///
+/// En uno nuevo, los de `compute`. En uno que ya existía, los de `recalc`
+/// (ahí está `HM-DES-013`).
+#[derive(Debug)]
+pub struct Built {
+    pub project: Project,
+    pub diagnostics: Vec<Diagnostic>,
+}
+
+/// Arma el proyecto de estas cajas.
+///
+/// Es el mismo caso que `compute`, y por eso lo guardado es lo que se ve. Sin
+/// proyecto previo, `new_project`. Con proyecto, `update_point` y `recalc` sin
+/// reelegir. No escribe el archivo. Una `rho` bloqueada ya está en `basis`: si
+/// la temperatura no es la de esa densidad, `recalc` deja `HM-DES-009`. Una ηm
+/// bloqueada no se deja pisar: la caja vuelve a su texto.
+pub fn build_project(
+    inputs: &Inputs,
+    basis: &Basis,
+    previous: Option<&Project>,
+    name: &str,
+) -> Result<Built, String> {
+    let inputs = match &basis.locked_eta_m {
+        Some(text) => Inputs {
+            eta_m: text.clone(),
+            ..inputs.clone()
+        },
+        None => inputs.clone(),
+    };
+    let case = case_from_inputs(&inputs, basis).map_err(|errors| field_failure(&errors))?;
+    let analysis = analyze(&case, CurvePoints::clamped(CURVE_POINTS))
+        .map_err(|error| engine_failure(&error))?;
+    if let Some(message) = stage_failure(&analysis) {
+        return Err(message);
+    }
+    match previous {
+        None => {
+            let project =
+                new_project(name, &case, &analysis).map_err(|error| engine_failure(&error))?;
+            Ok(Built {
+                project,
+                diagnostics: analysis.diagnostics,
+            })
+        }
+        Some(project) => {
+            let project = update_point(project.clone(), &case, &analysis)
+                .map_err(|error| engine_failure(&error))?;
+            let recalculated = recalc(project, false).map_err(|error| engine_failure(&error))?;
+            Ok(Built {
+                project: recalculated.project,
+                diagnostics: recalculated.diagnostics.into_vec(),
+            })
+        }
+    }
+}
+
+fn field_failure(errors: &FieldErrors) -> String {
+    if errors.is_empty() {
+        return "hay errores en las cajas".to_string();
+    }
+    errors
+        .iter()
+        .map(|(_, message)| message.clone())
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
+fn stage_failure(analysis: &Analysis) -> Option<String> {
+    if let Err(error) = &analysis.geometry {
+        return Some(error.to_string());
+    }
+    if let Err(error) = &analysis.mechanics {
+        return Some(error.to_string());
+    }
+    if let Err(error) = &analysis.viscous {
+        return Some(error.to_string());
+    }
+    None
+}
+
+fn engine_failure(error: &EngineError) -> String {
+    match error {
+        EngineError::Invalid { diagnostics }
+        | EngineError::DesignHasErrors { diagnostics }
+        | EngineError::RecalculatedInvalid { diagnostics } => format_diagnostics(diagnostics),
+        EngineError::AfterDesign { design, source } => {
+            format!("{}\n{}", format_diagnostics(design), engine_failure(source))
+        }
+        _ => cli_message(error),
+    }
 }
 
 /// Como el panel: código, mensaje y, si la hay, la sugerencia.
@@ -1027,6 +1137,33 @@ mod tests {
             "{}",
             warmer.input.rho.si
         );
+    }
+
+    #[test]
+    fn a_locked_density_is_on_screen_whatever_the_temperature() {
+        let mut project = load("end_suction_v0.9.hmf");
+        project.params.insert(
+            "rho".into(),
+            Param::Locked {
+                value: "998.204 kg/m3".into(),
+            },
+        );
+        let path = std::env::temp_dir().join(format!(
+            "hmflow-rho-bloqueada-{:?}.hmf",
+            std::thread::current().id()
+        ));
+        project.save(&path).unwrap();
+        let opened = open_file(&path);
+        let _ = std::fs::remove_file(&path);
+        let opened = opened.unwrap();
+
+        let inputs = Inputs {
+            temperature_c: "60".into(),
+            ..opened.inputs
+        };
+        let window = super::compute(&inputs, &opened.basis).unwrap();
+
+        assert!((window.input.rho.si - 998.204).abs() < 1e-12);
     }
 
     #[test]

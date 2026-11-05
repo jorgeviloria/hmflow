@@ -31,6 +31,9 @@ pub struct Opened {
     /// El texto guardado de `eta_m`, para mostrarlo tal cual. La ventana no lee
     /// los parámetros del proyecto.
     pub eta_m_text: Option<String>,
+    /// `rho` y `eta_m` en `locked`: `update_point` no los reescribe.
+    pub rho_locked: bool,
+    pub eta_m_locked: bool,
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -79,7 +82,7 @@ pub fn open_project(project: &Project) -> Result<Opened, EditorError> {
     if !project.operating.viscosity.trim().is_empty() {
         return Err(unsupported("esta interfaz no edita una viscosidad escrita"));
     }
-    if rho_drifted(&case) {
+    if !is_locked(project, "rho") && rho_drifted(&case) {
         return Err(unsupported(
             "esta interfaz solo edita agua con la densidad de su temperatura",
         ));
@@ -101,6 +104,8 @@ pub fn open_project(project: &Project) -> Result<Opened, EditorError> {
         case,
         diagnostics,
         eta_m_text,
+        rho_locked: is_locked(project, "rho"),
+        eta_m_locked: is_locked(project, "eta_m"),
     })
 }
 
@@ -185,6 +190,10 @@ fn rewrite_unless_fixed(project: &mut Project, name: &str, value: String) {
     }
 }
 
+fn is_locked(project: &Project, name: &str) -> bool {
+    matches!(project.params.get(name), Some(Param::Locked { .. }))
+}
+
 fn unsupported(reason: impl Into<String>) -> EditorError {
     EditorError::Unsupported {
         reason: reason.into(),
@@ -227,6 +236,7 @@ fn reject_overrides(project: &Project) -> Result<(), EditorError> {
 
 /// Una densidad escrita que se aleja más de 0,5 % de la del agua a su
 /// temperatura (20 °C si no hay) ya no es «agua»: guardar la reescribiría.
+/// Una bloqueada no entra aquí, porque guardar no la toca.
 fn rho_drifted(case: &Case) -> bool {
     let DensitySource::Explicit { text } = &case.fluid.density.source else {
         return false;

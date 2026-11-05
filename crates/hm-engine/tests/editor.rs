@@ -371,6 +371,22 @@ fn the_text_of_eta_m_comes_with_the_opened_project() {
 }
 
 #[test]
+fn an_opened_project_says_what_is_locked() {
+    let mut project = v09();
+    let opened = open_project(&project).unwrap();
+    assert!(!opened.rho_locked);
+    assert!(!opened.eta_m_locked);
+
+    for name in ["rho", "eta_m"] {
+        let value = manual(&project, name);
+        project.params.insert(name.into(), Param::Locked { value });
+    }
+    let opened = open_project(&project).unwrap();
+    assert!(opened.rho_locked);
+    assert!(opened.eta_m_locked);
+}
+
+#[test]
 fn water_without_rho_opens() {
     let mut project = v09();
     project.params.remove("rho");
@@ -409,6 +425,17 @@ fn rejects_a_drifted_rho() {
         reason,
         "esta interfaz solo edita agua con la densidad de su temperatura"
     );
+}
+
+#[test]
+fn a_locked_rho_that_is_not_the_water_opens() {
+    // Guardar no la reescribiría, y es lo que queda al cambiar la temperatura.
+    let mut project = v09();
+    project.operating.temperature = "60 degC".into();
+    let value = manual(&project, "rho");
+    project.params.insert("rho".into(), Param::Locked { value });
+
+    assert!(open_project(&project).unwrap().rho_locked);
 }
 
 #[test]

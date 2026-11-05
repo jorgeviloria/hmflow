@@ -9,7 +9,7 @@ use std::path::{Path, PathBuf};
 use hm_core::Diagnostic;
 use hm_project::Project;
 
-use crate::model::{Basis, Inputs, open_file};
+use crate::model::{Basis, Inputs, build_project, open_file, open_loaded};
 
 /// Orden del menú Archivo que puede tirar el trabajo en curso.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -143,6 +143,14 @@ impl Session {
         }
     }
 
+    /// Guardar desarma el descarte: no tira el trabajo, lo escribe.
+    pub fn disarm(&mut self) {
+        self.armed = None;
+        if self.discard_notice().is_some() {
+            self.notice = None;
+        }
+    }
+
     /// Pide Nuevo o Abrir.
     ///
     /// Sin cambios, actúa. Con cambios, la primera vez deja el aviso y no
@@ -162,6 +170,65 @@ impl Session {
         Gate::Armed
     }
 
+    /// Escribe el proyecto en `path`.
+    ///
+    /// Si falta, añade `.hmf`. El nombre del proyecto nuevo es el del archivo,
+    /// sin extensión. Solo si sale bien quedan `project`, `file` y las cajas
+    /// de lo escrito, sin `●`. Si falla, `notice`: el disco y el `●` siguen.
+    pub fn save_to(&mut self, path: &Path) -> Result<(), String> {
+        self.disarm();
+        let chosen = path;
+        let path = with_hmf(chosen);
+        // El diálogo preguntó por el nombre elegido, no por el que sale de
+        // añadir la extensión.
+        if path != chosen && path.exists() {
+            let message = format!(
+                "ya existe {}: elige otro nombre",
+                path.file_name().unwrap_or_default().to_string_lossy()
+            );
+            self.notice = Some(message.clone());
+            return Err(message);
+        }
+        let name = path
+            .file_stem()
+            .map(|stem| stem.to_string_lossy().into_owned())
+            .filter(|name| !name.is_empty())
+            .unwrap_or_else(|| "sin título".to_string());
+        let had_project = self.project.is_some();
+        let built = match build_project(&self.inputs, &self.basis, self.project.as_ref(), &name) {
+            Ok(built) => built,
+            Err(message) => {
+                self.notice = Some(message.clone());
+                return Err(message);
+            }
+        };
+        if let Err(error) = built.project.save(&path) {
+            let message = error.to_string();
+            self.notice = Some(message.clone());
+            return Err(message);
+        }
+        let reopened = match open_loaded(built.project.clone()) {
+            Ok(reopened) => reopened,
+            Err(message) => {
+                // El archivo ya está escrito: la sesión apunta a él.
+                self.notice = Some(message.clone());
+                self.file = Some(path);
+                self.project = Some(built.project);
+                self.dirty = false;
+                self.opened_diagnostics = had_project.then_some(built.diagnostics);
+                return Err(message);
+            }
+        };
+        self.inputs = reopened.inputs;
+        self.basis = reopened.basis;
+        self.project = Some(built.project);
+        self.file = Some(path);
+        self.dirty = false;
+        self.notice = None;
+        self.opened_diagnostics = had_project.then_some(built.diagnostics);
+        Ok(())
+    }
+
     /// Nuevo: las entradas por defecto, sin archivo, sin proyecto y sin `●`.
     pub fn new_design(&mut self) {
         let shown_title = self.shown_title.take();
@@ -170,6 +237,20 @@ impl Session {
             ..Self::default()
         };
     }
+}
+
+/// `.hmf` si el nombre no la trae. No sustituye otra extensión: la añade.
+fn with_hmf(path: &Path) -> PathBuf {
+    let is_hmf = path
+        .extension()
+        .and_then(|extension| extension.to_str())
+        .is_some_and(|extension| extension.eq_ignore_ascii_case("hmf"));
+    if is_hmf {
+        return path.to_path_buf();
+    }
+    let mut name = path.as_os_str().to_os_string();
+    name.push(".hmf");
+    PathBuf::from(name)
 }
 
 #[cfg(test)]
@@ -368,5 +449,343 @@ mod tests {
         assert_eq!(session.title(), "HidroMac Flow");
         assert_eq!(session.title_change().as_deref(), Some("HidroMac Flow"));
         assert_eq!(session.request(Command::New), Gate::Proceed);
+    }
+
+    use hm_project::{Param, Project};
+
+    fn scratch(name: &str) -> PathBuf {
+        let path = std::env::temp_dir().join(format!("hmflow-{name}-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&path);
+        std::fs::create_dir_all(&path).unwrap();
+        path
+    }
+
+    fn copy_fixture(dir: &std::path::Path, name: &str) -> PathBuf {
+        let dest = dir.join(name);
+        std::fs::copy(fixture(name), &dest).unwrap();
+        dest
+    }
+
+    fn param_text(project: &Project, name: &str) -> String {
+        match &project.params[name] {
+            Param::Manual { value } | Param::Locked { value } => value.clone(),
+            Param::Auto { value, .. } => value.clone().unwrap_or_default(),
+            Param::Override { .. } => String::new(),
+        }
+    }
+
+    fn codes(session: &Session) -> Vec<&str> {
+        session
+            .opened_diagnostics
+            .as_deref()
+            .unwrap_or_default()
+            .iter()
+            .map(|diagnostic| diagnostic.code.as_str())
+            .collect()
+    }
+
+    #[test]
+    fn saving_a_new_design_and_reopening_gives_the_same_boxes() {
+        let dir = scratch("nuevo");
+        let mut session = Session::default();
+        session.edited();
+
+        session.save_to(&dir.join("bomba")).unwrap();
+
+        assert!(!session.dirty);
+        assert!(session.notice.is_none());
+        assert!(
+            session
+                .bar_label()
+                .as_deref()
+                .unwrap()
+                .ends_with("bomba.hmf")
+        );
+        assert!(!session.bar_label().unwrap().contains('●'));
+        let saved = session.inputs.clone();
+        let path = session.file.clone().unwrap();
+
+        let mut again = Session::default();
+        assert!(again.open_path(&path));
+        assert_eq!(again.inputs, saved);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn eta_m_empty_becomes_the_resolved_number_after_saving() {
+        let dir = scratch("eta");
+        let mut session = Session::default();
+        assert!(session.inputs.eta_m.is_empty());
+
+        session.save_to(&dir.join("bomba.hmf")).unwrap();
+
+        let eta_m = session.inputs.eta_m.parse::<f64>().unwrap();
+        assert!(eta_m > 0.0 && eta_m < 1.0, "{eta_m}");
+        assert_eq!(
+            param_text(session.project.as_ref().unwrap(), "eta_m"),
+            session.inputs.eta_m
+        );
+
+        let mut again = Session::default();
+        assert!(again.open_path(session.file.as_ref().unwrap()));
+        assert_eq!(again.inputs.eta_m, session.inputs.eta_m);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_locked_eta_m_comes_back_to_the_box() {
+        let dir = scratch("eta-locked");
+        let path = copy_fixture(&dir, "end_suction_v0.9.hmf");
+        let mut project = Project::load(&path).unwrap();
+        let eta_m = param_text(&project, "eta_m");
+        project.params.insert(
+            "eta_m".into(),
+            Param::Locked {
+                value: eta_m.clone(),
+            },
+        );
+        project.save(&path).unwrap();
+        let mut session = Session::default();
+        assert!(session.open_path(&path));
+        session.inputs.eta_m = "0.9".into();
+
+        session.save_to(&path).unwrap();
+
+        assert_eq!(session.inputs.eta_m, eta_m);
+        assert!(matches!(
+            &session.project.as_ref().unwrap().params["eta_m"],
+            Param::Locked { value } if value == &eta_m
+        ));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_manual_rho_follows_the_temperature_on_save() {
+        let dir = scratch("rho-manual");
+        let path = copy_fixture(&dir, "end_suction_v0.9.hmf");
+        let mut session = Session::default();
+        assert!(session.open_path(&path));
+        assert_eq!(
+            param_text(session.project.as_ref().unwrap(), "rho"),
+            "998.204 kg/m3"
+        );
+        session.inputs.temperature_c = "60".into();
+
+        session.save_to(&path).unwrap();
+
+        let rho = param_text(session.project.as_ref().unwrap(), "rho");
+        let expected = format!(
+            "{:.3} kg/m3",
+            hm_design::water_density(60.0 + 273.15).unwrap()
+        );
+        assert_eq!(rho, expected);
+        assert!(matches!(
+            session.project.as_ref().unwrap().params.get("rho"),
+            Some(Param::Manual { .. })
+        ));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_locked_rho_stays_and_shows_hm_des_009() {
+        let dir = scratch("rho-locked");
+        let path = copy_fixture(&dir, "end_suction_v0.9.hmf");
+        let mut project = Project::load(&path).unwrap();
+        let rho = param_text(&project, "rho");
+        project
+            .params
+            .insert("rho".into(), Param::Locked { value: rho.clone() });
+        project.save(&path).unwrap();
+
+        let mut session = Session::default();
+        assert!(session.open_path(&path));
+        session.inputs.temperature_c = "60".into();
+        session.dirty = true;
+
+        session.save_to(&path).unwrap();
+
+        assert!(matches!(
+            &session.project.as_ref().unwrap().params["rho"],
+            Param::Locked { value } if value == &rho
+        ));
+        assert_eq!(
+            codes(&session)
+                .iter()
+                .filter(|code| **code == "HM-DES-009")
+                .count(),
+            1
+        );
+        assert!(!session.dirty);
+        assert_eq!(session.inputs.temperature_c, "60");
+
+        // Lo guardado se puede volver a abrir, con la misma densidad.
+        let mut again = Session::default();
+        assert!(again.open_path(&path), "{:?}", again.notice);
+        assert_eq!(again.inputs, session.inputs);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_stale_manual_selection_shows_hm_des_013_once() {
+        let dir = scratch("seleccion");
+        let path = copy_fixture(&dir, "end_suction_v0.9.hmf");
+        let mut session = Session::default();
+        assert!(session.open_path(&path));
+        let psi = param_text(session.project.as_ref().unwrap(), "psi");
+        session.inputs.q = "250 m3/h".into();
+
+        session.save_to(&path).unwrap();
+
+        assert_eq!(
+            codes(&session)
+                .iter()
+                .filter(|code| **code == "HM-DES-013")
+                .count(),
+            1
+        );
+        assert_eq!(param_text(session.project.as_ref().unwrap(), "psi"), psi);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn an_input_error_does_not_create_or_modify_the_file() {
+        let dir = scratch("caja-mala");
+        let created = dir.join("nueva.hmf");
+        let mut session = Session::default();
+        session.inputs.q = "mucho".into();
+        session.edited();
+        assert_eq!(session.request(Command::New), Gate::Armed);
+
+        assert!(session.save_to(&created).is_err());
+
+        assert!(!created.exists());
+        assert!(session.dirty);
+        assert!(session.notice.is_some());
+        assert_eq!(session.inputs.q, "mucho");
+        assert!(session.file.is_none());
+        // Guardar desarmó: la siguiente orden vuelve a pedir confirmación.
+        assert_eq!(session.request(Command::New), Gate::Armed);
+
+        let path = copy_fixture(&dir, "end_suction_v0.9.hmf");
+        let bytes = std::fs::read(&path).unwrap();
+        let mut session = Session::default();
+        assert!(session.open_path(&path));
+        session.inputs.q = "mucho".into();
+        session.dirty = true;
+        assert!(session.save_to(&path).is_err());
+        assert_eq!(std::fs::read(&path).unwrap(), bytes);
+        assert!(session.dirty);
+        assert_eq!(session.inputs.q, "mucho");
+        assert_eq!(session.file.as_deref(), Some(path.as_path()));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_failed_stage_does_not_create_or_modify_the_file() {
+        let dir = scratch("etapa");
+        let path = dir.join("etapa.hmf");
+        let mut session = Session::default();
+        session.save_to(&path).unwrap();
+        // Solo la razón de garganta, como el caso del motor que tumba la geometría.
+        // El resto de selecciones del diseño nuevo forzarían otro punto.
+        let mut project = Project::new("etapa", hm_engine::PumpType::EndSuction);
+        project.design.method = hm_engine::METHOD.to_string();
+        project.params.insert(
+            "volute_ratio".into(),
+            Param::Manual {
+                value: "0.5".into(),
+            },
+        );
+        session.project = Some(project);
+        session.basis = Basis {
+            design: hm_engine::DesignOptions {
+                volute_ratio: Some(0.5),
+                ..Default::default()
+            },
+            ..Basis::default()
+        };
+        session.inputs.q = "4 m3/s".into();
+        session.inputs.h = "30 m".into();
+        session.inputs.n = "500 rpm".into();
+        session.dirty = true;
+        let bytes = std::fs::read(&path).unwrap();
+
+        let error = session.save_to(&path).unwrap_err();
+
+        assert!(
+            error.contains("difusor") || error.contains("tubuladura"),
+            "{error}"
+        );
+        assert_eq!(std::fs::read(&path).unwrap(), bytes);
+        assert!(session.dirty);
+        assert!(session.notice.is_some());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn save_as_adds_the_hmf_extension_and_accepts_spaces_and_accents() {
+        let dir = scratch("nombre");
+        let mut session = Session::default();
+
+        session.save_to(&dir.join("Bomba de río")).unwrap();
+
+        let saved = dir.join("Bomba de río.hmf");
+        assert!(saved.is_file());
+        assert_eq!(session.file.as_deref(), Some(saved.as_path()));
+        assert_eq!(
+            session.project.as_ref().unwrap().project.name,
+            "Bomba de río"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn adding_the_extension_never_overwrites_another_file() {
+        let dir = scratch("colision");
+        let existing = dir.join("bomba.hmf");
+        std::fs::write(&existing, "mío").unwrap();
+        let mut session = Session::default();
+        session.edited();
+
+        let error = session.save_to(&dir.join("bomba")).unwrap_err();
+
+        assert!(error.contains("bomba.hmf"), "{error}");
+        assert_eq!(std::fs::read_to_string(&existing).unwrap(), "mío");
+        assert!(session.dirty);
+        assert!(session.file.is_none());
+        assert_eq!(session.notice.as_deref(), Some(error.as_str()));
+
+        // Escribir el nombre completo es elegirlo: ahí el diálogo ya preguntó.
+        session.save_to(&existing).unwrap();
+        assert_ne!(std::fs::read_to_string(&existing).unwrap(), "mío");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_legacy_project_is_migrated_only_when_saved() {
+        let dir = scratch("legado");
+        let path = copy_fixture(&dir, "end_suction_v0.8.hmf");
+        let bytes = std::fs::read(&path).unwrap();
+        let mut session = Session::default();
+        assert!(session.open_path(&path));
+
+        assert_eq!(
+            session.project.as_ref().unwrap().design.method,
+            "end_suction_v0.8"
+        );
+        assert_eq!(std::fs::read(&path).unwrap(), bytes);
+
+        session.save_to(&path).unwrap();
+
+        assert_eq!(
+            Project::load(&path).unwrap().design.method,
+            hm_engine::METHOD
+        );
+        assert_ne!(std::fs::read(&path).unwrap(), bytes);
+        assert_eq!(
+            std::fs::read(fixture("end_suction_v0.8.hmf")).unwrap(),
+            bytes
+        );
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }

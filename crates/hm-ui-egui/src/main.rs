@@ -17,8 +17,8 @@ use hm_engine::{METHOD, PARAM_SPECS, PREFERRED_OPERATING_REGION};
 use hm_formula::Registry;
 
 use model::{
-    Field, FieldErrors, IntakeMode, Outcome, SUCTION_BOXES, compute, suction_box_error,
-    suction_group_errors,
+    Field, FieldErrors, IntakeMode, Outcome, SUCTION_BOXES, build_project, compute,
+    suction_box_error, suction_group_errors,
 };
 use session::{Command, Gate, Session};
 
@@ -26,6 +26,8 @@ const OPEN_SHORTCUT: egui::KeyboardShortcut =
     egui::KeyboardShortcut::new(egui::Modifiers::COMMAND, egui::Key::O);
 const NEW_SHORTCUT: egui::KeyboardShortcut =
     egui::KeyboardShortcut::new(egui::Modifiers::COMMAND, egui::Key::N);
+const SAVE_SHORTCUT: egui::KeyboardShortcut =
+    egui::KeyboardShortcut::new(egui::Modifiers::COMMAND, egui::Key::S);
 
 fn main() -> eframe::Result {
     let options = eframe::NativeOptions {
@@ -153,10 +155,14 @@ impl eframe::App for App {
 fn top_bar(ui: &mut egui::Ui, app: &mut App) {
     let mut new_design = new_requested(ui.ctx());
     let mut open = open_requested(ui.ctx());
+    let mut save_file = save_requested(ui.ctx());
+    let mut save_as = false;
     egui::Panel::top("top").show(ui, |ui| {
-        let (menu_new, menu_open) = file_menu(ui);
-        new_design |= menu_new;
-        open |= menu_open;
+        let menu = file_menu(ui);
+        new_design |= menu.new_design;
+        open |= menu.open;
+        save_file |= menu.save;
+        save_as |= menu.save_as;
         ui.horizontal(|ui| {
             ui.heading("HidroMac Flow");
             if let Some(name) = app.session.bar_label() {
@@ -180,6 +186,11 @@ fn top_bar(ui: &mut egui::Ui, app: &mut App) {
     if open {
         choose_and_open(app);
     }
+    if save_as {
+        choose_and_save(app);
+    } else if save_file {
+        save(app);
+    }
 }
 
 /// Ctrl+N y, en macOS, también ⌘N. `COMMAND` es ⌘ en Mac y Ctrl en el resto.
@@ -190,6 +201,11 @@ fn new_requested(ctx: &egui::Context) -> bool {
 /// Ctrl+O y, en macOS, también ⌘O. `COMMAND` es ⌘ en Mac y Ctrl en el resto.
 fn open_requested(ctx: &egui::Context) -> bool {
     pressed_once(ctx, OPEN_SHORTCUT) || pressed_once(ctx, ctrl(OPEN_SHORTCUT))
+}
+
+/// Ctrl+S y, en macOS, también ⌘S.
+fn save_requested(ctx: &egui::Context) -> bool {
+    pressed_once(ctx, SAVE_SHORTCUT) || pressed_once(ctx, ctrl(SAVE_SHORTCUT))
 }
 
 fn ctrl(shortcut: egui::KeyboardShortcut) -> egui::KeyboardShortcut {
@@ -220,27 +236,49 @@ fn pressed_once(ctx: &egui::Context, shortcut: egui::KeyboardShortcut) -> bool {
     })
 }
 
-/// Archivo → Nuevo y Abrir…. Devuelve cuál se pulsó.
-fn file_menu(ui: &mut egui::Ui) -> (bool, bool) {
-    let mut new_design = false;
-    let mut open = false;
+struct MenuChoice {
+    new_design: bool,
+    open: bool,
+    save: bool,
+    save_as: bool,
+}
+
+/// Archivo → Nuevo, Abrir…, Guardar y Guardar como….
+fn file_menu(ui: &mut egui::Ui) -> MenuChoice {
+    let mut choice = MenuChoice {
+        new_design: false,
+        open: false,
+        save: false,
+        save_as: false,
+    };
     egui::MenuBar::new().ui(ui, |ui| {
         ui.menu_button("Archivo", |ui| {
             let new_button =
                 egui::Button::new("Nuevo").shortcut_text(ui.ctx().format_shortcut(&NEW_SHORTCUT));
             if ui.add(new_button).clicked() {
                 ui.close();
-                new_design = true;
+                choice.new_design = true;
             }
             let open_button =
                 egui::Button::new("Abrir…").shortcut_text(ui.ctx().format_shortcut(&OPEN_SHORTCUT));
             if ui.add(open_button).clicked() {
                 ui.close();
-                open = true;
+                choice.open = true;
+            }
+            ui.separator();
+            let save_button = egui::Button::new("Guardar")
+                .shortcut_text(ui.ctx().format_shortcut(&SAVE_SHORTCUT));
+            if ui.add(save_button).clicked() {
+                ui.close();
+                choice.save = true;
+            }
+            if ui.button("Guardar como…").clicked() {
+                ui.close();
+                choice.save_as = true;
             }
         });
     });
-    (new_design, open)
+    choice
 }
 
 fn apply_new(app: &mut App) {
@@ -267,6 +305,64 @@ fn choose_and_open(app: &mut App) {
     };
     if app.session.open_path(&path) {
         app.recompute();
+    }
+}
+
+/// Sin ruta, Guardar es Guardar como. Con errores de caja o de etapa no abre
+/// el diálogo ni escribe.
+fn save(app: &mut App) {
+    if !can_save(app) {
+        return;
+    }
+    if let Some(path) = app.session.file.clone() {
+        write_to(app, &path);
+        return;
+    }
+    choose_and_save(app);
+}
+
+fn choose_and_save(app: &mut App) {
+    if !can_save(app) {
+        return;
+    }
+    app.session.disarm();
+    let Some(path) = rfd::FileDialog::new()
+        .set_title("Guardar proyecto")
+        .add_filter("HidroMac Flow", &["hmf"])
+        .save_file()
+    else {
+        return;
+    };
+    write_to(app, &path);
+}
+
+fn write_to(app: &mut App, path: &std::path::Path) {
+    if app.session.save_to(path).is_ok() {
+        app.recompute();
+    }
+}
+
+fn can_save(app: &mut App) -> bool {
+    let name = app
+        .session
+        .file
+        .as_ref()
+        .and_then(|path| path.file_stem())
+        .map(|stem| stem.to_string_lossy().into_owned())
+        .filter(|name| !name.is_empty())
+        .unwrap_or_else(|| "sin título".to_string());
+    match build_project(
+        &app.session.inputs,
+        &app.session.basis,
+        app.session.project.as_ref(),
+        &name,
+    ) {
+        Ok(_) => true,
+        Err(message) => {
+            app.session.disarm();
+            app.session.notice = Some(message);
+            false
+        }
     }
 }
 

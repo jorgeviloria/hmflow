@@ -358,6 +358,19 @@ fn opens_the_v0_8_fixture_with_the_legacy_notice() {
 }
 
 #[test]
+fn the_text_of_eta_m_comes_with_the_opened_project() {
+    let mut project = v09();
+    let text = manual(&project, "eta_m");
+    assert_eq!(
+        open_project(&project).unwrap().eta_m_text.as_deref(),
+        Some(text.as_str())
+    );
+
+    project.params.remove("eta_m");
+    assert_eq!(open_project(&project).unwrap().eta_m_text, None);
+}
+
+#[test]
 fn water_without_rho_opens() {
     let mut project = v09();
     project.params.remove("rho");

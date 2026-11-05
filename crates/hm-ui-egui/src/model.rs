@@ -16,7 +16,7 @@ use hm_engine::{
     EditorError, EngineError, Entered, Fluid, FluidKind, Intake, PumpType, Temperature, analyze,
     cli_message, open_project, water_density_at,
 };
-use hm_project::{Param, Project};
+use hm_project::Project;
 use hm_units::Quantity;
 
 /// Puntos de la curva que se dibujan.
@@ -408,7 +408,7 @@ pub struct OpenedFile {
 /// queda en °C: si el texto ya es un número que la caja acepta y coincide con
 /// los grados, se conserva; `80 degC` pasa a `80`, sin ceros de más. ηm es el
 /// número del caso, o vacío si no hay: el texto del parámetro lo pone
-/// `open_file`, que es quien tiene el proyecto.
+/// `open_file`, que recibe ese texto del motor.
 pub fn case_to_inputs(case: &Case) -> Inputs {
     // Sin instalación en el archivo, la caja arranca como en un diseño nuevo:
     // pasar a «instalación» no debe abrir con un error.
@@ -476,7 +476,7 @@ pub fn open_file(path: &Path) -> Result<OpenedFile, String> {
         Err(EditorError::Invalid { diagnostics }) => return Err(format_diagnostics(&diagnostics)),
     };
     let mut inputs = case_to_inputs(&opened.case);
-    if let Some(text) = parameter_text(&project, "eta_m") {
+    if let Some(text) = opened.eta_m_text {
         inputs.eta_m = text;
     }
     let basis = Basis::from_opened(&opened.case, &inputs);
@@ -526,15 +526,6 @@ fn format_celsius(celsius: f64) -> String {
         .to_string()
 }
 
-/// Texto guardado de ηm. Un `override` no llega: `open_project` ya lo rechazó.
-fn parameter_text(project: &Project, name: &str) -> Option<String> {
-    match project.params.get(name)? {
-        Param::Manual { value } | Param::Locked { value } => Some(value.clone()),
-        Param::Auto { value, .. } => value.clone(),
-        Param::Override { .. } => None,
-    }
-}
-
 /// Como el panel: código, mensaje y, si la hay, la sugerencia.
 fn format_diagnostics(diagnostics: &Diagnostics) -> String {
     let text = diagnostics
@@ -558,6 +549,7 @@ fn format_diagnostics(diagnostics: &Diagnostics) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use hm_project::Param;
 
     fn codes(diagnostics: &[Diagnostic]) -> Vec<&str> {
         diagnostics

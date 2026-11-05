@@ -10,7 +10,7 @@ use hm_units::parse_quantity;
 use crate::analysis::{Analysis, CurvePoints, require_stages};
 use crate::audit::audit;
 use crate::case::{Case, DensitySource, FluidKind, Temperature};
-use crate::convert::{case_from_project, override_error};
+use crate::convert::{case_from_project, override_error, param_value};
 use crate::dispatch::analyze;
 use crate::error::{CaseField, EngineError, cli_message, input_error};
 use crate::fluid::{DEFAULT_WATER_TEMPERATURE_K, water_density_at};
@@ -28,6 +28,9 @@ const RHO_TOLERANCE: f64 = 0.005;
 pub struct Opened {
     pub case: Case,
     pub diagnostics: Diagnostics,
+    /// El texto guardado de `eta_m`, para mostrarlo tal cual. La ventana no lee
+    /// los parámetros del proyecto.
+    pub eta_m_text: Option<String>,
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -89,7 +92,16 @@ pub fn open_project(project: &Project) -> Result<Opened, EditorError> {
             diagnostics.extend(analysis.diagnostics);
         }
     }
-    Ok(Opened { case, diagnostics })
+    let eta_m_text = project
+        .params
+        .get("eta_m")
+        .and_then(param_value)
+        .map(str::to_string);
+    Ok(Opened {
+        case,
+        diagnostics,
+        eta_m_text,
+    })
 }
 
 /// Escribe el punto del caso en un proyecto que ya existe.

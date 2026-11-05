@@ -2,17 +2,21 @@
 //!
 //! Arma un caso de agua desde las entradas y lo pasa al motor. La interfaz
 //! muestra el `Analysis`: diseño, curva, etapas y diagnósticos en el orden
-//! canónico.
+//! canónico. Abrir un archivo es `Project::load` y `open_project`: aquí no se
+//! interpreta el esquema.
 
-use hm_core::Diagnostic;
+use std::path::Path;
+
+use hm_core::{Diagnostic, Diagnostics};
 use hm_design::geometry::Geometry;
 use hm_design::mechanics::Mechanics;
 use hm_design::{CurvePoint, DesignError, DesignInput, DesignResult, ViscousCorrection};
 use hm_engine::{
     Analysis, Case, CaseField, CurvePoints, Density, DensitySource, DesignOptions, Duty,
-    EngineError, Entered, Fluid, FluidKind, Intake, PumpType, Temperature, analyze, cli_message,
-    water_density_at,
+    EditorError, EngineError, Entered, Fluid, FluidKind, Intake, PumpType, Temperature, analyze,
+    cli_message, open_project, water_density_at,
 };
+use hm_project::{Param, Project};
 use hm_units::Quantity;
 
 /// Puntos de la curva que se dibujan.
@@ -355,6 +359,162 @@ fn engine_error_field(error: EngineError, eta_m_typed: bool) -> (Field, String) 
         message
     };
     (field, message)
+}
+
+/// Un proyecto que la ventana ya puede mostrar.
+#[derive(Debug)]
+pub struct OpenedFile {
+    pub project: Project,
+    pub inputs: Inputs,
+    pub diagnostics: Vec<Diagnostic>,
+}
+
+/// Cajas a partir de un caso.
+///
+/// Q, H, n, el NPSHa y la aspiración copian el texto guardado. La temperatura
+/// queda en °C: si el texto ya es un número que la caja acepta y coincide con
+/// los grados, se conserva; `80 degC` pasa a `80`, sin ceros de más. ηm es el
+/// número del caso, o vacío si no hay: el texto del parámetro lo pone
+/// `open_file`, que es quien tiene el proyecto.
+pub fn case_to_inputs(case: &Case) -> Inputs {
+    let (intake, npsha, suction_pressure, suction_height, suction_losses, suction_vapor) =
+        match &case.intake {
+            Intake::Available(npsha) => (
+                IntakeMode::Written,
+                npsha.text.clone(),
+                String::new(),
+                String::new(),
+                String::new(),
+                String::new(),
+            ),
+            Intake::None => (
+                IntakeMode::Written,
+                String::new(),
+                String::new(),
+                String::new(),
+                String::new(),
+                String::new(),
+            ),
+            Intake::Installation {
+                pressure,
+                height,
+                losses,
+                vapor_pressure,
+            } => (
+                IntakeMode::Installation,
+                String::new(),
+                pressure.text.clone(),
+                optional_text(height),
+                optional_text(losses),
+                optional_text(vapor_pressure),
+            ),
+        };
+
+    Inputs {
+        q: case.duty.q.text.clone(),
+        h: case.duty.h.text.clone(),
+        n: case.duty.n.text.clone(),
+        temperature_c: temperature_box(case.fluid.temperature.as_ref()),
+        eta_m: case
+            .mechanical_efficiency
+            .map(|value| value.to_string())
+            .unwrap_or_default(),
+        npsha,
+        intake,
+        suction_pressure,
+        suction_height,
+        suction_losses,
+        suction_vapor,
+    }
+}
+
+/// Abre un `.hmf` para la ventana.
+///
+/// El rechazo es la frase de `Unsupported` o los diagnósticos, un aviso por
+/// línea. No escribe nada.
+pub fn open_file(path: &Path) -> Result<OpenedFile, String> {
+    let project = Project::load(path).map_err(|error| error.to_string())?;
+    let opened = match open_project(&project) {
+        Ok(opened) => opened,
+        Err(EditorError::Unsupported { reason }) => return Err(reason),
+        Err(EditorError::Invalid { diagnostics }) => return Err(format_diagnostics(&diagnostics)),
+    };
+    let mut inputs = case_to_inputs(&opened.case);
+    if let Some(text) = parameter_text(&project, "eta_m") {
+        inputs.eta_m = text;
+    }
+    Ok(OpenedFile {
+        project,
+        inputs,
+        diagnostics: opened.diagnostics.into_vec(),
+    })
+}
+
+fn optional_text(entered: &Option<Entered>) -> String {
+    entered
+        .as_ref()
+        .map(|entered| entered.text.clone())
+        .unwrap_or_default()
+}
+
+/// Número en °C, o el texto si la caja ya lo acepta y da los mismos grados.
+///
+/// Sin temperatura el motor usa 20 °C: la caja no puede quedar vacía.
+fn temperature_box(temperature: Option<&Temperature>) -> String {
+    let Some(temperature) = temperature else {
+        return "20".to_string();
+    };
+    let celsius = temperature.kelvin - 273.15;
+    let trimmed = temperature.text.trim();
+    let parsed = trimmed.replace(',', ".");
+    if parsed
+        .parse::<f64>()
+        .is_ok_and(|value| (value - celsius).abs() <= 1e-4)
+    {
+        return trimmed.to_string();
+    }
+    format_celsius(celsius)
+}
+
+/// Grados sin ceros de más: `80`, no `80.0`.
+fn format_celsius(celsius: f64) -> String {
+    let rounded = (celsius * 1000.0).round() / 1000.0;
+    if (rounded - rounded.round()).abs() < 1e-9 {
+        return format!("{}", rounded.round() as i64);
+    }
+    format!("{rounded:.3}")
+        .trim_end_matches('0')
+        .trim_end_matches('.')
+        .to_string()
+}
+
+/// Texto guardado de ηm. Un `override` no llega: `open_project` ya lo rechazó.
+fn parameter_text(project: &Project, name: &str) -> Option<String> {
+    match project.params.get(name)? {
+        Param::Manual { value } | Param::Locked { value } => Some(value.clone()),
+        Param::Auto { value, .. } => value.clone(),
+        Param::Override { .. } => None,
+    }
+}
+
+/// Como el panel: código, mensaje y, si la hay, la sugerencia.
+fn format_diagnostics(diagnostics: &Diagnostics) -> String {
+    let text = diagnostics
+        .iter()
+        .map(|diagnostic| {
+            let mut line = format!("{}  {}", diagnostic.code, diagnostic.message);
+            if let Some(hint) = &diagnostic.hint {
+                line.push_str(&format!("\n    → {hint}"));
+            }
+            line
+        })
+        .collect::<Vec<_>>()
+        .join("\n");
+    if text.is_empty() {
+        "el proyecto tiene errores".to_string()
+    } else {
+        text
+    }
 }
 
 #[cfg(test)]
@@ -763,5 +923,114 @@ mod tests {
             ..Inputs::default()
         };
         assert!(compute(&inputs).is_ok());
+    }
+
+    fn fixture(name: &str) -> std::path::PathBuf {
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../hm-project/tests/fixtures")
+            .join(name)
+    }
+
+    fn load(name: &str) -> Project {
+        Project::load(&fixture(name)).unwrap()
+    }
+
+    #[test]
+    fn case_to_inputs_copies_the_texts() {
+        let project = load("end_suction_v0.9.hmf");
+        let case = hm_engine::case_from_project(&project).unwrap();
+        let inputs = case_to_inputs(&case);
+
+        assert_eq!(inputs.q, "120 m3/h");
+        assert_eq!(inputs.h, "45 m");
+        assert_eq!(inputs.n, "2900 rpm");
+        assert_eq!(inputs.npsha, "15 m");
+        assert_eq!(inputs.intake, IntakeMode::Written);
+
+        let mut case = case;
+        case.intake = Intake::Installation {
+            pressure: Entered::parse("1 atm").unwrap(),
+            height: Some(Entered::parse("2 m").unwrap()),
+            losses: None,
+            vapor_pressure: Some(Entered::parse("2.3 kPa").unwrap()),
+        };
+        let inputs = case_to_inputs(&case);
+        assert_eq!(inputs.intake, IntakeMode::Installation);
+        assert!(inputs.npsha.is_empty());
+        assert_eq!(inputs.suction_pressure, "1 atm");
+        assert_eq!(inputs.suction_height, "2 m");
+        assert!(inputs.suction_losses.is_empty());
+        assert_eq!(inputs.suction_vapor, "2.3 kPa");
+    }
+
+    #[test]
+    fn temperature_shows_degrees_celsius() {
+        let mut project = load("end_suction_v0.9.hmf");
+        project.operating.temperature = "80 degC".into();
+        let mut case = hm_engine::case_from_project(&project).unwrap();
+        assert_eq!(case_to_inputs(&case).temperature_c, "80");
+
+        // Un número que la caja ya acepta se conserva, ceros incluidos.
+        case.fluid.temperature = Some(Temperature {
+            text: "20.0".into(),
+            kelvin: 20.0 + 273.15,
+        });
+        assert_eq!(case_to_inputs(&case).temperature_c, "20.0");
+
+        case.fluid.temperature = Some(Temperature {
+            text: "20,5".into(),
+            kelvin: 20.5 + 273.15,
+        });
+        assert_eq!(case_to_inputs(&case).temperature_c, "20,5");
+    }
+
+    #[test]
+    fn open_fixture_fills_the_boxes_and_computes() {
+        let path = fixture("end_suction_v0.9.hmf");
+        let opened = open_file(&path).unwrap();
+
+        assert_eq!(opened.inputs.q, "120 m3/h");
+        assert_eq!(opened.inputs.h, "45 m");
+        assert_eq!(opened.inputs.n, "2900 rpm");
+        assert_eq!(opened.inputs.temperature_c, "20");
+        assert_eq!(opened.inputs.npsha, "15 m");
+        assert_eq!(opened.inputs.eta_m, "0.9856064144305404");
+        assert!(compute(&opened.inputs).is_ok());
+
+        let project = Project::load(&path).unwrap();
+        let from_engine = open_project(&project).unwrap();
+        assert_eq!(opened.diagnostics, from_engine.diagnostics.into_vec());
+    }
+
+    #[test]
+    fn a_rejected_file_returns_its_reason() {
+        let mut project = load("end_suction_v0.9.hmf");
+        project.operating.fluid = "aceite".into();
+        let path = std::env::temp_dir().join("hmflow-abrir-aceite.hmf");
+        project.save(&path).unwrap();
+        let error = open_file(&path).unwrap_err();
+        let _ = std::fs::remove_file(&path);
+        assert_eq!(error, "esta interfaz solo edita proyectos de agua");
+
+        let mut project = load("end_suction_v0.9.hmf");
+        project.design.method = "end_suction_v9.9".into();
+        let path = std::env::temp_dir().join("hmflow-abrir-metodo.hmf");
+        project.save(&path).unwrap();
+        let error = open_file(&path).unwrap_err();
+        let _ = std::fs::remove_file(&path);
+        assert!(error.contains("HM-PROJ-016"), "{error}");
+    }
+
+    #[test]
+    fn opening_a_legacy_project_keeps_the_notice_first() {
+        let opened = open_file(&fixture("end_suction_v0.8.hmf")).unwrap();
+        assert_eq!(opened.diagnostics[0].code, "HM-PROJ-025");
+        assert_eq!(opened.inputs.q, "120 m3/h");
+    }
+
+    #[test]
+    fn an_unreadable_file_returns_an_error() {
+        let error = open_file(std::path::Path::new("/no/existe/hmflow.hmf")).unwrap_err();
+        assert!(error.contains("E/S"), "{error}");
     }
 }

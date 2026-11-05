@@ -182,9 +182,12 @@ fn check_deps(graph: &Graph) -> Vec<String> {
             }
         }
 
-        // Solo `hm-engine` junta el diseño con el proyecto para calcular. Un
-        // adaptador que dependa de los dos estaría rehaciendo ese trabajo.
+        // Solo `hm-engine` junta el diseño con el proyecto para calcular. La
+        // ventana también los ve, y solo para `Project::load` y `Project::save`:
+        // no arma el caso desde el archivo. Otro adaptador estaría rehaciendo
+        // el trabajo del motor.
         if name != "hm-engine"
+            && name != "hm-ui-egui"
             && dependencies.contains("hm-design")
             && dependencies.contains("hm-project")
         {
@@ -737,6 +740,7 @@ mod tests {
                     "hm-design",
                     "hm-engine",
                     "hm-formula",
+                    "hm-project",
                     "hm-units",
                 ],
             ),
@@ -772,6 +776,13 @@ mod tests {
 
         let engine = check_deps(&graph(&[("hm-engine", &["hm-design", "hm-project"])]));
         assert!(engine.is_empty(), "{engine:?}");
+
+        // La ventana carga y guarda; no es el motor.
+        let window = check_deps(&graph(&[(
+            "hm-ui-egui",
+            &["hm-engine", "hm-design", "hm-project"],
+        )]));
+        assert!(window.is_empty(), "{window:?}");
 
         // Cada uno por separado sí puede.
         let separate = check_deps(&graph(&[

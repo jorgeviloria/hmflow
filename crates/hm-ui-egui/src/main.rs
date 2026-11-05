@@ -4,6 +4,7 @@
 //! Ejecutar con `cargo run --manifest-path crates/hm-ui-egui/Cargo.toml`.
 
 mod model;
+mod session;
 
 use eframe::egui;
 use egui::{Color32, RichText};
@@ -16,9 +17,13 @@ use hm_engine::{METHOD, PARAM_SPECS, PREFERRED_OPERATING_REGION};
 use hm_formula::Registry;
 
 use model::{
-    Field, FieldErrors, Inputs, IntakeMode, Outcome, SUCTION_BOXES, compute, suction_box_error,
+    Field, FieldErrors, IntakeMode, Outcome, SUCTION_BOXES, compute, suction_box_error,
     suction_group_errors,
 };
+use session::Session;
+
+const OPEN_SHORTCUT: egui::KeyboardShortcut =
+    egui::KeyboardShortcut::new(egui::Modifiers::COMMAND, egui::Key::O);
 
 fn main() -> eframe::Result {
     let options = eframe::NativeOptions {
@@ -43,7 +48,7 @@ enum Tab {
 }
 
 struct App {
-    inputs: Inputs,
+    session: Session,
     outcome: Option<Outcome>,
     errors: FieldErrors,
     selected: &'static str,
@@ -64,7 +69,7 @@ struct Capture {
 impl App {
     fn new() -> Self {
         let mut app = Self {
-            inputs: Inputs::default(),
+            session: Session::default(),
             outcome: None,
             errors: FieldErrors::new(),
             selected: "d2",
@@ -86,7 +91,7 @@ impl App {
 
     /// El diseño tarda milisegundos: se recalcula con cada cambio.
     fn recompute(&mut self) {
-        match compute(&self.inputs) {
+        match compute(&self.session.inputs) {
             Ok(outcome) => {
                 self.outcome = Some(outcome);
                 self.errors.clear();
@@ -99,7 +104,7 @@ impl App {
     fn stale(&self) -> bool {
         self.outcome
             .as_ref()
-            .is_some_and(|outcome| outcome.inputs != self.inputs)
+            .is_some_and(|outcome| outcome.inputs != self.session.inputs)
     }
 }
 
@@ -108,6 +113,8 @@ impl eframe::App for App {
         if let Some(capture) = &mut self.capture {
             capture_step(ui.ctx(), capture);
         }
+        ui.ctx()
+            .send_viewport_cmd(egui::ViewportCommand::Title(self.session.title()));
         top_bar(ui, self);
         inputs_panel(ui, self);
         inspector_panel(ui, self);
@@ -138,10 +145,15 @@ impl eframe::App for App {
 
 // ---------------------------------------------------------------- barra
 
-fn top_bar(ui: &mut egui::Ui, app: &App) {
+fn top_bar(ui: &mut egui::Ui, app: &mut App) {
+    let mut open = open_requested(ui.ctx());
     egui::Panel::top("top").show(ui, |ui| {
+        open |= file_menu(ui);
         ui.horizontal(|ui| {
             ui.heading("HidroMac Flow");
+            if let Some(name) = app.session.file_name() {
+                ui.label(RichText::new(name).strong());
+            }
             ui.label(
                 RichText::new(format!("Diseño preliminar end-suction · método {}", METHOD)).weak(),
             );
@@ -151,6 +163,46 @@ fn top_bar(ui: &mut egui::Ui, app: &App) {
             });
         });
     });
+    if open {
+        choose_and_open(app);
+    }
+}
+
+/// Ctrl+O y, en macOS, también ⌘O. `COMMAND` es ⌘ en Mac y Ctrl en el resto.
+fn open_requested(ctx: &egui::Context) -> bool {
+    ctx.input_mut(|input| {
+        input.consume_shortcut(&OPEN_SHORTCUT)
+            || input.consume_key(egui::Modifiers::CTRL, egui::Key::O)
+    })
+}
+
+/// Archivo → Abrir…. Devuelve si hay que abrir el diálogo.
+fn file_menu(ui: &mut egui::Ui) -> bool {
+    let mut open = false;
+    egui::MenuBar::new().ui(ui, |ui| {
+        ui.menu_button("Archivo", |ui| {
+            let button =
+                egui::Button::new("Abrir…").shortcut_text(ui.ctx().format_shortcut(&OPEN_SHORTCUT));
+            if ui.add(button).clicked() {
+                ui.close();
+                open = true;
+            }
+        });
+    });
+    open
+}
+
+fn choose_and_open(app: &mut App) {
+    let Some(path) = rfd::FileDialog::new()
+        .set_title("Abrir proyecto")
+        .add_filter("HidroMac Flow", &["hmf"])
+        .pick_file()
+    else {
+        return;
+    };
+    if app.session.open_path(&path) {
+        app.recompute();
+    }
 }
 
 fn status(ui: &egui::Ui, app: &App) -> (&'static str, Color32) {
@@ -159,10 +211,26 @@ fn status(ui: &egui::Ui, app: &App) -> (&'static str, Color32) {
         return ("SIN DISEÑO", visuals.error_fg_color);
     };
     if !app.errors.is_empty() || app.stale() {
-        (
+        return (
             "ENTRADAS INVÁLIDAS · resultados anteriores",
             visuals.error_fg_color,
-        )
+        );
+    }
+    // Con un archivo recién abierto, la barra mira esos avisos, no los de
+    // `compute`: la lista es una sola.
+    if let Some(diagnostics) = &app.session.opened_diagnostics {
+        let stage_failed =
+            outcome.geometry.is_err() || outcome.mechanics.is_err() || outcome.viscous.is_err();
+        if stage_failed || diagnostics.iter().any(hm_core::Diagnostic::is_error) {
+            ("ERRORES", visuals.error_fg_color)
+        } else if diagnostics
+            .iter()
+            .any(|diagnostic| diagnostic.severity == Severity::Warning)
+        {
+            ("REVISAR AVISOS", visuals.warn_fg_color)
+        } else {
+            ("SIN AVISOS", Color32::from_rgb(80, 180, 120))
+        }
     } else if outcome.has_errors() {
         ("ERRORES", visuals.error_fg_color)
     } else if outcome
@@ -195,11 +263,11 @@ fn inputs_panel(ui: &mut egui::Ui, app: &mut App) {
                 (Field::EtaM, "ηm cojinetes y cierre (vacío: Gülich)", "auto"),
             ] {
                 let value = match field {
-                    Field::Q => &mut app.inputs.q,
-                    Field::H => &mut app.inputs.h,
-                    Field::N => &mut app.inputs.n,
-                    Field::Temperature => &mut app.inputs.temperature_c,
-                    Field::EtaM => &mut app.inputs.eta_m,
+                    Field::Q => &mut app.session.inputs.q,
+                    Field::H => &mut app.session.inputs.h,
+                    Field::N => &mut app.session.inputs.n,
+                    Field::Temperature => &mut app.session.inputs.temperature_c,
+                    Field::EtaM => &mut app.session.inputs.eta_m,
                     Field::Npsha | Field::Suction | Field::General => continue,
                 };
                 changed |= text_box(ui, label, value, hint, error_of(&errors, field), label);
@@ -208,22 +276,26 @@ fn inputs_panel(ui: &mut egui::Ui, app: &mut App) {
             ui.label("NPSH disponible");
             ui.horizontal(|ui| {
                 changed |= ui
-                    .selectable_value(&mut app.inputs.intake, IntakeMode::Written, "escrito")
+                    .selectable_value(
+                        &mut app.session.inputs.intake,
+                        IntakeMode::Written,
+                        "escrito",
+                    )
                     .changed();
                 changed |= ui
                     .selectable_value(
-                        &mut app.inputs.intake,
+                        &mut app.session.inputs.intake,
                         IntakeMode::Installation,
                         "instalación",
                     )
                     .changed();
             });
-            match app.inputs.intake {
+            match app.session.inputs.intake {
                 IntakeMode::Written => {
                     changed |= text_box(
                         ui,
                         "NPSHa (opcional)",
-                        &mut app.inputs.npsha,
+                        &mut app.session.inputs.npsha,
                         "vacío si no se conoce",
                         error_of(&errors, Field::Npsha),
                         "npsha",
@@ -232,18 +304,22 @@ fn inputs_panel(ui: &mut egui::Ui, app: &mut App) {
                 IntakeMode::Installation => {
                     let boxes = [
                         (
-                            &mut app.inputs.suction_pressure,
+                            &mut app.session.inputs.suction_pressure,
                             "Presión en la aspiración",
                             "1 atm",
                         ),
-                        (&mut app.inputs.suction_height, "Altura (opcional)", "2 m"),
                         (
-                            &mut app.inputs.suction_losses,
+                            &mut app.session.inputs.suction_height,
+                            "Altura (opcional)",
+                            "2 m",
+                        ),
+                        (
+                            &mut app.session.inputs.suction_losses,
                             "Pérdidas (opcional)",
                             "0.5 m",
                         ),
                         (
-                            &mut app.inputs.suction_vapor,
+                            &mut app.session.inputs.suction_vapor,
                             "Presión de vapor (opcional)",
                             "vacío: la del agua",
                         ),
@@ -269,6 +345,7 @@ fn inputs_panel(ui: &mut egui::Ui, app: &mut App) {
                 );
             }
             if changed {
+                app.session.boxes_changed();
                 app.recompute();
             }
             ui.separator();
@@ -634,12 +711,18 @@ fn diagnostics_panel(ui: &mut egui::Ui, app: &App) {
         .resizable(true)
         .default_size(150.0)
         .show(ui, |ui| {
+            if let Some(notice) = &app.session.notice {
+                ui.label(RichText::new(notice).color(ui.visuals().error_fg_color));
+            }
             let Some(outcome) = &app.outcome else {
                 return;
             };
+            // Los avisos del archivo sustituyen a los de `compute` hasta que
+            // cambia una caja. Sumarlos repetiría los del método actual.
+            let from_file = app.session.opened_diagnostics.as_ref();
+            let diagnostics = from_file.unwrap_or(&outcome.diagnostics);
             let count = |severity: Severity| {
-                outcome
-                    .diagnostics
+                diagnostics
                     .iter()
                     .filter(|diagnostic| diagnostic.severity == severity)
                     .count()
@@ -654,19 +737,21 @@ fn diagnostics_panel(ui: &mut egui::Ui, app: &App) {
                 ));
             });
             egui::ScrollArea::vertical().show(ui, |ui| {
-                for (name, error) in [
-                    ("geometría", outcome.geometry.as_ref().err()),
-                    ("mecánica", outcome.mechanics.as_ref().err()),
-                    ("viscosidad", outcome.viscous.as_ref().err()),
-                ] {
-                    if let Some(error) = error {
-                        ui.label(
-                            RichText::new(format!("{name} no disponible: {error}"))
-                                .color(ui.visuals().warn_fg_color),
-                        );
+                if from_file.is_none() {
+                    for (name, error) in [
+                        ("geometría", outcome.geometry.as_ref().err()),
+                        ("mecánica", outcome.mechanics.as_ref().err()),
+                        ("viscosidad", outcome.viscous.as_ref().err()),
+                    ] {
+                        if let Some(error) = error {
+                            ui.label(
+                                RichText::new(format!("{name} no disponible: {error}"))
+                                    .color(ui.visuals().warn_fg_color),
+                            );
+                        }
                     }
                 }
-                for diagnostic in &outcome.diagnostics {
+                for diagnostic in diagnostics {
                     let color = match diagnostic.severity {
                         Severity::Error | Severity::Blocking => ui.visuals().error_fg_color,
                         Severity::Warning => ui.visuals().warn_fg_color,

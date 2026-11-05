@@ -17,7 +17,7 @@ use hm_engine::{METHOD, PARAM_SPECS, PREFERRED_OPERATING_REGION};
 use hm_formula::Registry;
 
 use model::{
-    Field, FieldErrors, IntakeMode, Outcome, SUCTION_BOXES, build_project, compute, export_report,
+    Field, FieldErrors, IntakeMode, Outcome, SUCTION_BOXES, build_project, compute,
     suction_box_error, suction_group_errors,
 };
 use session::{Command, Gate, Session};
@@ -364,7 +364,7 @@ fn write_to(app: &mut App, path: &std::path::Path) {
 }
 
 fn can_save(app: &mut App) -> bool {
-    let name = project_name(&app.session);
+    let name = app.session.project_name();
     match build_project(
         &app.session.inputs,
         &app.session.basis,
@@ -380,81 +380,22 @@ fn can_save(app: &mut App) -> bool {
     }
 }
 
-/// Nombre del proyecto: el del archivo, sin extensión, o «sin título».
-fn project_name(session: &Session) -> String {
-    session
-        .file
-        .as_ref()
-        .and_then(|path| path.file_stem())
-        .map(|stem| stem.to_string_lossy().into_owned())
-        .filter(|name| !name.is_empty())
-        .unwrap_or_else(|| "sin título".to_string())
-}
-
 /// Con errores de caja o de etapa no abre el diálogo ni escribe. El JSON no
 /// toca el `.hmf`, el proyecto ni el `●`.
 fn choose_and_export(app: &mut App) {
-    let name = project_name(&app.session);
-    let json = match export_report(
-        &app.session.inputs,
-        &app.session.basis,
-        app.session.project.as_ref(),
-        &name,
-    ) {
-        Ok(json) => json,
-        Err(message) => {
-            app.session.disarm();
-            app.session.notice = Some(message);
-            return;
-        }
+    let Ok(json) = app.session.export_json() else {
+        return;
     };
     let Some(path) = rfd::FileDialog::new()
         .set_title("Exportar informe")
         .add_filter("Informe JSON", &["json"])
-        .set_file_name(project_name(&app.session))
+        .set_file_name(app.session.project_name())
         .save_file()
     else {
         return;
     };
-    write_report(app, &path, &json);
-}
-
-fn write_report(app: &mut App, path: &std::path::Path, json: &str) {
-    let chosen = path;
-    let path = with_json(chosen);
-    // El diálogo preguntó por el nombre elegido, no por el que sale de
-    // añadir la extensión.
-    if path != chosen && path.exists() {
-        let message = format!(
-            "ya existe {}: elige otro nombre",
-            path.file_name().unwrap_or_default().to_string_lossy()
-        );
-        app.session.disarm();
-        app.session.notice = Some(message);
-        return;
-    }
-    if let Err(error) = std::fs::write(&path, json) {
-        app.session.disarm();
-        app.session.notice = Some(error.to_string());
-        return;
-    }
-    if app.session.discard_notice().is_none() {
-        app.session.notice = None;
-    }
-}
-
-/// `.json` si el nombre no la trae. No sustituye otra extensión: la añade.
-fn with_json(path: &std::path::Path) -> std::path::PathBuf {
-    let is_json = path
-        .extension()
-        .and_then(|extension| extension.to_str())
-        .is_some_and(|extension| extension.eq_ignore_ascii_case("json"));
-    if is_json {
-        return path.to_path_buf();
-    }
-    let mut name = path.as_os_str().to_os_string();
-    name.push(".json");
-    std::path::PathBuf::from(name)
+    // Si falla, el error ya está en `notice`.
+    let _ = app.session.export_to(&path, &json);
 }
 
 fn status(ui: &egui::Ui, app: &App) -> (&'static str, Color32) {

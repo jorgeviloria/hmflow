@@ -9,7 +9,7 @@ use std::path::{Path, PathBuf};
 use hm_core::Diagnostic;
 use hm_project::Project;
 
-use crate::model::{Basis, Inputs, build_project, open_file, open_loaded};
+use crate::model::{Basis, Inputs, build_project, export_report, open_file, open_loaded};
 
 /// Orden del menú Archivo que puede tirar el trabajo en curso.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -178,14 +178,8 @@ impl Session {
     pub fn save_to(&mut self, path: &Path) -> Result<(), String> {
         self.disarm();
         let chosen = path;
-        let path = with_hmf(chosen);
-        // El diálogo preguntó por el nombre elegido, no por el que sale de
-        // añadir la extensión.
-        if path != chosen && path.exists() {
-            let message = format!(
-                "ya existe {}: elige otro nombre",
-                path.file_name().unwrap_or_default().to_string_lossy()
-            );
+        let path = with_extension(chosen, "hmf");
+        if let Some(message) = unasked_collision(chosen, &path) {
             self.notice = Some(message.clone());
             return Err(message);
         }
@@ -229,6 +223,49 @@ impl Session {
         Ok(())
     }
 
+    /// El nombre del proyecto: el del archivo, sin extensión, o «sin título».
+    pub fn project_name(&self) -> String {
+        self.file
+            .as_ref()
+            .and_then(|path| path.file_stem())
+            .map(|stem| stem.to_string_lossy().into_owned())
+            .filter(|name| !name.is_empty())
+            .unwrap_or_else(|| "sin título".to_string())
+    }
+
+    /// El JSON del informe, antes de abrir el diálogo. Si no se puede armar,
+    /// queda en `notice`. No toca el `.hmf`, el proyecto ni el `●`.
+    pub fn export_json(&mut self) -> Result<String, String> {
+        let name = self.project_name();
+        let exported = export_report(&self.inputs, &self.basis, self.project.as_ref(), &name);
+        if let Err(message) = &exported {
+            self.disarm();
+            self.notice = Some(message.clone());
+        }
+        exported
+    }
+
+    /// Escribe el informe en `path`. Si falta, añade `.json`. Si falla, `notice`.
+    pub fn export_to(&mut self, path: &Path, json: &str) -> Result<(), String> {
+        let chosen = path;
+        let path = with_extension(chosen, "json");
+        if let Some(message) = unasked_collision(chosen, &path) {
+            self.disarm();
+            self.notice = Some(message.clone());
+            return Err(message);
+        }
+        if let Err(error) = std::fs::write(&path, json) {
+            let message = error.to_string();
+            self.disarm();
+            self.notice = Some(message.clone());
+            return Err(message);
+        }
+        if self.discard_notice().is_none() {
+            self.notice = None;
+        }
+        Ok(())
+    }
+
     /// Nuevo: las entradas por defecto, sin archivo, sin proyecto y sin `●`.
     pub fn new_design(&mut self) {
         let shown_title = self.shown_title.take();
@@ -239,24 +276,35 @@ impl Session {
     }
 }
 
-/// `.hmf` si el nombre no la trae. No sustituye otra extensión: la añade.
-fn with_hmf(path: &Path) -> PathBuf {
-    let is_hmf = path
+/// `extension` si el nombre no la trae. No sustituye otra extensión: la añade.
+fn with_extension(path: &Path, extension: &str) -> PathBuf {
+    let has_it = path
         .extension()
-        .and_then(|extension| extension.to_str())
-        .is_some_and(|extension| extension.eq_ignore_ascii_case("hmf"));
-    if is_hmf {
+        .and_then(|found| found.to_str())
+        .is_some_and(|found| found.eq_ignore_ascii_case(extension));
+    if has_it {
         return path.to_path_buf();
     }
     let mut name = path.as_os_str().to_os_string();
-    name.push(".hmf");
+    name.push(".");
+    name.push(extension);
     PathBuf::from(name)
+}
+
+/// El diálogo preguntó por el nombre elegido, no por el que sale de añadir la
+/// extensión: ese archivo no se pisa.
+fn unasked_collision(chosen: &Path, path: &Path) -> Option<String> {
+    (path != chosen && path.exists()).then(|| {
+        format!(
+            "ya existe {}: elige otro nombre",
+            path.file_name().unwrap_or_default().to_string_lossy()
+        )
+    })
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::model::export_report;
 
     fn fixture(name: &str) -> std::path::PathBuf {
         PathBuf::from(env!("CARGO_MANIFEST_DIR"))
@@ -790,22 +838,6 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
     }
 
-    fn export_of(session: &Session) -> Result<String, String> {
-        let name = session
-            .file
-            .as_ref()
-            .and_then(|path| path.file_stem())
-            .map(|stem| stem.to_string_lossy().into_owned())
-            .filter(|name| !name.is_empty())
-            .unwrap_or_else(|| "sin título".to_string());
-        export_report(
-            &session.inputs,
-            &session.basis,
-            session.project.as_ref(),
-            &name,
-        )
-    }
-
     /// Cajas, archivo, `●`, avisos y el proyecto en memoria.
     fn session_stamp(session: &Session) -> String {
         let codes = session.opened_diagnostics.as_ref().map(|diagnostics| {
@@ -845,7 +877,7 @@ mod tests {
         session.edited();
         let before = session_stamp(&session);
 
-        let json = export_of(&session).unwrap();
+        let json = session.export_json().unwrap();
 
         assert!(json.ends_with('\n'));
         assert_eq!(session_stamp(&session), before);
@@ -865,7 +897,7 @@ mod tests {
         assert!(!session.dirty);
         let before = session_stamp(&session);
 
-        let json = export_of(&session).unwrap();
+        let json = session.export_json().unwrap();
 
         assert_eq!(std::fs::read(&path).unwrap(), bytes);
         assert_eq!(
@@ -896,9 +928,10 @@ mod tests {
         session.edited();
         let before = session_stamp(&session);
 
-        let error = export_of(&session).unwrap_err();
+        let error = session.export_json().unwrap_err();
 
         assert!(!error.is_empty(), "{error}");
+        assert_eq!(session.notice.take(), Some(error));
         assert_eq!(session_stamp(&session), before);
         assert_eq!(std::fs::read(&path).unwrap(), bytes);
         assert_eq!(dir_listing(&dir), listing);
@@ -932,12 +965,13 @@ mod tests {
         let etapa_bytes = std::fs::read(&etapa).unwrap();
         let before = session_stamp(&session);
 
-        let error = export_of(&session).unwrap_err();
+        let error = session.export_json().unwrap_err();
 
         assert!(
             error.contains("difusor") || error.contains("tubuladura"),
             "{error}"
         );
+        assert_eq!(session.notice.take(), Some(error));
         assert_eq!(std::fs::read(&etapa).unwrap(), etapa_bytes);
         assert_eq!(session_stamp(&session), before);
         let _ = std::fs::remove_dir_all(&dir);
@@ -952,7 +986,7 @@ mod tests {
         let bytes = std::fs::read(session.file.as_ref().unwrap()).unwrap();
         let before = session_stamp(&session);
 
-        let json = export_of(&session).unwrap();
+        let json = session.export_json().unwrap();
 
         assert_eq!(session_stamp(&session), before);
         assert_eq!(
@@ -963,6 +997,80 @@ mod tests {
         let engine = hm_engine::report(&loaded, hm_engine::CurvePoints::new(11).unwrap()).unwrap();
         let exported: serde_json::Value = serde_json::from_str(&json).unwrap();
         assert_eq!(exported, serde_json::to_value(&engine).unwrap());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn export_to_adds_the_json_extension_and_leaves_the_session_alone() {
+        let dir = scratch("export-json");
+        let mut session = Session::default();
+        session.edited();
+        session.notice = Some("aviso viejo".into());
+
+        session.export_to(&dir.join("informe"), "{}\n").unwrap();
+
+        assert_eq!(
+            std::fs::read_to_string(dir.join("informe.json")).unwrap(),
+            "{}\n"
+        );
+        assert_eq!(session.notice, None);
+        assert!(session.dirty);
+        assert_eq!(session.file, None);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn export_to_keeps_its_extension_and_adds_to_another() {
+        let dir = scratch("export-extension");
+        let mut session = Session::default();
+
+        session.export_to(&dir.join("a.JSON"), "a").unwrap();
+        session.export_to(&dir.join("b.hmf"), "b").unwrap();
+
+        assert_eq!(
+            dir_listing(&dir),
+            vec![dir.join("a.JSON"), dir.join("b.hmf.json")]
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn export_to_does_not_overwrite_a_file_the_dialog_did_not_ask_about() {
+        let dir = scratch("export-colision");
+        std::fs::write(dir.join("bomba.json"), "mío").unwrap();
+        let mut session = Session::default();
+
+        let error = session.export_to(&dir.join("bomba"), "nuevo").unwrap_err();
+
+        assert!(error.contains("bomba.json"), "{error}");
+        assert_eq!(session.notice, Some(error));
+        assert_eq!(
+            std::fs::read_to_string(dir.join("bomba.json")).unwrap(),
+            "mío"
+        );
+        assert_eq!(dir_listing(&dir), vec![dir.join("bomba.json")]);
+
+        // El nombre exacto sí lo preguntó el diálogo.
+        session.export_to(&dir.join("bomba.json"), "nuevo").unwrap();
+        assert_eq!(
+            std::fs::read_to_string(dir.join("bomba.json")).unwrap(),
+            "nuevo"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn export_to_reports_a_write_failure_and_keeps_the_mark() {
+        let dir = scratch("export-falla");
+        let mut session = Session::default();
+        session.edited();
+
+        let error = session
+            .export_to(&dir.join("no-existe").join("informe.json"), "x")
+            .unwrap_err();
+
+        assert_eq!(session.notice, Some(error));
+        assert!(session.dirty);
         let _ = std::fs::remove_dir_all(&dir);
     }
 }

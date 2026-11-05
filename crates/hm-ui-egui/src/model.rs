@@ -22,6 +22,8 @@ use hm_units::Quantity;
 
 /// Puntos de la curva que se dibujan.
 pub const CURVE_POINTS: usize = 61;
+/// Puntos de curva del informe: el defecto de `hmflow-cli report`.
+const REPORT_CURVE_POINTS: usize = 11;
 
 /// De dónde sale el NPSHa: un valor escrito o la instalación de aspiración.
 /// Son excluyentes, como en el `.hmf`.
@@ -612,8 +614,8 @@ pub fn export_report(
     name: &str,
 ) -> Result<String, String> {
     let built = build_project(inputs, basis, previous, name)?;
-    let points = CurvePoints::new(11).expect("11 está en el rango");
-    let report = report(&built.project, points).map_err(|error| engine_failure(&error))?;
+    let report = report(&built.project, CurvePoints::clamped(REPORT_CURVE_POINTS))
+        .map_err(|error| engine_failure(&error))?;
     let json = serde_json::to_string_pretty(&report).map_err(|error| error.to_string())?;
     Ok(format!("{json}\n"))
 }

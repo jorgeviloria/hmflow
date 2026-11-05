@@ -68,6 +68,9 @@ cargo run -p hmflow-cli -- recalc bomba.hmf
 # dependen de nq (las locked se respetan)
 cargo run -p hmflow-cli -- recalc --reselect bomba.hmf
 
+# Reducir un ensayo de banco y compararlo con el .hmf que indique el caso
+cargo run -p hmflow-cli -- bench case.toml
+
 # Informe JSON para la interfaz o el CAD: valores en SI, voluta, curva,
 # geometría del álabe y de la salida, y diagnósticos (docs/report-format.md)
 cargo run -p hmflow-cli -- report bomba.hmf --out bomba.json

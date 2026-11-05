@@ -11,8 +11,8 @@
 //! aceptación de una bomba.
 
 use hm_design::{
-    DesignInput, DesignOptions, curve_head, default_mechanical_efficiency, design,
-    design_with_options, npshr_ratio,
+    DesignInput, DesignOptions, PREFERRED_OPERATING_REGION, curve_head,
+    default_mechanical_efficiency, design, design_with_options, npshr_ratio, performance_curve,
 };
 use hm_units::parse_quantity;
 
@@ -43,6 +43,9 @@ const CATALOG_HQ: &[(f64, f64)] = &[
 const GRADE_2B_HEAD: f64 = 0.05;
 /// Grado 2B de ISO 9906:2012: tolerancia de rendimiento.
 const GRADE_2B_EFFICIENCY: f64 = 0.05;
+/// Grado 2B de ISO 9906:2012: tolerancia de potencia. Por verificar contra la
+/// norma, igual que las dos anteriores; aquí se aplica como banda simétrica.
+const GRADE_2B_POWER: f64 = 0.08;
 
 fn input() -> DesignInput {
     let q = parse_quantity(&format!("{Q_DESIGN_GPM} gpm")).unwrap();
@@ -243,4 +246,79 @@ fn b1_seal_leakage_tells_the_impellers_apart() {
         real.seal_eta_v,
         default.seal_eta_v
     );
+}
+
+/// Cruces de las isolíneas de η sobre el rodete de 425 mm: (gpm, η).
+const CATALOG_EFFICIENCY: &[(f64, f64)] = &[
+    (370.0, 0.48),
+    (505.0, 0.58),
+    (582.0, 0.63),
+    (727.0, 0.68),
+    (838.0, 0.705),
+    (1055.0, 0.73),
+    (1346.0, 0.705),
+];
+
+/// Cruces de las isolíneas de potencia sobre el rodete de 425 mm: (gpm, HP).
+const CATALOG_POWER_HP: &[(f64, f64)] = &[(413.0, 60.0), (1088.0, 100.0)];
+
+/// W en un HP mecánico.
+const HP: f64 = 745.7;
+
+/// m³/s en un gpm.
+const GPM: f64 = 3.785_411_784e-3 / 60.0;
+
+/// η y P del modelo a ese caudal, por interpolación lineal.
+fn model_at(q_gpm: f64) -> (f64, f64) {
+    let input = input();
+    let result = design(&input).unwrap();
+    let curve = performance_curve(&input, &result, 1000);
+    let q = q_gpm * GPM;
+    let pair = curve
+        .windows(2)
+        .find(|pair| pair[0].q.si <= q && q <= pair[1].q.si)
+        .unwrap();
+    let t = (q - pair[0].q.si) / (pair[1].q.si - pair[0].q.si);
+    (
+        pair[0].eta + t * (pair[1].eta - pair[0].eta),
+        pair[0].p_shaft.si + t * (pair[1].p_shaft.si - pair[0].p_shaft.si),
+    )
+}
+
+fn in_preferred_region(q_gpm: f64) -> bool {
+    let (low, high) = PREFERRED_OPERATING_REGION;
+    (low..=high).contains(&(q_gpm / Q_DESIGN_GPM))
+}
+
+#[test]
+#[ignore = "no cumple: a 838 gpm el modelo da +5,3 %. Ver el caso B1 en docs/validation/matrix.md"]
+fn b1_efficiency_inside_grade_2b_in_preferred_region() {
+    let mut failures = Vec::new();
+    for &(q_gpm, eta) in CATALOG_EFFICIENCY
+        .iter()
+        .filter(|(q, _)| in_preferred_region(*q))
+    {
+        let deviation = model_at(q_gpm).0 / eta - 1.0;
+        if deviation.abs() > GRADE_2B_EFFICIENCY {
+            failures.push(format!("{q_gpm} gpm: {:+.1} %", 100.0 * deviation));
+        }
+    }
+    assert!(failures.is_empty(), "{}", failures.join("\n"));
+}
+
+#[test]
+fn b1_power_inside_grade_2b_in_preferred_region() {
+    let points: Vec<_> = CATALOG_POWER_HP
+        .iter()
+        .filter(|(q, _)| in_preferred_region(*q))
+        .collect();
+    assert!(!points.is_empty());
+    for &&(q_gpm, power_hp) in &points {
+        let deviation = model_at(q_gpm).1 / HP / power_hp - 1.0;
+        assert!(
+            deviation.abs() <= GRADE_2B_POWER,
+            "{q_gpm} gpm: {:+.1} %",
+            100.0 * deviation
+        );
+    }
 }

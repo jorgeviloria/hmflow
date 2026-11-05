@@ -117,6 +117,19 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "2304e00983f87ffb38b55b444b5e3b60a884b5d30c0fca7d82fe33449bbe55ea"
 
 [[package]]
+name = "hm-bench"
+version = "0.0.1"
+dependencies = [
+ "hm-design",
+ "hm-formula",
+ "hm-math",
+ "hm-units",
+ "serde",
+ "thiserror",
+ "toml",
+]
+
+[[package]]
 name = "hm-core"
 version = "0.0.1"
 dependencies = [
@@ -140,6 +153,7 @@ dependencies = [
 name = "hm-engine"
 version = "0.0.1"
 dependencies = [
+ "hm-bench",
  "hm-core",
  "hm-design",
  "hm-formula",
@@ -189,6 +203,7 @@ name = "hmflow-cli"
 version = "0.0.1"
 dependencies = [
  "clap",
+ "hm-bench",
  "hm-core",
  "hm-engine",
  "hm-formula",

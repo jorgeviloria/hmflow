@@ -5,12 +5,13 @@ use std::path::PathBuf;
 use std::process::ExitCode;
 
 use clap::{Parser, Subcommand};
+use hm_bench::{BenchCase, Comparison, Level, Reduction, reduce};
 use hm_core::Diagnostic;
 use hm_engine::{
     ChangeKind, CurvePoints, Density, DensitySource, DesignOptions, DesignReport, Duty,
     EngineError, Entered, Fluid, Intake, PREFERRED_OPERATING_REGION, ParamChange, PumpType,
-    analyze, audit, cli_message, fluid_kind, looks_like_water, new_project, parse_temperature,
-    report, viscosity_from_text, water_density_at,
+    analyze, audit, cli_message, compare_with_project, fluid_kind, looks_like_water, new_project,
+    parse_temperature, report, viscosity_from_text, water_density_at,
 };
 use hm_formula::{Registry, eval, infer, parse};
 use hm_project::{Param, Project};
@@ -58,6 +59,12 @@ enum Command {
         /// salvo las que estén en locked.
         #[arg(long)]
         reselect: bool,
+    },
+    /// Reduce un caso de ensayo de banco y, si indica su `.hmf`, lo compara
+    /// con la curva del modelo.
+    Bench {
+        /// Ruta del archivo case.toml.
+        file: PathBuf,
     },
     /// Escribe el informe del diseño en JSON (formato hmflow.design-report):
     /// valores en SI, selecciones, secciones de voluta, curva y diagnósticos.
@@ -185,6 +192,9 @@ enum Command {
     },
 }
 
+/// m³/s en un gpm.
+const GPM: f64 = 3.785_411_784e-3 / 60.0;
+
 fn main() -> ExitCode {
     let cli = Cli::parse();
     match run(cli) {
@@ -224,6 +234,7 @@ fn run(cli: Cli) -> Result<ExitCode, Box<dyn std::error::Error>> {
             Ok(ExitCode::SUCCESS)
         }
 
+        Command::Bench { file } => bench(&file),
         Command::Check { file } => {
             let project = Project::load(&file)?;
             let diagnostics = audit(&project);
@@ -732,6 +743,115 @@ fn recalc(file: &std::path::Path, reselect: bool) -> Result<ExitCode, Box<dyn st
             Err(format!("recalc solo admite end-suction; el proyecto es {pump_type}").into())
         }
         Err(error) => Err(engine_text(error)),
+    }
+}
+
+fn bench(file: &std::path::Path) -> Result<ExitCode, Box<dyn std::error::Error>> {
+    let case = BenchCase::parse(&std::fs::read_to_string(file)?)?;
+    let reduction = reduce(&case)?;
+    print_reduction(&case, &reduction);
+
+    if let Some(hmf) = &case.hmf {
+        let path = file.parent().unwrap_or(std::path::Path::new(".")).join(hmf);
+        let project = Project::load(&path)?;
+        print_comparison(&compare_with_project(&reduction, &project)?);
+    }
+    Ok(ExitCode::SUCCESS)
+}
+
+/// Porcentaje con signo, o un guion si no hay dato.
+fn signed_percent(value: Option<f64>) -> String {
+    value.map_or("-".to_string(), |value| format!("{:+.1}", 100.0 * value))
+}
+
+/// Valor con su incertidumbre en porcentaje, o un guion si no hay dato.
+fn with_uncertainty(value: Option<String>, uncertainty: Option<f64>) -> String {
+    match (value, uncertainty) {
+        (Some(value), Some(u)) => format!("{value} ±{:.1} %", 100.0 * u),
+        (Some(value), None) => value,
+        (None, _) => "-".to_string(),
+    }
+}
+
+fn print_reduction(case: &BenchCase, reduction: &Reduction) {
+    let level = match case.level {
+        Level::Trial => "trial, no cuenta como validación",
+        Level::Bench => "bench",
+    };
+    println!("caso {} ({level})", case.id);
+    println!("referido a {:.0} rpm", reduction.speed * 60.0);
+    for note in &reduction.notes {
+        println!("aviso: {note}");
+    }
+    println!();
+    println!("punto  Q* gpm  n rpm  lecturas  H* m            P* kW           η %");
+    for point in &reduction.points {
+        let u = point.uncertainty;
+        println!(
+            "{:>5}  {:>6.0}  {:>5}  {:>8}  {:<14}  {:<14}  {}",
+            point.point,
+            point.q / GPM,
+            point
+                .n
+                .map_or("-".to_string(), |n| format!("{:.0}", n * 60.0)),
+            point.readings,
+            with_uncertainty(Some(format!("{:.2}", point.h)), u.map(|u| u.h)),
+            with_uncertainty(
+                point.p.map(|p| format!("{:.1}", p / 1000.0)),
+                u.map(|u| u.p)
+            ),
+            with_uncertainty(
+                point.eta.map(|eta| format!("{:.1}", 100.0 * eta)),
+                u.and_then(|u| u.eta)
+            ),
+        );
+    }
+    if !reduction.npsh.is_empty() {
+        println!();
+        println!("Q* gpm  pasos  H ref m  NPSH3 m");
+        for series in &reduction.npsh {
+            println!(
+                "{:>6.0}  {:>5}  {:>7.2}  {}",
+                series.q / GPM,
+                series.steps,
+                series.h_reference,
+                series
+                    .npsh3
+                    .map_or("no alcanzado".to_string(), |npsh3| format!("{npsh3:.2}")),
+            );
+        }
+    }
+}
+
+fn print_comparison(comparison: &Comparison) {
+    println!();
+    println!("frente al modelo, (modelo − medido)/medido, en % (±5 % por verificar)");
+    println!("punto  Q* gpm  H medida  H modelo    ΔH     Δη     ΔP  banda");
+    for point in &comparison.points {
+        println!(
+            "{:>5}  {:>6.0}  {:>8.2}  {:>8.2}  {:>5}  {:>5}  {:>5}  {}",
+            point.point,
+            point.q / GPM,
+            point.h_measured,
+            point.h_model,
+            signed_percent(Some(point.h_deviation)),
+            signed_percent(point.eta_deviation),
+            signed_percent(point.p_deviation),
+            if point.in_band { "dentro" } else { "fuera" },
+        );
+    }
+    if !comparison.outside.is_empty() {
+        let outside: Vec<String> = comparison.outside.iter().map(u32::to_string).collect();
+        println!("fuera de la curva del modelo: {}", outside.join(", "));
+    }
+    for series in &comparison.npsh {
+        println!(
+            "NPSH3 a {:.0} gpm: medido {:.2} m, modelo {:.2} m ({})",
+            series.q / GPM,
+            series.npsh3,
+            series.npshr_model,
+            signed_percent(Some(series.deviation)),
+        );
     }
 }
 

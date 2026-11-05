@@ -7,6 +7,7 @@ license.workspace = true
 authors.workspace = true
 
 [dependencies]
+hm-bench = { path = "../hm-bench" }
 hm-core = { path = "../hm-core" }
 hm-units = { path = "../hm-units" }
 hm-formula = { path = "../hm-formula" }

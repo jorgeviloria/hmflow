@@ -1,0 +1,222 @@
+# Caso FICTICIO. Ningún número viene de un ensayo.
+schema = 1
+id = "EJEMPLO-U1-2027-01"
+pump = "EJEMPLO"
+unit = "U1"
+month = "2027-01"
+level = "bench"
+authorization = true
+hmf = "modelo.hmf"
+
+[specified]
+Q = "1060 gpm"
+H = "83 m"
+n = "1750 rpm"
+
+[rig]
+p_atm = "101.2 kPa"
+D_suction = "128.2 mm"
+D_discharge = "102.3 mm"
+z_suction = "0.15 m"
+z_discharge = "0.40 m"
+suction_reference = "gauge"
+
+[seal]
+kind = "packing"
+
+[instruments]
+flow = { kind = "electromagnetic", u = "0.5 %" }
+speed = { kind = "encoder", u = "1 rpm" }
+torque = { kind = "rotary", range = "1000 N*m", u = "1 N*m" }
+p_discharge = { kind = "transducer", range = "300 psi", u = "0.75 psi" }
+p_suction = { kind = "transducer", range = "30 psi", u = "0.08 psi" }
+temperature = { kind = "pt100", u = "0.5 K" }
+
+[[curve]]
+point = 4
+n = "1781 rpm"
+Q = "1078 gpm"
+p_discharge = "116.3 psi"
+p_suction = "-5.2 psi"
+T = "425 N*m"
+t_water = "29.4 degC"
+
+[[curve]]
+point = 4
+n = "1781 rpm"
+Q = "1079 gpm"
+p_discharge = "116.5 psi"
+p_suction = "-5.2 psi"
+T = "426 N*m"
+t_water = "29.4 degC"
+
+[[curve]]
+point = 4
+n = "1780 rpm"
+Q = "1077 gpm"
+p_discharge = "116.4 psi"
+p_suction = "-5.1 psi"
+T = "425 N*m"
+t_water = "29.5 degC"
+
+[[curve]]
+point = 8
+n = "1795 rpm"
+Q = "0 gpm"
+p_discharge = "134.0 psi"
+p_suction = "-3.0 psi"
+T = "210 N*m"
+t_water = "30.0 degC"
+
+[[npsh]]
+Q_target = "1060 gpm"
+step = 0
+n = "1780 rpm"
+Q = "1061 gpm"
+p_discharge = "110.58 psi"
+p_suction = "-5 psi"
+t_water = "29.6 degC"
+
+[[npsh]]
+Q_target = "1060 gpm"
+step = 1
+n = "1780 rpm"
+Q = "1061 gpm"
+p_discharge = "109.58 psi"
+p_suction = "-6 psi"
+t_water = "29.6 degC"
+
+[[npsh]]
+Q_target = "1060 gpm"
+step = 2
+n = "1780 rpm"
+Q = "1061 gpm"
+p_discharge = "108.58 psi"
+p_suction = "-7 psi"
+t_water = "29.6 degC"
+
+[[npsh]]
+Q_target = "1060 gpm"
+step = 3
+n = "1780 rpm"
+Q = "1061 gpm"
+p_discharge = "105.78 psi"
+p_suction = "-9 psi"
+t_water = "29.6 degC"
+
+[[npsh]]
+Q_target = "1060 gpm"
+step = 4
+n = "1780 rpm"
+Q = "1061 gpm"
+p_discharge = "103.08 psi"
+p_suction = "-10 psi"
+t_water = "29.6 degC"
+
+[[npsh]]
+Q_target = "1060 gpm"
+step = 5
+n = "1780 rpm"
+Q = "1061 gpm"
+p_discharge = "99.08 psi"
+p_suction = "-11 psi"
+t_water = "29.6 degC"
+
+[[npsh]]
+Q_target = "850 gpm"
+step = 0
+n = "1780 rpm"
+Q = "851 gpm"
+p_discharge = "112.05 psi"
+p_suction = "-5 psi"
+t_water = "29.6 degC"
+
+[[npsh]]
+Q_target = "850 gpm"
+step = 1
+n = "1780 rpm"
+Q = "851 gpm"
+p_discharge = "111.05 psi"
+p_suction = "-6 psi"
+t_water = "29.6 degC"
+
+[[npsh]]
+Q_target = "850 gpm"
+step = 2
+n = "1780 rpm"
+Q = "851 gpm"
+p_discharge = "110.05 psi"
+p_suction = "-7 psi"
+t_water = "29.6 degC"
+
+[[npsh]]
+Q_target = "850 gpm"
+step = 3
+n = "1780 rpm"
+Q = "851 gpm"
+p_discharge = "107.85 psi"
+p_suction = "-9 psi"
+t_water = "29.6 degC"
+
+[[npsh]]
+Q_target = "850 gpm"
+step = 4
+n = "1780 rpm"
+Q = "851 gpm"
+p_discharge = "105.05 psi"
+p_suction = "-10.5 psi"
+t_water = "29.6 degC"
+
+[[npsh]]
+Q_target = "850 gpm"
+step = 5
+n = "1780 rpm"
+Q = "851 gpm"
+p_discharge = "101.05 psi"
+p_suction = "-11.5 psi"
+t_water = "29.6 degC"
+
+[[npsh]]
+Q_target = "640 gpm"
+step = 0
+n = "1780 rpm"
+Q = "641 gpm"
+p_discharge = "113.52 psi"
+p_suction = "-5 psi"
+t_water = "29.6 degC"
+
+[[npsh]]
+Q_target = "640 gpm"
+step = 1
+n = "1780 rpm"
+Q = "641 gpm"
+p_discharge = "112.52 psi"
+p_suction = "-6 psi"
+t_water = "29.6 degC"
+
+[[npsh]]
+Q_target = "640 gpm"
+step = 2
+n = "1780 rpm"
+Q = "641 gpm"
+p_discharge = "111.52 psi"
+p_suction = "-7 psi"
+t_water = "29.6 degC"
+
+[[npsh]]
+Q_target = "640 gpm"
+step = 3
+n = "1780 rpm"
+Q = "641 gpm"
+p_discharge = "110.52 psi"
+p_suction = "-8 psi"
+t_water = "29.6 degC"
+
+[[npsh]]
+Q_target = "640 gpm"
+step = 4
+n = "1780 rpm"
+Q = "641 gpm"
+p_discharge = "109.42 psi"
+p_suction = "-9 psi"
+t_water = "29.6 degC"

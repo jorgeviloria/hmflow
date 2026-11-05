@@ -1,0 +1,16 @@
+[package]
+name = "hm-bench"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+authors.workspace = true
+
+[dependencies]
+hm-design = { path = "../hm-design" }
+hm-formula = { path = "../hm-formula" }
+hm-math = { path = "../hm-math" }
+hm-units = { path = "../hm-units" }
+serde = { workspace = true }
+toml = { workspace = true }
+thiserror = { workspace = true }

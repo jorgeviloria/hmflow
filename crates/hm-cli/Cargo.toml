@@ -12,6 +12,7 @@ path = "src/main.rs"
 
 [dependencies]
 clap = { workspace = true }
+hm-bench = { path = "../hm-bench" }
 hm-core = { path = "../hm-core" }
 hm-engine = { path = "../hm-engine" }
 hm-formula = { path = "../hm-formula" }

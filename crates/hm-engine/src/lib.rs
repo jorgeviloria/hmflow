@@ -4,6 +4,7 @@
 
 mod analysis;
 mod audit;
+mod bench;
 mod case;
 mod changes;
 mod convert;
@@ -17,6 +18,7 @@ mod validate;
 
 pub use analysis::{Analysis, CurvePoints};
 pub use audit::{audit, audit_with_analysis};
+pub use bench::{BenchRunError, compare_with_project};
 pub use case::{
     Case, Density, DensitySource, Duty, Entered, Fluid, FluidKind, Intake, Temperature, Viscosity,
 };

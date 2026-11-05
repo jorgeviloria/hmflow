@@ -9,6 +9,7 @@ members = [
     "crates/hm-math",
     "crates/hm-formula",
     "crates/hm-design",
+    "crates/hm-bench",
     "crates/hm-project",
     "crates/hm-engine",
     "crates/hm-cli",

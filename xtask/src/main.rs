@@ -49,10 +49,11 @@ const LAYERS: &[(&str, u8)] = &[
     ("hm-formula", 1),
     ("hm-design", 2),
     ("hm-project", 2),
-    ("hm-engine", 3),
-    ("hmflow-cli", 4),
-    ("hm-ui-egui", 4),
-    ("xtask", 4),
+    ("hm-bench", 3),
+    ("hm-engine", 4),
+    ("hmflow-cli", 5),
+    ("hm-ui-egui", 5),
+    ("xtask", 5),
 ];
 
 fn layer_of(name: &str) -> Option<u8> {

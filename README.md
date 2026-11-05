@@ -6,8 +6,8 @@ Suite open source de diseño de bombas centrífugas, escrita en Rust.
 > (`end_suction_v0.9`). El repositorio compila, hay 89 fórmulas auditadas
 > (58 piloto, 31 con referencia de ejemplo resuelto, 0 de banco) y `design`
 > genera geometría, voluta, pérdidas y curvas preliminares. El cálculo lo
-> comparte `hm-engine`. Hay una interfaz de prueba con egui; todavía no abre
-> proyectos ni hay CAD.
+> comparte `hm-engine`. La ventana egui abre un `.hmf`, edita el punto y la
+> aspiración, guarda y exporta el informe. Todavía no hay CAD.
 
 ## Qué es
 
@@ -22,8 +22,9 @@ doble aspiración y barrel. Solo bombas centrífugas.
 - No hay validación de banco todavía: es lo que cierra la Parte 0.
 - Las curvas H(Q), η(Q) y NPSHr(Q) son preliminares; falta el modelo de
   pérdidas detallado y su contraste con medidas.
-- La ventana egui muestra un punto de diseño. Abrir y guardar el `.hmf`, y
-  exportar el informe, llegan con la interfaz mínima.
+- La ventana egui abre, edita el punto y la aspiración, guarda el `.hmf` y
+  exporta el informe. No edita los parámetros del método, ni un fluido que
+  no sea agua, ni una viscosidad escrita.
 - No hay geometría CAD (llega en la Parte 2).
 - No hay CFD.
 - No sustituye la revisión de un ingeniero.
@@ -74,7 +75,8 @@ cargo run -p hmflow-cli -- report bomba.hmf --out bomba.json
 # Ver las fórmulas disponibles
 cargo run -p hmflow-cli -- formulas
 
-# Interfaz de prueba (workspace aparte; no entra en `cargo build` del raíz)
+# Ventana: abre, edita el punto, guarda y exporta el informe
+# (workspace aparte; no entra en `cargo build` del raíz)
 cargo run --manifest-path crates/hm-ui-egui/Cargo.toml
 
 # Evaluar una expresión con unidades
@@ -93,7 +95,7 @@ cargo run -p hmflow-cli -- eval "Q/(pi*d2*b2)" --var "Q=120 m3/h" --var "d2=0.3 
 | `hm-project` | Formato `.hmf`, parámetros, validación |
 | `hm-engine` | Caso de uso compartido por la CLI y la interfaz |
 | `hmflow-cli` | CLI |
-| `hm-ui-egui` | Interfaz de prueba con egui (workspace propio) |
+| `hm-ui-egui` | Ventana egui: abre, edita el punto, guarda y exporta (workspace propio) |
 | `xtask` | Puertas de calidad, incluidas las capas de dependencia |
 
 ## Licencia

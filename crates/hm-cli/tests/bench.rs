@@ -87,3 +87,19 @@ fn an_incomplete_bench_case_is_an_error() {
     assert!(String::from_utf8_lossy(&output.stderr).contains("authorization"));
     std::fs::remove_dir_all(&dir).ok();
 }
+
+#[test]
+fn a_trial_compares_but_gives_no_verdict() {
+    let dir = temp_dir("trial");
+    make_model(&dir, "1750 rpm");
+    let text = CASE.replace("level = \"bench\"", "level = \"trial\"");
+    std::fs::write(dir.join("case.toml"), text).unwrap();
+
+    let output = run(&dir, &["bench", "case.toml"]);
+    let text = String::from_utf8_lossy(&output.stdout);
+    assert!(output.status.success());
+    assert!(text.contains("sin veredicto"), "{text}");
+    assert!(!text.contains("dentro"), "{text}");
+    assert!(!text.contains("fuera\n"), "{text}");
+    std::fs::remove_dir_all(&dir).ok();
+}

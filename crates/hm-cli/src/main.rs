@@ -754,7 +754,7 @@ fn bench(file: &std::path::Path) -> Result<ExitCode, Box<dyn std::error::Error>>
     if let Some(hmf) = &case.hmf {
         let path = file.parent().unwrap_or(std::path::Path::new(".")).join(hmf);
         let project = Project::load(&path)?;
-        print_comparison(&compare_with_project(&reduction, &project)?);
+        print_comparison(&compare_with_project(&reduction, &project)?, case.level);
     }
     Ok(ExitCode::SUCCESS)
 }
@@ -823,10 +823,18 @@ fn print_reduction(case: &BenchCase, reduction: &Reduction) {
     }
 }
 
-fn print_comparison(comparison: &Comparison) {
+fn print_comparison(comparison: &Comparison, level: Level) {
     println!();
-    println!("frente al modelo, (modelo − medido)/medido, en % (±5 % por verificar)");
-    println!("punto  Q* gpm  H medida  H modelo    ΔH     Δη     ΔP  banda");
+    match level {
+        Level::Trial => {
+            println!("frente al modelo, (modelo − medido)/medido, en %: trial, sin veredicto");
+            println!("punto  Q* gpm  H medida  H modelo    ΔH     Δη     ΔP");
+        }
+        Level::Bench => {
+            println!("frente al modelo, (modelo − medido)/medido, en % (±5 % por verificar)");
+            println!("punto  Q* gpm  H medida  H modelo    ΔH     Δη     ΔP  banda");
+        }
+    }
     for point in &comparison.points {
         println!(
             "{:>5}  {:>6.0}  {:>8.2}  {:>8.2}  {:>5}  {:>5}  {:>5}  {}",
@@ -837,7 +845,11 @@ fn print_comparison(comparison: &Comparison) {
             signed_percent(Some(point.h_deviation)),
             signed_percent(point.eta_deviation),
             signed_percent(point.p_deviation),
-            if point.in_band { "dentro" } else { "fuera" },
+            match (level, point.in_band) {
+                (Level::Trial, _) => "",
+                (Level::Bench, true) => "dentro",
+                (Level::Bench, false) => "fuera",
+            },
         );
     }
     if !comparison.outside.is_empty() {

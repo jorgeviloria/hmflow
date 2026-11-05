@@ -234,12 +234,13 @@ impl Session {
     }
 
     /// El JSON del informe, antes de abrir el diálogo. Si no se puede armar,
-    /// queda en `notice`. No toca el `.hmf`, el proyecto ni el `●`.
+    /// queda en `notice`. No toca el `.hmf`, el proyecto ni el `●`, pero es otra
+    /// orden: desarma el descarte, aunque luego se cancele el diálogo.
     pub fn export_json(&mut self) -> Result<String, String> {
+        self.disarm();
         let name = self.project_name();
         let exported = export_report(&self.inputs, &self.basis, self.project.as_ref(), &name);
         if let Err(message) = &exported {
-            self.disarm();
             self.notice = Some(message.clone());
         }
         exported
@@ -250,19 +251,15 @@ impl Session {
         let chosen = path;
         let path = with_extension(chosen, "json");
         if let Some(message) = unasked_collision(chosen, &path) {
-            self.disarm();
             self.notice = Some(message.clone());
             return Err(message);
         }
         if let Err(error) = std::fs::write(&path, json) {
             let message = error.to_string();
-            self.disarm();
             self.notice = Some(message.clone());
             return Err(message);
         }
-        if self.discard_notice().is_none() {
-            self.notice = None;
-        }
+        self.notice = None;
         Ok(())
     }
 
@@ -1072,5 +1069,36 @@ mod tests {
         assert_eq!(session.notice, Some(error));
         assert!(session.dirty);
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// Editada Q y armado Nuevo: la sesión que usan las dos pruebas siguientes.
+    fn armed_session() -> Session {
+        let mut session = Session::default();
+        session.inputs.q = "100 m3/h".into();
+        session.edited();
+        assert_eq!(session.request(Command::New), Gate::Armed);
+        session
+    }
+
+    #[test]
+    fn exporting_disarms_the_discard() {
+        let mut session = armed_session();
+
+        // Sin `export_to`: es lo que pasa si se cancela el diálogo.
+        session.export_json().unwrap();
+
+        assert_eq!(session.discard_notice(), None);
+        assert_eq!(session.request(Command::New), Gate::Armed);
+        assert_eq!(session.inputs.q, "100 m3/h");
+    }
+
+    #[test]
+    fn a_failed_export_disarms_the_discard_too() {
+        let mut session = armed_session();
+        session.inputs.q = "mucho".into();
+
+        session.export_json().unwrap_err();
+
+        assert_eq!(session.request(Command::New), Gate::Armed);
     }
 }

@@ -176,7 +176,7 @@ fn check_texts_match_values(case: &Case, analysis: &Analysis) -> Result<(), Engi
     Ok(())
 }
 
-fn same_value(a: f64, b: f64) -> bool {
+pub(crate) fn same_value(a: f64, b: f64) -> bool {
     (a - b).abs() <= 1e-9 * a.abs().max(b.abs())
 }
 

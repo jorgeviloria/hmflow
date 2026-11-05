@@ -5,18 +5,20 @@ use hm_core::{Diagnostic, Diagnostics, PumpType};
 use hm_design::{LEGACY_METHODS, METHOD};
 use hm_formula::Registry;
 use hm_project::{Param, Project};
+use hm_units::parse_quantity;
 
 use crate::analysis::{Analysis, CurvePoints, require_stages};
 use crate::audit::audit;
 use crate::case::{Case, DensitySource, FluidKind, Temperature};
 use crate::convert::{case_from_project, override_error};
 use crate::dispatch::analyze;
-use crate::error::{EngineError, cli_message};
+use crate::error::{CaseField, EngineError, cli_message, input_error};
 use crate::fluid::{DEFAULT_WATER_TEMPERATURE_K, water_density_at};
 use crate::project_ops::{
-    check_case_matches_analysis, fluid_name, npsha_text, rho_text, suction_from, temperature_text,
-    viscosity_text,
+    check_case_matches_analysis, fluid_name, npsha_text, rho_text, same_value, suction_from,
+    temperature_text, viscosity_text,
 };
+use crate::validate::field_code;
 
 /// Densidad escrita que se admite aunque no sea la del agua a su temperatura.
 const RHO_TOLERANCE: f64 = 0.005;
@@ -109,6 +111,8 @@ pub fn update_point(
             return Err(override_error(name));
         }
     }
+    check_locked_agrees(&project, "rho", analysis.input.rho.si)?;
+    check_locked_agrees(&project, "eta_m", analysis.input.eta_m)?;
 
     project.operating.q = case.duty.q.text.clone();
     project.operating.h = case.duty.h.text.clone();
@@ -129,6 +133,32 @@ pub fn update_point(
         });
     }
     Ok(project)
+}
+
+/// Un `locked` no se toca; por eso tiene que ser el valor con que se calculó.
+///
+/// Si el usuario cambió algo de lo que depende (la temperatura para `rho`, la
+/// eficiencia para `eta_m`), guardar dejaría un archivo que no reproduce lo que
+/// vio en pantalla, sin avisar. Se rechaza y se dice qué está bloqueado.
+fn check_locked_agrees(
+    project: &Project,
+    name: &'static str,
+    analyzed: f64,
+) -> Result<(), EngineError> {
+    let Some(Param::Locked { value }) = project.params.get(name) else {
+        return Ok(());
+    };
+    if parse_quantity(value).is_ok_and(|locked| same_value(locked.si, analyzed)) {
+        return Ok(());
+    }
+    Err(input_error(
+        CaseField::Param(name),
+        field_code(CaseField::Param(name)),
+        format!(
+            "`{name}` está en locked ({value}) y el cálculo usó otro valor; \
+             desbloquéalo en el proyecto o deja el dato como estaba"
+        ),
+    ))
 }
 
 /// Ausente o `manual` se reescribe como `manual`; `locked` se respeta.

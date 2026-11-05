@@ -240,6 +240,96 @@ fn update_point_keeps_a_legacy_method() {
     assert_eq!(updated.design.method, legacy, "migrar es cosa de `recalc`");
 }
 
+#[test]
+fn a_locked_rho_that_the_edit_changes_is_an_error() {
+    // Agua a otra temperatura: el cálculo usaría otra densidad que la bloqueada.
+    let mut project = v09();
+    let rho = manual(&project, "rho");
+    project
+        .params
+        .insert("rho".into(), Param::Locked { value: rho });
+    let mut case = opened_case(&project);
+    let temperature = parse_temperature("60 degC").unwrap();
+    case.fluid.density = Density {
+        value: water_density_at(&temperature).unwrap(),
+        source: DensitySource::WaterAtTemperature,
+    };
+    case.fluid.temperature = Some(temperature);
+    let analysis = analyzed(&case);
+
+    let error = update_point(project, &case, &analysis).unwrap_err();
+
+    match error {
+        EngineError::Input { field, diagnostic } => {
+            assert_eq!(diagnostic.code, "HM-PROJ-020");
+            assert!(matches!(field, CaseField::Param("rho")), "{field:?}");
+            assert!(
+                diagnostic.message.contains("locked"),
+                "{}",
+                diagnostic.message
+            );
+        }
+        other => panic!("se esperaba Input y salió {other:?}"),
+    }
+}
+
+#[test]
+fn a_locked_eta_m_that_the_edit_changes_is_an_error() {
+    let mut project = v09();
+    let eta_m = manual(&project, "eta_m");
+    project
+        .params
+        .insert("eta_m".into(), Param::Locked { value: eta_m });
+    let mut case = opened_case(&project);
+    case.mechanical_efficiency = Some(0.95);
+    let analysis = analyzed(&case);
+
+    let error = update_point(project, &case, &analysis).unwrap_err();
+
+    assert!(
+        matches!(
+            error,
+            EngineError::Input {
+                field: CaseField::Param("eta_m"),
+                ..
+            }
+        ),
+        "{error:?}"
+    );
+}
+
+#[test]
+fn saving_without_changes_leaves_the_file_as_it_was() {
+    let project = v09();
+    let before = project.to_toml().unwrap();
+    let opened = open_project(&project).unwrap();
+    let analysis = analyzed(&opened.case);
+
+    let updated = update_point(project, &opened.case, &analysis).unwrap();
+
+    assert_eq!(updated.to_toml().unwrap(), before);
+}
+
+#[test]
+fn installation_texts_survive_and_an_empty_vapor_pressure_stays_empty() {
+    let project = v09();
+    let mut case = opened_case(&project);
+    case.intake = Intake::Installation {
+        pressure: entered("1 atm"),
+        height: Some(entered("2 m")),
+        losses: Some(entered("0.5 m")),
+        vapor_pressure: None,
+    };
+    let analysis = analyzed(&case);
+
+    let updated = update_point(project, &case, &analysis).unwrap();
+
+    let suction = updated.suction.expect("[suction] escrito");
+    assert_eq!(suction.height, "2 m");
+    assert_eq!(suction.losses, "0.5 m");
+    assert!(suction.vapor_pressure.is_empty());
+}
+
 // ------------------------------------------------------------ open_project
 
 #[test]
@@ -375,4 +465,17 @@ fn a_project_with_format_errors_is_invalid() {
     let found = invalid_codes(open_project(&project).unwrap_err());
 
     assert!(!found.is_empty());
+}
+
+#[test]
+fn a_rho_within_half_a_percent_of_water_opens_and_beyond_it_does_not() {
+    // Agua a 20 °C: 998,2 kg/m3. El 0,5 % son unos 5 kg/m3.
+    for (rho, opens) in [("1003.1 kg/m3", true), ("1003.3 kg/m3", false)] {
+        let mut project = v09();
+        project
+            .params
+            .insert("rho".into(), Param::Manual { value: rho.into() });
+
+        assert_eq!(open_project(&project).is_ok(), opens, "{rho}");
+    }
 }

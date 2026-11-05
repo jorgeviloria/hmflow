@@ -8,12 +8,14 @@ use std::path::{Path, PathBuf};
 use hm_core::Diagnostic;
 use hm_project::Project;
 
-use crate::model::{Inputs, open_file};
+use crate::model::{Basis, Inputs, open_file};
 
 /// Lo que la ventana recuerda entre un fotograma y el siguiente.
 #[derive(Default)]
 pub struct Session {
     pub inputs: Inputs,
+    /// Selecciones y densidad del archivo abierto, para `compute`.
+    pub basis: Basis,
     pub file: Option<PathBuf>,
     pub project: Option<Project>,
     pub dirty: bool,
@@ -49,6 +51,7 @@ impl Session {
         match open_file(path) {
             Ok(opened) => {
                 self.inputs = opened.inputs;
+                self.basis = opened.basis;
                 self.file = Some(path.to_path_buf());
                 self.project = Some(opened.project);
                 self.dirty = false;

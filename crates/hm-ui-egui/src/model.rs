@@ -119,7 +119,7 @@ impl Outcome {
 /// Caso de agua que describe `inputs`. Los textos de caudal, altura, giro y
 /// NPSHa pasan por `Entered::parse`. La temperatura es un número en °C: fija
 /// el fluido y la densidad sale de `water_density_at`.
-fn case_from_inputs(inputs: &Inputs) -> Result<Case, FieldErrors> {
+fn case_from_inputs(inputs: &Inputs, basis: &Basis) -> Result<Case, FieldErrors> {
     let mut errors = FieldErrors::new();
     let q = entered(Field::Q, &inputs.q, &mut errors);
     let h = entered(Field::H, &inputs.h, &mut errors);
@@ -141,15 +141,15 @@ fn case_from_inputs(inputs: &Inputs) -> Result<Case, FieldErrors> {
         fluid: Fluid {
             kind: FluidKind::Water,
             temperature: Some(temperature),
-            density: Density {
+            density: basis.density_for(inputs).unwrap_or(Density {
                 value: rho,
                 source: DensitySource::WaterAtTemperature,
-            },
+            }),
             viscosity: None,
         },
         intake,
         mechanical_efficiency: eta_m,
-        design: DesignOptions::default(),
+        design: basis.design.clone(),
     })
 }
 
@@ -309,8 +309,8 @@ fn optional_suction(name: &str, text: &str, errors: &mut FieldErrors) -> Option<
 ///
 /// `Err` son errores de lectura o del motor, cada uno en su campo. Un fallo
 /// de etapa no descarta el resto: queda en el `Result` de `Outcome`.
-pub fn compute(inputs: &Inputs) -> Result<Outcome, FieldErrors> {
-    let case = case_from_inputs(inputs)?;
+pub fn compute(inputs: &Inputs, basis: &Basis) -> Result<Outcome, FieldErrors> {
+    let case = case_from_inputs(inputs, basis)?;
     let analysis = analyze(&case, CurvePoints::clamped(CURVE_POINTS))
         .map_err(|error| vec![engine_error_field(error, !inputs.eta_m.trim().is_empty())])?;
     Ok(outcome_from(inputs, analysis))
@@ -361,11 +361,44 @@ fn engine_error_field(error: EngineError, eta_m_typed: bool) -> (Field, String) 
     (field, message)
 }
 
+/// Lo que el archivo abierto fija y las cajas no muestran.
+///
+/// Sin esto, la ventana calcularía otra bomba que la del archivo: las
+/// selecciones manuales valen hasta que se cierre el proyecto.
+#[derive(Debug, Clone, Default)]
+pub struct Basis {
+    pub design: DesignOptions,
+    /// Densidad escrita en el archivo y la caja de temperatura con que se
+    /// abrió. Solo vale mientras esa caja no cambie.
+    pub density: Option<(String, Density)>,
+}
+
+impl Basis {
+    fn from_opened(case: &Case, inputs: &Inputs) -> Self {
+        let written = matches!(
+            &case.fluid.density.source,
+            DensitySource::Explicit { text } if !text.trim().is_empty()
+        );
+        Self {
+            design: case.design.clone(),
+            density: written.then(|| (inputs.temperature_c.clone(), case.fluid.density.clone())),
+        }
+    }
+
+    fn density_for(&self, inputs: &Inputs) -> Option<Density> {
+        self.density
+            .as_ref()
+            .filter(|(box_text, _)| box_text.trim() == inputs.temperature_c.trim())
+            .map(|(_, density)| density.clone())
+    }
+}
+
 /// Un proyecto que la ventana ya puede mostrar.
 #[derive(Debug)]
 pub struct OpenedFile {
     pub project: Project,
     pub inputs: Inputs,
+    pub basis: Basis,
     pub diagnostics: Vec<Diagnostic>,
 }
 
@@ -443,9 +476,11 @@ pub fn open_file(path: &Path) -> Result<OpenedFile, String> {
     if let Some(text) = parameter_text(&project, "eta_m") {
         inputs.eta_m = text;
     }
+    let basis = Basis::from_opened(&opened.case, &inputs);
     Ok(OpenedFile {
         project,
         inputs,
+        basis,
         diagnostics: opened.diagnostics.into_vec(),
     })
 }
@@ -923,6 +958,95 @@ mod tests {
             ..Inputs::default()
         };
         assert!(compute(&inputs).is_ok());
+    }
+
+    /// Sin archivo abierto: las pruebas de las cajas no necesitan más.
+    fn compute(inputs: &Inputs) -> Result<Outcome, FieldErrors> {
+        super::compute(inputs, &Basis::default())
+    }
+
+    fn case_from_inputs(inputs: &Inputs) -> Result<Case, FieldErrors> {
+        super::case_from_inputs(inputs, &Basis::default())
+    }
+
+    /// Fixture v0.9 con el rodete real de la nota: seis álabes y su φ.
+    fn opened_with_selections() -> (Project, OpenedFile) {
+        let mut project = load("end_suction_v0.9.hmf");
+        for (name, value) in [("blade_count", "6"), ("phi", "0.0785")] {
+            project.params.insert(
+                name.into(),
+                Param::Manual {
+                    value: value.into(),
+                },
+            );
+        }
+        let path = std::env::temp_dir().join(format!(
+            "hmflow-selecciones-{:?}.hmf",
+            std::thread::current().id()
+        ));
+        project.save(&path).unwrap();
+        let opened = open_file(&path);
+        let _ = std::fs::remove_file(&path);
+        (project, opened.unwrap())
+    }
+
+    #[test]
+    fn the_window_shows_the_design_of_the_file() {
+        let (project, opened) = opened_with_selections();
+        let case = hm_engine::case_from_project(&project).unwrap();
+        let file = analyze(&case, CurvePoints::clamped(CURVE_POINTS)).unwrap();
+
+        let window = super::compute(&opened.inputs, &opened.basis).unwrap();
+
+        assert_eq!(window.result.selection.blade_count, 6);
+        assert_eq!(format!("{:?}", window.result), format!("{:?}", file.result));
+        assert_eq!(format!("{:?}", window.curve), format!("{:?}", file.curve));
+    }
+
+    #[test]
+    fn an_edit_keeps_the_selections_of_the_file() {
+        let (_, opened) = opened_with_selections();
+        let inputs = Inputs {
+            q: "100 m3/h".into(),
+            ..opened.inputs
+        };
+
+        let window = super::compute(&inputs, &opened.basis).unwrap();
+
+        assert_eq!(window.result.selection.blade_count, 6);
+    }
+
+    #[test]
+    fn the_written_density_stays_until_the_temperature_changes() {
+        let (_, opened) = opened_with_selections();
+        let written = super::compute(&opened.inputs, &opened.basis).unwrap();
+        assert!((written.input.rho.si - 998.204).abs() < 1e-12);
+
+        let inputs = Inputs {
+            temperature_c: "60".into(),
+            ..opened.inputs
+        };
+        let warmer = super::compute(&inputs, &opened.basis).unwrap();
+        assert!(
+            (warmer.input.rho.si - 983.2).abs() < 0.1,
+            "{}",
+            warmer.input.rho.si
+        );
+    }
+
+    #[test]
+    fn a_file_without_written_density_uses_the_water_of_the_box() {
+        let opened = open_file(&fixture("end_suction_v0.9.hmf")).unwrap();
+        let basis = Basis {
+            density: None,
+            ..opened.basis
+        };
+        let window = super::compute(&opened.inputs, &basis).unwrap();
+        assert!(
+            (window.input.rho.si - 998.207).abs() < 0.01,
+            "{}",
+            window.input.rho.si
+        );
     }
 
     fn fixture(name: &str) -> std::path::PathBuf {

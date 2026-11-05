@@ -91,7 +91,7 @@ impl App {
 
     /// El diseño tarda milisegundos: se recalcula con cada cambio.
     fn recompute(&mut self) {
-        match compute(&self.session.inputs) {
+        match compute(&self.session.inputs, &self.session.basis) {
             Ok(outcome) => {
                 self.outcome = Some(outcome);
                 self.errors.clear();

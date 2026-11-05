@@ -1,0 +1,153 @@
+# Pack de reducción de ensayos de banco.
+#
+# Pasa las lecturas del banco a altura, potencia y NPSH disponible, y las
+# lleva a la velocidad especificada. Son definiciones, no modelos.
+
+[[formula]]
+id = "bench.pipe_velocity"
+version = 1
+validation = "pilot"
+module = "bench"
+title = "Velocidad media en una toma"
+source = "Continuidad; Gülich 2020, Tabla 2.2"
+units = "m/s"
+range = "0 .. 100"
+test = "crates/hm-formula/tests/bench.rs::pipe_velocity"
+
+[formula.inputs]
+Q = "m3/s"
+D = "m"
+
+[formula.expr]
+value = "Q/(pi*D^2/4)"
+
+[formula.notes]
+assumptions = "D es el diámetro interior medido en la toma."
+
+[[formula]]
+id = "bench.total_head"
+version = 1
+validation = "pilot"
+module = "bench"
+title = "Altura total medida entre tomas"
+source = "Gülich 2020, ec. (2.2) y Tabla 2.2"
+units = "m"
+range = "-100 .. 10000"
+test = "crates/hm-formula/tests/bench.rs::total_head"
+
+[formula.inputs]
+p_d = "Pa"
+p_s = "Pa"
+rho = "kg/m3"
+z_d = "m"
+z_s = "m"
+c_d = "m/s"
+c_s = "m/s"
+
+[formula.expr]
+value = "(p_d - p_s)/(rho*g) + z_d - z_s + (c_d^2 - c_s^2)/(2*g)"
+
+[formula.notes]
+assumptions = "p_d y p_s con la misma referencia; z sobre el eje; g estándar, igual que en el modelo."
+
+[[formula]]
+id = "bench.shaft_power"
+version = 1
+validation = "pilot"
+module = "bench"
+title = "Potencia en el eje medida"
+source = "Potencia y velocidad angular; Gülich 2020, cap. 1"
+units = "W"
+range = "0 .. 100000000"
+test = "crates/hm-formula/tests/bench.rs::shaft_power"
+
+[formula.inputs]
+n = "1/s"
+T = "N*m"
+
+[formula.expr]
+value = "2*pi*n*T"
+
+[formula.notes]
+assumptions = "Par medido entre el motor y la bomba."
+
+[[formula]]
+id = "bench.npsha"
+version = 1
+validation = "pilot"
+module = "bench"
+title = "NPSH disponible medido en la toma"
+source = "Gülich 2020, sec. 2.2.2 y Tabla 2.2"
+units = "m"
+range = "-10 .. 100"
+test = "crates/hm-formula/tests/bench.rs::npsha"
+
+[formula.inputs]
+p_abs = "Pa"
+p_v = "Pa"
+rho = "kg/m3"
+z_s = "m"
+c_s = "m/s"
+
+[formula.expr]
+value = "(p_abs - p_v)/(rho*g) + z_s + c_s^2/(2*g)"
+
+[formula.notes]
+assumptions = "p_abs es la presión absoluta en la toma; plano de referencia en el eje."
+
+[[formula]]
+id = "bench.similar_flow"
+version = 1
+validation = "pilot"
+module = "bench"
+title = "Caudal a la velocidad especificada"
+source = "Leyes de semejanza; Gülich 2020, Tabla 3.4"
+units = "m3/s"
+range = "0 .. 100"
+test = "crates/hm-formula/tests/bench.rs::similar"
+
+[formula.inputs]
+Q = "m3/s"
+n = "1/s"
+n_sp = "1/s"
+
+[formula.expr]
+value = "Q*n_sp/n"
+
+[[formula]]
+id = "bench.similar_head"
+version = 1
+validation = "pilot"
+module = "bench"
+title = "Altura o NPSH a la velocidad especificada"
+source = "Leyes de semejanza; Gülich 2020, Tabla 3.4"
+units = "m"
+range = "-100 .. 10000"
+test = "crates/hm-formula/tests/bench.rs::similar"
+
+[formula.inputs]
+H = "m"
+n = "1/s"
+n_sp = "1/s"
+
+[formula.expr]
+value = "H*(n_sp/n)^2"
+
+[[formula]]
+id = "bench.similar_power"
+version = 1
+validation = "pilot"
+module = "bench"
+title = "Potencia a la velocidad especificada"
+source = "Leyes de semejanza; Gülich 2020, Tabla 3.4"
+units = "W"
+range = "0 .. 100000000"
+test = "crates/hm-formula/tests/bench.rs::similar"
+
+[formula.inputs]
+P = "W"
+n = "1/s"
+n_sp = "1/s"
+
+[formula.expr]
+value = "P*(n_sp/n)^3"

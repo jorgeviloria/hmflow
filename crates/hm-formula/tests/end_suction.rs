@@ -31,8 +31,8 @@ fn pack_has_seventy_nine_formulas() {
 }
 
 #[test]
-fn all_merges_both_packs() {
-    assert_eq!(Registry::all().len(), 89);
+fn all_merges_every_pack() {
+    assert_eq!(Registry::all().len(), 96);
 }
 
 #[test]

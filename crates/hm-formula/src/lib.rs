@@ -24,3 +24,6 @@ pub const BUILTIN_PACK: &str = include_str!("../packs/pilot.toml");
 
 /// Pack de diseño preliminar para bombas end-suction OH1/OH2.
 pub const END_SUCTION_V01_PACK: &str = include_str!("../packs/end_suction_v01.toml");
+
+/// Pack de reducción de ensayos de banco.
+pub const BENCH_V1_PACK: &str = include_str!("../packs/bench_v1.toml");

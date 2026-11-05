@@ -201,10 +201,14 @@ impl Registry {
         Self::from_toml(crate::BUILTIN_PACK).expect("el pack integrado debe ser válido")
     }
 
-    /// Catálogo completo: pack piloto y pack de diseño end-suction.
+    /// Catálogo completo: pack piloto, diseño end-suction y reducción de banco.
     pub fn all() -> Self {
-        Self::from_packs(&[crate::BUILTIN_PACK, crate::END_SUCTION_V01_PACK])
-            .expect("los packs integrados deben ser válidos")
+        Self::from_packs(&[
+            crate::BUILTIN_PACK,
+            crate::END_SUCTION_V01_PACK,
+            crate::BENCH_V1_PACK,
+        ])
+        .expect("los packs integrados deben ser válidos")
     }
 
     pub fn get(&self, id: &str) -> Option<&FormulaSpec> {

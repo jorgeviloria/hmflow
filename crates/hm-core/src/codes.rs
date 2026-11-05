@@ -164,6 +164,11 @@ pub const CODES: &[CodeInfo] = &[
         Error,
         "Falta la presión de vapor de [suction] para un fluido que no es agua.",
     ),
+    active(
+        "HM-PROJ-030",
+        Error,
+        "Una cota de [casing] no se entiende, no es positiva o no encaja con las demás.",
+    ),
     // Diseño
     active(
         "HM-DES-001",

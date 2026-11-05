@@ -17,10 +17,11 @@ use thiserror::Error;
 ///
 /// - 1: proyecto, diseño, punto de operación y parámetros.
 /// - 2: añade `viscosity` en `[operating]` y la sección opcional `[suction]`.
-pub const SCHEMA_VERSION: u32 = 2;
+/// - 3: añade la sección opcional `[casing]`.
+pub const SCHEMA_VERSION: u32 = 3;
 
 /// Esquemas anteriores que se migran al cargar.
-pub const MIGRATABLE_SCHEMAS: &[u32] = &[1];
+pub const MIGRATABLE_SCHEMAS: &[u32] = &[1, 2];
 
 #[derive(Debug, Error)]
 pub enum ProjectError {
@@ -48,6 +49,9 @@ pub struct Project {
     /// Instalación de aspiración para calcular el NPSHa (esquema 2).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub suction: Option<Suction>,
+    /// Carcasa existente para la que se diseña el rodete (esquema 3).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub casing: Option<Casing>,
     #[serde(default)]
     pub params: BTreeMap<String, Param>,
 }
@@ -70,6 +74,34 @@ pub struct Suction {
     /// proyecto (IAPWS-IF97); obligatoria si el fluido no es agua.
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub vapor_pressure: String,
+}
+
+/// Lo que una carcasa existente le impone al rodete. Con esta sección, el
+/// diseño deja de elegir estas cotas: son datos.
+#[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct Casing {
+    /// Diámetro exterior del rodete.
+    pub d2: String,
+    /// Cuello del anillo de desgaste delantero.
+    pub neck_diameter: String,
+    /// Mayor ojo que deja el cuello, con su pared.
+    pub eye_diameter_max: String,
+    /// Agujero del eje.
+    pub bore_diameter: String,
+    /// Cubo mínimo en el borde de ataque.
+    pub hub_diameter: String,
+    /// Ancho de entrada de la voluta.
+    pub b3: String,
+    /// Radio de la lengua.
+    pub cutwater_radius: String,
+    /// Canales de la voluta: 1 o 2.
+    pub channels: u32,
+    /// Envolvente de la voluta interior.
+    pub wrap: String,
+    /// Área de garganta de cada canal. Vacía: sin dato, y no se inventa.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub throat_area: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -216,13 +248,14 @@ impl Project {
                 viscosity: String::new(),
             },
             suction: None,
+            casing: None,
             params: BTreeMap::new(),
         }
     }
 
     /// Lleva un proyecto de un esquema anterior al actual.
     ///
-    /// 1 → 2: el esquema 2 solo añade campos opcionales, así que basta con
+    /// Los esquemas 2 y 3 solo añaden campos opcionales, así que basta con
     /// cambiar el número. Un esquema desconocido se deja como está y lo
     /// señala `validate` con `HM-PROJ-001`.
     fn migrated(mut self) -> Self {
@@ -349,6 +382,10 @@ impl Project {
 
         if !self.operating.viscosity.trim().is_empty() {
             check_viscosity(&mut diagnostics, &self.operating.viscosity);
+        }
+
+        if let Some(casing) = &self.casing {
+            check_casing(&mut diagnostics, casing);
         }
 
         if let Some(suction) = &self.suction {
@@ -479,6 +516,93 @@ fn check_viscosity(diagnostics: &mut Diagnostics, text: &str) {
             "HM-PROJ-026",
             format!("`viscosity` {problem}"),
         ));
+    }
+}
+
+/// Envolvente admitida en `[casing]`, en grados: la misma de `volute_wrap_deg`.
+const CASING_WRAP_RANGE_DEG: (f64, f64) = (90.0, 180.0);
+
+fn casing_problem(diagnostics: &mut Diagnostics, name: &str, problem: &str) {
+    diagnostics.push(
+        Diagnostic::error("HM-PROJ-030", format!("[casing] `{name}` {problem}"))
+            .with_hint("Corrige la cota con la del plano de la carcasa."),
+    );
+}
+
+/// Valor en SI, positivo y finito, o el diagnóstico que nombra el campo.
+fn casing_value(diagnostics: &mut Diagnostics, name: &str, text: &str, unit: &str) -> Option<f64> {
+    let problem = match (parse_quantity(text), parse_unit(unit)) {
+        (Ok(quantity), Ok(expected)) if quantity.dim() != expected.dim => {
+            format!("debe ser {unit}: {text}")
+        }
+        (Ok(quantity), Ok(_)) if !quantity.si.is_finite() => format!("debe ser finito: {text}"),
+        (Ok(quantity), Ok(_)) if quantity.si <= 0.0 => format!("debe ser positivo: {text}"),
+        (Ok(quantity), Ok(_)) => return Some(quantity.si),
+        (Err(error), _) | (_, Err(error)) => {
+            format!("no se puede interpretar ({error}): {text}")
+        }
+    };
+    casing_problem(diagnostics, name, &problem);
+    None
+}
+
+/// Cada cota por separado y, si todas se entienden, que encajen entre sí.
+fn check_casing(diagnostics: &mut Diagnostics, casing: &Casing) {
+    let d2 = casing_value(diagnostics, "d2", &casing.d2, "m");
+    let neck = casing_value(diagnostics, "neck_diameter", &casing.neck_diameter, "m");
+    let eye = casing_value(
+        diagnostics,
+        "eye_diameter_max",
+        &casing.eye_diameter_max,
+        "m",
+    );
+    let bore = casing_value(diagnostics, "bore_diameter", &casing.bore_diameter, "m");
+    let hub = casing_value(diagnostics, "hub_diameter", &casing.hub_diameter, "m");
+    casing_value(diagnostics, "b3", &casing.b3, "m");
+    let cutwater = casing_value(diagnostics, "cutwater_radius", &casing.cutwater_radius, "m");
+
+    if !matches!(casing.channels, 1 | 2) {
+        casing_problem(
+            diagnostics,
+            "channels",
+            &format!("debe ser 1 o 2: {}", casing.channels),
+        );
+    }
+    if let Some(wrap) = casing_value(diagnostics, "wrap", &casing.wrap, "rad") {
+        let (low, high) = CASING_WRAP_RANGE_DEG;
+        if !(low..=high).contains(&wrap.to_degrees()) {
+            casing_problem(
+                diagnostics,
+                "wrap",
+                &format!("debe estar entre {low} y {high} grados: {}", casing.wrap),
+            );
+        }
+    }
+    if !casing.throat_area.trim().is_empty() {
+        casing_value(diagnostics, "throat_area", &casing.throat_area, "m2");
+    }
+
+    if let (Some(d2), Some(neck), Some(eye), Some(bore), Some(hub), Some(cutwater)) =
+        (d2, neck, eye, bore, hub, cutwater)
+    {
+        let nested = [
+            ("bore_diameter", "hub_diameter", bore < hub),
+            ("hub_diameter", "eye_diameter_max", hub < eye),
+            ("eye_diameter_max", "neck_diameter", eye < neck),
+            ("neck_diameter", "d2", neck < d2),
+        ];
+        for (small, large, fits) in nested {
+            if !fits {
+                casing_problem(diagnostics, small, &format!("debe ser menor que `{large}`"));
+            }
+        }
+        if 2.0 * cutwater < d2 {
+            casing_problem(
+                diagnostics,
+                "cutwater_radius",
+                "deja la lengua dentro del rodete: debe ser al menos d2/2",
+            );
+        }
     }
 }
 

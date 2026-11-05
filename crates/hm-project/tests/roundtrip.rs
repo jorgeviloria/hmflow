@@ -307,10 +307,10 @@ fn with_suction(pressure: &str, height: &str, losses: &str, vapor: &str) -> Proj
 #[test]
 fn unknown_schema_is_not_migrated() {
     let mut project = Project::new("demo", PumpType::EndSuction);
-    project.schema = 3;
+    project.schema = 4;
     let text = project.to_toml().unwrap();
     let project = Project::from_toml(&text).unwrap();
-    assert_eq!(project.schema, 3);
+    assert_eq!(project.schema, 4);
     assert_eq!(codes(&project), ["HM-PROJ-001"]);
 }
 

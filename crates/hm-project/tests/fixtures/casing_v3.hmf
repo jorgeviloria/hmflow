@@ -1,0 +1,28 @@
+# Carcasa ficticia: ninguna cota es de una bomba real.
+schema = 3
+
+[project]
+name = "carcasa-ficticia"
+
+[design]
+pump_type = "end_suction"
+stages = 1
+standard = "ISO 2858"
+
+[operating]
+Q = "120 m3/h"
+H = "45 m"
+n = "2900 rpm"
+fluid = "water"
+temperature = "20 degC"
+
+[casing]
+d2 = "300 mm"
+neck_diameter = "120 mm"
+eye_diameter_max = "105 mm"
+bore_diameter = "30 mm"
+hub_diameter = "45 mm"
+b3 = "28 mm"
+cutwater_radius = "155 mm"
+channels = 2
+wrap = "180 deg"

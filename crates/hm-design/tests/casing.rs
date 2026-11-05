@@ -1,5 +1,6 @@
 //! Diseño de un rodete para una carcasa existente. Carcasa ficticia.
 
+use hm_design::mechanics::{DEFAULT_SHAFT_SHEAR_STRESS, mechanics};
 use hm_design::{CasingFit, DesignInput, DesignOptions, design, design_with_options};
 use hm_units::parse_quantity;
 
@@ -168,4 +169,135 @@ fn a_bad_casing_value_is_rejected_by_name() {
             .to_string();
         assert!(error.contains(&format!("casing.{field}")), "{error}");
     }
+}
+
+fn free_eye() -> f64 {
+    design_with_options(&input(), &with_eye_limit(0.180))
+        .unwrap()
+        .d1
+        .si
+}
+
+fn with_eye_limit(limit: f64) -> DesignOptions {
+    with(CasingFit {
+        eye_diameter_max: limit,
+        neck_diameter: 0.190,
+        ..sample()
+    })
+}
+
+fn codes(result: &hm_design::DesignResult) -> Vec<String> {
+    result
+        .diagnostics
+        .iter()
+        .map(|diagnostic| diagnostic.code.clone())
+        .collect()
+}
+
+#[test]
+fn a_tight_neck_limits_the_eye_and_says_so() {
+    let free = free_eye();
+    let limit = free * 0.9;
+    let result = design_with_options(&input(), &with_eye_limit(limit)).unwrap();
+    assert!((result.d1.si - limit).abs() < 1e-9, "{}", result.d1.si);
+    let warning = result
+        .diagnostics
+        .iter()
+        .find(|diagnostic| diagnostic.code == "HM-DES-039")
+        .unwrap();
+    assert!(
+        warning.message.contains(&format!("{:.1} mm", limit * 1e3)),
+        "{}",
+        warning.message
+    );
+    assert!(
+        warning.message.contains(&format!("{:.1} mm", free * 1e3)),
+        "{}",
+        warning.message
+    );
+}
+
+#[test]
+fn a_roomy_neck_leaves_the_best_eye() {
+    let free = free_eye();
+    let result = design_with_options(&input(), &with_eye_limit(free * 1.1)).unwrap();
+    assert!((result.d1.si - free).abs() < 1e-6);
+    assert!(!codes(&result).contains(&"HM-DES-039".to_string()));
+}
+
+#[test]
+fn the_eye_search_uses_the_casing_hub() {
+    let thick = CasingFit {
+        hub_diameter: 0.050,
+        eye_diameter_max: 0.180,
+        neck_diameter: 0.190,
+        ..sample()
+    };
+    let result = design_with_options(&input(), &with(thick)).unwrap();
+    assert!(result.d1.si > free_eye());
+}
+
+#[test]
+fn a_manual_eye_over_the_limit_is_an_error_that_names_everything() {
+    let options = DesignOptions {
+        c0: Some(1.5),
+        j: Some(1.1),
+        ..with(sample())
+    };
+    let error = design_with_options(&input(), &options)
+        .unwrap_err()
+        .to_string();
+    for expected in ["c0", "J", "75.0 mm"] {
+        assert!(error.contains(expected), "{error}");
+    }
+}
+
+#[test]
+fn a_manual_eye_inside_the_limit_is_kept() {
+    let options = DesignOptions {
+        c0: Some(5.0),
+        j: Some(1.1),
+        ..with_eye_limit(0.110)
+    };
+    let result = design_with_options(&input(), &options).unwrap();
+    assert_eq!(result.selection.c0, 5.0);
+}
+
+#[test]
+fn the_seal_is_the_neck_with_a_casing_and_the_eye_without() {
+    let fitted = design_with_options(&input(), &with(sample())).unwrap();
+    let mech = mechanics(&input(), &fitted, DEFAULT_SHAFT_SHEAR_STRESS).unwrap();
+    assert_eq!(mech.front_seal_diameter, 0.090);
+
+    let wider = CasingFit {
+        neck_diameter: 0.110,
+        ..sample()
+    };
+    let wider = design_with_options(&input(), &with(wider)).unwrap();
+    let wider_mech = mechanics(&input(), &wider, DEFAULT_SHAFT_SHEAR_STRESS).unwrap();
+    assert!(wider_mech.axial_thrust.1 > mech.axial_thrust.1);
+
+    let free = design(&input()).unwrap();
+    let free_mech = mechanics(&input(), &free, DEFAULT_SHAFT_SHEAR_STRESS).unwrap();
+    assert_eq!(free_mech.front_seal_diameter, free.d1.si);
+}
+
+#[test]
+fn the_seal_leakage_uses_the_neck() {
+    let tight = design_with_options(&input(), &with(sample())).unwrap();
+    let wider = CasingFit {
+        neck_diameter: 0.110,
+        ..sample()
+    };
+    let wider = design_with_options(&input(), &with(wider)).unwrap();
+    assert!(wider.seal_leakage_ratio > tight.seal_leakage_ratio);
+}
+
+#[test]
+fn an_eye_with_no_room_around_the_hub_is_an_error() {
+    let error = design_with_options(&input(), &with_eye_limit(0.033))
+        .unwrap_err()
+        .to_string();
+    assert!(error.contains("33.0 mm"), "{error}");
+    assert!(error.contains("30.0 mm"), "{error}");
 }

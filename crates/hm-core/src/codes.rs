@@ -335,6 +335,11 @@ pub const CODES: &[CodeInfo] = &[
         "Z par y número de lenguas de la voluta par: Gülich evita esa combinación (p. 491).",
     ),
     active(
+        "HM-DES-039",
+        Warning,
+        "El cuello de la carcasa no deja usar el ojo óptimo para el NPSH3.",
+    ),
+    active(
         "HM-DES-038",
         Info,
         "Voluta doble a medias: `volute_wrap_deg` y `volute_channels = 2` van juntos.",

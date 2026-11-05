@@ -298,7 +298,10 @@ pub fn mechanics(
         )
     };
 
-    let front_seal_diameter = result.d1.si;
+    let front_seal_diameter = result
+        .casing
+        .as_ref()
+        .map_or(result.d1.si, |casing| casing.neck_diameter);
     let shaft_seal_diameter = hub_diameter;
     let axial = |factor: f64| -> Result<f64, DesignError> {
         evaluate(

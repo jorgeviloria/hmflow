@@ -9,7 +9,9 @@ use crate::analysis::{Analysis, CurvePoints, require_mechanics_and_viscosity};
 use crate::audit::{NQ_SELECTIONS, selection_diagnostics};
 use crate::case::Case;
 use crate::changes::{ChangeKind, ParamChange};
-use crate::convert::{ManualDefaults, case_from_project, design_params, param_value};
+use crate::convert::{
+    CASING_RESULTS, ManualDefaults, case_from_project, design_params, param_value,
+};
 use crate::dispatch::analyze;
 use crate::error::EngineError;
 
@@ -67,10 +69,13 @@ pub fn recalc(mut project: Project, reselect: bool) -> Result<Recalculated, Engi
     } else {
         Vec::new()
     };
-    // Con carcasa, un ψ `manual` es el que dejó `design`: se rehace con el
-    // punto actual para que el archivo no conserve uno viejo.
-    if project.casing.is_some() && matches!(project.params.get("psi"), Some(Param::Manual { .. })) {
-        project.params.remove("psi");
+    // Se rehacen con el punto actual: el archivo no debe conservar unos viejos.
+    if project.casing.is_some() {
+        for name in CASING_RESULTS {
+            if matches!(project.params.get(name), Some(Param::Manual { .. })) {
+                project.params.remove(name);
+            }
+        }
     }
 
     let case = case_from_project(&project)?;

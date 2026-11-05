@@ -186,6 +186,10 @@ pub struct DesignResult {
     /// del área libre. Con `c0`, `cm0` o `J` manuales, `d0` es el de
     /// Srinivasan y el cubo no entra en el área.
     pub eye_excludes_hub: bool,
+    /// Ojo óptimo, m, si el cuello de la carcasa no lo dejó usar.
+    pub eye_limited_from: Option<f64>,
+    /// Carcasa con que se diseñó.
+    pub casing: Option<CasingFit>,
     pub diagnostics: Diagnostics,
 }
 
@@ -1211,9 +1215,28 @@ fn golden_section_min(mut f: impl FnMut(f64) -> f64, mut a: f64, mut b: f64) -> 
 
 /// Diámetro del álabe a la entrada que minimiza λc·c² + λw·(c² + u²), con el
 /// cubo restado del área. Devuelve `(d1, c1m, d0 equivalente)`.
-fn minimize_eye(qth: f64, n: f64, d2: f64, hub: f64) -> Result<(f64, f64, f64), DesignError> {
+///
+/// `eye_max` es el tope de una carcasa. Si el óptimo queda por encima, el ojo
+/// es exactamente ese tope: NPSH3(d1) baja hasta el óptimo, así que el mejor
+/// ojo admisible está en el borde.
+fn minimize_eye(
+    qth: f64,
+    n: f64,
+    d2: f64,
+    hub: f64,
+    eye_max: Option<f64>,
+) -> Result<(f64, f64, f64), DesignError> {
     let low = hub + EYE_HUB_CLEARANCE;
     let high = (EYE_TO_IMPELLER * d2).max(low + 1.0e-3);
+    if let Some(limit) = eye_max
+        && limit <= low
+    {
+        return Err(DesignError::Input(format!(
+            "el ojo máximo de [casing] ({:.1} mm) no deja paso alrededor del cubo ({:.1} mm)",
+            limit * 1000.0,
+            hub * 1000.0
+        )));
+    }
     if !high.is_finite() || !low.is_finite() || high <= low || hub >= d2 {
         return Err(DesignError::Input(format!(
             "el cubo ({:.1} mm) no cabe en el rodete (D2 = {:.1} mm)",
@@ -1230,7 +1253,8 @@ fn minimize_eye(qth: f64, n: f64, d2: f64, hub: f64) -> Result<(f64, f64, f64), 
         let u = std::f64::consts::PI * d1 * n;
         NPSH_LAMBDA_C * c * c + NPSH_LAMBDA_W * (c * c + u * u)
     };
-    let d1 = golden_section_min(objective, low, high);
+    let best = golden_section_min(objective, low, high);
+    let d1 = eye_max.map_or(best, |limit| best.min(limit));
     let free = d1 * d1 - hub * hub;
     if free <= 0.0 {
         return Err(DesignError::Input(
@@ -1254,17 +1278,37 @@ fn hubless_inlet_speed(qth: f64, n: f64, j: f64) -> Result<f64, DesignError> {
     Ok(qth / (std::f64::consts::PI / 4.0 * d0 * d0))
 }
 
-/// `(c0, cm0, J, el ojo descuenta el cubo)`.
+/// Lo que `choose_inlet` decide.
+struct Inlet {
+    c0: f64,
+    cm0: f64,
+    j: f64,
+    eye_excludes_hub: bool,
+    /// Ojo óptimo, si el cuello no lo dejó usar.
+    limited_from: Option<f64>,
+}
+
 fn choose_inlet(
     options: &DesignOptions,
     qth: f64,
     n: f64,
     d2: f64,
     hub: f64,
-) -> Result<(f64, f64, f64, bool), DesignError> {
+) -> Result<Inlet, DesignError> {
     if options.c0.is_none() && options.cm0.is_none() && options.j.is_none() {
-        let (d1, c1m, d0) = minimize_eye(qth, n, d2, hub)?;
-        return Ok((c1m, c1m, d1 / d0, true));
+        let eye_max = options
+            .casing
+            .as_ref()
+            .map(|casing| casing.eye_diameter_max);
+        let (d1, c1m, d0) = minimize_eye(qth, n, d2, hub, eye_max)?;
+        let (free_d1, _, _) = minimize_eye(qth, n, d2, hub, None)?;
+        return Ok(Inlet {
+            c0: c1m,
+            cm0: c1m,
+            j: d1 / d0,
+            eye_excludes_hub: true,
+            limited_from: (d1 < free_d1).then_some(free_d1),
+        });
     }
     let c0 = match (options.c0, options.cm0) {
         (Some(c0), _) => c0,
@@ -1273,7 +1317,13 @@ fn choose_inlet(
     };
     let cm0 = options.cm0.unwrap_or(c0);
     let j = options.j.unwrap_or(DEFAULT_EYE_RATIO);
-    Ok((c0, cm0, j, false))
+    Ok(Inlet {
+        c0,
+        cm0,
+        j,
+        eye_excludes_hub: false,
+        limited_from: None,
+    })
 }
 
 /// Intervalo admitido de la incidencia i1, en grados. Gülich p. 411 da 0..4°;
@@ -1322,6 +1372,10 @@ fn leading_edge(
 pub fn design(input: &DesignInput) -> Result<DesignResult, DesignError> {
     design_with_options(input, &DesignOptions::default())
 }
+
+/// Holgura, en m, con que un ojo guardado se considera dentro del tope: c0 y J
+/// se escriben por separado y su producto no vuelve exacto.
+const CASING_EYE_ROUNDING: f64 = 1.0e-9;
 
 /// Diferencia relativa con que un ψ manual se considera el de la carcasa.
 /// `design` escribe ψ en el `.hmf`, y `recalc` tiene que aceptar ese archivo.
@@ -1702,11 +1756,16 @@ pub fn design_with_options(
         &[("P", p_max.clone()), ("n", input.n.clone())],
     )?;
 
-    let (_, hub) = mechanics::shaft_and_hub(torque_max.si, mechanics::DEFAULT_SHAFT_SHEAR_STRESS)?;
-    let (c0, cm0, j, eye_excludes_hub) = choose_inlet(options, qth.si, input.n.si, d2.si, hub)?;
-    selection.c0 = c0;
-    selection.cm0 = cm0;
-    selection.j = j;
+    let (_, shaft_hub) =
+        mechanics::shaft_and_hub(torque_max.si, mechanics::DEFAULT_SHAFT_SHEAR_STRESS)?;
+    let hub = options
+        .casing
+        .as_ref()
+        .map_or(shaft_hub, |casing| casing.hub_diameter);
+    let inlet = choose_inlet(options, qth.si, input.n.si, d2.si, hub)?;
+    selection.c0 = inlet.c0;
+    selection.cm0 = inlet.cm0;
+    selection.j = inlet.j;
 
     let d0 = evaluate(
         &registry,
@@ -1724,6 +1783,18 @@ pub fn design_with_options(
             ("J", quantity(selection.j, one.clone())),
         ],
     )?;
+    if let Some(casing) = &options.casing
+        && d1.si > casing.eye_diameter_max + CASING_EYE_ROUNDING
+    {
+        return Err(DesignError::Input(format!(
+            "con c0 = {:.3} m/s y J = {:.3} el ojo sale {:.1} mm y [casing] admite {:.1} mm; \
+             ajústalos o quítalos de `locked`",
+            selection.c0,
+            selection.j,
+            d1.si * 1000.0,
+            casing.eye_diameter_max * 1000.0
+        )));
+    }
     let b1 = evaluate(
         &registry,
         "design.b1",
@@ -1894,7 +1965,10 @@ pub fn design_with_options(
     let (seal_leakage_ratio, seal_eta_v, seal_without_drive) = seal_leakage(
         &registry,
         input,
-        d1.si,
+        options
+            .casing
+            .as_ref()
+            .map_or(d1.si, |casing| casing.neck_diameter),
         d2.si,
         u2.si,
         cu2.si,
@@ -2079,7 +2153,9 @@ pub fn design_with_options(
         zero_head_flow_ratio,
         head_slope,
         volute,
-        eye_excludes_hub,
+        eye_excludes_hub: inlet.eye_excludes_hub,
+        eye_limited_from: inlet.limited_from,
+        casing: options.casing.clone(),
         diagnostics: Diagnostics::new(),
     };
 
@@ -2612,6 +2688,20 @@ fn diagnostics_for(
     options: &DesignOptions,
 ) -> Diagnostics {
     let mut diagnostics = Diagnostics::new();
+
+    if let Some(free) = result.eye_limited_from {
+        diagnostics.push(
+            Diagnostic::warning(
+                "HM-DES-039",
+                format!(
+                    "el cuello limita el ojo a {:.1} mm; el óptimo para el NPSH3 sería {:.1} mm",
+                    result.d1.si * 1000.0,
+                    free * 1000.0
+                ),
+            )
+            .with_hint("Un ojo mayor exige otro cuello y otro anillo."),
+        );
+    }
 
     if !(10.0..=100.0).contains(&result.nq) {
         diagnostics.push(

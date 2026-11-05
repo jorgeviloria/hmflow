@@ -106,3 +106,42 @@ fn the_casing_psi_is_not_reported_as_stale() {
         .collect();
     assert!(found.is_empty(), "{found:?}");
 }
+
+#[test]
+fn changing_the_point_never_trips_on_the_saved_eye() {
+    for (name, value) in [("Q", "150 m3/h"), ("Q", "100 m3/h"), ("H", "46 m")] {
+        let mut project = saved();
+        match name {
+            "Q" => project.operating.q = value.to_string(),
+            _ => project.operating.h = value.to_string(),
+        }
+        recalc(project, false).unwrap_or_else(|error| panic!("{value}: {error}"));
+    }
+}
+
+#[test]
+fn a_locked_eye_over_the_limit_is_still_an_error() {
+    let mut project = saved();
+    project.params.insert(
+        "c0".to_string(),
+        Param::Locked {
+            value: "1.5 m/s".to_string(),
+        },
+    );
+    let error = recalc(project, false).unwrap_err().to_string();
+    assert!(error.contains("75.0 mm"), "{error}");
+}
+
+#[test]
+fn a_locked_eye_that_fits_is_kept() {
+    let mut project = saved();
+    project.params.insert(
+        "c0".to_string(),
+        Param::Locked {
+            value: "12 m/s".to_string(),
+        },
+    );
+    let project = recalc(project, false).unwrap().project;
+    let case = case_from_project(&project).unwrap();
+    assert_eq!(case.design.c0, Some(12.0));
+}

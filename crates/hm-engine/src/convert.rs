@@ -426,6 +426,11 @@ fn default_density(
     })
 }
 
+/// Selecciones que, con carcasa, son resultado: ψ sale de D2 y el ojo del
+/// cuello. Las que `design` dejó como `manual` no son una decisión y quedan
+/// viejas al cambiar el punto. Solo `locked` las fija.
+pub(crate) const CASING_RESULTS: [&str; 4] = ["psi", "c0", "cm0", "J"];
+
 fn design_options(project: &Project) -> Result<DesignOptions, EngineError> {
     let mut options = DesignOptions::default();
 
@@ -435,10 +440,18 @@ fn design_options(project: &Project) -> Result<DesignOptions, EngineError> {
 
     if let Some(casing) = &project.casing {
         options.casing = Some(casing_fit(casing)?);
-        // Con carcasa, ψ es resultado: el que `design` dejó en el archivo no
-        // es una decisión y queda viejo al cambiar H o n. `locked` sí lo es.
-        if !matches!(project.params.get("psi"), Some(Param::Locked { .. })) {
+        let unlocked = |name: &str| !matches!(project.params.get(name), Some(Param::Locked { .. }));
+        if unlocked("psi") {
             options.psi = None;
+        }
+        if unlocked("c0") {
+            options.c0 = None;
+        }
+        if unlocked("cm0") {
+            options.cm0 = None;
+        }
+        if unlocked("J") {
+            options.j = None;
         }
     }
 

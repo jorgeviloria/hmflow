@@ -565,6 +565,22 @@ pub const VOLUTE_WRAP_RANGE_DEG: (f64, f64) = (90.0, 180.0);
 const CUTWATER_THICKNESS_RATIO: f64 = 0.02;
 
 /// Selecciones que se pueden fijar desde el proyecto.
+/// Lo que una carcasa existente le impone al rodete, en SI.
+#[derive(Debug, Clone, PartialEq)]
+pub struct CasingFit {
+    pub d2: f64,
+    pub neck_diameter: f64,
+    pub eye_diameter_max: f64,
+    pub bore_diameter: f64,
+    pub hub_diameter: f64,
+    pub b3: f64,
+    pub cutwater_radius: f64,
+    pub channels: u32,
+    pub wrap_deg: f64,
+    /// Área de garganta de cada canal. `None`: sin dato.
+    pub throat_area: Option<f64>,
+}
+
 #[derive(Debug, Clone, Default)]
 pub struct DesignOptions {
     pub psi: Option<f64>,
@@ -609,6 +625,8 @@ pub struct DesignOptions {
     /// El rodete tiene agujeros de equilibrio: la fuga de Gülich 3.5.10 se
     /// duplica (zH = 2).
     pub balance_holes: bool,
+    /// Carcasa existente. Con ella, D2 es dato y ψ, resultado.
+    pub casing: Option<CasingFit>,
 }
 
 impl DesignOptions {
@@ -1242,6 +1260,41 @@ pub fn design(input: &DesignInput) -> Result<DesignResult, DesignError> {
     design_with_options(input, &DesignOptions::default())
 }
 
+/// Diferencia relativa con que un ψ manual se considera el de la carcasa.
+/// `design` escribe ψ en el `.hmf`, y `recalc` tiene que aceptar ese archivo.
+const CASING_PSI_AGREEMENT: f64 = 1.0e-9;
+
+/// ψ de la tabla o manual; con carcasa, el que da su D2.
+fn selected_psi(
+    registry: &Registry,
+    input: &DesignInput,
+    options: &DesignOptions,
+    table_psi: f64,
+) -> Result<f64, DesignError> {
+    let Some(casing) = &options.casing else {
+        return Ok(options.psi.unwrap_or(table_psi));
+    };
+    let psi = evaluate(
+        registry,
+        "design.psi_from_d2",
+        &[
+            ("H", input.h.clone()),
+            ("n", input.n.clone()),
+            ("d2", Quantity::from_si(casing.d2, unit("m")?)),
+        ],
+    )?
+    .value();
+    match options.psi {
+        Some(manual) if (manual / psi - 1.0).abs() > CASING_PSI_AGREEMENT => {
+            Err(DesignError::Input(format!(
+                "`psi` = {manual} contradice [casing]: con D2 = {:.1} mm sale ψ = {psi:.3}",
+                casing.d2 * 1000.0
+            )))
+        }
+        _ => Ok(psi),
+    }
+}
+
 /// Rendimiento mecánico por defecto, sin rozamiento de discos: la estimación
 /// de Gülich 2020, ec. (3.10.14), con QRef = 1 m³/s y nRef = 1500 rpm.
 pub fn default_mechanical_efficiency(q: &Quantity, n: &Quantity) -> Result<f64, DesignError> {
@@ -1299,7 +1352,7 @@ pub fn design_with_options(
     let table = base_selection(&registry, nq, eta_v)?;
     let manual_beta2 = options.beta2_rad.map(f64::to_degrees);
     let mut selection = DesignSelection {
-        psi: options.psi.unwrap_or(table.psi),
+        psi: selected_psi(&registry, input, options, table.psi)?,
         phi: options.phi.unwrap_or(table.phi),
         // Provisional, solo para rechazar un manual absurdo. El definitivo
         // sale de select_outlet, con el espesor y d1/d2.

@@ -110,6 +110,28 @@ value = "sqrt(2*g*H/psi)/(pi*n)"
 assumptions = "D2 = u2/(pi*n) con n en 1/s; equivale a 60*u2/(pi*n_rpm). Con H=13.8 m, n=1800 rpm y psi=0.87 da 0.1872 m."
 
 [[formula]]
+id = "design.psi_from_d2"
+version = 1
+validation = "pilot"
+module = "design"
+title = "Coeficiente de altura para un diámetro dado"
+source = "Inversa de design.d2: Srinivasan 2017, Diseño D1.A1, p. 415"
+units = "1"
+range = "0 .. 5"
+test = "crates/hm-formula/tests/end_suction.rs::psi_from_d2"
+
+[formula.inputs]
+H = "m"
+n = "1/s"
+d2 = "m"
+
+[formula.expr]
+value = "2*g*H/(pi*d2*n)^2"
+
+[formula.notes]
+assumptions = "Se usa cuando D2 lo impone una carcasa existente: ψ es resultado, no selección."
+
+[[formula]]
 id = "design.qth"
 version = 1
 validation = "reference"

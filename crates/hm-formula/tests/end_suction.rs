@@ -26,13 +26,13 @@ fn pack_is_audit_clean() {
 }
 
 #[test]
-fn pack_has_seventy_nine_formulas() {
-    assert_eq!(Registry::from_toml(END_SUCTION_V01_PACK).unwrap().len(), 79);
+fn pack_has_eighty_formulas() {
+    assert_eq!(Registry::from_toml(END_SUCTION_V01_PACK).unwrap().len(), 80);
 }
 
 #[test]
 fn all_merges_every_pack() {
-    assert_eq!(Registry::all().len(), 96);
+    assert_eq!(Registry::all().len(), 97);
 }
 
 #[test]
@@ -71,6 +71,25 @@ fn u2() {
         evaluate("design.u2", &[("H", "13.8 m"), ("psi", "0.87")]),
         17.64,
         0.01,
+    );
+}
+
+#[test]
+fn psi_from_d2() {
+    let psi = evaluate(
+        "design.psi_from_d2",
+        &[("H", "13.8 m"), ("n", "1800 rpm"), ("d2", "0.1872 m")],
+    );
+    close(psi, 0.8695, 0.001);
+    // Es la inversa de design.d2.
+    let text = format!("{psi}");
+    close(
+        evaluate(
+            "design.d2",
+            &[("H", "13.8 m"), ("n", "1800 rpm"), ("psi", &text)],
+        ),
+        0.1872,
+        1e-9,
     );
 }
 

@@ -581,6 +581,52 @@ pub struct CasingFit {
     pub throat_area: Option<f64>,
 }
 
+impl CasingFit {
+    /// Una cota fuera de dominio no debe dar un diseño: D2 negativo daría ψ
+    /// positivo, porque la fórmula lo eleva al cuadrado.
+    fn validate(&self) -> Result<(), FieldError> {
+        let problem = |name: &'static str, shown: &str, wanted: &str| FieldError {
+            name: "casing",
+            message: format!("`casing.{name}` = {shown} no es válido; {wanted}"),
+        };
+        let sizes = [
+            ("d2", self.d2),
+            ("neck_diameter", self.neck_diameter),
+            ("eye_diameter_max", self.eye_diameter_max),
+            ("bore_diameter", self.bore_diameter),
+            ("hub_diameter", self.hub_diameter),
+            ("b3", self.b3),
+            ("cutwater_radius", self.cutwater_radius),
+            ("throat_area", self.throat_area.unwrap_or(1.0)),
+        ];
+        for (name, value) in sizes {
+            if !value.is_finite() || value <= 0.0 {
+                return Err(problem(
+                    name,
+                    &value.to_string(),
+                    "debe ser positivo y finito",
+                ));
+            }
+        }
+        if !matches!(self.channels, 1 | 2) {
+            return Err(problem(
+                "channels",
+                &self.channels.to_string(),
+                "debe ser 1 o 2",
+            ));
+        }
+        let (low, high) = VOLUTE_WRAP_RANGE_DEG;
+        if !self.wrap_deg.is_finite() || !(low..=high).contains(&self.wrap_deg) {
+            return Err(problem(
+                "wrap",
+                &self.wrap_deg.to_string(),
+                &format!("debe estar entre {low} y {high} grados"),
+            ));
+        }
+        Ok(())
+    }
+}
+
 #[derive(Debug, Clone, Default)]
 pub struct DesignOptions {
     pub psi: Option<f64>,
@@ -632,6 +678,10 @@ pub struct DesignOptions {
 impl DesignOptions {
     /// Valida las opciones que no dependen de valores calculados.
     pub fn validate(&self) -> Result<(), FieldError> {
+        if let Some(casing) = &self.casing {
+            casing.validate()?;
+        }
+
         if let Some(value) = self.eta_v
             && (!value.is_finite() || value <= 0.0 || value >= 1.0)
         {
@@ -782,14 +832,18 @@ fn base_selection(
     registry: &Registry,
     nq: f64,
     eta_v: f64,
+    fixed_psi: Option<f64>,
 ) -> Result<DesignSelection, DesignError> {
     let one = Unit::dimensionless();
-    let psi = evaluate(
-        registry,
-        "design.head_coefficient",
-        &[("nq", quantity(nq, one.clone()))],
-    )?
-    .value();
+    let psi = match fixed_psi {
+        Some(psi) => psi,
+        None => evaluate(
+            registry,
+            "design.head_coefficient",
+            &[("nq", quantity(nq, one.clone()))],
+        )?
+        .value(),
+    };
     let b2_star = evaluate(
         registry,
         "design.relative_outlet_width",
@@ -827,7 +881,7 @@ fn base_selection(
 pub fn table_selection(nq: f64, eta_h: f64) -> Result<DesignSelection, DesignError> {
     let registry = Registry::all();
     let eta_v = gulich_volumetric_efficiency(nq, false)?;
-    let mut selection = base_selection(&registry, nq, eta_v)?;
+    let mut selection = base_selection(&registry, nq, eta_v, None)?;
     selection.beta2_deg = euler_blade_angle(
         &registry,
         &EulerTarget {
@@ -838,6 +892,7 @@ pub fn table_selection(nq: f64, eta_h: f64) -> Result<DesignSelection, DesignErr
             outlet_diameter: 0.0,
             trailing_thickness: 0.0,
             radius_ratio: 0.0,
+            casing_d2: None,
         },
     )?;
     Ok(selection)
@@ -927,6 +982,8 @@ struct EulerTarget {
     trailing_thickness: f64,
     /// d1/d2. Wiesner aplica kw cuando supera εLim.
     radius_ratio: f64,
+    /// D2 impuesto por una carcasa: cambia el consejo del error.
+    casing_d2: Option<f64>,
 }
 
 /// Ángulo de salida del álabe β2, en grados, que hace que el rodete dé la
@@ -987,10 +1044,14 @@ fn euler_blade_angle(registry: &Registry, target: &EulerTarget) -> Result<f64, D
     let reachable = cu2_over_u2(peak)?;
     if reachable < needed {
         // cu2/u2 no llega a 1 con ningún Z: más álabes solo acercan a ese límite.
-        let advice = if needed >= 1.0 {
-            "ningún número de álabes la alcanza: reduce ψ"
-        } else {
-            "aumenta Z o reduce ψ"
+        let advice = match target.casing_d2 {
+            // Con carcasa, ψ es resultado y la búsqueda ya probó los Z.
+            Some(d2) => format!(
+                "con D2 = {:.1} mm no se alcanza: cambia H, n o la carcasa",
+                d2 * 1000.0
+            ),
+            None if needed >= 1.0 => "ningún número de álabes la alcanza: reduce ψ".to_string(),
+            None => "aumenta Z o reduce ψ".to_string(),
         };
         return Err(DesignError::Input(format!(
             "con ψ = {psi:.3}, φ = {phi:.3} y Z = {blade_count}, ningún β2 da la altura: \
@@ -1039,6 +1100,7 @@ struct OutletRequest {
     beta2_rad: Option<f64>,
     /// Lenguas de la voluta, zLe.
     volute_channels: u32,
+    casing_d2: Option<f64>,
 }
 
 /// Z y β2. Con Z manual se resuelve solo β2. Con β2 manual, Z se queda en
@@ -1073,6 +1135,7 @@ fn select_outlet(
                     outlet_diameter: request.d2,
                     trailing_thickness: trailing,
                     radius_ratio: eps,
+                    casing_d2: request.casing_d2,
                 },
             )?
         };
@@ -1264,35 +1327,49 @@ pub fn design(input: &DesignInput) -> Result<DesignResult, DesignError> {
 /// `design` escribe ψ en el `.hmf`, y `recalc` tiene que aceptar ese archivo.
 const CASING_PSI_AGREEMENT: f64 = 1.0e-9;
 
-/// ψ de la tabla o manual; con carcasa, el que da su D2.
-fn selected_psi(
+/// ψ que impone el D2 de la carcasa, si hay carcasa.
+fn casing_psi(
     registry: &Registry,
     input: &DesignInput,
     options: &DesignOptions,
+) -> Result<Option<f64>, DesignError> {
+    options
+        .casing
+        .as_ref()
+        .map(|casing| {
+            Ok(evaluate(
+                registry,
+                "design.psi_from_d2",
+                &[
+                    ("H", input.h.clone()),
+                    ("n", input.n.clone()),
+                    ("d2", Quantity::from_si(casing.d2, unit("m")?)),
+                ],
+            )?
+            .value())
+        })
+        .transpose()
+}
+
+/// ψ de la tabla o manual; con carcasa, el suyo. Un manual que no coincide
+/// con la carcasa es un error, también si no es un número.
+fn selected_psi(
+    options: &DesignOptions,
+    casing_psi: Option<f64>,
     table_psi: f64,
 ) -> Result<f64, DesignError> {
-    let Some(casing) = &options.casing else {
+    let Some(psi) = casing_psi else {
         return Ok(options.psi.unwrap_or(table_psi));
     };
-    let psi = evaluate(
-        registry,
-        "design.psi_from_d2",
-        &[
-            ("H", input.h.clone()),
-            ("n", input.n.clone()),
-            ("d2", Quantity::from_si(casing.d2, unit("m")?)),
-        ],
-    )?
-    .value();
-    match options.psi {
-        Some(manual) if (manual / psi - 1.0).abs() > CASING_PSI_AGREEMENT => {
-            Err(DesignError::Input(format!(
-                "`psi` = {manual} contradice [casing]: con D2 = {:.1} mm sale ψ = {psi:.3}",
-                casing.d2 * 1000.0
-            )))
+    if let Some(manual) = options.psi {
+        let agrees = (manual / psi - 1.0).abs() <= CASING_PSI_AGREEMENT;
+        if !agrees {
+            return Err(DesignError::Input(format!(
+                "`psi` = {manual} contradice [casing]: con ese D2 sale ψ = {psi:.3}"
+            )));
         }
-        _ => Ok(psi),
     }
+    Ok(psi)
 }
 
 /// Rendimiento mecánico por defecto, sin rozamiento de discos: la estimación
@@ -1349,10 +1426,11 @@ pub fn design_with_options(
         Some(value) => value,
         None => gulich_volumetric_efficiency(nq, options.balance_holes)?,
     };
-    let table = base_selection(&registry, nq, eta_v)?;
+    let casing_psi = casing_psi(&registry, input, options)?;
+    let table = base_selection(&registry, nq, eta_v, casing_psi)?;
     let manual_beta2 = options.beta2_rad.map(f64::to_degrees);
     let mut selection = DesignSelection {
-        psi: selected_psi(&registry, input, options, table.psi)?,
+        psi: selected_psi(options, casing_psi, table.psi)?,
         phi: options.phi.unwrap_or(table.phi),
         // Provisional, solo para rechazar un manual absurdo. El definitivo
         // sale de select_outlet, con el espesor y d1/d2.
@@ -1660,6 +1738,7 @@ pub fn design_with_options(
         &registry,
         &OutletRequest {
             psi: selection.psi,
+            casing_d2: options.casing.as_ref().map(|casing| casing.d2),
             phi: selection.phi,
             eta_h,
             nq,

@@ -24,13 +24,13 @@ fn fixture_loads_every_field() {
     let project = Project::from_toml(FIXTURE).unwrap();
     assert_eq!(project.schema, SCHEMA_VERSION);
     let casing = project.casing.unwrap();
-    assert_eq!(casing.d2, "300 mm");
-    assert_eq!(casing.neck_diameter, "120 mm");
-    assert_eq!(casing.eye_diameter_max, "105 mm");
-    assert_eq!(casing.bore_diameter, "30 mm");
-    assert_eq!(casing.hub_diameter, "45 mm");
-    assert_eq!(casing.b3, "28 mm");
-    assert_eq!(casing.cutwater_radius, "155 mm");
+    assert_eq!(casing.d2, "210 mm");
+    assert_eq!(casing.neck_diameter, "90 mm");
+    assert_eq!(casing.eye_diameter_max, "75 mm");
+    assert_eq!(casing.bore_diameter, "20 mm");
+    assert_eq!(casing.hub_diameter, "30 mm");
+    assert_eq!(casing.b3, "30 mm");
+    assert_eq!(casing.cutwater_radius, "111 mm");
     assert_eq!(casing.channels, 2);
     assert_eq!(casing.wrap, "180 deg");
     assert_eq!(casing.throat_area, "");
@@ -83,7 +83,7 @@ fn each_bad_field_is_reported_by_name() {
             "eye_diameter_max",
         ),
         (|c| c.bore_diameter = "mucho".to_string(), "bore_diameter"),
-        (|c| c.hub_diameter = "-45 mm".to_string(), "hub_diameter"),
+        (|c| c.hub_diameter = "-30 mm".to_string(), "hub_diameter"),
         (|c| c.b3 = "inf mm".to_string(), "b3"),
         (|c| c.cutwater_radius = "".to_string(), "cutwater_radius"),
         (|c| c.wrap = "180 mm".to_string(), "wrap"),
@@ -112,11 +112,11 @@ fn each_bad_field_is_reported_by_name() {
 fn the_sizes_must_nest() {
     type Edit = fn(&mut Casing);
     let cases: [Edit; 5] = [
-        |c| c.neck_diameter = "300 mm".to_string(),
-        |c| c.eye_diameter_max = "120 mm".to_string(),
-        |c| c.hub_diameter = "105 mm".to_string(),
-        |c| c.bore_diameter = "45 mm".to_string(),
-        |c| c.cutwater_radius = "149 mm".to_string(),
+        |c| c.neck_diameter = "210 mm".to_string(),
+        |c| c.eye_diameter_max = "90 mm".to_string(),
+        |c| c.hub_diameter = "75 mm".to_string(),
+        |c| c.bore_diameter = "30 mm".to_string(),
+        |c| c.cutwater_radius = "104 mm".to_string(),
     ];
     for edit in cases {
         let mut casing = sample();

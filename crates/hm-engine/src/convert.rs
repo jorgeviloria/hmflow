@@ -5,10 +5,10 @@ use std::collections::BTreeMap;
 
 use hm_design::geometry::DEFAULT_INCIDENCE_DEG;
 use hm_design::{
-    DEFAULT_K_EFF, DEFAULT_VOLUTE_C, DEFAULT_VOLUTE_RATIO, DesignError, DesignOptions,
+    CasingFit, DEFAULT_K_EFF, DEFAULT_VOLUTE_C, DEFAULT_VOLUTE_RATIO, DesignError, DesignOptions,
     DesignResult, PARAM_SPECS, ParamSpec, designed_si, water_density,
 };
-use hm_project::{Param, Project};
+use hm_project::{Casing, Param, Project};
 use hm_units::{Quantity, parse_quantity, parse_unit};
 
 use crate::case::{
@@ -433,7 +433,52 @@ fn design_options(project: &Project) -> Result<DesignOptions, EngineError> {
         (param.set)(&mut options, decode(project, param)?);
     }
 
+    if let Some(casing) = &project.casing {
+        options.casing = Some(casing_fit(casing)?);
+        // Con carcasa, ψ es resultado: el que `design` dejó en el archivo no
+        // es una decisión y queda viejo al cambiar H o n. `locked` sí lo es.
+        if !matches!(project.params.get("psi"), Some(Param::Locked { .. })) {
+            options.psi = None;
+        }
+    }
+
     Ok(options)
+}
+
+/// `[casing]` en SI. `validate` ya habla de cada cota, pero este camino
+/// también se recorre sin validar.
+fn casing_fit(casing: &Casing) -> Result<CasingFit, EngineError> {
+    let si = |name: &'static str, text: &str, unit: &str| {
+        let wrong = |problem: String| {
+            input_error(
+                CaseField::Param("casing"),
+                "HM-PROJ-030",
+                format!("[casing] `{name}` {problem}: {text}"),
+            )
+        };
+        let quantity = parse_quantity(text).map_err(|error| wrong(error.to_string()))?;
+        let expected = parse_unit(unit).map_err(|error| wrong(error.to_string()))?;
+        if quantity.dim() != expected.dim {
+            return Err(wrong(format!("debe ser {unit}")));
+        }
+        Ok(quantity.si)
+    };
+    let throat_area = match casing.throat_area.trim() {
+        "" => None,
+        text => Some(si("throat_area", text, "m2")?),
+    };
+    Ok(CasingFit {
+        d2: si("d2", &casing.d2, "m")?,
+        neck_diameter: si("neck_diameter", &casing.neck_diameter, "m")?,
+        eye_diameter_max: si("eye_diameter_max", &casing.eye_diameter_max, "m")?,
+        bore_diameter: si("bore_diameter", &casing.bore_diameter, "m")?,
+        hub_diameter: si("hub_diameter", &casing.hub_diameter, "m")?,
+        b3: si("b3", &casing.b3, "m")?,
+        cutwater_radius: si("cutwater_radius", &casing.cutwater_radius, "m")?,
+        channels: casing.channels,
+        wrap_deg: si("wrap", &casing.wrap, "rad")?.to_degrees(),
+        throat_area,
+    })
 }
 
 fn decode(project: &Project, param: &ManualParam) -> Result<Option<f64>, EngineError> {

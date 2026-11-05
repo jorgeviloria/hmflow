@@ -67,6 +67,11 @@ pub fn recalc(mut project: Project, reselect: bool) -> Result<Recalculated, Engi
     } else {
         Vec::new()
     };
+    // Con carcasa, un ψ `manual` es el que dejó `design`: se rehace con el
+    // punto actual para que el archivo no conserve uno viejo.
+    if project.casing.is_some() && matches!(project.params.get("psi"), Some(Param::Manual { .. })) {
+        project.params.remove("psi");
+    }
 
     let case = case_from_project(&project)?;
     let analysis = analyze(&case, CurvePoints::MINIMUM)?;

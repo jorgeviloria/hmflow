@@ -364,6 +364,7 @@ fn stale_selections(project: &Project, case: &Case, input: &DesignInput) -> Vec<
         volute_channels: case.design.volute_channels,
         volute_wrap_deg: case.design.volute_wrap_deg,
         incidence_deg: case.design.incidence_deg,
+        casing: case.design.casing.clone(),
         ..DesignOptions::default()
     };
     let Ok(fresh) = design_with_options(input, &data_only) else {

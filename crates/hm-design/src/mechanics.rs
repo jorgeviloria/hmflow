@@ -84,6 +84,8 @@ pub struct Mechanics {
     pub shaft_min_diameter: f64,
     /// Diámetro del cubo con ese eje, m.
     pub hub_diameter: f64,
+    /// Cubo mínimo que pide el par, m. Sin carcasa es `hub_diameter`.
+    pub hub_min_diameter: f64,
     /// Ángulo de envolvente de la voluta doble en que se basa el empuje radial,
     /// grados; `None` es una voluta simple.
     pub volute_wrap_deg: Option<f64>,
@@ -238,7 +240,11 @@ pub fn mechanics(
     let metres = |value: f64| Quantity::from_si(value, m.clone());
 
     let shaft_torque = result.torque_max.si;
-    let (shaft_min_diameter, hub_diameter) = shaft_and_hub(shaft_torque, shear_stress)?;
+    let (shaft_min_diameter, hub_min_diameter) = shaft_and_hub(shaft_torque, shear_stress)?;
+    let hub_diameter = result
+        .casing
+        .as_ref()
+        .map_or(hub_min_diameter, |casing| casing.hub_diameter);
 
     let nq = result.nq.clamp(RADIAL_NQ_RANGE.0, RADIAL_NQ_RANGE.1);
     let k0 = evaluate(
@@ -343,6 +349,7 @@ pub fn mechanics(
         shaft_shear_stress: shear_stress,
         shaft_min_diameter,
         hub_diameter,
+        hub_min_diameter,
         volute_wrap_deg: result.volute.wrap_deg,
         radial_coefficient_shutoff: double_k0.unwrap_or(k0),
         radial_coefficient_design: double_k0.unwrap_or(k_opt),

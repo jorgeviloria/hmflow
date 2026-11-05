@@ -68,10 +68,23 @@ fn changing_the_head_updates_the_saved_psi() {
 }
 
 #[test]
-fn recalculating_twice_changes_nothing() {
+fn recalculating_twice_changes_nothing_and_reports_nothing() {
     let once = saved();
-    let twice = recalc(once.clone(), false).unwrap().project;
-    assert_eq!(psi_of(&once), psi_of(&twice));
+    let twice = recalc(once.clone(), false).unwrap();
+    assert_eq!(once.to_toml().unwrap(), twice.project.to_toml().unwrap());
+    assert!(twice.changes.is_empty(), "{:?}", twice.changes);
+}
+
+#[test]
+fn a_real_change_of_the_eye_is_reported_once() {
+    let mut project = saved();
+    project.operating.q = "60 m3/h".to_string();
+    let changes = recalc(project, false).unwrap().changes;
+    let names: Vec<_> = changes.iter().map(|change| change.name.as_str()).collect();
+    assert!(names.contains(&"c0"), "{names:?}");
+    assert_eq!(names.iter().filter(|name| **name == "c0").count(), 1);
+    let c0 = changes.iter().find(|change| change.name == "c0").unwrap();
+    assert!(c0.before.is_some());
 }
 
 #[test]
@@ -97,14 +110,20 @@ fn a_locked_psi_that_disagrees_is_still_an_error() {
 }
 
 #[test]
-fn the_casing_psi_is_not_reported_as_stale() {
-    let diagnostics = audit(&saved());
-    let found: Vec<_> = diagnostics
+fn casing_results_are_never_reported_as_stale() {
+    let mut project = saved();
+    project.operating.h = "46 m".to_string();
+    project.operating.q = "130 m3/h".to_string();
+    let stale: Vec<_> = audit(&project)
         .iter()
-        .filter(|diagnostic| diagnostic.message.contains("psi"))
+        .filter(|diagnostic| {
+            ["`psi`", "`c0`", "`cm0`", "`J`", "psi,", "c0,", "cm0,"]
+                .iter()
+                .any(|name| diagnostic.message.contains(name))
+        })
         .map(|diagnostic| diagnostic.message.clone())
         .collect();
-    assert!(found.is_empty(), "{found:?}");
+    assert!(stale.is_empty(), "{stale:?}");
 }
 
 #[test]
@@ -144,4 +163,54 @@ fn a_locked_eye_that_fits_is_kept() {
     let project = recalc(project, false).unwrap().project;
     let case = case_from_project(&project).unwrap();
     assert_eq!(case.design.c0, Some(12.0));
+}
+
+fn locked_value(project: &Project, name: &str) -> Param {
+    let Some(Param::Manual { value }) = project.params.get(name) else {
+        panic!("{name} no es manual");
+    };
+    Param::Locked {
+        value: value.clone(),
+    }
+}
+
+fn eye(project: &Project) -> f64 {
+    let case = case_from_project(project).unwrap();
+    analyze(&case, CurvePoints::MINIMUM).unwrap().result.d1.si
+}
+
+#[test]
+fn locking_one_eye_value_keeps_the_other_two() {
+    for name in ["c0", "cm0", "J"] {
+        let mut project = saved();
+        let before = project.params.clone();
+        let locked = locked_value(&project, name);
+        project.params.insert(name.to_string(), locked);
+
+        let case = case_from_project(&project).unwrap();
+        assert!(case.design.c0.is_some(), "{name}");
+        assert!(case.design.cm0.is_some(), "{name}");
+        assert!(case.design.j.is_some(), "{name}");
+
+        let after = recalc(project, false).unwrap().project;
+        for other in ["c0", "cm0", "J"] {
+            if other != name {
+                assert_eq!(
+                    format!("{:?}", after.params.get(other)),
+                    format!("{:?}", before.get(other)),
+                    "{name}: {other}"
+                );
+            }
+        }
+    }
+}
+
+#[test]
+fn locking_the_eye_as_saved_keeps_the_eye() {
+    let project = saved();
+    let reference = eye(&project);
+    let mut locked = project.clone();
+    let value = locked_value(&project, "c0");
+    locked.params.insert("c0".to_string(), value);
+    assert!((eye(&locked) - reference).abs() < 1e-9);
 }

@@ -426,10 +426,27 @@ fn default_density(
     })
 }
 
-/// Selecciones que, con carcasa, son resultado: ψ sale de D2 y el ojo del
-/// cuello. Las que `design` dejó como `manual` no son una decisión y quedan
-/// viejas al cambiar el punto. Solo `locked` las fija.
-pub(crate) const CASING_RESULTS: [&str; 4] = ["psi", "c0", "cm0", "J"];
+/// Las tres cotas que fijan el ojo: van juntas.
+const EYE_SELECTIONS: [&str; 3] = ["c0", "cm0", "J"];
+
+/// Selecciones que, en este proyecto, son resultado y no decisión: ψ sale de
+/// D2 y el ojo del cuello. Las que `design` dejó como `manual` quedan viejas
+/// al cambiar el punto. `locked` es la decisión: ψ se fija solo, y un valor
+/// del ojo en `locked` conserva los otros dos, porque c0 sin J no es un ojo.
+pub(crate) fn casing_results(project: &Project) -> Vec<&'static str> {
+    if project.casing.is_none() {
+        return Vec::new();
+    }
+    let locked = |name: &str| matches!(project.params.get(name), Some(Param::Locked { .. }));
+    let mut names = Vec::new();
+    if !locked("psi") {
+        names.push("psi");
+    }
+    if !EYE_SELECTIONS.iter().any(|name| locked(name)) {
+        names.extend(EYE_SELECTIONS);
+    }
+    names
+}
 
 fn design_options(project: &Project) -> Result<DesignOptions, EngineError> {
     let mut options = DesignOptions::default();
@@ -440,18 +457,13 @@ fn design_options(project: &Project) -> Result<DesignOptions, EngineError> {
 
     if let Some(casing) = &project.casing {
         options.casing = Some(casing_fit(casing)?);
-        let unlocked = |name: &str| !matches!(project.params.get(name), Some(Param::Locked { .. }));
-        if unlocked("psi") {
-            options.psi = None;
-        }
-        if unlocked("c0") {
-            options.c0 = None;
-        }
-        if unlocked("cm0") {
-            options.cm0 = None;
-        }
-        if unlocked("J") {
-            options.j = None;
+        for name in casing_results(project) {
+            match name {
+                "psi" => options.psi = None,
+                "c0" => options.c0 = None,
+                "cm0" => options.cm0 = None,
+                _ => options.j = None,
+            }
         }
     }
 

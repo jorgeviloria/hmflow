@@ -14,7 +14,7 @@ use hm_units::{Quantity, parse_quantity, parse_unit};
 
 use crate::analysis::{Analysis, CurvePoints, require_mechanics_and_viscosity};
 use crate::case::Case;
-use crate::convert::{MAX_COUNT, case_from_project};
+use crate::convert::{MAX_COUNT, case_from_project, casing_results};
 use crate::dispatch::analyze;
 use crate::error::cli_message;
 
@@ -370,8 +370,10 @@ fn stale_selections(project: &Project, case: &Case, input: &DesignInput) -> Vec<
     let Ok(fresh) = design_with_options(input, &data_only) else {
         return Vec::new();
     };
+    let results = casing_results(project);
     NQ_SELECTIONS
         .into_iter()
+        .filter(|name| !results.contains(name))
         .filter(|name| {
             let Some(Param::Manual { value }) = project.params.get(*name) else {
                 return false;

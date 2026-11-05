@@ -301,3 +301,47 @@ fn an_eye_with_no_room_around_the_hub_is_an_error() {
     assert!(error.contains("33.0 mm"), "{error}");
     assert!(error.contains("30.0 mm"), "{error}");
 }
+
+#[test]
+fn the_mechanics_use_the_casing_hub() {
+    let thin = design_with_options(&input(), &with(sample())).unwrap();
+    let thin_mech = mechanics(&input(), &thin, DEFAULT_SHAFT_SHEAR_STRESS).unwrap();
+    assert_eq!(thin_mech.hub_diameter, 0.030);
+    assert_eq!(thin_mech.shaft_seal_diameter, 0.030);
+
+    let thick = CasingFit {
+        hub_diameter: 0.040,
+        ..sample()
+    };
+    let thick = design_with_options(&input(), &with(thick)).unwrap();
+    let thick_mech = mechanics(&input(), &thick, DEFAULT_SHAFT_SHEAR_STRESS).unwrap();
+    assert!(thick_mech.axial_thrust.1 < thin_mech.axial_thrust.1);
+    assert_eq!(thick_mech.hub_min_diameter, thin_mech.hub_min_diameter);
+}
+
+#[test]
+fn without_a_casing_the_hub_is_the_required_one() {
+    let free = design(&input()).unwrap();
+    let mech = mechanics(&input(), &free, DEFAULT_SHAFT_SHEAR_STRESS).unwrap();
+    assert_eq!(mech.hub_diameter, mech.hub_min_diameter);
+}
+
+#[test]
+fn casing_sizes_that_do_not_nest_are_rejected() {
+    type Edit = fn(&mut CasingFit);
+    let cases: [(Edit, &str); 5] = [
+        (|c| c.eye_diameter_max = 0.095, "eye_diameter_max"),
+        (|c| c.neck_diameter = 0.220, "neck_diameter"),
+        (|c| c.hub_diameter = 0.080, "hub_diameter"),
+        (|c| c.bore_diameter = 0.035, "bore_diameter"),
+        (|c| c.cutwater_radius = 0.100, "cutwater_radius"),
+    ];
+    for (edit, field) in cases {
+        let mut casing = sample();
+        edit(&mut casing);
+        let error = design_with_options(&input(), &with(casing))
+            .unwrap_err()
+            .to_string();
+        assert!(error.contains(&format!("casing.{field}")), "{error}");
+    }
+}

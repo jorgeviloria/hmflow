@@ -612,6 +612,43 @@ impl CasingFit {
                 ));
             }
         }
+        let nested = [
+            (
+                "bore_diameter",
+                self.bore_diameter,
+                "hub_diameter",
+                self.hub_diameter,
+            ),
+            (
+                "hub_diameter",
+                self.hub_diameter,
+                "eye_diameter_max",
+                self.eye_diameter_max,
+            ),
+            (
+                "eye_diameter_max",
+                self.eye_diameter_max,
+                "neck_diameter",
+                self.neck_diameter,
+            ),
+            ("neck_diameter", self.neck_diameter, "d2", self.d2),
+        ];
+        for (name, small, larger, large) in nested {
+            if small >= large {
+                return Err(problem(
+                    name,
+                    &small.to_string(),
+                    &format!("debe ser menor que `{larger}`"),
+                ));
+            }
+        }
+        if 2.0 * self.cutwater_radius < self.d2 {
+            return Err(problem(
+                "cutwater_radius",
+                &self.cutwater_radius.to_string(),
+                "deja la lengua dentro del rodete: debe ser al menos d2/2",
+            ));
+        }
         if !matches!(self.channels, 1 | 2) {
             return Err(problem(
                 "channels",
@@ -1301,13 +1338,19 @@ fn choose_inlet(
             .as_ref()
             .map(|casing| casing.eye_diameter_max);
         let (d1, c1m, d0) = minimize_eye(qth, n, d2, hub, eye_max)?;
-        let (free_d1, _, _) = minimize_eye(qth, n, d2, hub, None)?;
+        let limited_from = match eye_max {
+            Some(_) => {
+                let (free_d1, _, _) = minimize_eye(qth, n, d2, hub, None)?;
+                (d1 < free_d1).then_some(free_d1)
+            }
+            None => None,
+        };
         return Ok(Inlet {
             c0: c1m,
             cm0: c1m,
             j: d1 / d0,
             eye_excludes_hub: true,
-            limited_from: (d1 < free_d1).then_some(free_d1),
+            limited_from,
         });
     }
     let c0 = match (options.c0, options.cm0) {

@@ -410,12 +410,15 @@ pub struct OpenedFile {
 /// número del caso, o vacío si no hay: el texto del parámetro lo pone
 /// `open_file`, que es quien tiene el proyecto.
 pub fn case_to_inputs(case: &Case) -> Inputs {
+    // Sin instalación en el archivo, la caja arranca como en un diseño nuevo:
+    // pasar a «instalación» no debe abrir con un error.
+    let default_pressure = Inputs::default().suction_pressure;
     let (intake, npsha, suction_pressure, suction_height, suction_losses, suction_vapor) =
         match &case.intake {
             Intake::Available(npsha) => (
                 IntakeMode::Written,
                 npsha.text.clone(),
-                String::new(),
+                default_pressure,
                 String::new(),
                 String::new(),
                 String::new(),
@@ -423,7 +426,7 @@ pub fn case_to_inputs(case: &Case) -> Inputs {
             Intake::None => (
                 IntakeMode::Written,
                 String::new(),
-                String::new(),
+                default_pressure,
                 String::new(),
                 String::new(),
                 String::new(),
@@ -1124,6 +1127,18 @@ mod tests {
         let project = Project::load(&path).unwrap();
         let from_engine = open_project(&project).unwrap();
         assert_eq!(opened.diagnostics, from_engine.diagnostics.into_vec());
+    }
+
+    #[test]
+    fn a_file_without_installation_can_switch_to_it() {
+        let opened = open_file(&fixture("end_suction_v0.9.hmf")).unwrap();
+        assert_eq!(opened.inputs.suction_pressure, "1 atm");
+        let inputs = Inputs {
+            intake: IntakeMode::Installation,
+            ..opened.inputs
+        };
+
+        assert!(super::compute(&inputs, &opened.basis).is_ok());
     }
 
     #[test]

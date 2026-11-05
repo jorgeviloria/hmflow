@@ -140,6 +140,56 @@ fn default_stages() -> u32 {
     1
 }
 
+/// Escribe en un temporal junto a `path` y lo pone en su lugar con un rename.
+///
+/// `fs::write` vacía el archivo antes de escribir: un disco lleno se llevaría
+/// el proyecto. El temporal va en la misma carpeta porque el rename solo es
+/// atómico dentro de un mismo sistema de archivos.
+///
+/// El rename no mira los permisos del destino ni sigue enlaces, así que eso se
+/// resuelve aquí: un enlace escribe en el archivo real, un archivo de solo
+/// lectura es un error y los permisos se conservan.
+fn replace_file(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
+    let target = std::fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf());
+    let existing = std::fs::metadata(&target).ok();
+    if existing
+        .as_ref()
+        .is_some_and(|metadata| metadata.permissions().readonly())
+    {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::PermissionDenied,
+            "el archivo es de solo lectura",
+        ));
+    }
+    let Some(name) = target.file_name() else {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidInput,
+            "la ruta no tiene nombre de archivo",
+        ));
+    };
+    let mut temporary = std::ffi::OsString::from(".");
+    temporary.push(name);
+    temporary.push(format!(".tmp-{}", std::process::id()));
+    let temporary = target.with_file_name(temporary);
+
+    let written = write_durably(&temporary, bytes)
+        .and_then(|()| match &existing {
+            Some(metadata) => std::fs::set_permissions(&temporary, metadata.permissions()),
+            None => Ok(()),
+        })
+        .and_then(|()| std::fs::rename(&temporary, &target));
+    if written.is_err() {
+        let _ = std::fs::remove_file(&temporary);
+    }
+    written
+}
+
+fn write_durably(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
+    let mut file = std::fs::File::create(path)?;
+    std::io::Write::write_all(&mut file, bytes)?;
+    file.sync_all()
+}
+
 impl Project {
     pub fn new(name: &str, pump_type: PumpType) -> Self {
         Self {
@@ -188,8 +238,9 @@ impl Project {
         Ok(project.migrated())
     }
 
+    /// Escribe el proyecto. Si algo falla, un archivo que ya existía queda igual.
     pub fn save(&self, path: &Path) -> Result<(), ProjectError> {
-        std::fs::write(path, self.to_toml()?)?;
+        replace_file(path, self.to_toml()?.as_bytes())?;
         Ok(())
     }
 

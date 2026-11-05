@@ -20,10 +20,12 @@ use model::{
     Field, FieldErrors, IntakeMode, Outcome, SUCTION_BOXES, compute, suction_box_error,
     suction_group_errors,
 };
-use session::Session;
+use session::{Command, Gate, Session};
 
 const OPEN_SHORTCUT: egui::KeyboardShortcut =
     egui::KeyboardShortcut::new(egui::Modifiers::COMMAND, egui::Key::O);
+const NEW_SHORTCUT: egui::KeyboardShortcut =
+    egui::KeyboardShortcut::new(egui::Modifiers::COMMAND, egui::Key::N);
 
 fn main() -> eframe::Result {
     let options = eframe::NativeOptions {
@@ -149,12 +151,15 @@ impl eframe::App for App {
 // ---------------------------------------------------------------- barra
 
 fn top_bar(ui: &mut egui::Ui, app: &mut App) {
+    let mut new_design = new_requested(ui.ctx());
     let mut open = open_requested(ui.ctx());
     egui::Panel::top("top").show(ui, |ui| {
-        open |= file_menu(ui);
+        let (menu_new, menu_open) = file_menu(ui);
+        new_design |= menu_new;
+        open |= menu_open;
         ui.horizontal(|ui| {
             ui.heading("HidroMac Flow");
-            if let Some(name) = app.session.file_name() {
+            if let Some(name) = app.session.bar_label() {
                 ui.label(RichText::new(name).strong());
             }
             ui.label(
@@ -165,42 +170,99 @@ fn top_bar(ui: &mut egui::Ui, app: &mut App) {
                 ui.label(RichText::new(text).strong().color(color));
             });
         });
+        if let Some(notice) = app.session.discard_notice() {
+            ui.label(RichText::new(notice).color(ui.visuals().error_fg_color));
+        }
     });
+    if new_design {
+        apply_new(app);
+    }
     if open {
         choose_and_open(app);
     }
 }
 
+/// Ctrl+N y, en macOS, también ⌘N. `COMMAND` es ⌘ en Mac y Ctrl en el resto.
+fn new_requested(ctx: &egui::Context) -> bool {
+    pressed_once(ctx, NEW_SHORTCUT) || pressed_once(ctx, ctrl(NEW_SHORTCUT))
+}
+
 /// Ctrl+O y, en macOS, también ⌘O. `COMMAND` es ⌘ en Mac y Ctrl en el resto.
 fn open_requested(ctx: &egui::Context) -> bool {
+    pressed_once(ctx, OPEN_SHORTCUT) || pressed_once(ctx, ctrl(OPEN_SHORTCUT))
+}
+
+fn ctrl(shortcut: egui::KeyboardShortcut) -> egui::KeyboardShortcut {
+    egui::KeyboardShortcut::new(egui::Modifiers::CTRL, shortcut.logical_key)
+}
+
+/// El atajo, sin contar las repeticiones de una tecla mantenida.
+///
+/// `consume_shortcut` las incluye, y Nuevo y Abrir confirman el descarte al
+/// repetirse: dejar la tecla apretada tiraría el trabajo. La repetición se
+/// consume igual, para que no llegue a otro sitio.
+fn pressed_once(ctx: &egui::Context, shortcut: egui::KeyboardShortcut) -> bool {
     ctx.input_mut(|input| {
-        input.consume_shortcut(&OPEN_SHORTCUT)
-            || input.consume_key(egui::Modifiers::CTRL, egui::Key::O)
+        let fresh = input.events.iter().any(|event| {
+            matches!(
+                event,
+                egui::Event::Key {
+                    key,
+                    modifiers,
+                    pressed: true,
+                    repeat: false,
+                    ..
+                } if *key == shortcut.logical_key
+                    && modifiers.matches_logically(shortcut.modifiers)
+            )
+        });
+        input.consume_shortcut(&shortcut) && fresh
     })
 }
 
-/// Archivo → Abrir…. Devuelve si hay que abrir el diálogo.
-fn file_menu(ui: &mut egui::Ui) -> bool {
+/// Archivo → Nuevo y Abrir…. Devuelve cuál se pulsó.
+fn file_menu(ui: &mut egui::Ui) -> (bool, bool) {
+    let mut new_design = false;
     let mut open = false;
     egui::MenuBar::new().ui(ui, |ui| {
         ui.menu_button("Archivo", |ui| {
-            let button =
+            let new_button =
+                egui::Button::new("Nuevo").shortcut_text(ui.ctx().format_shortcut(&NEW_SHORTCUT));
+            if ui.add(new_button).clicked() {
+                ui.close();
+                new_design = true;
+            }
+            let open_button =
                 egui::Button::new("Abrir…").shortcut_text(ui.ctx().format_shortcut(&OPEN_SHORTCUT));
-            if ui.add(button).clicked() {
+            if ui.add(open_button).clicked() {
                 ui.close();
                 open = true;
             }
         });
     });
-    open
+    (new_design, open)
+}
+
+fn apply_new(app: &mut App) {
+    if app.session.request(Command::New) == Gate::Proceed {
+        app.session.new_design();
+        app.recompute();
+    }
 }
 
 fn choose_and_open(app: &mut App) {
+    if app.session.request(Command::Open) != Gate::Proceed {
+        return;
+    }
     let Some(path) = rfd::FileDialog::new()
         .set_title("Abrir proyecto")
         .add_filter("HidroMac Flow", &["hmf"])
         .pick_file()
     else {
+        // El diálogo no descartó nada: la próxima orden vuelve a pedir confirmación.
+        if app.session.dirty {
+            app.session.notice = None;
+        }
         return;
     };
     if app.session.open_path(&path) {
@@ -348,7 +410,7 @@ fn inputs_panel(ui: &mut egui::Ui, app: &mut App) {
                 );
             }
             if changed {
-                app.session.boxes_changed();
+                app.session.edited();
                 app.recompute();
             }
             ui.separator();
@@ -714,7 +776,7 @@ fn diagnostics_panel(ui: &mut egui::Ui, app: &App) {
         .resizable(true)
         .default_size(150.0)
         .show(ui, |ui| {
-            if let Some(notice) = &app.session.notice {
+            if let Some(notice) = app.session.panel_notice() {
                 ui.label(RichText::new(notice).color(ui.visuals().error_fg_color));
             }
             let Some(outcome) = &app.outcome else {
@@ -1009,5 +1071,51 @@ fn capture_step(ctx: &egui::Context, capture: &mut Capture) {
     }
     if capture.done.load(std::sync::atomic::Ordering::SeqCst) {
         ctx.send_viewport_cmd(egui::ViewportCommand::Close);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn key_event(key: egui::Key, pressed: bool) -> egui::RawInput {
+        egui::RawInput {
+            events: vec![egui::Event::Key {
+                key,
+                physical_key: None,
+                pressed,
+                repeat: false,
+                modifiers: egui::Modifiers::COMMAND,
+            }],
+            ..Default::default()
+        }
+    }
+
+    /// Cuántos fotogramas dieron la orden. `true` pulsa la tecla, `false` la
+    /// suelta; dos `true` seguidos son la repetición de una tecla mantenida.
+    fn orders(requested: fn(&egui::Context) -> bool, key: egui::Key, presses: &[bool]) -> usize {
+        let ctx = egui::Context::default();
+        let mut count = 0;
+        for pressed in presses {
+            let mut output = ctx.run_ui(key_event(key, *pressed), |ui| {
+                count += usize::from(requested(ui.ctx()));
+            });
+            output.textures_delta.clear();
+        }
+        count
+    }
+
+    #[test]
+    fn holding_a_shortcut_is_one_order() {
+        let hold = [true, true, true];
+        assert_eq!(orders(new_requested, egui::Key::N, &hold), 1);
+        assert_eq!(orders(open_requested, egui::Key::O, &hold), 1);
+    }
+
+    #[test]
+    fn pressing_a_shortcut_again_is_a_second_order() {
+        let twice = [true, false, true];
+        assert_eq!(orders(new_requested, egui::Key::N, &twice), 2);
+        assert_eq!(orders(open_requested, egui::Key::O, &twice), 2);
     }
 }

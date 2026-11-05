@@ -1,7 +1,8 @@
 //! Sesión de la ventana: archivo abierto, cajas y qué avisos mostrar.
 //!
 //! Sin egui. No calcula: abrir es `open_file`, y el primer cambio de una caja
-//! devuelve el panel al resultado de `compute`.
+//! devuelve el panel al resultado de `compute`. Nuevo y Abrir, con cambios,
+//! piden repetir la orden antes de descartar.
 
 use std::path::{Path, PathBuf};
 
@@ -9,6 +10,25 @@ use hm_core::Diagnostic;
 use hm_project::Project;
 
 use crate::model::{Basis, Inputs, open_file};
+
+/// Orden del menú Archivo que puede tirar el trabajo en curso.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Command {
+    New,
+    Open,
+}
+
+/// Si la orden actúa ya, o si quedó armada y hay que repetirla.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Gate {
+    /// No hay cambios, o es la misma orden repetida.
+    Proceed,
+    /// Hay cambios y esta es la primera vez: no actúa.
+    Armed,
+}
+
+/// Aviso cuando Nuevo o Abrir no actúan porque hay cambios.
+pub const DISCARD_NOTICE: &str = "Hay cambios sin guardar. Repite la orden para descartarlos.";
 
 /// Lo que la ventana recuerda entre un fotograma y el siguiente.
 #[derive(Default)]
@@ -23,6 +43,8 @@ pub struct Session {
     /// Avisos de `open_project`. Sustituyen al panel de `compute` hasta el
     /// primer cambio de una caja.
     pub opened_diagnostics: Option<Vec<Diagnostic>>,
+    /// Orden armada para descartar. La misma, repetida, sí actúa.
+    armed: Option<Command>,
     /// El último título enviado a la ventana.
     shown_title: Option<String>,
 }
@@ -42,6 +64,34 @@ impl Session {
             Some(name) => format!("HidroMac Flow — {name}"),
             None => "HidroMac Flow".to_string(),
         }
+    }
+
+    /// Nombre en la barra: el archivo, o «sin título» si hay cambios y no hay
+    /// archivo. Con cambios, lleva `●` al final.
+    pub fn bar_label(&self) -> Option<String> {
+        let name = self
+            .file_name()
+            .or_else(|| self.dirty.then(|| "sin título".to_string()))?;
+        if self.dirty {
+            Some(format!("{name} ●"))
+        } else {
+            Some(name)
+        }
+    }
+
+    /// El aviso de descarte, si es el que está puesto.
+    pub fn discard_notice(&self) -> Option<&str> {
+        self.notice
+            .as_deref()
+            .filter(|notice| *notice == DISCARD_NOTICE)
+    }
+
+    /// El aviso del panel de diagnósticos: todos menos el de descarte, que va
+    /// en la barra.
+    pub fn panel_notice(&self) -> Option<&str> {
+        self.notice
+            .as_deref()
+            .filter(|notice| *notice != DISCARD_NOTICE)
     }
 
     /// El título, solo si no es el que ya tiene la ventana.
@@ -71,6 +121,7 @@ impl Session {
                 self.project = Some(opened.project);
                 self.dirty = false;
                 self.notice = None;
+                self.armed = None;
                 self.opened_diagnostics = Some(opened.diagnostics);
                 true
             }
@@ -81,9 +132,43 @@ impl Session {
         }
     }
 
-    /// Una caja cambió: el panel vuelve a los avisos del cálculo.
-    pub fn boxes_changed(&mut self) {
+    /// Una caja cambió: hay trabajo sin guardar, se desarma el descarte y el
+    /// panel vuelve a los avisos del cálculo.
+    pub fn edited(&mut self) {
         self.opened_diagnostics = None;
+        self.dirty = true;
+        self.armed = None;
+        if self.discard_notice().is_some() {
+            self.notice = None;
+        }
+    }
+
+    /// Pide Nuevo o Abrir.
+    ///
+    /// Sin cambios, actúa. Con cambios, la primera vez deja el aviso y no
+    /// actúa; la misma orden, repetida, sí. Otra orden, o una edición, desarma
+    /// la anterior.
+    pub fn request(&mut self, command: Command) -> Gate {
+        if !self.dirty {
+            self.armed = None;
+            return Gate::Proceed;
+        }
+        if self.armed == Some(command) {
+            self.armed = None;
+            return Gate::Proceed;
+        }
+        self.armed = Some(command);
+        self.notice = Some(DISCARD_NOTICE.to_string());
+        Gate::Armed
+    }
+
+    /// Nuevo: las entradas por defecto, sin archivo, sin proyecto y sin `●`.
+    pub fn new_design(&mut self) {
+        let shown_title = self.shown_title.take();
+        *self = Self {
+            shown_title,
+            ..Self::default()
+        };
     }
 }
 
@@ -163,9 +248,125 @@ mod tests {
             "HM-PROJ-025"
         );
 
-        session.boxes_changed();
+        session.edited();
 
         assert!(session.opened_diagnostics.is_none());
         assert!(session.project.is_some());
+    }
+
+    #[test]
+    fn a_clean_session_proceeds_at_once() {
+        let mut session = Session::default();
+
+        assert_eq!(session.request(Command::New), Gate::Proceed);
+        assert_eq!(session.request(Command::Open), Gate::Proceed);
+        assert_eq!(session.request(Command::New), Gate::Proceed);
+
+        assert!(!session.dirty);
+        assert!(session.notice.is_none());
+        assert!(session.bar_label().is_none());
+    }
+
+    #[test]
+    fn a_dirty_session_arms_the_first_time() {
+        let mut session = Session::default();
+        let inputs = session.inputs.clone();
+        session.edited();
+
+        assert_eq!(session.request(Command::New), Gate::Armed);
+
+        assert!(session.dirty);
+        assert_eq!(session.notice.as_deref(), Some(DISCARD_NOTICE));
+        assert_eq!(session.inputs, inputs);
+        assert!(session.file.is_none());
+        assert!(session.project.is_none());
+        assert_eq!(session.bar_label().as_deref(), Some("sin título ●"));
+    }
+
+    #[test]
+    fn the_discard_notice_goes_to_the_bar_and_a_rejection_to_the_panel() {
+        let mut session = Session::default();
+        session.edited();
+        assert_eq!(session.request(Command::New), Gate::Armed);
+        assert_eq!(session.discard_notice(), Some(DISCARD_NOTICE));
+        assert_eq!(session.panel_notice(), None);
+
+        session.notice = Some("esta interfaz solo edita proyectos de agua".into());
+        assert_eq!(session.discard_notice(), None);
+        assert_eq!(
+            session.panel_notice(),
+            Some("esta interfaz solo edita proyectos de agua")
+        );
+    }
+
+    #[test]
+    fn the_same_command_twice_proceeds() {
+        let mut session = Session::default();
+        session.edited();
+
+        assert_eq!(session.request(Command::Open), Gate::Armed);
+        assert_eq!(session.request(Command::Open), Gate::Proceed);
+        // Sigue habiendo cambios: la siguiente vez vuelve a pedir confirmación.
+        assert_eq!(session.request(Command::Open), Gate::Armed);
+    }
+
+    #[test]
+    fn a_different_command_between_disarms() {
+        let mut session = Session::default();
+        session.edited();
+
+        assert_eq!(session.request(Command::New), Gate::Armed);
+        assert_eq!(session.request(Command::Open), Gate::Armed);
+        assert_eq!(session.request(Command::New), Gate::Armed);
+        assert_eq!(session.request(Command::New), Gate::Proceed);
+    }
+
+    #[test]
+    fn an_edit_between_disarms() {
+        let mut session = Session::default();
+        session.edited();
+        assert_eq!(session.request(Command::New), Gate::Armed);
+
+        session.edited();
+
+        assert!(session.notice.is_none());
+        assert_eq!(session.request(Command::New), Gate::Armed);
+        assert_eq!(session.notice.as_deref(), Some(DISCARD_NOTICE));
+    }
+
+    #[test]
+    fn new_resets_to_the_defaults() {
+        let mut session = Session::default();
+        let path = fixture("end_suction_v0.9.hmf");
+        assert!(session.open_path(&path));
+        assert!(session.basis.design.psi.is_some());
+        assert!(session.basis.density.is_some());
+        assert_eq!(session.bar_label().as_deref(), Some("end_suction_v0.9.hmf"));
+        session.inputs.q = "1 m3/h".into();
+        session.edited();
+        assert_eq!(
+            session.bar_label().as_deref(),
+            Some("end_suction_v0.9.hmf ●")
+        );
+        assert_eq!(session.request(Command::Open), Gate::Armed);
+        assert_eq!(
+            session.title_change().as_deref(),
+            Some("HidroMac Flow — end_suction_v0.9.hmf")
+        );
+
+        session.new_design();
+
+        assert_eq!(session.inputs, Inputs::default());
+        assert!(session.file.is_none());
+        assert!(session.project.is_none());
+        assert!(session.basis.density.is_none());
+        assert!(session.basis.design.psi.is_none());
+        assert!(!session.dirty);
+        assert!(session.notice.is_none());
+        assert!(session.opened_diagnostics.is_none());
+        assert!(session.bar_label().is_none());
+        assert_eq!(session.title(), "HidroMac Flow");
+        assert_eq!(session.title_change().as_deref(), Some("HidroMac Flow"));
+        assert_eq!(session.request(Command::New), Gate::Proceed);
     }
 }

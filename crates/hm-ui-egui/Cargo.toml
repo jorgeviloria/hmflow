@@ -8,7 +8,7 @@ authors = ["Jorge Viloria and contributors"]
 publish = false
 description = "Interfaz de HidroMac Flow con egui."
 
-# Workspace propio: todavía no entra en el CI principal.
+# Workspace propio: tiene su job `ui-egui` en el CI.
 [workspace]
 
 [[bin]]

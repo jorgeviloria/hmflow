@@ -1,6 +1,6 @@
-//! Prueba de la interfaz de HidroMac Flow con egui.
+//! Ventana de HidroMac Flow con egui: abre, edita el punto, guarda y exporta.
 //!
-//! Vive en su propio workspace y todavía no entra en el CI principal.
+//! Vive en su propio workspace, con su job `ui-egui` en el CI.
 //! Ejecutar con `cargo run --manifest-path crates/hm-ui-egui/Cargo.toml`.
 
 mod model;

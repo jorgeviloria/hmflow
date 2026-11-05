@@ -23,6 +23,8 @@ pub struct Session {
     /// Avisos de `open_project`. Sustituyen al panel de `compute` hasta el
     /// primer cambio de una caja.
     pub opened_diagnostics: Option<Vec<Diagnostic>>,
+    /// El último título enviado a la ventana.
+    shown_title: Option<String>,
 }
 
 impl Session {
@@ -40,6 +42,19 @@ impl Session {
             Some(name) => format!("HidroMac Flow — {name}"),
             None => "HidroMac Flow".to_string(),
         }
+    }
+
+    /// El título, solo si no es el que ya tiene la ventana.
+    ///
+    /// Cada orden a la ventana pide otro fotograma: enviarlo siempre la
+    /// dejaría repintándose sin parar.
+    pub fn title_change(&mut self) -> Option<String> {
+        let title = self.title();
+        if self.shown_title.as_ref() == Some(&title) {
+            return None;
+        }
+        self.shown_title = Some(title.clone());
+        Some(title)
     }
 
     /// Abre `path`.
@@ -98,6 +113,20 @@ mod tests {
         assert!(session.notice.is_none());
         assert!(session.opened_diagnostics.is_some());
         assert_eq!(session.title(), "HidroMac Flow — end_suction_v0.9.hmf");
+    }
+
+    #[test]
+    fn the_title_is_sent_only_when_it_changes() {
+        let mut session = Session::default();
+        assert_eq!(session.title_change().as_deref(), Some("HidroMac Flow"));
+        assert_eq!(session.title_change(), None);
+
+        assert!(session.open_path(&fixture("end_suction_v0.9.hmf")));
+        assert_eq!(
+            session.title_change().as_deref(),
+            Some("HidroMac Flow — end_suction_v0.9.hmf")
+        );
+        assert_eq!(session.title_change(), None);
     }
 
     #[test]

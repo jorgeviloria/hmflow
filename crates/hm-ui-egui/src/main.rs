@@ -113,9 +113,12 @@ impl eframe::App for App {
         if let Some(capture) = &mut self.capture {
             capture_step(ui.ctx(), capture);
         }
-        ui.ctx()
-            .send_viewport_cmd(egui::ViewportCommand::Title(self.session.title()));
         top_bar(ui, self);
+        // Después de la barra: un archivo recién abierto cambia el título ya.
+        if let Some(title) = self.session.title_change() {
+            ui.ctx()
+                .send_viewport_cmd(egui::ViewportCommand::Title(title));
+        }
         inputs_panel(ui, self);
         inspector_panel(ui, self);
         diagnostics_panel(ui, self);

@@ -335,6 +335,11 @@ pub const CODES: &[CodeInfo] = &[
         "Z par y número de lenguas de la voluta par: Gülich evita esa combinación (p. 491).",
     ),
     active(
+        "HM-DES-040",
+        Info,
+        "[casing] no indica la garganta: la voluta no limita la subida del NPSH3.",
+    ),
+    active(
         "HM-DES-039",
         Warning,
         "El cuello de la carcasa no deja usar el ojo óptimo para el NPSH3.",

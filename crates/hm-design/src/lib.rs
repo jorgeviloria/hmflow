@@ -1424,6 +1424,64 @@ const CASING_EYE_ROUNDING: f64 = 1.0e-9;
 /// `design` escribe ψ en el `.hmf`, y `recalc` tiene que aceptar ese archivo.
 const CASING_PSI_AGREEMENT: f64 = 1.0e-9;
 
+/// Diferencia, en grados, con que una envolvente se considera la de la carcasa:
+/// el `.hmf` las guarda en grados y `[casing]` pasa por radianes.
+const CASING_WRAP_AGREEMENT_DEG: f64 = 1.0e-9;
+
+/// Opciones con la voluta de la carcasa. Una opción escrita que no coincide es
+/// un error: de otro modo se ignoraría sin avisar.
+fn with_casing_volute(options: &DesignOptions) -> Result<DesignOptions, DesignError> {
+    let mut fitted = options.clone();
+    let Some(casing) = &options.casing else {
+        return Ok(fitted);
+    };
+    let contradiction = |name: &str, value: String, wanted: String| {
+        DesignError::Input(format!("`{name}` = {value} contradice [casing]: {wanted}"))
+    };
+    let k3 = 2.0 * casing.cutwater_radius / casing.d2;
+    if let Some(value) = options.k3
+        && (value / k3 - 1.0).abs() > CASING_PSI_AGREEMENT
+    {
+        return Err(contradiction(
+            "k3",
+            value.to_string(),
+            format!("sale {k3:.4}"),
+        ));
+    }
+    if let Some(value) = options.volute_width_factor {
+        return Err(contradiction(
+            "volute_c",
+            value.to_string(),
+            "b3 ya es dato de la carcasa".to_string(),
+        ));
+    }
+    if let Some(value) = options.volute_channels
+        && value != casing.channels
+    {
+        return Err(contradiction(
+            "volute_channels",
+            value.to_string(),
+            format!("tiene {}", casing.channels),
+        ));
+    }
+    let wrap = (casing.channels == 2).then_some(casing.wrap_deg);
+    if let Some(value) = options.volute_wrap_deg
+        && wrap.is_none_or(|wrap| (value - wrap).abs() > CASING_WRAP_AGREEMENT_DEG)
+    {
+        return Err(contradiction(
+            "volute_wrap_deg",
+            value.to_string(),
+            wrap.map_or("es de un canal".to_string(), |wrap| {
+                format!("tiene {wrap}°")
+            }),
+        ));
+    }
+    fitted.k3 = Some(k3);
+    fitted.volute_channels = Some(casing.channels);
+    fitted.volute_wrap_deg = wrap;
+    Ok(fitted)
+}
+
 /// ψ que impone el D2 de la carcasa, si hay carcasa.
 fn casing_psi(
     registry: &Registry,
@@ -1518,6 +1576,8 @@ pub fn design_with_options(
     options
         .validate()
         .map_err(|error| DesignError::Input(error.message))?;
+    let fitted = with_casing_volute(options)?;
+    let options = &fitted;
 
     let eta_v = match options.eta_v {
         Some(value) => value,
@@ -1929,15 +1989,18 @@ pub fn design_with_options(
         "design.volute_base_radius",
         &[("D2", d2.clone()), ("k3", k3)],
     )?;
-    let b3 = evaluate(
-        &registry,
-        "design.volute_width",
-        &[
-            ("B2", b2.clone()),
-            ("D2", d2.clone()),
-            ("c", volute_width_factor),
-        ],
-    )?;
+    let b3 = match &options.casing {
+        Some(casing) => Quantity::from_si(casing.b3, m.clone()),
+        None => evaluate(
+            &registry,
+            "design.volute_width",
+            &[
+                ("B2", b2.clone()),
+                ("D2", d2.clone()),
+                ("c", volute_width_factor),
+            ],
+        )?,
+    };
     let c3 = evaluate(
         &registry,
         "design.volute_inlet_velocity",
@@ -2104,8 +2167,17 @@ pub fn design_with_options(
     // mayor que A2·ηv, c3q no llega a c2 en ningún caudal y Qc se toma como
     // `NO_MATCHING_FLOW_RATIO`·Qd.
     let a2_outlet = std::f64::consts::PI * d2.si * b2.si;
-    let a_ratio = a2_outlet * input.q.si / (volute.throat_area.si * qth.si);
-    let volute_matching_flow = if a_ratio > 1.0 {
+    //
+    // Con carcasa, zLe·A3q son sus canales por su garganta. Sin ese dato no se
+    // usa la de voluta simple, que no es la de esta carcasa: Qc no limita.
+    let total_throat = match &options.casing {
+        Some(casing) => casing
+            .throat_area
+            .map(|area| f64::from(casing.channels) * area),
+        None => Some(volute.throat_area.si),
+    };
+    let a_ratio = total_throat.map(|area| a2_outlet * input.q.si / (area * qth.si));
+    let volute_matching_flow = if let Some(a_ratio) = a_ratio.filter(|a_ratio| *a_ratio > 1.0) {
         let impeller_flow = evaluate(
             &registry,
             "design.volute_matching_flow_cm",
@@ -2731,6 +2803,21 @@ fn diagnostics_for(
     options: &DesignOptions,
 ) -> Diagnostics {
     let mut diagnostics = Diagnostics::new();
+
+    if options
+        .casing
+        .as_ref()
+        .is_some_and(|casing| casing.throat_area.is_none())
+    {
+        diagnostics.push(
+            Diagnostic::info(
+                "HM-DES-040",
+                "[casing] sin `throat_area`: la voluta no limita la subida del NPSH3 con \
+                 sobrecarga",
+            )
+            .with_hint("Mide la garganta de cada canal para contrastar ese tramo."),
+        );
+    }
 
     if let Some(free) = result.eye_limited_from {
         diagnostics.push(

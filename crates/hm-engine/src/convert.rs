@@ -448,6 +448,18 @@ pub(crate) fn casing_results(project: &Project) -> Vec<&'static str> {
     names
 }
 
+/// Parámetros de voluta que, con carcasa, son copia de `[casing]`. Solo un
+/// `locked` se contrasta con ella.
+pub(crate) fn casing_volute(project: &Project) -> Vec<&'static str> {
+    if project.casing.is_none() {
+        return Vec::new();
+    }
+    ["k3", "volute_c", "volute_channels", "volute_wrap_deg"]
+        .into_iter()
+        .filter(|name| !matches!(project.params.get(*name), Some(Param::Locked { .. })))
+        .collect()
+}
+
 fn design_options(project: &Project) -> Result<DesignOptions, EngineError> {
     let mut options = DesignOptions::default();
 
@@ -463,6 +475,14 @@ fn design_options(project: &Project) -> Result<DesignOptions, EngineError> {
                 "c0" => options.c0 = None,
                 "cm0" => options.cm0 = None,
                 _ => options.j = None,
+            }
+        }
+        for name in casing_volute(project) {
+            match name {
+                "k3" => options.k3 = None,
+                "volute_channels" => options.volute_channels = None,
+                "volute_wrap_deg" => options.volute_wrap_deg = None,
+                _ => options.volute_width_factor = None,
             }
         }
     }
@@ -754,8 +774,14 @@ fn default_manual_text(
         "balance_holes" => defaults.balance_holes.clone(),
         "volute_ratio" => defaults.volute_ratio.clone(),
         "impeller_roughness" => defaults.impeller_roughness.clone(),
-        "volute_channels" => defaults.volute_channels.clone(),
-        "volute_wrap_deg" => defaults.volute_wrap_deg.clone(),
+        "volute_channels" => match &result.casing {
+            Some(casing) => casing.channels.to_string(),
+            None => defaults.volute_channels.clone(),
+        },
+        "volute_wrap_deg" => match (&result.casing, result.volute.wrap_deg) {
+            (Some(_), Some(wrap)) => format!("{wrap} deg"),
+            _ => defaults.volute_wrap_deg.clone(),
+        },
         "incidence_deg" => defaults.incidence_deg.clone(),
         _ => return None,
     })

@@ -345,3 +345,128 @@ fn casing_sizes_that_do_not_nest_are_rejected() {
         assert!(error.contains(&format!("casing.{field}")), "{error}");
     }
 }
+
+fn double() -> CasingFit {
+    CasingFit {
+        channels: 2,
+        ..sample()
+    }
+}
+
+fn has(result: &hm_design::DesignResult, code: &str) -> bool {
+    codes(result).iter().any(|found| found == code)
+}
+
+#[test]
+fn the_volute_is_the_casing_one() {
+    let result = design_with_options(&input(), &with(sample())).unwrap();
+    assert_eq!(result.volute.width.si, 0.030);
+    assert!((result.volute.base_radius.si - 0.111).abs() < 1e-12);
+}
+
+#[test]
+fn two_channels_give_an_odd_blade_count_and_less_radial_thrust() {
+    let single = design_with_options(&input(), &with(sample())).unwrap();
+    let double = design_with_options(&input(), &with(double())).unwrap();
+    assert_eq!(double.selection.blade_count % 2, 1);
+    assert_eq!(double.volute.wrap_deg, Some(180.0));
+    assert_eq!(single.volute.wrap_deg, None);
+    assert!(!has(&single, "HM-DES-038"));
+    assert!(!has(&double, "HM-DES-038"));
+
+    let shear = DEFAULT_SHAFT_SHEAR_STRESS;
+    let thrust = |result| {
+        mechanics(&input(), result, shear)
+            .unwrap()
+            .radial_thrust_design
+    };
+    assert!(thrust(&double) < thrust(&single));
+}
+
+#[test]
+fn volute_options_that_agree_pass_and_those_that_disagree_fail() {
+    let k3 = 2.0 * 0.111 / 0.210;
+    let agreeing = DesignOptions {
+        k3: Some(k3),
+        volute_channels: Some(2),
+        volute_wrap_deg: Some(180.0),
+        ..with(double())
+    };
+    assert!(design_with_options(&input(), &agreeing).is_ok());
+
+    type Edit = fn(&mut DesignOptions);
+    let cases: [(Edit, &str); 4] = [
+        (|o| o.k3 = Some(1.2), "k3"),
+        (|o| o.volute_channels = Some(1), "volute_channels"),
+        (|o| o.volute_wrap_deg = Some(170.0), "volute_wrap_deg"),
+        (|o| o.volute_width_factor = Some(0.05), "volute_c"),
+    ];
+    for (edit, name) in cases {
+        let mut options = with(double());
+        edit(&mut options);
+        let error = design_with_options(&input(), &options)
+            .unwrap_err()
+            .to_string();
+        assert!(error.contains(name), "{error}");
+        assert!(error.contains("[casing]"), "{error}");
+    }
+}
+
+#[test]
+fn without_a_throat_the_volute_does_not_decide_the_transition() {
+    let result = design_with_options(&input(), &with(sample())).unwrap();
+    let qd = input().q.si;
+    assert!((result.volute_matching_flow.si / qd - 10.0).abs() < 1e-9);
+    let inlet = 0.5 * (result.shockless_flow.si + result.throat_flow.si) / qd;
+    assert!((result.transition_ratio - inlet).abs() < 1e-9);
+    assert!(has(&result, "HM-DES-040"));
+}
+
+#[test]
+fn a_throat_enters_equation_6_22a_per_channel() {
+    let area = 0.0012;
+    let fit = |channels, throat_area| CasingFit {
+        channels,
+        throat_area: Some(throat_area),
+        ..sample()
+    };
+    let one = DesignOptions {
+        blade_count: Some(7),
+        ..with(fit(1, 2.0 * area))
+    };
+    let two = DesignOptions {
+        blade_count: Some(7),
+        ..with(fit(2, area))
+    };
+    let one = design_with_options(&input(), &one).unwrap();
+    let two = design_with_options(&input(), &two).unwrap();
+    let qd = input().q.si;
+    assert!(one.volute_matching_flow.si / qd < 10.0);
+    assert!((one.volute_matching_flow.si / two.volute_matching_flow.si - 1.0).abs() < 1e-9);
+    assert!(!has(&two, "HM-DES-040"));
+}
+
+#[test]
+fn a_smaller_throat_lowers_the_matching_flow() {
+    let flow = |area| {
+        let fit = CasingFit {
+            throat_area: Some(area),
+            ..sample()
+        };
+        design_with_options(&input(), &with(fit))
+            .unwrap()
+            .volute_matching_flow
+            .si
+    };
+    assert!(flow(0.0015) < flow(0.0020));
+}
+
+#[test]
+fn an_even_blade_count_in_two_channels_is_still_warned() {
+    let options = DesignOptions {
+        blade_count: Some(6),
+        ..with(double())
+    };
+    let result = design_with_options(&input(), &options).unwrap();
+    assert!(has(&result, "HM-DES-037"));
+}

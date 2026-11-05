@@ -10,7 +10,7 @@ use crate::audit::{NQ_SELECTIONS, selection_diagnostics};
 use crate::case::Case;
 use crate::changes::{ChangeKind, ParamChange};
 use crate::convert::{
-    ManualDefaults, case_from_project, casing_results, design_params, param_value,
+    ManualDefaults, case_from_project, casing_results, casing_volute, design_params, param_value,
 };
 use crate::dispatch::analyze;
 use crate::error::EngineError;
@@ -70,8 +70,14 @@ pub fn recalc(mut project: Project, reselect: bool) -> Result<Recalculated, Engi
         Vec::new()
     };
     // Se rehacen con el punto actual: el archivo no debe conservar unos viejos.
-    for name in casing_results(&project) {
-        if let Some(Param::Manual { value }) = project.params.remove(name) {
+    let copied: Vec<_> = casing_results(&project)
+        .into_iter()
+        .chain(casing_volute(&project))
+        .collect();
+    for name in copied {
+        if matches!(project.params.get(name), Some(Param::Manual { .. }))
+            && let Some(Param::Manual { value }) = project.params.remove(name)
+        {
             reselected.push((name, value));
         }
     }

@@ -214,3 +214,68 @@ fn locking_the_eye_as_saved_keeps_the_eye() {
     locked.params.insert("c0".to_string(), value);
     assert!((eye(&locked) - reference).abs() < 1e-9);
 }
+
+fn double_saved() -> Project {
+    let mut project = project();
+    project.casing.as_mut().unwrap().channels = 2;
+    recalc(project, false).unwrap().project
+}
+
+fn text(project: &Project, name: &str) -> String {
+    match project.params.get(name) {
+        Some(Param::Manual { value } | Param::Locked { value }) => value.clone(),
+        other => panic!("{name}: {other:?}"),
+    }
+}
+
+#[test]
+fn the_file_says_what_the_casing_says() {
+    let project = double_saved();
+    assert_eq!(text(&project, "volute_channels"), "2");
+    assert_eq!(text(&project, "volute_wrap_deg"), "180 deg");
+    let k3: f64 = text(&project, "k3").parse().unwrap();
+    assert!((k3 - 2.0 * 111.0 / 210.0).abs() < 1e-9);
+    let twice = recalc(project.clone(), false).unwrap();
+    assert_eq!(project.to_toml().unwrap(), twice.project.to_toml().unwrap());
+    assert!(twice.changes.is_empty(), "{:?}", twice.changes);
+}
+
+#[test]
+fn a_casing_added_to_a_saved_project_wins_over_its_volute() {
+    let mut project = recalc(Project::new("demo", PumpType::EndSuction), false)
+        .unwrap()
+        .project;
+    project.casing = Some(casing());
+    project.casing.as_mut().unwrap().channels = 2;
+    let project = recalc(project, false).unwrap().project;
+    assert_eq!(text(&project, "volute_channels"), "2");
+}
+
+#[test]
+fn a_locked_volute_that_disagrees_is_an_error() {
+    let mut project = double_saved();
+    project.params.insert(
+        "volute_channels".to_string(),
+        Param::Locked {
+            value: "1".to_string(),
+        },
+    );
+    let error = recalc(project, false).unwrap_err().to_string();
+    assert!(error.contains("[casing]"), "{error}");
+}
+
+#[test]
+fn a_locked_wrap_equal_to_the_casing_passes_after_the_unit_round_trip() {
+    let mut project = project();
+    let casing = project.casing.as_mut().unwrap();
+    casing.channels = 2;
+    casing.wrap = "178.7 deg".to_string();
+    let mut project = recalc(project, false).unwrap().project;
+    project.params.insert(
+        "volute_wrap_deg".to_string(),
+        Param::Locked {
+            value: "178.7 deg".to_string(),
+        },
+    );
+    recalc(project, false).unwrap();
+}

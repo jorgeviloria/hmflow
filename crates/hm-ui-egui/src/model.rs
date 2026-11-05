@@ -14,7 +14,8 @@ use hm_design::{CurvePoint, DesignError, DesignInput, DesignResult, ViscousCorre
 use hm_engine::{
     Analysis, Case, CaseField, CurvePoints, Density, DensitySource, DesignOptions, Duty,
     EditorError, EngineError, Entered, Fluid, FluidKind, Intake, Opened, PumpType, Temperature,
-    analyze, cli_message, new_project, open_project, recalc, update_point, water_density_at,
+    analyze, cli_message, new_project, open_project, recalc, report, update_point,
+    water_density_at,
 };
 use hm_project::Project;
 use hm_units::Quantity;
@@ -598,6 +599,23 @@ pub fn build_project(
             })
         }
     }
+}
+
+/// JSON del informe, con el mismo proyecto en memoria que al guardar.
+///
+/// Once puntos, como `hmflow-cli report`. No escribe el `.hmf`: un método
+/// anterior se migra solo dentro de este texto.
+pub fn export_report(
+    inputs: &Inputs,
+    basis: &Basis,
+    previous: Option<&Project>,
+    name: &str,
+) -> Result<String, String> {
+    let built = build_project(inputs, basis, previous, name)?;
+    let points = CurvePoints::new(11).expect("11 está en el rango");
+    let report = report(&built.project, points).map_err(|error| engine_failure(&error))?;
+    let json = serde_json::to_string_pretty(&report).map_err(|error| error.to_string())?;
+    Ok(format!("{json}\n"))
 }
 
 fn field_failure(errors: &FieldErrors) -> String {
@@ -1300,5 +1318,37 @@ mod tests {
     fn an_unreadable_file_returns_an_error() {
         let error = open_file(std::path::Path::new("/no/existe/hmflow.hmf")).unwrap_err();
         assert!(error.contains("E/S"), "{error}");
+    }
+
+    #[test]
+    fn export_has_the_report_format_and_eleven_points() {
+        let json =
+            export_report(&Inputs::default(), &Basis::default(), None, "sin título").unwrap();
+
+        assert!(json.ends_with('\n'));
+        let report: hm_engine::DesignReport = serde_json::from_str(&json).unwrap();
+        assert_eq!(report.format, hm_engine::REPORT_FORMAT);
+        assert_eq!(report.curve.len(), 11);
+    }
+
+    #[test]
+    fn export_equals_the_engine_report() {
+        let inputs = Inputs::default();
+        let basis = Basis::default();
+        let json = export_report(&inputs, &basis, None, "sin título").unwrap();
+        let built = build_project(&inputs, &basis, None, "sin título").unwrap();
+        let points = CurvePoints::new(11).unwrap();
+        let engine = report(&built.project, points).unwrap();
+
+        let exported: serde_json::Value = serde_json::from_str(&json).unwrap();
+        assert_eq!(exported, serde_json::to_value(&engine).unwrap());
+
+        // Lo que la CLI leería del archivo guardado.
+        let path = std::env::temp_dir().join(format!("hmflow-export-{}", std::process::id()));
+        built.project.save(&path).unwrap();
+        let loaded = Project::load(&path).unwrap();
+        let _ = std::fs::remove_file(&path);
+        let from_file = report(&loaded, points).unwrap();
+        assert_eq!(exported, serde_json::to_value(&from_file).unwrap());
     }
 }

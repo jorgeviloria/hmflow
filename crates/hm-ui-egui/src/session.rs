@@ -256,6 +256,7 @@ fn with_hmf(path: &Path) -> PathBuf {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::model::export_report;
 
     fn fixture(name: &str) -> std::path::PathBuf {
         PathBuf::from(env!("CARGO_MANIFEST_DIR"))
@@ -786,6 +787,182 @@ mod tests {
             std::fs::read(fixture("end_suction_v0.8.hmf")).unwrap(),
             bytes
         );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    fn export_of(session: &Session) -> Result<String, String> {
+        let name = session
+            .file
+            .as_ref()
+            .and_then(|path| path.file_stem())
+            .map(|stem| stem.to_string_lossy().into_owned())
+            .filter(|name| !name.is_empty())
+            .unwrap_or_else(|| "sin título".to_string());
+        export_report(
+            &session.inputs,
+            &session.basis,
+            session.project.as_ref(),
+            &name,
+        )
+    }
+
+    /// Cajas, archivo, `●`, avisos y el proyecto en memoria.
+    fn session_stamp(session: &Session) -> String {
+        let codes = session.opened_diagnostics.as_ref().map(|diagnostics| {
+            diagnostics
+                .iter()
+                .map(|diagnostic| diagnostic.code.clone())
+                .collect::<Vec<_>>()
+        });
+        let project = session
+            .project
+            .as_ref()
+            .map(|project| project.to_toml().unwrap())
+            .unwrap_or_default();
+        format!(
+            "{:?}\n{:?}\n{:?}\n{}\n{:?}\n{codes:?}\n{project}",
+            session.inputs, session.basis, session.file, session.dirty, session.notice,
+        )
+    }
+
+    fn dir_listing(dir: &std::path::Path) -> Vec<std::path::PathBuf> {
+        let mut names = std::fs::read_dir(dir)
+            .unwrap()
+            .map(|entry| entry.unwrap().path())
+            .collect::<Vec<_>>();
+        names.sort();
+        names
+    }
+
+    #[test]
+    fn export_does_not_touch_the_session() {
+        let dir = scratch("export-sesion");
+        let path = copy_fixture(&dir, "end_suction_v0.9.hmf");
+        let bytes = std::fs::read(&path).unwrap();
+        let mut session = Session::default();
+        assert!(session.open_path(&path));
+        session.inputs.q = "100 m3/h".into();
+        session.edited();
+        let before = session_stamp(&session);
+
+        let json = export_of(&session).unwrap();
+
+        assert!(json.ends_with('\n'));
+        assert_eq!(session_stamp(&session), before);
+        assert_eq!(std::fs::read(&path).unwrap(), bytes);
+        assert!(session.dirty);
+        assert!(session.bar_label().unwrap().contains('●'));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn export_of_a_legacy_project_does_not_modify_the_file() {
+        let dir = scratch("export-legado");
+        let path = copy_fixture(&dir, "end_suction_v0.8.hmf");
+        let bytes = std::fs::read(&path).unwrap();
+        let mut session = Session::default();
+        assert!(session.open_path(&path));
+        assert!(!session.dirty);
+        let before = session_stamp(&session);
+
+        let json = export_of(&session).unwrap();
+
+        assert_eq!(std::fs::read(&path).unwrap(), bytes);
+        assert_eq!(
+            Project::load(&path).unwrap().design.method,
+            "end_suction_v0.8"
+        );
+        assert_eq!(
+            session.project.as_ref().unwrap().design.method,
+            "end_suction_v0.8"
+        );
+        assert_eq!(session_stamp(&session), before);
+        let value: serde_json::Value = serde_json::from_str(&json).unwrap();
+        assert_eq!(value["method"], hm_engine::METHOD);
+        assert_eq!(value["format"], hm_engine::REPORT_FORMAT);
+        assert_eq!(value["curve"].as_array().unwrap().len(), 11);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn export_fails_with_an_input_error_and_writes_nothing() {
+        let dir = scratch("export-caja");
+        let path = copy_fixture(&dir, "end_suction_v0.9.hmf");
+        let bytes = std::fs::read(&path).unwrap();
+        let listing = dir_listing(&dir);
+        let mut session = Session::default();
+        assert!(session.open_path(&path));
+        session.inputs.q = "mucho".into();
+        session.edited();
+        let before = session_stamp(&session);
+
+        let error = export_of(&session).unwrap_err();
+
+        assert!(!error.is_empty(), "{error}");
+        assert_eq!(session_stamp(&session), before);
+        assert_eq!(std::fs::read(&path).unwrap(), bytes);
+        assert_eq!(dir_listing(&dir), listing);
+        assert!(session.dirty);
+        assert_eq!(session.inputs.q, "mucho");
+
+        // Sin una etapa tampoco hay JSON, y el archivo sigue igual.
+        let mut session = Session::default();
+        session.save_to(&dir.join("etapa.hmf")).unwrap();
+        let mut project = Project::new("etapa", hm_engine::PumpType::EndSuction);
+        project.design.method = hm_engine::METHOD.to_string();
+        project.params.insert(
+            "volute_ratio".into(),
+            Param::Manual {
+                value: "0.5".into(),
+            },
+        );
+        session.project = Some(project);
+        session.basis = Basis {
+            design: hm_engine::DesignOptions {
+                volute_ratio: Some(0.5),
+                ..Default::default()
+            },
+            ..Basis::default()
+        };
+        session.inputs.q = "4 m3/s".into();
+        session.inputs.h = "30 m".into();
+        session.inputs.n = "500 rpm".into();
+        session.dirty = true;
+        let etapa = session.file.clone().unwrap();
+        let etapa_bytes = std::fs::read(&etapa).unwrap();
+        let before = session_stamp(&session);
+
+        let error = export_of(&session).unwrap_err();
+
+        assert!(
+            error.contains("difusor") || error.contains("tubuladura"),
+            "{error}"
+        );
+        assert_eq!(std::fs::read(&etapa).unwrap(), etapa_bytes);
+        assert_eq!(session_stamp(&session), before);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_saved_clean_export_matches_the_report_of_the_file() {
+        let dir = scratch("export-limpio");
+        let mut session = Session::default();
+        session.save_to(&dir.join("bomba.hmf")).unwrap();
+        assert!(!session.dirty);
+        let bytes = std::fs::read(session.file.as_ref().unwrap()).unwrap();
+        let before = session_stamp(&session);
+
+        let json = export_of(&session).unwrap();
+
+        assert_eq!(session_stamp(&session), before);
+        assert_eq!(
+            std::fs::read(session.file.as_ref().unwrap()).unwrap(),
+            bytes
+        );
+        let loaded = Project::load(session.file.as_ref().unwrap()).unwrap();
+        let engine = hm_engine::report(&loaded, hm_engine::CurvePoints::new(11).unwrap()).unwrap();
+        let exported: serde_json::Value = serde_json::from_str(&json).unwrap();
+        assert_eq!(exported, serde_json::to_value(&engine).unwrap());
         let _ = std::fs::remove_dir_all(&dir);
     }
 }

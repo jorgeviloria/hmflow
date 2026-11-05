@@ -17,7 +17,7 @@ use hm_engine::{METHOD, PARAM_SPECS, PREFERRED_OPERATING_REGION};
 use hm_formula::Registry;
 
 use model::{
-    Field, FieldErrors, IntakeMode, Outcome, SUCTION_BOXES, build_project, compute,
+    Field, FieldErrors, IntakeMode, Outcome, SUCTION_BOXES, build_project, compute, export_report,
     suction_box_error, suction_group_errors,
 };
 use session::{Command, Gate, Session};
@@ -28,6 +28,8 @@ const NEW_SHORTCUT: egui::KeyboardShortcut =
     egui::KeyboardShortcut::new(egui::Modifiers::COMMAND, egui::Key::N);
 const SAVE_SHORTCUT: egui::KeyboardShortcut =
     egui::KeyboardShortcut::new(egui::Modifiers::COMMAND, egui::Key::S);
+const EXPORT_SHORTCUT: egui::KeyboardShortcut =
+    egui::KeyboardShortcut::new(egui::Modifiers::COMMAND, egui::Key::E);
 
 fn main() -> eframe::Result {
     let options = eframe::NativeOptions {
@@ -157,12 +159,14 @@ fn top_bar(ui: &mut egui::Ui, app: &mut App) {
     let mut open = open_requested(ui.ctx());
     let mut save_file = save_requested(ui.ctx());
     let mut save_as = false;
+    let mut export_file = export_requested(ui.ctx());
     egui::Panel::top("top").show(ui, |ui| {
         let menu = file_menu(ui);
         new_design |= menu.new_design;
         open |= menu.open;
         save_file |= menu.save;
         save_as |= menu.save_as;
+        export_file |= menu.export_report;
         ui.horizontal(|ui| {
             ui.heading("HidroMac Flow");
             if let Some(name) = app.session.bar_label() {
@@ -191,6 +195,9 @@ fn top_bar(ui: &mut egui::Ui, app: &mut App) {
     } else if save_file {
         save(app);
     }
+    if export_file {
+        choose_and_export(app);
+    }
 }
 
 /// Ctrl+N y, en macOS, también ⌘N. `COMMAND` es ⌘ en Mac y Ctrl en el resto.
@@ -206,6 +213,11 @@ fn open_requested(ctx: &egui::Context) -> bool {
 /// Ctrl+S y, en macOS, también ⌘S.
 fn save_requested(ctx: &egui::Context) -> bool {
     pressed_once(ctx, SAVE_SHORTCUT) || pressed_once(ctx, ctrl(SAVE_SHORTCUT))
+}
+
+/// Ctrl+E y, en macOS, también ⌘E.
+fn export_requested(ctx: &egui::Context) -> bool {
+    pressed_once(ctx, EXPORT_SHORTCUT) || pressed_once(ctx, ctrl(EXPORT_SHORTCUT))
 }
 
 fn ctrl(shortcut: egui::KeyboardShortcut) -> egui::KeyboardShortcut {
@@ -241,15 +253,17 @@ struct MenuChoice {
     open: bool,
     save: bool,
     save_as: bool,
+    export_report: bool,
 }
 
-/// Archivo → Nuevo, Abrir…, Guardar y Guardar como….
+/// Archivo → Nuevo, Abrir…, Guardar, Guardar como… y Exportar informe….
 fn file_menu(ui: &mut egui::Ui) -> MenuChoice {
     let mut choice = MenuChoice {
         new_design: false,
         open: false,
         save: false,
         save_as: false,
+        export_report: false,
     };
     egui::MenuBar::new().ui(ui, |ui| {
         ui.menu_button("Archivo", |ui| {
@@ -275,6 +289,13 @@ fn file_menu(ui: &mut egui::Ui) -> MenuChoice {
             if ui.button("Guardar como…").clicked() {
                 ui.close();
                 choice.save_as = true;
+            }
+            ui.separator();
+            let export_button = egui::Button::new("Exportar informe…")
+                .shortcut_text(ui.ctx().format_shortcut(&EXPORT_SHORTCUT));
+            if ui.add(export_button).clicked() {
+                ui.close();
+                choice.export_report = true;
             }
         });
     });
@@ -343,14 +364,7 @@ fn write_to(app: &mut App, path: &std::path::Path) {
 }
 
 fn can_save(app: &mut App) -> bool {
-    let name = app
-        .session
-        .file
-        .as_ref()
-        .and_then(|path| path.file_stem())
-        .map(|stem| stem.to_string_lossy().into_owned())
-        .filter(|name| !name.is_empty())
-        .unwrap_or_else(|| "sin título".to_string());
+    let name = project_name(&app.session);
     match build_project(
         &app.session.inputs,
         &app.session.basis,
@@ -364,6 +378,83 @@ fn can_save(app: &mut App) -> bool {
             false
         }
     }
+}
+
+/// Nombre del proyecto: el del archivo, sin extensión, o «sin título».
+fn project_name(session: &Session) -> String {
+    session
+        .file
+        .as_ref()
+        .and_then(|path| path.file_stem())
+        .map(|stem| stem.to_string_lossy().into_owned())
+        .filter(|name| !name.is_empty())
+        .unwrap_or_else(|| "sin título".to_string())
+}
+
+/// Con errores de caja o de etapa no abre el diálogo ni escribe. El JSON no
+/// toca el `.hmf`, el proyecto ni el `●`.
+fn choose_and_export(app: &mut App) {
+    let name = project_name(&app.session);
+    let json = match export_report(
+        &app.session.inputs,
+        &app.session.basis,
+        app.session.project.as_ref(),
+        &name,
+    ) {
+        Ok(json) => json,
+        Err(message) => {
+            app.session.disarm();
+            app.session.notice = Some(message);
+            return;
+        }
+    };
+    let Some(path) = rfd::FileDialog::new()
+        .set_title("Exportar informe")
+        .add_filter("Informe JSON", &["json"])
+        .set_file_name(project_name(&app.session))
+        .save_file()
+    else {
+        return;
+    };
+    write_report(app, &path, &json);
+}
+
+fn write_report(app: &mut App, path: &std::path::Path, json: &str) {
+    let chosen = path;
+    let path = with_json(chosen);
+    // El diálogo preguntó por el nombre elegido, no por el que sale de
+    // añadir la extensión.
+    if path != chosen && path.exists() {
+        let message = format!(
+            "ya existe {}: elige otro nombre",
+            path.file_name().unwrap_or_default().to_string_lossy()
+        );
+        app.session.disarm();
+        app.session.notice = Some(message);
+        return;
+    }
+    if let Err(error) = std::fs::write(&path, json) {
+        app.session.disarm();
+        app.session.notice = Some(error.to_string());
+        return;
+    }
+    if app.session.discard_notice().is_none() {
+        app.session.notice = None;
+    }
+}
+
+/// `.json` si el nombre no la trae. No sustituye otra extensión: la añade.
+fn with_json(path: &std::path::Path) -> std::path::PathBuf {
+    let is_json = path
+        .extension()
+        .and_then(|extension| extension.to_str())
+        .is_some_and(|extension| extension.eq_ignore_ascii_case("json"));
+    if is_json {
+        return path.to_path_buf();
+    }
+    let mut name = path.as_os_str().to_os_string();
+    name.push(".json");
+    std::path::PathBuf::from(name)
 }
 
 fn status(ui: &egui::Ui, app: &App) -> (&'static str, Color32) {

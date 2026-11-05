@@ -214,10 +214,9 @@ fn b1_npsh3_shape_follows_catalog() {
     // Forma de NPSHr(Q)/NPSHr(Qd) frente a las isolíneas del catálogo. Las
     // isolíneas van cada 1 m: la lectura vale ±0,5 m, ±0,15 en la razón.
     //
-    // Solo a caudal parcial. Con 1280 gpm el modelo da 1,76 frente a 1,21: la
-    // subida (Q/Qsa)³ arranca en Qsa ≈ 0,99 Qd porque la limita la garganta de
-    // la voluta simple del motor; B1 tiene doble voluta, de garganta
-    // desconocida, y su entrada sin choque está en 1,23 Qd. Desviación
+    // Solo a caudal parcial. Con 1280 gpm el modelo da 1,62 frente a 1,21: la
+    // subida (Q/Qsa)³ arranca en 1,054 Qd y la limita la entrada, no la voluta
+    // (Qc = 1,183 Qd). Depende de i1, que sigue sin medirse. Desviación
     // documentada en docs/validation/matrix.md.
     let result = design_with_options(&input(), &real_impeller()).unwrap();
     let at_design = npshr_ratio(&result, 1.0);

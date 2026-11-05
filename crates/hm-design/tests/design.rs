@@ -1828,3 +1828,22 @@ fn an_invalid_option_is_reported_before_an_invalid_selection() {
         "`psi` = 0 no es válido; debe ser mayor que 0",
     );
 }
+
+#[test]
+fn unreachable_head_does_not_suggest_more_blades() {
+    // cu2/u2 = 1,278: ningún Z la da.
+    let error = design(&input("10 m3/h", "100 m", "2900 rpm"))
+        .unwrap_err()
+        .to_string();
+    assert!(error.contains("reduce ψ"), "{error}");
+    assert!(!error.contains("aumenta Z"), "{error}");
+}
+
+#[test]
+fn reachable_head_still_suggests_more_blades() {
+    // cu2/u2 = 0,817, por debajo de 1: con más álabes puede alcanzarse.
+    let error = design(&input("30 m3/h", "100 m", "2900 rpm"))
+        .unwrap_err()
+        .to_string();
+    assert!(error.contains("aumenta Z"), "{error}");
+}

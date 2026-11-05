@@ -119,3 +119,23 @@ fn low_nq_points_that_used_to_fail_now_design() {
             .unwrap_or_else(|error| panic!("{q} m3/h, {h} m, {n} rpm: {error}"));
     }
 }
+
+#[test]
+fn default_blades_keep_beta2_in_range_from_nq_11() {
+    // nq de ≈ 10,8 a ≈ 26,5. Z puede saltar con nq: lo que se fija es el rango.
+    for q in [50.0, 60.0, 80.0, 100.0, 150.0, 200.0, 300.0] {
+        let result =
+            design_with_options(&input(q, 100.0, 2900.0), &DesignOptions::default()).unwrap();
+        let selection = &result.selection;
+        assert!(
+            (5..=7).contains(&selection.blade_count),
+            "{q} m3/h: Z = {}",
+            selection.blade_count
+        );
+        assert!(
+            (15.0..=45.0).contains(&selection.beta2_deg),
+            "{q} m3/h: β2 = {}",
+            selection.beta2_deg
+        );
+    }
+}

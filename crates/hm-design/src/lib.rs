@@ -968,9 +968,15 @@ fn euler_blade_angle(registry: &Registry, target: &EulerTarget) -> Result<f64, D
     );
     let reachable = cu2_over_u2(peak)?;
     if reachable < needed {
+        // cu2/u2 no llega a 1 con ningún Z: más álabes solo acercan a ese límite.
+        let advice = if needed >= 1.0 {
+            "ningún número de álabes la alcanza: reduce ψ"
+        } else {
+            "aumenta Z o reduce ψ"
+        };
         return Err(DesignError::Input(format!(
             "con ψ = {psi:.3}, φ = {phi:.3} y Z = {blade_count}, ningún β2 da la altura: \
-             hace falta cu2/u2 = {needed:.3} y el máximo es {reachable:.3}; aumenta Z o reduce ψ",
+             hace falta cu2/u2 = {needed:.3} y el máximo es {reachable:.3}; {advice}",
             psi = target.psi,
             phi = target.phi,
             blade_count = target.blade_count,

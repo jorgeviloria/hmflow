@@ -5,8 +5,8 @@ use std::collections::BTreeMap;
 
 use hm_design::geometry::DEFAULT_INCIDENCE_DEG;
 use hm_design::{
-    CasingFit, DEFAULT_K_EFF, DEFAULT_VOLUTE_C, DEFAULT_VOLUTE_RATIO, DesignError, DesignOptions,
-    DesignResult, PARAM_SPECS, ParamSpec, designed_si, water_density,
+    CasingFit, CasingLeakage, DEFAULT_K_EFF, DEFAULT_VOLUTE_C, DEFAULT_VOLUTE_RATIO, DesignError,
+    DesignOptions, DesignResult, PARAM_SPECS, ParamSpec, designed_si, water_density,
 };
 use hm_project::{Casing, Param, Project};
 use hm_units::{Quantity, parse_quantity, parse_unit};
@@ -519,6 +519,39 @@ pub fn casing_fit(casing: &Casing) -> Result<CasingFit, EngineError> {
         "" => None,
         text => Some(si("throat_area", text, "m2")?),
     };
+    let has_leakage = casing.balance_hole_count > 0
+        || [
+            &casing.seal_clearance,
+            &casing.seal_length,
+            &casing.rear_seal_diameter,
+            &casing.rear_seal_length,
+            &casing.balance_hole_diameter,
+        ]
+        .iter()
+        .any(|text| !text.trim().is_empty());
+    let leakage = has_leakage
+        .then(|| {
+            if casing.balance_hole_count == 0 {
+                return Err(input_error(
+                    CaseField::Param("casing"),
+                    "HM-PROJ-030",
+                    "[casing] `balance_hole_count` hace falta con los demás datos de fuga",
+                ));
+            }
+            Ok(CasingLeakage {
+                seal_clearance: si("seal_clearance", &casing.seal_clearance, "m")?,
+                seal_length: si("seal_length", &casing.seal_length, "m")?,
+                rear_seal_diameter: si("rear_seal_diameter", &casing.rear_seal_diameter, "m")?,
+                rear_seal_length: si("rear_seal_length", &casing.rear_seal_length, "m")?,
+                balance_hole_count: casing.balance_hole_count,
+                balance_hole_diameter: si(
+                    "balance_hole_diameter",
+                    &casing.balance_hole_diameter,
+                    "m",
+                )?,
+            })
+        })
+        .transpose()?;
     let wrap_deg = match casing.wrap.trim() {
         "" => None,
         text => Some(si("wrap", text, "rad")?.to_degrees()),
@@ -534,6 +567,7 @@ pub fn casing_fit(casing: &Casing) -> Result<CasingFit, EngineError> {
         channels: casing.channels,
         wrap_deg,
         throat_area,
+        leakage,
     })
 }
 

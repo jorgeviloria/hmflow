@@ -721,6 +721,7 @@ mod tests {
                 channels: 1,
                 wrap_deg: None,
                 throat_area: None,
+                leakage: None,
             }),
             ..hm_design::DesignOptions::default()
         };

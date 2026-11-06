@@ -2,7 +2,9 @@
 
 use hm_design::geometry::geometry;
 use hm_design::mechanics::{DEFAULT_SHAFT_SHEAR_STRESS, mechanics, mechanics_diagnostics};
-use hm_design::{CasingFit, DesignInput, DesignOptions, design, design_with_options};
+use hm_design::{
+    CasingFit, CasingLeakage, DesignInput, DesignOptions, design, design_with_options,
+};
 use hm_units::parse_quantity;
 
 /// ψ de D2 = 210 mm con 45 m y 2900 rpm, calculado aparte.
@@ -33,6 +35,7 @@ fn sample() -> CasingFit {
         channels: 1,
         wrap_deg: None,
         throat_area: None,
+        leakage: None,
     }
 }
 
@@ -720,6 +723,7 @@ fn the_model_outlet_cannot_block_a_casing_design() {
         channels: 1,
         wrap_deg: None,
         throat_area: None,
+        leakage: None,
     };
     let fitted = design_with_options(&big, &with(casing)).unwrap();
     let shape = geometry(&big, &fitted).unwrap();
@@ -740,4 +744,53 @@ fn a_casing_too_small_for_the_head_blames_the_casing() {
     let hint = hint_of(&result, "HM-DES-016");
     assert!(hint.contains("esta carcasa"), "{hint}");
     assert!(!hint.contains("reduce el"), "{hint}");
+}
+
+fn leakage() -> CasingLeakage {
+    CasingLeakage {
+        seal_clearance: 0.0003,
+        seal_length: 0.015,
+        rear_seal_diameter: 0.080,
+        rear_seal_length: 0.015,
+        balance_hole_count: 6,
+        balance_hole_diameter: 0.009,
+    }
+}
+
+#[test]
+fn bad_leakage_data_is_rejected_by_name() {
+    type Edit = fn(&mut CasingLeakage);
+    let cases: [(Edit, &str); 7] = [
+        (|l| l.seal_clearance = 0.0, "seal_clearance"),
+        (|l| l.seal_length = -1.0, "seal_length"),
+        (|l| l.rear_seal_diameter = f64::NAN, "rear_seal_diameter"),
+        (|l| l.rear_seal_diameter = 0.030, "rear_seal_diameter"),
+        (|l| l.rear_seal_diameter = 0.210, "rear_seal_diameter"),
+        (|l| l.balance_hole_count = 0, "balance_hole_count"),
+        (|l| l.balance_hole_diameter = 0.0, "balance_hole_diameter"),
+    ];
+    for (edit, field) in cases {
+        let mut data = leakage();
+        edit(&mut data);
+        let casing = CasingFit {
+            leakage: Some(data),
+            ..sample()
+        };
+        let error = design_with_options(&input(), &with(casing))
+            .unwrap_err()
+            .to_string();
+        assert!(error.contains(&format!("casing.{field}")), "{error}");
+    }
+}
+
+#[test]
+fn leakage_data_does_not_change_the_design_yet() {
+    let plain = design_with_options(&input(), &with(sample())).unwrap();
+    let casing = CasingFit {
+        leakage: Some(leakage()),
+        ..sample()
+    };
+    let with_data = design_with_options(&input(), &with(casing)).unwrap();
+    assert_eq!(plain.eta, with_data.eta);
+    assert_eq!(plain.leakage_eta_v, with_data.leakage_eta_v);
 }

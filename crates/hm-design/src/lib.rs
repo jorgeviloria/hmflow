@@ -569,6 +569,18 @@ pub const VOLUTE_WRAP_RANGE_DEG: (f64, f64) = (90.0, 180.0);
 const CUTWATER_THICKNESS_RATIO: f64 = 0.02;
 
 /// Selecciones que se pueden fijar desde el proyecto.
+/// Anillos y agujeros de equilibrio reales, en SI.
+#[derive(Debug, Clone, PartialEq)]
+pub struct CasingLeakage {
+    /// Holgura diametral de los dos anillos.
+    pub seal_clearance: f64,
+    pub seal_length: f64,
+    pub rear_seal_diameter: f64,
+    pub rear_seal_length: f64,
+    pub balance_hole_count: u32,
+    pub balance_hole_diameter: f64,
+}
+
 /// Lo que una carcasa existente le impone al rodete, en SI.
 #[derive(Debug, Clone, PartialEq)]
 pub struct CasingFit {
@@ -584,6 +596,8 @@ pub struct CasingFit {
     pub wrap_deg: Option<f64>,
     /// Área de garganta de cada canal. `None`: sin dato.
     pub throat_area: Option<f64>,
+    /// `None`: sin datos de fuga.
+    pub leakage: Option<CasingLeakage>,
 }
 
 impl CasingFit {
@@ -656,6 +670,35 @@ impl CasingFit {
                 &self.channels.to_string(),
                 "debe ser 1 o 2",
             ));
+        }
+        if let Some(leakage) = &self.leakage {
+            let sizes = [
+                ("seal_clearance", leakage.seal_clearance),
+                ("seal_length", leakage.seal_length),
+                ("rear_seal_diameter", leakage.rear_seal_diameter),
+                ("rear_seal_length", leakage.rear_seal_length),
+                ("balance_hole_diameter", leakage.balance_hole_diameter),
+            ];
+            for (name, value) in sizes {
+                if !value.is_finite() || value <= 0.0 {
+                    return Err(problem(
+                        name,
+                        &value.to_string(),
+                        "debe ser positivo y finito",
+                    ));
+                }
+            }
+            if leakage.balance_hole_count == 0 {
+                return Err(problem("balance_hole_count", "0", "debe ser al menos 1"));
+            }
+            let rear = leakage.rear_seal_diameter;
+            if rear <= self.hub_diameter || rear >= self.d2 {
+                return Err(problem(
+                    "rear_seal_diameter",
+                    &rear.to_string(),
+                    "debe quedar entre `hub_diameter` y `d2`",
+                ));
+            }
         }
         let (low, high) = VOLUTE_WRAP_RANGE_DEG;
         match (self.channels, self.wrap_deg) {

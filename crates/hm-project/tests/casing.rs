@@ -155,3 +155,98 @@ fn a_casing_file_reads_alone() {
     assert!(Casing::from_toml("[carcasa]\nd2 = \"210 mm\"\n").is_err());
     assert!(Casing::from_toml(&format!("{text}serial = \"000\"\n")).is_err());
 }
+
+fn with_leakage() -> Casing {
+    Casing {
+        seal_clearance: "0.3 mm".to_string(),
+        seal_length: "15 mm".to_string(),
+        rear_seal_diameter: "80 mm".to_string(),
+        rear_seal_length: "15 mm".to_string(),
+        balance_hole_count: 6,
+        balance_hole_diameter: "9 mm".to_string(),
+        ..sample()
+    }
+}
+
+#[test]
+fn the_leakage_data_round_trips_and_stays_out_when_absent() {
+    assert!(codes(with_leakage()).is_empty());
+
+    let mut project = Project::new("demo", PumpType::EndSuction);
+    project.casing = Some(with_leakage());
+    let text = project.to_toml().unwrap();
+    assert!(text.contains("balance_hole_count = 6"), "{text}");
+    assert_eq!(
+        Project::from_toml(&text).unwrap().casing,
+        Some(with_leakage())
+    );
+
+    project.casing = Some(sample());
+    let text = project.to_toml().unwrap();
+    for name in ["seal_clearance", "seal_length", "rear_seal", "balance_hole"] {
+        assert!(!text.contains(name), "{name}: {text}");
+    }
+}
+
+#[test]
+fn the_leakage_data_goes_all_or_nothing() {
+    type Edit = fn(&mut Casing);
+    let cases: [(Edit, &str); 6] = [
+        (|c| c.seal_clearance.clear(), "seal_clearance"),
+        (|c| c.seal_length.clear(), "seal_length"),
+        (|c| c.rear_seal_diameter.clear(), "rear_seal_diameter"),
+        (|c| c.rear_seal_length.clear(), "rear_seal_length"),
+        (|c| c.balance_hole_count = 0, "balance_hole_count"),
+        (|c| c.balance_hole_diameter.clear(), "balance_hole_diameter"),
+    ];
+    for (edit, field) in cases {
+        let mut casing = with_leakage();
+        edit(&mut casing);
+        let mut project = Project::new("demo", PumpType::EndSuction);
+        project.casing = Some(casing);
+        let report = project.validate(&Registry::all());
+        let found: Vec<_> = report.iter().collect();
+        assert_eq!(found.len(), 1, "{field}: {found:?}");
+        assert_eq!(found[0].code, "HM-PROJ-030");
+        assert!(
+            found[0].message.contains(&format!("`{field}`")),
+            "{}",
+            found[0].message
+        );
+    }
+}
+
+#[test]
+fn bad_leakage_values_are_reported_by_name() {
+    type Edit = fn(&mut Casing);
+    let cases: [(Edit, &str); 5] = [
+        (|c| c.seal_clearance = "0 mm".to_string(), "seal_clearance"),
+        (|c| c.seal_length = "15".to_string(), "seal_length"),
+        (
+            |c| c.rear_seal_diameter = "30 mm".to_string(),
+            "rear_seal_diameter",
+        ),
+        (
+            |c| c.rear_seal_diameter = "210 mm".to_string(),
+            "rear_seal_diameter",
+        ),
+        (
+            |c| c.balance_hole_diameter = "mucho".to_string(),
+            "balance_hole_diameter",
+        ),
+    ];
+    for (edit, field) in cases {
+        let mut casing = with_leakage();
+        edit(&mut casing);
+        let mut project = Project::new("demo", PumpType::EndSuction);
+        project.casing = Some(casing);
+        let report = project.validate(&Registry::all());
+        let found: Vec<_> = report.iter().collect();
+        assert_eq!(found.len(), 1, "{field}: {found:?}");
+        assert!(
+            found[0].message.contains(&format!("`{field}`")),
+            "{}",
+            found[0].message
+        );
+    }
+}

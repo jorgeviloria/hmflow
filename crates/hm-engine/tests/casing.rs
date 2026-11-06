@@ -18,6 +18,7 @@ fn casing() -> Casing {
         channels: 1,
         wrap: String::new(),
         throat_area: String::new(),
+        ..Casing::default()
     }
 }
 
@@ -480,4 +481,65 @@ fn a_manual_selection_that_ignores_the_locked_one_is_still_stale() {
     let found = stale_warnings(&project);
     assert_eq!(found.len(), 1, "{found:?}");
     assert!(found[0].contains("blade_count"), "{found:?}");
+}
+
+fn with_leakage() -> Casing {
+    Casing {
+        seal_clearance: "0.3 mm".to_string(),
+        seal_length: "15 mm".to_string(),
+        rear_seal_diameter: "80 mm".to_string(),
+        rear_seal_length: "15 mm".to_string(),
+        balance_hole_count: 6,
+        balance_hole_diameter: "9 mm".to_string(),
+        ..casing()
+    }
+}
+
+#[test]
+fn the_leakage_data_reaches_the_design_in_si() {
+    let mut project = project();
+    project.casing = Some(with_leakage());
+    let case = case_from_project(&project).unwrap();
+    let data = case.design.casing.unwrap().leakage.unwrap();
+    let close = |actual: f64, expected: f64| {
+        assert!(
+            (actual - expected).abs() < 1e-12,
+            "{actual} frente a {expected}"
+        );
+    };
+    close(data.seal_clearance, 0.0003);
+    close(data.seal_length, 0.015);
+    close(data.rear_seal_diameter, 0.08);
+    close(data.rear_seal_length, 0.015);
+    assert_eq!(data.balance_hole_count, 6);
+    close(data.balance_hole_diameter, 0.009);
+}
+
+#[test]
+fn without_leakage_data_the_design_has_none() {
+    let case = case_from_project(&project()).unwrap();
+    assert_eq!(case.design.casing.unwrap().leakage, None);
+}
+
+#[test]
+fn half_the_leakage_data_is_an_error_even_without_validating() {
+    let mut project = project();
+    project.casing = Some(Casing {
+        seal_length: String::new(),
+        ..with_leakage()
+    });
+    let error = case_from_project(&project).unwrap_err();
+    assert_eq!(error.code(), Some("HM-PROJ-030"));
+    assert!(error.to_string().contains("seal_length"), "{error}");
+}
+
+#[test]
+fn the_report_gives_the_leakage_data() {
+    let mut project = project();
+    project.casing = Some(with_leakage());
+    let project = recalc(project, false).unwrap().project;
+    let report = report(&project, CurvePoints::MINIMUM).unwrap();
+    let data = report.casing.unwrap().leakage.unwrap();
+    assert!((data.rear_seal_diameter.value - 0.08).abs() < 1e-12);
+    assert_eq!(data.balance_hole_count, 6);
 }

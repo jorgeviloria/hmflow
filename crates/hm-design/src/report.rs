@@ -134,6 +134,20 @@ pub struct ReportCasing {
     /// Garganta de cada canal; ausente si no hay dato.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub throat_area: Option<Measure>,
+    /// Anillos y agujeros de equilibrio; ausente si no hay datos.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub leakage: Option<ReportCasingLeakage>,
+}
+
+/// Anillos y agujeros de equilibrio reales.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct ReportCasingLeakage {
+    pub seal_clearance: Measure,
+    pub seal_length: Measure,
+    pub rear_seal_diameter: Measure,
+    pub rear_seal_length: Measure,
+    pub balance_hole_count: u32,
+    pub balance_hole_diameter: Measure,
 }
 
 /// Mecánica preliminar: eje por torsión, cubo y empujes hidráulicos.
@@ -264,6 +278,14 @@ impl ReportCasing {
                 .wrap_deg
                 .map(|wrap| Measure::new(wrap.to_radians(), "rad")),
             throat_area: casing.throat_area.map(|area| Measure::new(area, "m2")),
+            leakage: casing.leakage.as_ref().map(|leakage| ReportCasingLeakage {
+                seal_clearance: Measure::new(leakage.seal_clearance, "m"),
+                seal_length: Measure::new(leakage.seal_length, "m"),
+                rear_seal_diameter: Measure::new(leakage.rear_seal_diameter, "m"),
+                rear_seal_length: Measure::new(leakage.rear_seal_length, "m"),
+                balance_hole_count: leakage.balance_hole_count,
+                balance_hole_diameter: Measure::new(leakage.balance_hole_diameter, "m"),
+            }),
         }
     }
 }

@@ -103,6 +103,28 @@ pub struct Casing {
     /// Área de garganta de cada canal. Vacía: sin dato, y no se inventa.
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub throat_area: String,
+    /// Holgura diametral de los dos anillos. Con los otros datos de fuga.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub seal_clearance: String,
+    /// Largo del anillo delantero.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub seal_length: String,
+    /// Diámetro de sellado del anillo trasero.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub rear_seal_diameter: String,
+    /// Largo del anillo trasero.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub rear_seal_length: String,
+    /// Agujeros de equilibrio en la tapa trasera.
+    #[serde(default, skip_serializing_if = "is_zero")]
+    pub balance_hole_count: u32,
+    /// Diámetro de cada agujero de equilibrio.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub balance_hole_diameter: String,
+}
+
+fn is_zero(value: &u32) -> bool {
+    *value == 0
 }
 
 /// Un archivo que solo trae la tabla `[casing]`.
@@ -561,6 +583,45 @@ fn casing_value(diagnostics: &mut Diagnostics, name: &str, text: &str, unit: &st
     None
 }
 
+/// Los datos de fuga van todos o ninguno: con la mitad no hay cálculo posible.
+/// Devuelve el diámetro de sellado trasero, si se entiende.
+fn check_casing_leakage(diagnostics: &mut Diagnostics, casing: &Casing) -> Option<f64> {
+    let lengths = [
+        ("seal_clearance", casing.seal_clearance.as_str()),
+        ("seal_length", casing.seal_length.as_str()),
+        ("rear_seal_diameter", casing.rear_seal_diameter.as_str()),
+        ("rear_seal_length", casing.rear_seal_length.as_str()),
+        (
+            "balance_hole_diameter",
+            casing.balance_hole_diameter.as_str(),
+        ),
+    ];
+    let declared =
+        casing.balance_hole_count > 0 || lengths.iter().any(|(_, text)| !text.trim().is_empty());
+    if !declared {
+        return None;
+    }
+    let mut rear = None;
+    for (name, text) in lengths {
+        if text.trim().is_empty() {
+            casing_problem(diagnostics, name, "hace falta con los demás datos de fuga");
+        } else {
+            let value = casing_value(diagnostics, name, text, "m");
+            if name == "rear_seal_diameter" {
+                rear = value;
+            }
+        }
+    }
+    if casing.balance_hole_count == 0 {
+        casing_problem(
+            diagnostics,
+            "balance_hole_count",
+            "hace falta con los demás datos de fuga",
+        );
+    }
+    rear
+}
+
 /// Cada cota por separado y, si todas se entienden, que encajen entre sí.
 fn check_casing(diagnostics: &mut Diagnostics, casing: &Casing) {
     let d2 = casing_value(diagnostics, "d2", &casing.d2, "m");
@@ -602,6 +663,16 @@ fn check_casing(diagnostics: &mut Diagnostics, casing: &Casing) {
     }
     if !casing.throat_area.trim().is_empty() {
         casing_value(diagnostics, "throat_area", &casing.throat_area, "m2");
+    }
+    let rear_seal = check_casing_leakage(diagnostics, casing);
+    if let (Some(rear), Some(hub), Some(d2)) = (rear_seal, hub, d2)
+        && !(hub < rear && rear < d2)
+    {
+        casing_problem(
+            diagnostics,
+            "rear_seal_diameter",
+            "debe quedar entre `hub_diameter` y `d2`",
+        );
     }
 
     if let (Some(d2), Some(neck), Some(eye), Some(bore), Some(hub), Some(cutwater)) =

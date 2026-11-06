@@ -512,6 +512,32 @@ mod tests {
         dest
     }
 
+    #[test]
+    fn the_window_keeps_the_casing_through_edit_and_save() {
+        let dir = scratch("carcasa");
+        let path = copy_fixture(&dir, "casing_v3.hmf");
+        let project = Project::load(&path).unwrap();
+        let casing = project.casing.clone().unwrap();
+        hm_engine::recalc(project, false)
+            .unwrap()
+            .project
+            .save(&path)
+            .unwrap();
+
+        let mut session = Session::default();
+        assert!(session.open_path(&path), "{:?}", session.notice);
+        session.inputs.h = "46 m".into();
+        session.edited();
+        session.save_to(&path).unwrap();
+
+        let saved = Project::load(&path).unwrap();
+        assert_eq!(saved.casing, Some(casing));
+        assert_eq!(saved.operating.h, "46 m");
+        let mut again = Session::default();
+        assert!(again.open_path(&path), "{:?}", again.notice);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
     fn param_text(project: &Project, name: &str) -> String {
         match &project.params[name] {
             Param::Manual { value } | Param::Locked { value } => value.clone(),

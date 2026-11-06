@@ -17,7 +17,7 @@ use serde::{Deserialize, Serialize};
 use crate::geometry::Geometry;
 use crate::mechanics::Mechanics;
 use crate::{
-    DesignInput, DesignResult, METHOD, PARAM_SPECS, ViscousCorrection, designed_si,
+    CasingFit, DesignInput, DesignResult, METHOD, PARAM_SPECS, ViscousCorrection, designed_si,
     performance_curve,
 };
 
@@ -112,7 +112,28 @@ pub struct ReportVoluteOutlet {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct ReportGeometry {
     pub impeller: ReportImpeller,
-    pub volute_outlet: ReportVoluteOutlet,
+    /// De la voluta del modelo: ausente con carcasa, que tiene la suya.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub volute_outlet: Option<ReportVoluteOutlet>,
+}
+
+/// Lo que fija la carcasa existente. Las comprobaciones van en `diagnostics`.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct ReportCasing {
+    pub d2: Measure,
+    pub neck_diameter: Measure,
+    pub eye_diameter_max: Measure,
+    pub bore_diameter: Measure,
+    pub hub_diameter: Measure,
+    pub b3: Measure,
+    pub cutwater_radius: Measure,
+    pub channels: u32,
+    /// Separación entre lenguas; solo con 2 canales.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub wrap: Option<Measure>,
+    /// Garganta de cada canal; ausente si no hay dato.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub throat_area: Option<Measure>,
 }
 
 /// Mecánica preliminar: eje por torsión, cubo y empujes hidráulicos.
@@ -218,7 +239,33 @@ pub struct DesignReport {
     /// Mecánica preliminar (eje, cubo y empujes).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub mechanics: Option<ReportMechanics>,
+    /// Carcasa existente para la que se diseñó el rodete.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub casing: Option<ReportCasing>,
     pub diagnostics: Vec<Diagnostic>,
+}
+
+/// Resultados que describen la voluta del modelo. Con carcasa no se publican:
+/// la voluta real es otra.
+pub const MODEL_VOLUTE_RESULTS: [&str; 3] = ["a360", "d360", "r4"];
+
+impl ReportCasing {
+    fn new(casing: &CasingFit) -> Self {
+        Self {
+            d2: Measure::new(casing.d2, "m"),
+            neck_diameter: Measure::new(casing.neck_diameter, "m"),
+            eye_diameter_max: Measure::new(casing.eye_diameter_max, "m"),
+            bore_diameter: Measure::new(casing.bore_diameter, "m"),
+            hub_diameter: Measure::new(casing.hub_diameter, "m"),
+            b3: Measure::new(casing.b3, "m"),
+            cutwater_radius: Measure::new(casing.cutwater_radius, "m"),
+            channels: casing.channels,
+            wrap: casing
+                .wrap_deg
+                .map(|wrap| Measure::new(wrap.to_radians(), "rad")),
+            throat_area: casing.throat_area.map(|area| Measure::new(area, "m2")),
+        }
+    }
 }
 
 impl DesignReport {
@@ -272,9 +319,20 @@ impl DesignReport {
             results.insert(name.to_string(), Measure::new(value, unit));
         }
 
-        let volute_sections = result
-            .volute
-            .sections
+        // Con carcasa, la voluta del modelo no es la real: no se publica.
+        let casing = result.casing.as_ref().map(ReportCasing::new);
+        if casing.is_some() {
+            for name in MODEL_VOLUTE_RESULTS {
+                results.remove(name);
+            }
+        }
+        let model_sections: &[crate::VoluteSection] = if casing.is_some() {
+            &[]
+        } else {
+            &result.volute.sections
+        };
+
+        let volute_sections = model_sections
             .iter()
             .map(|section| ReportSection {
                 angle: Measure::new(section.angle_deg.to_radians(), "rad"),
@@ -306,6 +364,7 @@ impl DesignReport {
             results,
             volute_sections,
             curve,
+            casing,
             hydraulics: Some(ReportHydraulics {
                 beta1b: Measure::new(result.beta1b, "rad"),
                 shockless_flow: Measure::new(result.shockless_flow.si, "m3/s"),
@@ -328,10 +387,10 @@ impl DesignReport {
                 blade_loading: cylindrical.then(|| Measure::new(result.blade_loading, "1")),
                 blade_loading_allowable: cylindrical
                     .then(|| Measure::new(crate::blade_loading_allowable(result.nq), "1")),
-                momentum_throat_diameter: Some(Measure::new(
-                    result.volute.momentum_throat_diameter.si,
-                    "m",
-                )),
+                momentum_throat_diameter: result
+                    .casing
+                    .is_none()
+                    .then(|| Measure::new(result.volute.momentum_throat_diameter.si, "m")),
             }),
             viscous: None,
             geometry: None,
@@ -359,14 +418,14 @@ impl DesignReport {
                     })
                     .collect(),
             },
-            volute_outlet: ReportVoluteOutlet {
+            volute_outlet: self.casing.is_none().then(|| ReportVoluteOutlet {
                 cutwater_radius: Measure::new(outlet.cutwater_radius, "m"),
                 cutwater_min_radius: Measure::new(outlet.cutwater_min_radius, "m"),
                 nominal_diameter: Measure::new(outlet.nominal_diameter, "m"),
                 area_ratio: Measure::new(outlet.area_ratio, "1"),
                 min_length: Measure::new(outlet.min_length, "m"),
                 half_angle: Measure::new(outlet.half_angle, "rad"),
-            },
+            }),
         });
         self
     }

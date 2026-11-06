@@ -105,6 +105,20 @@ pub struct Casing {
     pub throat_area: String,
 }
 
+/// Un archivo que solo trae la tabla `[casing]`.
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct CasingFile {
+    casing: Casing,
+}
+
+impl Casing {
+    /// Lee un archivo con una tabla `[casing]`.
+    pub fn from_toml(text: &str) -> Result<Self, ProjectError> {
+        Ok(toml::from_str::<CasingFile>(text)?.casing)
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct ProjectMeta {

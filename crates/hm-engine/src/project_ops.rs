@@ -3,12 +3,12 @@
 use hm_core::PumpType;
 use hm_design::{DesignInput, DesignReport, LEGACY_METHODS, METHOD, design_with_options};
 use hm_formula::Registry;
-use hm_project::{Project, Suction};
+use hm_project::{Casing, Project, Suction};
 
 use crate::analysis::{Analysis, CurvePoints, require_stages};
 use crate::audit::{audit_with_analysis, schema_diagnostics};
 use crate::case::{Case, DensitySource, Entered, FluidKind, Intake, Temperature, Viscosity};
-use crate::convert::{ManualDefaults, case_from_project, design_params};
+use crate::convert::{ManualDefaults, case_from_project, casing_fit, design_params};
 use crate::dispatch::analyze;
 use crate::error::{CaseField, EngineError, input_error};
 use crate::fluid::parse_temperature;
@@ -21,10 +21,49 @@ use crate::validate::{design_input, field_code};
 /// `eta_m` quedan siempre resueltos. No recalcula: quien llama ya decidió
 /// guardar. Exige geometría, mecánica y viscosidad correctas.
 pub fn new_project(name: &str, case: &Case, analysis: &Analysis) -> Result<Project, EngineError> {
+    if case.design.casing.is_some() {
+        return Err(casing_error(
+            "este caso lleva carcasa: usa `new_casing_project`, o se perdería",
+        ));
+    }
+    build_project(name, case, analysis, None)
+}
+
+/// Como [`new_project`], para un rodete en una carcasa existente. `casing` es
+/// el texto escrito: se guarda tal cual, y tiene que dar los valores del caso.
+pub fn new_casing_project(
+    name: &str,
+    case: &Case,
+    analysis: &Analysis,
+    casing: &Casing,
+) -> Result<Project, EngineError> {
+    if case.design.casing.as_ref() != Some(&casing_fit(casing)?) {
+        return Err(casing_error(
+            "el texto de la carcasa no es el del caso analizado",
+        ));
+    }
+    build_project(name, case, analysis, Some(casing))
+}
+
+fn casing_error(message: &str) -> EngineError {
+    input_error(
+        CaseField::Param("casing"),
+        "HM-PROJ-030",
+        format!("[casing] {message}"),
+    )
+}
+
+fn build_project(
+    name: &str,
+    case: &Case,
+    analysis: &Analysis,
+    casing: Option<&Casing>,
+) -> Result<Project, EngineError> {
     require_stages(analysis)?;
     check_case_matches_analysis(case, analysis)?;
 
     let mut project = Project::new(name, case.pump_type);
+    project.casing = casing.cloned();
     project.operating.q = case.duty.q.text.clone();
     project.operating.h = case.duty.h.text.clone();
     project.operating.n = case.duty.n.text.clone();

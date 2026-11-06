@@ -499,7 +499,7 @@ fn design_options(project: &Project) -> Result<DesignOptions, EngineError> {
 
 /// `[casing]` en SI. `validate` ya habla de cada cota, pero este camino
 /// también se recorre sin validar.
-fn casing_fit(casing: &Casing) -> Result<CasingFit, EngineError> {
+pub fn casing_fit(casing: &Casing) -> Result<CasingFit, EngineError> {
     let si = |name: &'static str, text: &str, unit: &str| {
         let wrong = |problem: String| {
             input_error(

@@ -144,3 +144,14 @@ fn the_wrap_goes_with_two_channels_only() {
     project.casing = Some(single);
     assert!(!project.to_toml().unwrap().contains("wrap"));
 }
+
+#[test]
+fn a_casing_file_reads_alone() {
+    let text = "[casing]\nd2 = \"210 mm\"\nneck_diameter = \"90 mm\"\neye_diameter_max = \"75 mm\"\n\
+                bore_diameter = \"20 mm\"\nhub_diameter = \"30 mm\"\nb3 = \"30 mm\"\n\
+                cutwater_radius = \"111 mm\"\nchannels = 1\n";
+    let casing = Casing::from_toml(text).unwrap();
+    assert_eq!(casing.neck_diameter, "90 mm");
+    assert!(Casing::from_toml("[carcasa]\nd2 = \"210 mm\"\n").is_err());
+    assert!(Casing::from_toml(&format!("{text}serial = \"000\"\n")).is_err());
+}

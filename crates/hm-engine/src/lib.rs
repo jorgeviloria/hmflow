@@ -24,7 +24,8 @@ pub use case::{
 };
 pub use changes::{ChangeKind, ParamChange};
 pub use convert::{
-    Decode, MANUAL_PARAMS, MAX_COUNT, ManualDefaults, ManualParam, case_from_project, design_params,
+    Decode, MANUAL_PARAMS, MAX_COUNT, ManualDefaults, ManualParam, case_from_project, casing_fit,
+    design_params,
 };
 pub use dispatch::analyze;
 pub use editor::{EditorError, Opened, open_project, update_point};
@@ -37,6 +38,6 @@ pub use hm_core::PumpType;
 pub use hm_design::{
     DesignOptions, DesignReport, METHOD, PARAM_SPECS, PREFERRED_OPERATING_REGION, REPORT_FORMAT,
 };
-pub use project_ops::{new_project, report};
+pub use project_ops::{new_casing_project, new_project, report};
 pub use recalc::{Recalculated, recalc};
 pub use validate::{design_input, validate_case};

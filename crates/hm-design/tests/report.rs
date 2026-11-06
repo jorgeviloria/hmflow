@@ -226,7 +226,7 @@ fn geometry_block_is_si_and_round_trips() {
     let shape = hm_design::geometry::geometry(&input, &result).unwrap();
     let report = DesignReport::new(&input, &result, 5, Vec::new()).with_geometry(&shape);
     let geometry = report.geometry.as_ref().unwrap();
-    let outlet = &geometry.volute_outlet;
+    let outlet = geometry.volute_outlet.as_ref().unwrap();
     let mut measures = vec![
         &geometry.impeller.beta1b,
         &geometry.impeller.wrap_angle,

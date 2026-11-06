@@ -1,7 +1,9 @@
 //! `[casing]` a través del motor: lo que el proyecto declara llega al diseño
 //! y el ψ guardado no bloquea cambiar el punto.
 
-use hm_engine::{CurvePoints, analyze, audit, case_from_project, recalc, report};
+use hm_engine::{
+    CurvePoints, analyze, audit, case_from_project, new_casing_project, new_project, recalc, report,
+};
 use hm_project::{Casing, Param, Project, PumpType};
 
 fn casing() -> Casing {
@@ -363,4 +365,75 @@ fn fit_warnings_reach_audit_and_report_once() {
             .count();
         assert_eq!((in_audit, in_report), (1, 1), "{code}");
     }
+}
+
+fn fitted_case() -> hm_engine::Case {
+    case_from_project(&project()).unwrap()
+}
+
+#[test]
+fn a_new_project_keeps_the_casing_as_it_was_written() {
+    let case = fitted_case();
+    let analysis = analyze(&case, CurvePoints::MINIMUM).unwrap();
+    let project = new_casing_project("rodete", &case, &analysis, &casing()).unwrap();
+    assert_eq!(project.casing, Some(casing()));
+    assert!(
+        project
+            .to_toml()
+            .unwrap()
+            .contains("neck_diameter = \"90 mm\"")
+    );
+
+    // La primera vez `rho` deja su redondeo, con o sin carcasa. Después es estable.
+    let once = recalc(project, false).unwrap();
+    assert!(once.changes.is_empty(), "{:?}", once.changes);
+    let twice = recalc(once.project.clone(), false).unwrap();
+    assert_eq!(
+        once.project.to_toml().unwrap(),
+        twice.project.to_toml().unwrap()
+    );
+    assert_eq!(twice.project.casing, Some(casing()));
+}
+
+#[test]
+fn a_new_project_cannot_lose_or_change_the_casing() {
+    let case = fitted_case();
+    let analysis = analyze(&case, CurvePoints::MINIMUM).unwrap();
+    let error = new_project("rodete", &case, &analysis).unwrap_err();
+    assert_eq!(error.code(), Some("HM-PROJ-030"));
+
+    let other = Casing {
+        b3: "31 mm".to_string(),
+        ..casing()
+    };
+    let error = new_casing_project("rodete", &case, &analysis, &other).unwrap_err();
+    assert_eq!(error.code(), Some("HM-PROJ-030"));
+}
+
+#[test]
+fn the_report_gives_the_casing_and_not_the_model_volute() {
+    let project = saved();
+    let report = report(&project, CurvePoints::MINIMUM).unwrap();
+    let casing = report.casing.as_ref().unwrap();
+    assert_eq!(casing.d2.value, 0.21);
+    assert_eq!(casing.neck_diameter.value, 0.09);
+    assert_eq!(casing.channels, 1);
+    assert_eq!(casing.wrap, None);
+    assert_eq!(casing.throat_area, None);
+
+    assert!(report.volute_sections.is_empty());
+    for name in ["a360", "d360", "r4"] {
+        assert!(!report.results.contains_key(name), "{name}");
+    }
+    assert!(report.geometry.unwrap().volute_outlet.is_none());
+}
+
+#[test]
+fn update_point_keeps_the_casing() {
+    let original = saved();
+    let mut case = case_from_project(&original).unwrap();
+    case.duty.h = hm_engine::Entered::parse("46 m").unwrap();
+    let analysis = analyze(&case, CurvePoints::MINIMUM).unwrap();
+    let updated = hm_engine::update_point(original.clone(), &case, &analysis).unwrap();
+    assert_eq!(updated.casing, original.casing);
 }

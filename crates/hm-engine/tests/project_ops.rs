@@ -186,7 +186,15 @@ fn report_of_a_designed_project_matches_its_stored_values() {
         .as_ref()
         .expect("el informe lleva geometría");
     assert_eq!(geometry.impeller.blade.len(), BLADE_STEPS + 1);
-    assert!(geometry.volute_outlet.nominal_diameter.value > 0.0);
+    assert!(
+        geometry
+            .volute_outlet
+            .as_ref()
+            .unwrap()
+            .nominal_diameter
+            .value
+            > 0.0
+    );
     let mechanics = report
         .mechanics
         .as_ref()

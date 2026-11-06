@@ -10,11 +10,12 @@ use hm_core::Diagnostic;
 use hm_engine::{
     ChangeKind, CurvePoints, Density, DensitySource, DesignOptions, DesignReport, Duty,
     EngineError, Entered, Fluid, Intake, PREFERRED_OPERATING_REGION, ParamChange, PumpType,
-    analyze, audit, cli_message, compare_with_project, fluid_kind, looks_like_water, new_project,
-    parse_temperature, report, viscosity_from_text, water_density_at,
+    analyze, audit, casing_fit, cli_message, compare_with_project, fluid_kind, looks_like_water,
+    new_casing_project, new_project, parse_temperature, report, viscosity_from_text,
+    water_density_at,
 };
 use hm_formula::{Registry, eval, infer, parse};
-use hm_project::{Param, Project};
+use hm_project::{Casing, Param, Project};
 use hm_units::{Quantity, parse_quantity, parse_unit};
 
 #[derive(Parser)]
@@ -174,6 +175,10 @@ enum Command {
         /// Gülich). Sin ella, 2°.
         #[arg(long, allow_hyphen_values = true)]
         incidence: Option<f64>,
+        /// Archivo con una tabla [casing]: diseña el rodete para esa carcasa.
+        /// D2, ojo máximo, cubo, b3, lengua y canales pasan a ser datos.
+        #[arg(long)]
+        casing: Option<PathBuf>,
         /// Archivo de salida; por defecto <name>.hmf.
         #[arg(long)]
         out: Option<PathBuf>,
@@ -346,6 +351,7 @@ fn run(cli: Cli) -> Result<ExitCode, Box<dyn std::error::Error>> {
             volute_channels,
             volute_wrap,
             incidence,
+            casing,
             out,
             force,
             curves,
@@ -407,6 +413,15 @@ fn run(cli: Cli) -> Result<ExitCode, Box<dyn std::error::Error>> {
                 return Err("--curve-points debe estar entre 2 y 1000".into());
             };
 
+            let casing_text = casing
+                .as_deref()
+                .map(|path| -> Result<Casing, Box<dyn std::error::Error>> {
+                    let text = std::fs::read_to_string(path)
+                        .map_err(|error| format!("{}: {error}", path.display()))?;
+                    Casing::from_toml(&text)
+                        .map_err(|error| format!("{}: {error}", path.display()).into())
+                })
+                .transpose()?;
             let options = DesignOptions {
                 eta_v,
                 balance_holes,
@@ -426,6 +441,11 @@ fn run(cli: Cli) -> Result<ExitCode, Box<dyn std::error::Error>> {
                 volute_channels,
                 volute_wrap_deg: volute_wrap,
                 incidence_deg: incidence,
+                casing: casing_text
+                    .as_ref()
+                    .map(casing_fit)
+                    .transpose()
+                    .map_err(engine_text)?,
                 ..DesignOptions::default()
             };
             let case = hm_engine::Case {
@@ -504,12 +524,21 @@ fn run(cli: Cli) -> Result<ExitCode, Box<dyn std::error::Error>> {
                 result.volute.width.value(),
                 result.volute.inlet_velocity.value()
             );
-            println!(
-                "  A360 = {:.6} m2   D360 = {:.4} m   R4 = {:.4} m",
-                result.volute.throat_area.value(),
-                result.volute.throat_diameter.value(),
-                result.volute.outer_radius.value()
-            );
+            match &result.casing {
+                // A360, D360 y R4 son de la voluta del modelo: no se imprimen.
+                Some(casing) => println!(
+                    "  Carcasa: {} canal(es), cuello {:.2} mm, agujero {:.2} mm",
+                    casing.channels,
+                    casing.neck_diameter * 1000.0,
+                    casing.bore_diameter * 1000.0
+                ),
+                None => println!(
+                    "  A360 = {:.6} m2   D360 = {:.4} m   R4 = {:.4} m",
+                    result.volute.throat_area.value(),
+                    result.volute.throat_diameter.value(),
+                    result.volute.outer_radius.value()
+                ),
+            }
             println!(
                 "  Pérdidas: hyd = {:.0} W   vol = {:.0} W   discos = {:.0} W   mech = {:.0} W",
                 result.p_hyd_loss.value(),
@@ -517,10 +546,15 @@ fn run(cli: Cli) -> Result<ExitCode, Box<dyn std::error::Error>> {
                 result.p_disk_loss.value(),
                 result.p_mech_loss.value()
             );
+            // Sin garganta de la carcasa, Qc no se calcula: no es un límite real.
+            let volute_limit = match &result.casing {
+                Some(casing) if casing.throat_area.is_none() => "sin dato".to_string(),
+                _ => format!("{:.2}·Qd", result.volute_matching_flow.si / input.q.si),
+            };
             println!(
-                "  NPSH3: entrada sin choque {:.2}·Qd   voluta {:.2}·Qd   subida desde {:.2}·Qd   recirculación ≈ {:.2}·Qd",
+                "  NPSH3: entrada sin choque {:.2}·Qd   voluta {}   subida desde {:.2}·Qd   recirculación ≈ {:.2}·Qd",
                 result.shockless_flow.si / input.q.si,
-                result.volute_matching_flow.si / input.q.si,
+                volute_limit,
                 result.transition_ratio,
                 result.recirculation_onset
             );
@@ -649,7 +683,11 @@ fn run(cli: Cli) -> Result<ExitCode, Box<dyn std::error::Error>> {
 
             // El análisis y la impresión ya ocurrieron. Aquí solo se escribe
             // el proyecto, con los mismos textos que se mostraron.
-            let project = match new_project(&name, &case, &analysis) {
+            let written = match &casing_text {
+                Some(casing) => new_casing_project(&name, &case, &analysis, casing),
+                None => new_project(&name, &case, &analysis),
+            };
+            let project = match written {
                 Ok(project) => project,
                 Err(EngineError::Invalid { diagnostics }) => {
                     for diagnostic in diagnostics.iter() {

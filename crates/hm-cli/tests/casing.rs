@@ -204,3 +204,32 @@ fn the_leakage_data_goes_through_the_whole_flow() {
     );
     std::fs::remove_dir_all(&dir).ok();
 }
+
+#[test]
+fn a_written_eta_v_does_not_pass_for_the_geometric_one() {
+    let dir = temp_dir("eta-v");
+    std::fs::write(dir.join("carcasa.toml"), format!("{CASING}{LEAKAGE}")).unwrap();
+    let output = run(
+        &dir,
+        &[
+            "design",
+            "--q",
+            "120 m3/h",
+            "--h",
+            "45 m",
+            "--n",
+            "2900 rpm",
+            "--casing",
+            "carcasa.toml",
+            "--eta-v",
+            "0.93",
+            "--out",
+            "rodete.hmf",
+        ],
+    );
+    let printed = text(&output);
+    assert!(output.status.success(), "{printed}");
+    assert!(printed.contains("ηv del método 0.9300"), "{printed}");
+    assert!(!printed.contains("ηv por fugas 0.9300"), "{printed}");
+    std::fs::remove_dir_all(&dir).ok();
+}

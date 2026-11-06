@@ -585,3 +585,12 @@ fn a_new_project_with_leakage_data_can_be_written() {
     let analysis = analyze(&case, CurvePoints::MINIMUM).unwrap();
     assert!(new_casing_project("rodete", &case, &analysis, &with_leakage()).is_ok());
 }
+
+#[test]
+fn the_report_gives_the_rear_leakage_only_with_leakage_data() {
+    let plain = report(&saved(), CurvePoints::MINIMUM).unwrap();
+    assert!(plain.hydraulics.unwrap().rear_seal_leakage_ratio.is_none());
+    let full = report(&saved_with_leakage(), CurvePoints::MINIMUM).unwrap();
+    let ratio = full.hydraulics.unwrap().rear_seal_leakage_ratio.unwrap();
+    assert!(ratio.value > 0.0);
+}

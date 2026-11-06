@@ -558,10 +558,17 @@ fn run(cli: Cli) -> Result<ExitCode, Box<dyn std::error::Error>> {
                 result.transition_ratio,
                 result.recirculation_onset
             );
-            if result.rear_seal_leakage_ratio > 0.0 {
+            let has_leakage = result
+                .casing
+                .as_ref()
+                .is_some_and(|casing| casing.leakage.is_some());
+            if has_leakage {
                 println!(
-                    "  Fugas por geometría: anillo delantero Qsp/Q {:.4}   trasero QE/Q {:.4}   ηv {:.4}",
-                    result.seal_leakage_ratio, result.rear_seal_leakage_ratio, result.eta_v
+                    "  Fugas por geometría: anillo delantero Qsp/Q {:.4}   trasero QE/Q {:.4}   ηv por fugas {:.4}   ηv del método {:.4}",
+                    result.seal_leakage_ratio,
+                    result.rear_seal_leakage_ratio,
+                    result.seal_eta_v,
+                    result.eta_v
                 );
             } else {
                 println!(

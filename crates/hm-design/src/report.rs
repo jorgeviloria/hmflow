@@ -208,6 +208,9 @@ pub struct ReportHydraulics {
     pub zero_head_flow_ratio: Measure,
     pub head_slope: Measure,
     pub seal_leakage_ratio: Measure,
+    /// Fuga por el anillo trasero, QE/Q; ausente sin datos de fuga.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub rear_seal_leakage_ratio: Option<Measure>,
     pub seal_eta_v: Measure,
     /// w1q/w1m en el punto de diseño (Gülich §7.2.1, paso 15). Opcional: un
     /// informe anterior a la v0.9 no lo lleva.
@@ -404,6 +407,11 @@ impl DesignReport {
                 zero_head_flow_ratio: Measure::new(result.zero_head_flow_ratio, "1"),
                 head_slope: Measure::new(result.head_slope, "1"),
                 seal_leakage_ratio: Measure::new(result.seal_leakage_ratio, "1"),
+                rear_seal_leakage_ratio: result
+                    .casing
+                    .as_ref()
+                    .and_then(|casing| casing.leakage.as_ref())
+                    .map(|_| Measure::new(result.rear_seal_leakage_ratio, "1")),
                 seal_eta_v: Measure::new(result.seal_eta_v, "1"),
                 inlet_deceleration: Some(Measure::new(result.inlet_deceleration, "1")),
                 // Con nq > 40 la línea media 2D no vale (HM-DES-036 tampoco

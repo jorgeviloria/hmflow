@@ -153,8 +153,8 @@ pub struct DesignResult {
     pub transition_ratio: f64,
     /// Inicio estimado de la recirculación a la entrada, fracción de Qd.
     pub recirculation_onset: f64,
-    /// ηv del método (Gülich 3.5.10, o el manual); igual a `eta_v`. Se conserva
-    /// como campo del informe.
+    /// ηv del método: Gülich 3.5.10, el manual o, con datos de fuga, el de los
+    /// anillos. Igual a `eta_v`. Se conserva como campo del informe.
     pub leakage_eta_v: f64,
     /// ηm estimado de Gülich (ec. 3.10.14), para contraste.
     pub mechanical_eta_estimate: f64,
@@ -171,7 +171,8 @@ pub struct DesignResult {
     /// geometría del anillo (Gülich tabla 3.7). Contraste.
     pub seal_leakage_ratio: f64,
     /// ηv con esa fuga (Gülich ec. 3.10.4, sin agujeros de equilibrio).
-    /// Contraste: el método sigue con `leakage_eta_v`.
+    /// Contraste, salvo con datos de fuga y sin ηv escrito: entonces es el del
+    /// método, y coincide con `leakage_eta_v`.
     pub seal_eta_v: f64,
     /// Fuga por el anillo trasero frente al caudal, QE/Q. Cero sin datos de fuga.
     pub rear_seal_leakage_ratio: f64,
@@ -1700,10 +1701,10 @@ pub fn design_with_options(
         if (next - current.eta_v).abs() <= ETA_V_TOLERANCE {
             return Ok(current);
         }
+        // Sin fuga por ningún anillo no hay ηv que calcular: se queda el
+        // estadístico, y `HM-DES-032` lo dice.
         if next >= 1.0 {
-            return Err(DesignError::Input(
-                "sin fuga por los anillos: ηv sale 1 y no se puede usar".to_string(),
-            ));
+            return Ok(current);
         }
         let fixed = DesignOptions {
             eta_v: Some(next),
@@ -2268,7 +2269,7 @@ fn design_once(input: &DesignInput, options: &DesignOptions) -> Result<DesignRes
         u2.si,
         cu2.si,
     )?;
-    let (rear_seal_leakage_ratio, seal_eta_v, seal_without_drive) = match leakage {
+    let (rear_seal_leakage_ratio, seal_eta_v, rear_without_drive) = match leakage {
         Some(leakage) => {
             let (ratio, _, without_drive) = seal_leakage(
                 &registry,
@@ -2295,9 +2296,9 @@ fn design_once(input: &DesignInput, options: &DesignOptions) -> Result<DesignRes
                 ],
             )?
             .value();
-            (ratio, both, front_without_drive && without_drive)
+            (ratio, both, without_drive)
         }
-        None => (0.0, front_eta_v, front_without_drive),
+        None => (0.0, front_eta_v, false),
     };
 
     let sigma = evaluate(
@@ -2508,17 +2509,28 @@ fn design_once(input: &DesignInput, options: &DesignOptions) -> Result<DesignRes
     }
 
     result.diagnostics = diagnostics_for(&result, input, options);
-    if seal_without_drive {
+    let rings_without_drive = match (front_without_drive, rear_without_drive) {
+        (true, true) => Some("de los anillos delantero y trasero"),
+        (true, false) => Some("del anillo delantero"),
+        (false, true) => Some("del anillo trasero"),
+        (false, false) => None,
+    };
+    if let Some(rings) = rings_without_drive {
         result.diagnostics.push(
             Diagnostic::info(
                 "HM-DES-032",
-                "la altura a través del anillo delantero no es positiva: la fuga de \
-                 contraste se tomó nula (Qsp = 0, ηv = 1)",
+                format!(
+                    "la altura a través {rings} no es positiva: la fuga de contraste se tomó \
+                     nula (Qsp = 0, ηv = 1)"
+                ),
             )
-            .with_hint(
+            .with_hint(if leakage.is_some() {
+                "El grado de reacción cinemático y la rotación de la cámara lateral no dejan ΔH. \
+                 Esa fuga cuenta como cero en ηv."
+            } else {
                 "El grado de reacción cinemático y la rotación de la cámara lateral \
-                 no dejan ΔH. El ηv del método no cambia.",
-            ),
+                 no dejan ΔH. El ηv del método no cambia."
+            }),
         );
     }
     Ok(result)

@@ -941,3 +941,93 @@ fn a_seal_right_at_the_laminar_transition_still_gives_a_leakage() {
     let (shorter, jump, longer) = (at(0.012), at(0.015), at(0.020));
     assert!(shorter > jump && jump > longer, "{shorter} {jump} {longer}");
 }
+
+fn oversized(rear: f64, neck: f64) -> CasingFit {
+    CasingFit {
+        d2: 0.40,
+        neck_diameter: neck,
+        cutwater_radius: 0.212,
+        b3: 0.10,
+        leakage: Some(CasingLeakage {
+            rear_seal_diameter: rear,
+            ..leakage()
+        }),
+        ..sample()
+    }
+}
+
+#[test]
+fn with_no_drive_on_either_ring_eta_v_stays_statistical_and_says_so() {
+    let result = design_with_options(&input(), &with(oversized(0.080, 0.090))).unwrap();
+    let plain = CasingFit {
+        leakage: None,
+        ..oversized(0.080, 0.090)
+    };
+    let statistical = design_with_options(&input(), &with(plain)).unwrap();
+    assert_eq!(result.eta_v, statistical.eta_v);
+    let notes = hint_of(&result, "HM-DES-032");
+    assert!(notes.contains("delantero"), "{notes}");
+    assert!(notes.contains("trasero"), "{notes}");
+}
+
+#[test]
+fn a_ring_without_drive_is_named_even_if_the_other_has_it() {
+    let result = design_with_options(&input(), &with(oversized(0.080, 0.200))).unwrap();
+    assert_eq!(result.rear_seal_leakage_ratio, 0.0);
+    assert!(result.seal_leakage_ratio > 0.0);
+    let notes = hint_of(&result, "HM-DES-032");
+    assert!(notes.contains("trasero"), "{notes}");
+    assert!(!notes.contains("delantero"), "{notes}");
+}
+
+/// El ηv mueve φ por defecto, y φ puede mover Z, que es entero: la iteración no
+/// debe quedarse saltando entre dos valores.
+#[test]
+fn the_eta_v_iteration_never_fails_to_converge() {
+    let q = |text: String| parse_quantity(&text).unwrap();
+    let mut designs = 0;
+    for flow in [40.0, 80.0, 120.0, 220.0, 400.0] {
+        for head in [25.0, 45.0, 80.0] {
+            for speed in [1750.0, 2900.0] {
+                let point = DesignInput {
+                    q: q(format!("{flow} m3/h")),
+                    h: q(format!("{head} m")),
+                    n: q(format!("{speed} rpm")),
+                    ..input()
+                };
+                let Ok(free) = design(&point) else { continue };
+                let d2 = free.d2.si;
+                let neck = free.d1.si * 1.3;
+                let casing = CasingFit {
+                    d2,
+                    neck_diameter: neck,
+                    eye_diameter_max: free.d1.si * 1.15,
+                    bore_diameter: 0.10 * d2,
+                    hub_diameter: 0.15 * d2,
+                    b3: free.b2.si * 1.9,
+                    cutwater_radius: 0.53 * d2,
+                    channels: 1,
+                    wrap_deg: None,
+                    throat_area: None,
+                    leakage: Some(CasingLeakage {
+                        seal_clearance: 0.003 * neck,
+                        seal_length: 0.1 * neck,
+                        rear_seal_diameter: 0.5 * (neck + d2),
+                        rear_seal_length: 0.1 * neck,
+                        balance_hole_count: 6,
+                        balance_hole_diameter: 0.05 * neck,
+                        balance_hole_circle: 0.3 * d2,
+                    }),
+                };
+                match design_with_options(&point, &with(casing)) {
+                    Ok(_) => designs += 1,
+                    Err(error) => assert!(
+                        !error.to_string().contains("no converge"),
+                        "{flow} {head} {speed}: {error}"
+                    ),
+                }
+            }
+        }
+    }
+    assert!(designs >= 15, "solo {designs} diseños");
+}

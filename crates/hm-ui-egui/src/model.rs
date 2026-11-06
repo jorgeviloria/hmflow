@@ -547,6 +547,12 @@ fn engine_error_field(error: EngineError, eta_m_typed: bool) -> (Field, String) 
     let message = message
         .strip_prefix("entrada inválida: ")
         .map_or_else(|| message.clone(), str::to_string);
+    // El diseño rechaza algunos valores sin campo, pero su frase nombra el parámetro.
+    let field = SELECTION_BOXES
+        .iter()
+        .find(|(name, _, _)| message.starts_with(&format!("`{name}`")))
+        .filter(|_| field == Field::General)
+        .map_or(field, |(name, _, _)| Field::Selection(name));
     let message = if let Field::Casing(name) = field {
         // La caja ya nombra la cota: «[casing] `b3` hace falta» -> «hace falta».
         message
@@ -1418,6 +1424,38 @@ mod tests {
         assert_eq!(shown.result.eta, saved.result.eta);
         // Las cajas no cambian: el resultado sigue siendo de lo que hay escrito.
         assert_eq!(shown.inputs, typed);
+    }
+
+    #[test]
+    fn a_selection_the_engine_rejects_is_marked_on_its_box() {
+        type Edit = fn(&mut Inputs);
+        let cases: [(&str, Edit); 3] = [
+            ("phi", |inputs| inputs.phi = "0".to_string()),
+            ("impeller_roughness", |inputs| {
+                inputs.roughness = "-1 mm".to_string();
+            }),
+            ("impeller_roughness", |inputs| {
+                inputs.roughness = "2 m".to_string();
+            }),
+        ];
+        for (name, edit) in cases {
+            let errors = errors_of(&free(edit));
+            assert_eq!(errors.len(), 1, "{errors:?}");
+            assert!(
+                matches!(errors[0].0, Field::Selection(found) if found == name),
+                "{name}: {errors:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn an_error_about_something_else_stays_general() {
+        let inputs = with_casing(|boxes| {
+            *boxes.text_mut("b3").unwrap() = "2 mm".to_string();
+        });
+        let errors = errors_of(&inputs);
+        assert_eq!(errors.len(), 1, "{errors:?}");
+        assert_eq!(errors[0].0, Field::General, "{errors:?}");
     }
 
     #[test]

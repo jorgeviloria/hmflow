@@ -233,3 +233,113 @@ fn a_written_eta_v_does_not_pass_for_the_geometric_one() {
     assert!(!printed.contains("ηv por fugas 0.9300"), "{printed}");
     std::fs::remove_dir_all(&dir).ok();
 }
+
+fn design_with(dir: &Path, extra: &[&str]) -> Output {
+    let mut args = vec![
+        "design",
+        "--q",
+        "120 m3/h",
+        "--h",
+        "45 m",
+        "--n",
+        "2900 rpm",
+        "--casing",
+        "carcasa.toml",
+        "--out",
+        "rodete.hmf",
+    ];
+    args.extend_from_slice(extra);
+    run(dir, &args)
+}
+
+fn section(file: &str, name: &str) -> String {
+    let start = file.find(&format!("[params.{name}]")).unwrap();
+    file[start..]
+        .split("\n\n")
+        .next()
+        .unwrap_or_default()
+        .to_string()
+}
+
+#[test]
+fn phi_and_blade_count_are_kept_as_decisions() {
+    let dir = temp_dir("fixed");
+    let done = design_with(&dir, &["--phi", "0.08", "--blade-count", "7"]);
+    assert!(done.status.success(), "{}", text(&done));
+
+    let saved = || std::fs::read_to_string(dir.join("rodete.hmf")).unwrap();
+    let file = saved();
+    for (name, value) in [("phi", "0.08"), ("blade_count", "7")] {
+        let block = section(&file, name);
+        assert!(block.contains("mode = \"locked\""), "{block}");
+        assert!(block.contains(&format!("value = \"{value}\"")), "{block}");
+    }
+
+    let checked = run(&dir, &["check", "rodete.hmf"]);
+    assert!(checked.status.success(), "{}", text(&checked));
+    assert!(!text(&checked).contains("HM-DES-013"), "{}", text(&checked));
+
+    let reselected = run(&dir, &["recalc", "--reselect", "rodete.hmf"]);
+    assert!(reselected.status.success(), "{}", text(&reselected));
+    let file = saved();
+    assert!(section(&file, "phi").contains("value = \"0.08\""), "{file}");
+    assert!(section(&file, "blade_count").contains("value = \"7\""));
+}
+
+#[test]
+fn without_the_options_the_engine_keeps_choosing() {
+    let dir = temp_dir("free-choice");
+    let done = design_with(&dir, &[]);
+    assert!(done.status.success(), "{}", text(&done));
+    let file = std::fs::read_to_string(dir.join("rodete.hmf")).unwrap();
+    for name in ["phi", "blade_count"] {
+        assert!(section(&file, name).contains("mode = \"manual\""), "{file}");
+    }
+}
+
+#[test]
+fn only_what_was_given_is_fixed() {
+    let dir = temp_dir("only-phi");
+    let done = design_with(&dir, &["--phi", "0.08"]);
+    assert!(done.status.success(), "{}", text(&done));
+    let file = std::fs::read_to_string(dir.join("rodete.hmf")).unwrap();
+    assert!(section(&file, "phi").contains("mode = \"locked\""));
+    assert!(section(&file, "blade_count").contains("mode = \"manual\""));
+}
+
+#[test]
+fn the_options_work_without_a_casing() {
+    let dir = temp_dir("no-casing");
+    let done = run(
+        &dir,
+        &[
+            "design",
+            "--q",
+            "120 m3/h",
+            "--h",
+            "45 m",
+            "--n",
+            "2900 rpm",
+            "--phi",
+            "0.09",
+            "--blade-count",
+            "5",
+            "--out",
+            "libre.hmf",
+        ],
+    );
+    assert!(done.status.success(), "{}", text(&done));
+    let file = std::fs::read_to_string(dir.join("libre.hmf")).unwrap();
+    assert!(section(&file, "phi").contains("mode = \"locked\""));
+    assert!(section(&file, "blade_count").contains("value = \"5\""));
+}
+
+#[test]
+fn a_bad_value_is_rejected_and_nothing_is_written() {
+    let dir = temp_dir("bad-phi");
+    for extra in [["--phi", "-0.1"], ["--blade-count", "0"]] {
+        let done = design_with(&dir, &extra);
+        assert!(!done.status.success(), "{}", text(&done));
+        assert!(!dir.join("rodete.hmf").exists());
+    }
+}

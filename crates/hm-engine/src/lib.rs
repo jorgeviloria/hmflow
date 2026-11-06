@@ -38,6 +38,6 @@ pub use hm_core::PumpType;
 pub use hm_design::{
     DesignOptions, DesignReport, METHOD, PARAM_SPECS, PREFERRED_OPERATING_REGION, REPORT_FORMAT,
 };
-pub use project_ops::{new_casing_project, new_project, report};
+pub use project_ops::{lock_selection, new_casing_project, new_project, report};
 pub use recalc::{Recalculated, recalc};
 pub use validate::{design_input, validate_case};

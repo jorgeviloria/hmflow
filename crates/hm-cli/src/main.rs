@@ -10,9 +10,9 @@ use hm_core::Diagnostic;
 use hm_engine::{
     ChangeKind, CurvePoints, Density, DensitySource, DesignOptions, DesignReport, Duty,
     EngineError, Entered, Fluid, Intake, PREFERRED_OPERATING_REGION, ParamChange, PumpType,
-    analyze, audit, casing_fit, cli_message, compare_with_project, fluid_kind, looks_like_water,
-    new_casing_project, new_project, parse_temperature, report, viscosity_from_text,
-    water_density_at,
+    analyze, audit, casing_fit, cli_message, compare_with_project, fluid_kind, lock_selection,
+    looks_like_water, new_casing_project, new_project, parse_temperature, report,
+    viscosity_from_text, water_density_at,
 };
 use hm_formula::{Registry, eval, infer, parse};
 use hm_project::{Casing, Param, Project};
@@ -175,6 +175,14 @@ enum Command {
         /// Gülich). Sin ella, 2°.
         #[arg(long, allow_hyphen_values = true)]
         incidence: Option<f64>,
+        /// Coeficiente de caudal φ. Se guarda como decisión (`locked`):
+        /// `recalc --reselect` lo conserva. Sin él, lo elige el motor.
+        #[arg(long, allow_hyphen_values = true)]
+        phi: Option<f64>,
+        /// Número de álabes Z. Se guarda como decisión (`locked`). Sin él, lo
+        /// elige el motor.
+        #[arg(long)]
+        blade_count: Option<u32>,
         /// Archivo con una tabla [casing]: diseña el rodete para esa carcasa.
         /// D2, ojo máximo, cubo, b3, lengua y canales pasan a ser datos.
         #[arg(long)]
@@ -351,6 +359,8 @@ fn run(cli: Cli) -> Result<ExitCode, Box<dyn std::error::Error>> {
             volute_channels,
             volute_wrap,
             incidence,
+            phi,
+            blade_count,
             casing,
             out,
             force,
@@ -441,6 +451,8 @@ fn run(cli: Cli) -> Result<ExitCode, Box<dyn std::error::Error>> {
                 volute_channels,
                 volute_wrap_deg: volute_wrap,
                 incidence_deg: incidence,
+                phi,
+                blade_count,
                 casing: casing_text
                     .as_ref()
                     .map(casing_fit)
@@ -707,7 +719,7 @@ fn run(cli: Cli) -> Result<ExitCode, Box<dyn std::error::Error>> {
                 Some(casing) => new_casing_project(&name, &case, &analysis, casing),
                 None => new_project(&name, &case, &analysis),
             };
-            let project = match written {
+            let mut project = match written {
                 Ok(project) => project,
                 Err(EngineError::Invalid { diagnostics }) => {
                     for diagnostic in diagnostics.iter() {
@@ -720,6 +732,12 @@ fn run(cli: Cli) -> Result<ExitCode, Box<dyn std::error::Error>> {
                 }
                 Err(error) => return Err(engine_text(error)),
             };
+            if phi.is_some() {
+                lock_selection(&mut project, "phi");
+            }
+            if blade_count.is_some() {
+                lock_selection(&mut project, "blade_count");
+            }
 
             project.save(&path)?;
             println!("escrito {}", path.display());

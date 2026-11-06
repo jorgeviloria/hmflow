@@ -3,7 +3,7 @@
 use hm_core::PumpType;
 use hm_design::{DesignInput, DesignReport, LEGACY_METHODS, METHOD, design_with_options};
 use hm_formula::Registry;
-use hm_project::{Casing, Project, Suction};
+use hm_project::{Casing, Param, Project, Suction};
 
 use crate::analysis::{Analysis, CurvePoints, require_stages};
 use crate::audit::{audit_with_analysis, schema_diagnostics};
@@ -43,6 +43,17 @@ pub fn new_casing_project(
         ));
     }
     build_project(name, case, analysis, Some(casing))
+}
+
+/// Convierte una selección `manual` en decisión: `locked`, con el mismo valor.
+/// `recalc --reselect` la conserva. Otro modo no se toca.
+pub fn lock_selection(project: &mut Project, name: &str) {
+    if let Some(Param::Manual { value }) = project.params.get(name) {
+        let value = value.clone();
+        project
+            .params
+            .insert(name.to_string(), Param::Locked { value });
+    }
 }
 
 fn casing_error(message: &str) -> EngineError {

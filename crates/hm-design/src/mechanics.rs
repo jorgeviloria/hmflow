@@ -374,8 +374,80 @@ pub fn mechanics(
 }
 
 /// Avisos de la mecánica preliminar.
-pub fn mechanics_diagnostics(mechanics: &Mechanics, result: &DesignResult) -> Diagnostics {
+/// b3/b2 que cita Gülich 2020, sec. 7.8, pp. 492–493: de 1,05..1,2 con nq alto
+/// a 2,0..4,0 con nq bajo. No es un límite: el libro dice que se elige «in wide
+/// limits without major effect on the efficiency». Fuera, solo se informa.
+pub const VOLUTE_WIDTH_RATIO_RANGE: (f64, f64) = (1.05, 4.0);
+
+/// Lo que no impide diseñar, pero hay que mirar antes de fabricar.
+fn casing_diagnostics(mechanics: &Mechanics, result: &DesignResult) -> Diagnostics {
     let mut diagnostics = Diagnostics::new();
+    let Some(casing) = &result.casing else {
+        return diagnostics;
+    };
+
+    let eye_with_walls = result.d1.si + 2.0 * mechanics.shroud_thickness;
+    if eye_with_walls > casing.neck_diameter {
+        diagnostics.push(
+            Diagnostic::warning(
+                "HM-DES-041",
+                format!(
+                    "el ojo de {:.1} mm más dos tapas de {:.1} mm suman {:.1} mm y el cuello \
+                     mide {:.1} mm",
+                    result.d1.si * 1000.0,
+                    mechanics.shroud_thickness * 1000.0,
+                    eye_with_walls * 1000.0,
+                    casing.neck_diameter * 1000.0
+                ),
+            )
+            .with_hint("Baja `eye_diameter_max` o revisa el espesor de la tapa en el cuello."),
+        );
+    }
+
+    if mechanics.shaft_min_diameter > casing.bore_diameter {
+        diagnostics.push(
+            Diagnostic::warning(
+                "HM-DES-042",
+                format!(
+                    "el eje mínimo sale {:.1} mm y el agujero de la carcasa es de {:.1} mm: \
+                     con un eje en servicio, revisa el criterio de la tensión admisible",
+                    mechanics.shaft_min_diameter * 1000.0,
+                    casing.bore_diameter * 1000.0
+                ),
+            )
+            .with_hint(
+                "El mínimo usa una tensión admisible conservadora, no el material real del eje.",
+            ),
+        );
+    }
+
+    if casing.hub_diameter < mechanics.hub_min_diameter {
+        diagnostics.push(Diagnostic::warning(
+            "HM-DES-044",
+            format!(
+                "el cubo de {:.1} mm queda por debajo de los {:.1} mm que pide el par",
+                casing.hub_diameter * 1000.0,
+                mechanics.hub_min_diameter * 1000.0
+            ),
+        ));
+    }
+
+    let ratio = casing.b3 / result.b2.si;
+    let (low, high) = VOLUTE_WIDTH_RATIO_RANGE;
+    if !(low..=high).contains(&ratio) {
+        diagnostics.push(Diagnostic::info(
+            "HM-DES-043",
+            format!(
+                "b3/b2 = {ratio:.2}, fuera de los valores que cita Gülich ({low}..{high}, \
+                 pp. 492–493)"
+            ),
+        ));
+    }
+    diagnostics
+}
+
+pub fn mechanics_diagnostics(mechanics: &Mechanics, result: &DesignResult) -> Diagnostics {
+    let mut diagnostics = casing_diagnostics(mechanics, result);
     let d0 = result.d0.si;
     let blockage = (mechanics.hub_diameter / d0).powi(2);
     // El ojo automático ya restó el cubo del área. El aviso es para el ojo

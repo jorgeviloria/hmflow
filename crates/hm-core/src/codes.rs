@@ -335,6 +335,26 @@ pub const CODES: &[CodeInfo] = &[
         "Z par y número de lenguas de la voluta par: Gülich evita esa combinación (p. 491).",
     ),
     active(
+        "HM-DES-041",
+        Warning,
+        "El ojo más las tapas no cabe en el cuello de la carcasa.",
+    ),
+    active(
+        "HM-DES-042",
+        Warning,
+        "El eje mínimo calculado es mayor que el agujero de la carcasa.",
+    ),
+    active(
+        "HM-DES-043",
+        Info,
+        "b3/b2 fuera de los valores que cita Gülich; no es un límite.",
+    ),
+    active(
+        "HM-DES-044",
+        Warning,
+        "El cubo de la carcasa es menor que el que pide el par.",
+    ),
+    active(
         "HM-DES-040",
         Info,
         "[casing] no indica la garganta: la voluta no limita la subida del NPSH3.",

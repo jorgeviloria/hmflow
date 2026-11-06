@@ -1,6 +1,6 @@
 //! Diseño de un rodete para una carcasa existente. Carcasa ficticia.
 
-use hm_design::mechanics::{DEFAULT_SHAFT_SHEAR_STRESS, mechanics};
+use hm_design::mechanics::{DEFAULT_SHAFT_SHEAR_STRESS, mechanics, mechanics_diagnostics};
 use hm_design::{CasingFit, DesignInput, DesignOptions, design, design_with_options};
 use hm_units::parse_quantity;
 
@@ -528,4 +528,99 @@ fn the_matching_flow_matches_the_hand_calculation() {
     };
     let result = design_with_options(&input(), &options).unwrap();
     assert!((result.volute_matching_flow.si - 0.022_970_29).abs() < 1e-8);
+}
+
+fn fit_codes(casing: CasingFit) -> Vec<String> {
+    let result = design_with_options(&input(), &with(casing)).unwrap();
+    let mech = mechanics(&input(), &result, DEFAULT_SHAFT_SHEAR_STRESS).unwrap();
+    mechanics_diagnostics(&mech, &result)
+        .iter()
+        .map(|diagnostic| diagnostic.code.clone())
+        .collect()
+}
+
+fn fires(casing: CasingFit, code: &str) -> bool {
+    fit_codes(casing).iter().any(|found| found == code)
+}
+
+/// Una carcasa de holguras amplias: no dispara ninguna comprobación.
+fn roomy() -> CasingFit {
+    CasingFit {
+        neck_diameter: 0.120,
+        bore_diameter: 0.029,
+        hub_diameter: 0.035,
+        ..sample()
+    }
+}
+
+#[test]
+fn a_roomy_casing_raises_no_fit_warning() {
+    let found = fit_codes(roomy());
+    for code in ["HM-DES-041", "HM-DES-042", "HM-DES-043", "HM-DES-044"] {
+        assert!(!found.iter().any(|item| item == code), "{code}: {found:?}");
+    }
+}
+
+#[test]
+fn a_neck_with_no_wall_is_warned() {
+    let tight = CasingFit {
+        neck_diameter: 0.076,
+        ..roomy()
+    };
+    assert!(fires(tight, "HM-DES-041"));
+}
+
+#[test]
+fn a_bore_under_the_minimum_shaft_is_warned_with_the_criterion() {
+    let casing = CasingFit {
+        bore_diameter: 0.020,
+        ..roomy()
+    };
+    let result = design_with_options(&input(), &with(casing)).unwrap();
+    let mech = mechanics(&input(), &result, DEFAULT_SHAFT_SHEAR_STRESS).unwrap();
+    let diagnostics = mechanics_diagnostics(&mech, &result);
+    let warning = diagnostics
+        .iter()
+        .find(|diagnostic| diagnostic.code == "HM-DES-042")
+        .unwrap();
+    assert!(warning.message.contains("20.0 mm"), "{}", warning.message);
+    assert!(warning.message.contains("criterio"), "{}", warning.message);
+}
+
+#[test]
+fn a_hub_under_the_minimum_is_warned() {
+    let casing = CasingFit {
+        hub_diameter: 0.030,
+        ..roomy()
+    };
+    assert!(fires(casing, "HM-DES-044"));
+}
+
+#[test]
+fn a_volute_width_outside_the_book_values_is_only_informed() {
+    for b3 in [0.019, 0.080] {
+        let casing = CasingFit { b3, ..roomy() };
+        let result = design_with_options(&input(), &with(casing.clone())).unwrap();
+        assert!(result.b2.si < b3);
+        let mech = mechanics(&input(), &result, DEFAULT_SHAFT_SHEAR_STRESS).unwrap();
+        let diagnostics = mechanics_diagnostics(&mech, &result);
+        let note = diagnostics
+            .iter()
+            .find(|diagnostic| diagnostic.code == "HM-DES-043")
+            .unwrap();
+        assert_eq!(note.severity, hm_core::Severity::Info);
+    }
+}
+
+#[test]
+fn the_fit_checks_never_stop_the_design_and_need_a_casing() {
+    let free = design(&input()).unwrap();
+    let mech = mechanics(&input(), &free, DEFAULT_SHAFT_SHEAR_STRESS).unwrap();
+    let codes: Vec<_> = mechanics_diagnostics(&mech, &free)
+        .iter()
+        .map(|diagnostic| diagnostic.code.clone())
+        .collect();
+    for code in ["HM-DES-041", "HM-DES-042", "HM-DES-043", "HM-DES-044"] {
+        assert!(!codes.iter().any(|item| item == code), "{code}");
+    }
 }

@@ -26,13 +26,13 @@ fn pack_is_audit_clean() {
 }
 
 #[test]
-fn pack_has_eighty_formulas() {
-    assert_eq!(Registry::from_toml(END_SUCTION_V01_PACK).unwrap().len(), 80);
+fn pack_has_eighty_one_formulas() {
+    assert_eq!(Registry::from_toml(END_SUCTION_V01_PACK).unwrap().len(), 81);
 }
 
 #[test]
 fn all_merges_every_pack() {
-    assert_eq!(Registry::all().len(), 97);
+    assert_eq!(Registry::all().len(), 98);
 }
 
 #[test]
@@ -72,6 +72,19 @@ fn u2() {
         17.64,
         0.01,
     );
+}
+
+#[test]
+fn seal_volumetric_efficiency_both() {
+    let eta_v = evaluate(
+        "design.seal_volumetric_efficiency_both",
+        &[
+            ("Q", "1 m3/s"),
+            ("Qsp", "0.0152 m3/s"),
+            ("QE", "0.0161 m3/s"),
+        ],
+    );
+    close(eta_v, 0.969_650, 1e-6);
 }
 
 #[test]

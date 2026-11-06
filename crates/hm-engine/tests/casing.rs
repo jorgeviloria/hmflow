@@ -545,3 +545,43 @@ fn the_report_gives_the_leakage_data() {
     assert!((data.rear_seal_diameter.value - 0.08).abs() < 1e-12);
     assert_eq!(data.balance_hole_count, 6);
 }
+
+fn saved_with_leakage() -> Project {
+    let mut project = project();
+    project.casing = Some(with_leakage());
+    recalc(project, false).unwrap().project
+}
+
+#[test]
+fn with_leakage_data_recalculating_is_stable() {
+    // La primera pasada deja `rho` redondeada, con o sin datos de fuga.
+    let once = recalc(saved_with_leakage(), false).unwrap();
+    assert!(once.changes.is_empty(), "{:?}", once.changes);
+    let twice = recalc(once.project.clone(), false).unwrap();
+    assert_eq!(
+        once.project.to_toml().unwrap(),
+        twice.project.to_toml().unwrap()
+    );
+}
+
+#[test]
+fn with_leakage_data_a_new_point_recalculates_eta_v() {
+    let mut project = saved_with_leakage();
+    let eta_v = |project: &Project| {
+        let case = case_from_project(project).unwrap();
+        analyze(&case, CurvePoints::MINIMUM).unwrap().result.eta_v
+    };
+    let before = eta_v(&project);
+    project.operating.q = "150 m3/h".to_string();
+    let project = recalc(project, false).unwrap().project;
+    assert!((eta_v(&project) - before).abs() > 1e-4);
+}
+
+#[test]
+fn a_new_project_with_leakage_data_can_be_written() {
+    let mut base = project();
+    base.casing = Some(with_leakage());
+    let case = case_from_project(&base).unwrap();
+    let analysis = analyze(&case, CurvePoints::MINIMUM).unwrap();
+    assert!(new_casing_project("rodete", &case, &analysis, &with_leakage()).is_ok());
+}

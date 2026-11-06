@@ -558,14 +558,21 @@ fn run(cli: Cli) -> Result<ExitCode, Box<dyn std::error::Error>> {
                 result.transition_ratio,
                 result.recirculation_onset
             );
-            println!(
-                "  Contraste Gülich: ηv anillo delantero {:.3} (Qsp/Q {:.3}; ηv del método {:.3})   ηm {:.3} (motor {:.3})",
-                result.seal_eta_v,
-                result.seal_leakage_ratio,
-                result.eta_v,
-                result.mechanical_eta_estimate,
-                input.eta_m
-            );
+            if result.rear_seal_leakage_ratio > 0.0 {
+                println!(
+                    "  Fugas por geometría: anillo delantero Qsp/Q {:.4}   trasero QE/Q {:.4}   ηv {:.4}",
+                    result.seal_leakage_ratio, result.rear_seal_leakage_ratio, result.eta_v
+                );
+            } else {
+                println!(
+                    "  Contraste Gülich: ηv anillo delantero {:.3} (Qsp/Q {:.3}; ηv del método {:.3})   ηm {:.3} (motor {:.3})",
+                    result.seal_eta_v,
+                    result.seal_leakage_ratio,
+                    result.eta_v,
+                    result.mechanical_eta_estimate,
+                    input.eta_m
+                );
+            }
             println!(
                 "  Pérdidas Gülich: discos PRR/Pu {:.3}   ηh estadístico {:.3} (dimensionado {:.3})   ηv {:.3}   ηm {:.3}   → η {:.3}",
                 result.disk_friction_ratio,

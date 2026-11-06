@@ -173,6 +173,8 @@ pub struct DesignResult {
     /// ηv con esa fuga (Gülich ec. 3.10.4, sin agujeros de equilibrio).
     /// Contraste: el método sigue con `leakage_eta_v`.
     pub seal_eta_v: f64,
+    /// Fuga por el anillo trasero frente al caudal, QE/Q. Cero sin datos de fuga.
+    pub rear_seal_leakage_ratio: f64,
     pub slip: f64,
     pub cu2: Quantity,
     /// Caudal en que la altura teórica se anula, en fracción de Qd
@@ -1682,6 +1684,45 @@ pub fn design_with_options(
     input: &DesignInput,
     options: &DesignOptions,
 ) -> Result<DesignResult, DesignError> {
+    let has_leakage = options
+        .casing
+        .as_ref()
+        .is_some_and(|casing| casing.leakage.is_some());
+    if !has_leakage || options.eta_v.is_some() {
+        return design_once(input, options);
+    }
+
+    // ηv depende de la fuga, y la fuga de cu2, que depende de ηv. El acople es
+    // débil: el punto fijo converge en pocas pasadas.
+    let mut current = design_once(input, options)?;
+    for _ in 0..ETA_V_ITERATIONS {
+        let next = current.seal_eta_v;
+        if (next - current.eta_v).abs() <= ETA_V_TOLERANCE {
+            return Ok(current);
+        }
+        if next >= 1.0 {
+            return Err(DesignError::Input(
+                "sin fuga por los anillos: ηv sale 1 y no se puede usar".to_string(),
+            ));
+        }
+        let fixed = DesignOptions {
+            eta_v: Some(next),
+            ..options.clone()
+        };
+        current = design_once(input, &fixed)?;
+    }
+    Err(DesignError::Input(
+        "ηv por la fuga de los anillos no converge".to_string(),
+    ))
+}
+
+/// Pasadas máximas del punto fijo de ηv.
+const ETA_V_ITERATIONS: usize = 30;
+
+/// Diferencia de ηv con que se da por convergido.
+const ETA_V_TOLERANCE: f64 = 1.0e-10;
+
+fn design_once(input: &DesignInput, options: &DesignOptions) -> Result<DesignResult, DesignError> {
     input
         .validate()
         .map_err(|error| DesignError::Input(error.message))?;
@@ -2208,18 +2249,56 @@ pub fn design_with_options(
         sections,
     };
 
-    let (seal_leakage_ratio, seal_eta_v, seal_without_drive) = seal_leakage(
+    let leakage = options
+        .casing
+        .as_ref()
+        .and_then(|casing| casing.leakage.as_ref());
+    let (seal_leakage_ratio, front_eta_v, front_without_drive) = seal_leakage(
         &registry,
         input,
-        options
-            .casing
-            .as_ref()
-            .map_or(d1.si, |casing| casing.neck_diameter),
+        SealRing {
+            diameter: options
+                .casing
+                .as_ref()
+                .map_or(d1.si, |casing| casing.neck_diameter),
+            clearance: options.seal_clearance,
+            length: leakage.map(|leakage| leakage.seal_length),
+        },
         d2.si,
         u2.si,
         cu2.si,
-        options.seal_clearance,
     )?;
+    let (rear_seal_leakage_ratio, seal_eta_v, seal_without_drive) = match leakage {
+        Some(leakage) => {
+            let (ratio, _, without_drive) = seal_leakage(
+                &registry,
+                input,
+                SealRing {
+                    diameter: leakage.rear_seal_diameter,
+                    clearance: Some(leakage.seal_clearance),
+                    length: Some(leakage.rear_seal_length),
+                },
+                d2.si,
+                u2.si,
+                cu2.si,
+            )?;
+            let both = evaluate(
+                &registry,
+                "design.seal_volumetric_efficiency_both",
+                &[
+                    ("Q", input.q.clone()),
+                    (
+                        "Qsp",
+                        Quantity::from_si(seal_leakage_ratio * input.q.si, m3s.clone()),
+                    ),
+                    ("QE", Quantity::from_si(ratio * input.q.si, m3s.clone())),
+                ],
+            )?
+            .value();
+            (ratio, both, front_without_drive && without_drive)
+        }
+        None => (0.0, front_eta_v, front_without_drive),
+    };
 
     let sigma = evaluate(
         &registry,
@@ -2403,6 +2482,7 @@ pub fn design_with_options(
         loss_eta,
         seal_leakage_ratio,
         seal_eta_v,
+        rear_seal_leakage_ratio,
         slip,
         cu2,
         zero_head_flow_ratio,
@@ -2593,15 +2673,26 @@ const SEAL_ROUGHNESS: f64 = 4.0e-6;
 /// Se acepta cuando el cambio relativo baja de 1e-4 y entonces se recalcula
 /// cax con esa λ. Si ΔH ≤ 0 no hay fuga (Qsp = 0, ηv = 1) y el tercer valor
 /// es verdadero. Si no hay raíz, error.
+/// Un anillo de desgaste. Sin holgura ni largo, los típicos de Gülich.
+struct SealRing {
+    diameter: f64,
+    clearance: Option<f64>,
+    length: Option<f64>,
+}
+
 fn seal_leakage(
     registry: &Registry,
     input: &DesignInput,
-    d1: f64,
+    ring: SealRing,
     d2: f64,
     u2: f64,
     cu2: f64,
-    clearance: Option<f64>,
 ) -> Result<(f64, f64, bool), DesignError> {
+    let SealRing {
+        diameter: d1,
+        clearance,
+        length: seal_length,
+    } = ring;
     let one = Unit::dimensionless();
     let m = unit("m")?;
     let ms = unit("m/s")?;
@@ -2625,7 +2716,7 @@ fn seal_leakage(
         ));
     }
     let s = 0.5 * diametral;
-    let length = SEAL_LENGTH_RATIO * d1;
+    let length = seal_length.unwrap_or(SEAL_LENGTH_RATIO * d1);
     let nu = Quantity::from_si(fluid_nu(input), m2s.clone());
     let reaction = if u2 > 0.0 && cu2.is_finite() {
         (1.0 - cu2 / (2.0 * u2)).clamp(0.2, 0.95)
@@ -2769,9 +2860,15 @@ fn seal_leakage(
     .map_err(|error| DesignError::Input(format!("la fuga del anillo no converge: {error}")))?;
     let (cax, next) = friction_at(lambda)?;
     if (next - lambda).abs() > 1.0e-4 * lambda.max(1.0e-12) {
-        return Err(DesignError::Input(
-            "la fuga del anillo no converge".to_string(),
-        ));
+        // Entre laminar y turbulento λ salta: la solución cae en el salto y no
+        // hay punto exacto. Si el residuo cambia de signo ahí, vale ese λ.
+        let gap = |value: f64| friction_at(value).map(|(_, next)| next - value);
+        let (below, above) = (gap(lambda * (1.0 - 1.0e-6))?, gap(lambda * (1.0 + 1.0e-6))?);
+        if below * above > 0.0 {
+            return Err(DesignError::Input(
+                "la fuga del anillo no converge".to_string(),
+            ));
+        }
     }
     if !cax.is_finite() || cax <= 0.0 {
         return Err(DesignError::Input(

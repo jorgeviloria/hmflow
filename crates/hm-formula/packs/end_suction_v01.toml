@@ -1753,3 +1753,25 @@ value = "Q/(Q + Qsp)"
 
 [formula.notes]
 assumptions = "Solo el anillo delantero (QE = 0): sin agujeros de equilibrio ni segundo anillo."
+
+[[formula]]
+id = "design.seal_volumetric_efficiency_both"
+version = 1
+validation = "pilot"
+module = "design"
+title = "Rendimiento volumétrico por las fugas de los dos anillos"
+source = "Gülich 2020, tabla 3.10, ec. (3.10.4), p. 164"
+units = "1"
+range = "0.5 .. 1"
+test = "crates/hm-formula/tests/end_suction.rs::seal_volumetric_efficiency_both"
+
+[formula.inputs]
+Q = "m3/s"
+Qsp = "m3/s"
+QE = "m3/s"
+
+[formula.expr]
+value = "Q/(Q + Qsp + QE)"
+
+[formula.notes]
+assumptions = "Una etapa: sin el término de los anillos entre etapas Qs3. QE es la fuga por el anillo trasero, que vuelve a la aspiración por los agujeros de equilibrio."

@@ -792,18 +792,6 @@ fn bad_leakage_data_is_rejected_by_name() {
     }
 }
 
-#[test]
-fn leakage_data_does_not_change_the_design_yet() {
-    let plain = design_with_options(&input(), &with(sample())).unwrap();
-    let casing = CasingFit {
-        leakage: Some(leakage()),
-        ..sample()
-    };
-    let with_data = design_with_options(&input(), &with(casing)).unwrap();
-    assert_eq!(plain.eta, with_data.eta);
-    assert_eq!(plain.leakage_eta_v, with_data.leakage_eta_v);
-}
-
 fn leaky() -> CasingFit {
     CasingFit {
         leakage: Some(leakage()),
@@ -862,4 +850,94 @@ fn a_clearance_far_from_the_usual_is_informed() {
         ..sample()
     };
     assert!(!fit_codes(close).iter().any(|code| code == "HM-DES-045"));
+}
+
+#[test]
+fn eta_v_comes_from_the_real_leakage_and_converges() {
+    let result = design_with_options(&input(), &with(leaky())).unwrap();
+    let total = 1.0 / (1.0 + result.seal_leakage_ratio + result.rear_seal_leakage_ratio);
+    assert!(
+        (result.eta_v - total).abs() < 1e-8,
+        "{} {total}",
+        result.eta_v
+    );
+    assert_eq!(result.leakage_eta_v, result.eta_v);
+    assert!(result.rear_seal_leakage_ratio > 0.0);
+}
+
+/// Calculado aparte con la tabla 3.7 de Gülich, con u2, cu2 y ν del diseño.
+#[test]
+fn the_leakage_matches_the_hand_calculation() {
+    let result = design_with_options(&input(), &with(leaky())).unwrap();
+    assert!((result.seal_leakage_ratio - 0.012_280).abs() < 2e-6);
+    assert!((result.rear_seal_leakage_ratio - 0.010_930).abs() < 2e-6);
+    assert!((result.eta_v - 0.977_317).abs() < 2e-6);
+}
+
+#[test]
+fn without_leakage_data_eta_v_stays_the_statistical_one() {
+    let plain = design_with_options(&input(), &with(sample())).unwrap();
+    assert_eq!(plain.rear_seal_leakage_ratio, 0.0);
+    let free = design(&input()).unwrap();
+    assert_eq!(plain.eta_v, free.eta_v);
+}
+
+#[test]
+fn a_written_eta_v_wins_over_the_leakage() {
+    let options = DesignOptions {
+        eta_v: Some(0.95),
+        ..with(leaky())
+    };
+    let result = design_with_options(&input(), &options).unwrap();
+    assert_eq!(result.eta_v, 0.95);
+}
+
+#[test]
+fn the_balance_holes_flag_does_not_count_the_leakage_twice() {
+    let options = DesignOptions {
+        balance_holes: true,
+        ..with(leaky())
+    };
+    let flagged = design_with_options(&input(), &options).unwrap();
+    let plain = design_with_options(&input(), &with(leaky())).unwrap();
+    assert!((flagged.eta_v - plain.eta_v).abs() < 1e-9);
+}
+
+#[test]
+fn longer_rings_leak_less() {
+    let longer = CasingFit {
+        leakage: Some(CasingLeakage {
+            seal_length: 0.030,
+            rear_seal_length: 0.030,
+            ..leakage()
+        }),
+        ..sample()
+    };
+    let long = design_with_options(&input(), &with(longer)).unwrap();
+    let short = design_with_options(&input(), &with(leaky())).unwrap();
+    assert!(long.seal_leakage_ratio < short.seal_leakage_ratio);
+    assert!(long.rear_seal_leakage_ratio < short.rear_seal_leakage_ratio);
+    assert!(long.eta_v > short.eta_v);
+}
+
+#[test]
+fn a_seal_right_at_the_laminar_transition_still_gives_a_leakage() {
+    // Con esta holgura y este largo, λ salta entre laminar y turbulento justo
+    // en la solución.
+    let at = |length: f64| {
+        let casing = CasingFit {
+            leakage: Some(CasingLeakage {
+                seal_clearance: 0.0002,
+                seal_length: length,
+                rear_seal_length: length,
+                ..leakage()
+            }),
+            ..sample()
+        };
+        design_with_options(&input(), &with(casing))
+            .unwrap()
+            .seal_leakage_ratio
+    };
+    let (shorter, jump, longer) = (at(0.012), at(0.015), at(0.020));
+    assert!(shorter > jump && jump > longer, "{shorter} {jump} {longer}");
 }

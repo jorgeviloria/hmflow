@@ -164,6 +164,16 @@ fn the_leakage_data_goes_through_the_whole_flow() {
     let designed = design(&dir);
     assert!(designed.status.success(), "{}", text(&designed));
     assert!(
+        text(&designed).contains("Fugas por geometría"),
+        "{}",
+        text(&designed)
+    );
+    assert!(
+        !text(&designed).contains("ηv anillo delantero"),
+        "{}",
+        text(&designed)
+    );
+    assert!(
         text(&designed).contains("Δd = 0.30 mm"),
         "{}",
         text(&designed)
@@ -178,8 +188,18 @@ fn the_leakage_data_goes_through_the_whole_flow() {
     assert!(String::from_utf8_lossy(&reported.stdout).contains("\"leakage\""));
     let recalculated = run(&dir, &["recalc", "rodete.hmf"]);
     assert!(recalculated.status.success(), "{}", text(&recalculated));
+    assert!(
+        !text(&recalculated).contains(" → "),
+        "{}",
+        text(&recalculated)
+    );
+
+    // ν depende de ρ, y `design` escribe ρ redondeada: la primera pasada mueve la
+    // duodécima cifra. Después el archivo no cambia.
+    let once = std::fs::read_to_string(dir.join("rodete.hmf")).unwrap();
+    assert!(run(&dir, &["recalc", "rodete.hmf"]).status.success());
     assert_eq!(
-        file,
+        once,
         std::fs::read_to_string(dir.join("rodete.hmf")).unwrap()
     );
     std::fs::remove_dir_all(&dir).ok();

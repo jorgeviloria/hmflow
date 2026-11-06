@@ -4,6 +4,7 @@ use hm_core::{Diagnostics, PumpType};
 use hm_design::{LEGACY_METHODS, METHOD, param_spec};
 use hm_formula::Registry;
 use hm_project::{Param, Project};
+use hm_units::parse_quantity;
 
 use crate::analysis::{Analysis, CurvePoints, require_mechanics_and_viscosity};
 use crate::audit::{NQ_SELECTIONS, selection_diagnostics};
@@ -190,7 +191,7 @@ fn assemble_changes(
     let mut changes = Vec::new();
     for (name, old) in reselected {
         let value = stored_text(project, name);
-        if old != &value {
+        if !same_value(old, &value) {
             changes.push(ParamChange {
                 name: (*name).to_string(),
                 before: Some(old.clone()),
@@ -228,6 +229,19 @@ fn assemble_changes(
         });
     }
     changes
+}
+
+/// Diferencia relativa que no es un cambio: el redondeo de `rho` en el archivo
+/// mueve la duodécima cifra de lo que depende de ν.
+const SAME_VALUE_TOLERANCE: f64 = 1.0e-9;
+
+fn same_value(old: &str, new: &str) -> bool {
+    match (parse_quantity(old), parse_quantity(new)) {
+        (Ok(old), Ok(new)) if old.si != 0.0 => {
+            (new.si / old.si - 1.0).abs() <= SAME_VALUE_TOLERANCE
+        }
+        _ => old == new,
+    }
 }
 
 fn stored_text(project: &Project, name: &str) -> String {

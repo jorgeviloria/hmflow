@@ -15,7 +15,8 @@ use hm_formula::Registry;
 
 use model::{
     CASING_BOXES, CasingBoxes, Field, FieldErrors, IntakeMode, LEAKAGE_BOXES, Outcome,
-    SUCTION_BOXES, build_project, compute, suction_box_error, suction_group_errors,
+    SELECTION_BOXES, SUCTION_BOXES, build_project, compute, suction_box_error,
+    suction_group_errors,
 };
 use session::{Command, Gate, Session};
 
@@ -463,7 +464,11 @@ fn inputs_content(ui: &mut egui::Ui, app: &mut App) {
             Field::N => &mut app.session.inputs.n,
             Field::Temperature => &mut app.session.inputs.temperature_c,
             Field::EtaM => &mut app.session.inputs.eta_m,
-            Field::Npsha | Field::Suction | Field::Casing(_) | Field::General => continue,
+            Field::Npsha
+            | Field::Suction
+            | Field::Casing(_)
+            | Field::Selection(_)
+            | Field::General => continue,
         };
         changed |= text_box(ui, label, value, hint, error_of(&errors, field), label);
     }
@@ -534,6 +539,7 @@ fn inputs_content(ui: &mut egui::Ui, app: &mut App) {
     }
     ui.add_space(4.0);
     changed |= casing_section(ui, app, &errors);
+    changed |= selections_section(ui, app, &errors);
     for (_, message) in errors.iter().filter(|(field, _)| *field == Field::General) {
         ui.label(
             RichText::new(message)
@@ -612,6 +618,31 @@ fn casing_section(ui: &mut egui::Ui, app: &mut App, errors: &FieldErrors) -> boo
                 .show(ui, |ui| {
                     changed |= casing_boxes(ui, boxes, &LEAKAGE_BOXES, errors);
                 });
+        });
+    changed
+}
+
+/// Bloque de selecciones y medidas. Plegado si no hay nada que mostrar.
+fn selections_section(ui: &mut egui::Ui, app: &mut App, errors: &FieldErrors) -> bool {
+    let inputs = &mut app.session.inputs;
+    let filled = SELECTION_BOXES.iter().any(|(name, _, _)| {
+        inputs
+            .selection_mut(name)
+            .is_some_and(|text| !text.trim().is_empty())
+    });
+    let open = filled || inputs.casing.is_some();
+    let mut changed = false;
+    // Como en la carcasa: un archivo con algo fijado se abre desplegado.
+    egui::CollapsingHeader::new("Selecciones y medidas")
+        .id_salt(("selections", open))
+        .default_open(open)
+        .show(ui, |ui| {
+            for (name, label, hint) in SELECTION_BOXES {
+                if let Some(value) = inputs.selection_mut(name) {
+                    let error = error_of(errors, Field::Selection(name));
+                    changed |= text_box(ui, label, value, hint, error, name);
+                }
+            }
         });
     changed
 }

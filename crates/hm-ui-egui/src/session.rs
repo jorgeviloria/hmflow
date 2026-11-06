@@ -553,6 +553,68 @@ mod tests {
     }
 
     #[test]
+    fn a_new_design_keeps_what_was_fixed() {
+        let dir = scratch("seleccion-nueva");
+        let path = dir.join("rodete.hmf");
+        let mut session = Session::default();
+        session.inputs.phi = "0.09".to_string();
+        session.inputs.blade_count = "5".to_string();
+        session.inputs.roughness = "0.05 mm".to_string();
+        session.inputs.incidence = "4 deg".to_string();
+        session.edited();
+        session.save_to(&path).unwrap();
+
+        let saved = Project::load(&path).unwrap();
+        assert!(matches!(&saved.params["phi"], Param::Locked { value } if value == "0.09"));
+        assert!(matches!(&saved.params["blade_count"], Param::Locked { value } if value == "5"));
+        let mut again = Session::default();
+        assert!(again.open_path(&path), "{:?}", again.notice);
+        assert_eq!(again.inputs.phi, "0.09");
+        assert_eq!(again.inputs.blade_count, "5");
+        assert_eq!(again.inputs.roughness, "0.05 mm");
+        assert_eq!(again.inputs.incidence, "4 deg");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_new_design_without_selections_is_as_before() {
+        let dir = scratch("seleccion-vacia");
+        let path = dir.join("rodete.hmf");
+        let mut session = Session::default();
+        session.save_to(&path).unwrap();
+        let saved = Project::load(&path).unwrap();
+        assert!(matches!(&saved.params["phi"], Param::Manual { .. }));
+        let mut again = Session::default();
+        assert!(again.open_path(&path), "{:?}", again.notice);
+        assert_eq!(again.inputs.phi, "");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn releasing_a_box_of_an_open_file_lets_the_engine_choose_again() {
+        let dir = scratch("seleccion-soltar");
+        let path = dir.join("rodete.hmf");
+        let mut session = Session::default();
+        session.save_to(&path).unwrap();
+        // El primer archivo sale del agua sin redondear; el reelegido, de `rho`
+        // tal como quedó escrita. Se compara desde un archivo ya reelegido.
+        session.inputs.phi = "0.08".to_string();
+        session.save_to(&path).unwrap();
+        session.inputs.phi.clear();
+        session.save_to(&path).unwrap();
+        let before = std::fs::read_to_string(&path).unwrap();
+
+        session.inputs.phi = "0.09".to_string();
+        session.edited();
+        session.save_to(&path).unwrap();
+        session.inputs.phi.clear();
+        session.edited();
+        session.save_to(&path).unwrap();
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), before);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
     fn a_new_design_with_a_casing_is_saved_and_reopened_with_its_boxes() {
         let dir = scratch("carcasa-nueva");
         let path = dir.join("rodete.hmf");

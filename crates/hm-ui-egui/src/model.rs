@@ -14,8 +14,8 @@ use hm_design::{CurvePoint, DesignError, DesignInput, DesignResult, ViscousCorre
 use hm_engine::{
     Analysis, Case, CaseField, CurvePoints, Density, DensitySource, DesignEdits, DesignOptions,
     Duty, EditorError, EngineError, Entered, Fluid, FluidKind, Intake, Opened, PumpType,
-    Temperature, analyze, cli_message, edited_options, new_casing_project, new_project,
-    open_project, report, update_design, update_point, water_density_at,
+    Temperature, analyze, cli_message, design_edits, edited_options, new_casing_project,
+    new_project, open_project, report, update_design, update_point, water_density_at,
 };
 use hm_project::{Casing, Project};
 use hm_units::Quantity;
@@ -54,6 +54,33 @@ pub struct Inputs {
     pub suction_vapor: String,
     /// Carcasa, si el rodete es para una existente.
     pub casing: Option<CasingBoxes>,
+    /// Decisiones: vacío significa que decide el motor.
+    pub phi: String,
+    pub blade_count: String,
+    /// Medidas: vacío significa el valor por defecto.
+    pub roughness: String,
+    pub incidence: String,
+}
+
+/// Cajas de selecciones y medidas: parámetro, etiqueta y ejemplo.
+pub const SELECTION_BOXES: [(&str, &str, &str); 4] = [
+    ("phi", "φ (vacío: el motor)", "0.0785"),
+    ("blade_count", "Z (vacío: el motor)", "7"),
+    ("impeller_roughness", "Rugosidad (vacío: liso)", "0.05 mm"),
+    ("incidence_deg", "Incidencia (vacío: 2°)", "4 deg"),
+];
+
+impl Inputs {
+    /// El texto de una caja de [`SELECTION_BOXES`].
+    pub fn selection_mut(&mut self, name: &str) -> Option<&mut String> {
+        Some(match name {
+            "phi" => &mut self.phi,
+            "blade_count" => &mut self.blade_count,
+            "impeller_roughness" => &mut self.roughness,
+            "incidence_deg" => &mut self.incidence,
+            _ => return None,
+        })
+    }
 }
 
 /// Las cajas de `[casing]`. Dos son números en el archivo, pero aquí se escriben:
@@ -181,6 +208,10 @@ impl Default for Inputs {
             suction_losses: String::new(),
             suction_vapor: String::new(),
             casing: None,
+            phi: String::new(),
+            blade_count: String::new(),
+            roughness: String::new(),
+            incidence: String::new(),
         }
     }
 }
@@ -201,6 +232,8 @@ pub enum Field {
     Suction,
     /// Una cota de `[casing]`.
     Casing(&'static str),
+    /// Una caja de [`SELECTION_BOXES`].
+    Selection(&'static str),
     General,
 }
 
@@ -280,19 +313,22 @@ fn case_from_inputs(inputs: &Inputs, basis: &Basis) -> Result<Case, FieldErrors>
 }
 
 /// Lo que las cajas piden del diseño, además del punto.
-fn edits_from(inputs: &Inputs, basis: &Basis) -> Result<DesignEdits, (Field, String)> {
+fn edits_from(inputs: &Inputs) -> Result<DesignEdits, (Field, String)> {
     Ok(DesignEdits {
         casing: inputs
             .casing
             .as_ref()
             .map(CasingBoxes::to_casing)
             .transpose()?,
-        ..basis.edits.clone()
+        phi: inputs.phi.clone(),
+        blade_count: inputs.blade_count.clone(),
+        roughness: inputs.roughness.clone(),
+        incidence: inputs.incidence.clone(),
     })
 }
 
 fn read_design(inputs: &Inputs, basis: &Basis, errors: &mut FieldErrors) -> Option<DesignOptions> {
-    let read = edits_from(inputs, basis).and_then(|edits| {
+    let read = edits_from(inputs).and_then(|edits| {
         edited_options(&basis.design, &basis.reselected, &basis.edits, &edits)
             .map_err(|error| engine_error_field(error, !inputs.eta_m.trim().is_empty()))
     });
@@ -495,6 +531,13 @@ fn engine_error_field(error: EngineError, eta_m_typed: bool) -> (Field, String) 
         Some(CaseField::Npsha) => Field::Npsha,
         Some(CaseField::Suction) => Field::Suction,
         Some(CaseField::Casing(name)) => Field::Casing(name),
+        Some(CaseField::Param(name))
+            if SELECTION_BOXES
+                .iter()
+                .any(|(box_name, _, _)| *box_name == name) =>
+        {
+            Field::Selection(name)
+        }
         Some(CaseField::MechanicalEfficiency | CaseField::Viscosity | CaseField::Param(_))
         | None => Field::General,
     };
@@ -638,6 +681,10 @@ pub fn case_to_inputs(case: &Case) -> Inputs {
         suction_losses,
         suction_vapor,
         casing: None,
+        phi: String::new(),
+        blade_count: String::new(),
+        roughness: String::new(),
+        incidence: String::new(),
     }
 }
 
@@ -662,6 +709,10 @@ pub fn open_loaded(project: Project) -> Result<OpenedFile, String> {
         inputs.eta_m.clone_from(text);
     }
     inputs.casing = opened.edits.casing.as_ref().map(CasingBoxes::from_casing);
+    inputs.phi.clone_from(&opened.edits.phi);
+    inputs.blade_count.clone_from(&opened.edits.blade_count);
+    inputs.roughness.clone_from(&opened.edits.roughness);
+    inputs.incidence.clone_from(&opened.edits.incidence);
     let basis = Basis::from_opened(&opened, &inputs);
     Ok(OpenedFile {
         project,
@@ -745,7 +796,7 @@ pub fn build_project(
     if let Some(message) = stage_failure(&analysis) {
         return Err(message);
     }
-    let edits = edits_from(&inputs, basis).map_err(|(_, message)| message)?;
+    let edits = edits_from(&inputs).map_err(|(_, message)| message)?;
     match previous {
         None => {
             let project = match &edits.casing {
@@ -753,6 +804,14 @@ pub fn build_project(
                 None => new_project(name, &case, &analysis),
             }
             .map_err(|error| engine_failure(&error))?;
+            // `design_edits` no ve lo que acaba de elegir el motor, solo lo fijado.
+            let project = if edits == design_edits(&project) {
+                project
+            } else {
+                update_design(project, &edits)
+                    .map_err(|error| engine_failure(&error))?
+                    .project
+            };
             Ok(Built {
                 project,
                 diagnostics: analysis.diagnostics,
@@ -852,6 +911,103 @@ pub fn balanced_axial_thrust(result: &DesignResult) -> bool {
 #[cfg(test)]
 mod tests {
     use super::{Basis, CasingBoxes, Field, Inputs};
+
+    fn free(edit: impl FnOnce(&mut Inputs)) -> Inputs {
+        let mut inputs = Inputs::default();
+        edit(&mut inputs);
+        inputs
+    }
+
+    #[test]
+    fn the_selection_boxes_reach_the_design() {
+        let outcome = super::compute(
+            &free(|inputs| {
+                inputs.phi = "0.09".to_string();
+                inputs.blade_count = "5".to_string();
+                inputs.incidence = "4 deg".to_string();
+            }),
+            &Basis::default(),
+        )
+        .unwrap();
+        assert_eq!(outcome.result.selection.phi, 0.09);
+        assert_eq!(outcome.result.selection.blade_count, 5);
+    }
+
+    #[test]
+    fn emptying_a_box_gives_the_design_of_the_engine_back() {
+        let engine = super::compute(&Inputs::default(), &Basis::default()).unwrap();
+        let emptied = free(|inputs| inputs.phi = "   ".to_string());
+        let again = super::compute(&emptied, &Basis::default()).unwrap();
+        assert_eq!(engine.result.selection.phi, again.result.selection.phi);
+    }
+
+    #[test]
+    fn a_bad_selection_is_marked_on_its_box() {
+        for (name, edit) in [
+            (
+                "phi",
+                (|inputs: &mut Inputs| inputs.phi = "mucho".to_string()) as fn(&mut Inputs),
+            ),
+            ("blade_count", |inputs| {
+                inputs.blade_count = "2.5".to_string()
+            }),
+            ("impeller_roughness", |inputs| {
+                inputs.roughness = "5 kg".to_string()
+            }),
+            ("incidence_deg", |inputs| {
+                inputs.incidence = "5 kg".to_string()
+            }),
+        ] {
+            let errors = errors_of(&free(edit));
+            assert_eq!(errors.len(), 1, "{errors:?}");
+            assert!(
+                matches!(errors[0].0, Field::Selection(found) if found == name),
+                "{name}: {errors:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn an_even_blade_count_with_two_channels_keeps_its_warning() {
+        let inputs = with_casing(|boxes| {
+            *boxes.text_mut("channels").unwrap() = "2".to_string();
+            *boxes.text_mut("wrap").unwrap() = "180 deg".to_string();
+        });
+        let inputs = Inputs {
+            blade_count: "6".to_string(),
+            ..inputs
+        };
+        let outcome = super::compute(&inputs, &Basis::default()).unwrap();
+        assert!(
+            outcome
+                .diagnostics
+                .iter()
+                .any(|item| item.code == "HM-DES-037"),
+            "{:?}",
+            outcome.diagnostics
+        );
+    }
+
+    #[test]
+    fn a_new_design_without_edits_is_exactly_what_the_engine_writes() {
+        let inputs = Inputs::default();
+        let basis = Basis::default();
+        let case = super::case_from_inputs(&inputs, &basis).unwrap();
+        let analysis =
+            hm_engine::analyze(&case, hm_engine::CurvePoints::clamped(super::CURVE_POINTS))
+                .unwrap();
+        let engine = hm_engine::new_project("rodete", &case, &analysis).unwrap();
+        let built = super::build_project(&inputs, &basis, None, "rodete").unwrap();
+        assert_eq!(built.project.to_toml().unwrap(), engine.to_toml().unwrap());
+    }
+
+    #[test]
+    fn every_selection_box_has_a_text() {
+        let mut inputs = Inputs::default();
+        for (name, _, _) in super::SELECTION_BOXES {
+            assert!(inputs.selection_mut(name).is_some(), "{name}");
+        }
+    }
 
     fn with_casing(edit: impl FnOnce(&mut CasingBoxes)) -> Inputs {
         let mut boxes = CasingBoxes::blank();

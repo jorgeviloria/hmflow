@@ -12,11 +12,11 @@ use hm_design::geometry::Geometry;
 use hm_design::mechanics::{BALANCE_HOLE_AREA_RATIO, Mechanics};
 use hm_design::{CurvePoint, DesignError, DesignInput, DesignResult, ViscousCorrection};
 use hm_engine::{
-    Analysis, Case, CaseField, CurvePoints, Density, DensitySource, DesignEdits, DesignOptions,
-    Duty, EditorError, EngineError, Entered, Fluid, FluidKind, Intake, Opened, PumpType,
-    Temperature, analyze, cli_message, design_edits, edited_options, new_casing_project,
-    new_project, open_project, report, reselect_design, reselected_options, update_design,
-    update_point, water_density_at,
+    Analysis, Case, CaseField, ChangeKind, CurvePoints, Density, DensitySource, DesignEdits,
+    DesignOptions, Duty, EditorError, EngineError, Entered, Fluid, FluidKind, Intake, Opened,
+    ParamChange, PumpType, Temperature, analyze, cli_message, design_edits, edited_options,
+    new_casing_project, new_project, open_project, report, reselect_design, reselected_options,
+    update_design, update_point, water_density_at,
 };
 use hm_project::{Casing, Project};
 use hm_units::Quantity;
@@ -764,6 +764,9 @@ fn format_celsius(celsius: f64) -> String {
 pub struct Built {
     pub project: Project,
     pub diagnostics: Vec<Diagnostic>,
+    /// Lo que cambió por migrar un método anterior: el archivo lo guarda distinto
+    /// aunque no se haya tocado ninguna caja.
+    pub migrated: Vec<String>,
 }
 
 /// Arma el proyecto de estas cajas.
@@ -811,6 +814,7 @@ pub fn build_project(
             Ok(Built {
                 project,
                 diagnostics: analysis.diagnostics,
+                migrated: Vec::new(),
             })
         }
         Some(project) => {
@@ -818,7 +822,14 @@ pub fn build_project(
                 .map_err(|error| engine_failure(&error))?;
             let recalculated =
                 update_design(project, &edits).map_err(|error| engine_failure(&error))?;
+            let migrated = change_lines(&recalculated.changes, |change| {
+                matches!(
+                    change.kind,
+                    ChangeKind::MethodMigrated | ChangeKind::MechanicalEfficiency
+                )
+            });
             Ok(Built {
+                migrated,
                 project: recalculated.project,
                 diagnostics: recalculated.diagnostics.into_vec(),
             })
@@ -842,6 +853,23 @@ fn short_value(text: &str) -> String {
     }
 }
 
+/// Una línea por cambio que pase el filtro.
+fn change_lines(changes: &[ParamChange], keep: impl Fn(&ParamChange) -> bool) -> Vec<String> {
+    changes
+        .iter()
+        .filter(|change| keep(change))
+        .map(|change| {
+            let before = change.before.as_deref().unwrap_or("nada");
+            format!(
+                "{}: {} → {}",
+                change.name,
+                short_value(before),
+                short_value(&change.after)
+            )
+        })
+        .collect()
+}
+
 /// Rehace lo que esté en `manual` con estas cajas. Es una orden: guardar nunca
 /// reelige. No escribe el archivo. Funciona aunque el diseño de las cajas falle,
 /// porque es la salida de un φ manual que ya no cabe.
@@ -860,20 +888,9 @@ pub fn reselect_project(inputs: &Inputs, basis: &Basis) -> Result<Reselected, St
     let updated =
         update_point(project.clone(), &case, &analysis).map_err(|error| engine_failure(&error))?;
     let recalculated = reselect_design(updated, &edits).map_err(|error| engine_failure(&error))?;
-    let changes = recalculated
-        .changes
-        .iter()
-        .filter(|change| change.before.as_deref() != Some(change.after.as_str()))
-        .map(|change| {
-            let before = change.before.as_deref().unwrap_or("nada");
-            format!(
-                "{}: {} → {}",
-                change.name,
-                short_value(before),
-                short_value(&change.after)
-            )
-        })
-        .collect();
+    let changes = change_lines(&recalculated.changes, |change| {
+        change.before.as_deref() != Some(change.after.as_str())
+    });
     Ok(Reselected {
         project: recalculated.project,
         changes,

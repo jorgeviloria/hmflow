@@ -267,7 +267,9 @@ impl Session {
         self.project = Some(built.project);
         self.file = Some(path);
         self.dirty = false;
-        self.notice = None;
+        // Un método anterior cambia números sin que se haya tocado una caja.
+        self.notice = (!built.migrated.is_empty())
+            .then(|| format!("Migrado al guardar: {}.", built.migrated.join("; ")));
         self.opened_diagnostics = had_project.then_some(built.diagnostics);
         Ok(())
     }
@@ -1113,6 +1115,44 @@ mod tests {
         // Escribir el nombre completo es elegirlo: ahí el diálogo ya preguntó.
         session.save_to(&existing).unwrap();
         assert_ne!(std::fs::read_to_string(&existing).unwrap(), "mío");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn saving_an_old_method_says_what_the_migration_changed() {
+        let dir = scratch("migracion-avisada");
+        let path = copy_fixture(&dir, "end_suction_v0.2.hmf");
+        let mut session = Session::default();
+        assert!(session.open_path(&path), "{:?}", session.notice);
+        session.save_to(&path).unwrap();
+        let notice = session.notice.clone().unwrap();
+        assert!(notice.contains("Migrado al guardar"), "{notice}");
+        assert!(notice.contains("eta_m: 0.9600 → "), "{notice}");
+        assert!(notice.contains("method: end_suction_v0.2 → "), "{notice}");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn saving_a_current_method_has_nothing_to_report() {
+        let dir = scratch("sin-migracion");
+        let path = copy_fixture(&dir, "end_suction_v0.9.hmf");
+        let mut session = Session::default();
+        assert!(session.open_path(&path), "{:?}", session.notice);
+        session.save_to(&path).unwrap();
+        assert_eq!(session.notice, None);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn the_second_save_has_nothing_left_to_report() {
+        let dir = scratch("migracion-limpia");
+        let path = copy_fixture(&dir, "end_suction_v0.2.hmf");
+        let mut session = Session::default();
+        assert!(session.open_path(&path), "{:?}", session.notice);
+        session.save_to(&path).unwrap();
+        assert!(session.notice.is_some());
+        session.save_to(&path).unwrap();
+        assert_eq!(session.notice, None);
         let _ = std::fs::remove_dir_all(&dir);
     }
 

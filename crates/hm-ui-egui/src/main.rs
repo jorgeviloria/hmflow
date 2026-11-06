@@ -880,9 +880,20 @@ fn rows(outcome: &Outcome) -> Vec<(&'static str, Vec<Row>)> {
         }));
     }
 
+    let casing = model::casing_rows(outcome)
+        .into_iter()
+        .map(|row| Row {
+            key: row.key,
+            label: row.label,
+            value: row.value,
+            formula: row.formula,
+        })
+        .collect();
+
     vec![
         ("Diseño", design),
         ("Hidráulica fina", hydraulics),
+        ("Carcasa", casing),
         ("Mecánica", mechanics),
     ]
 }
@@ -945,7 +956,11 @@ fn inspector_panel(ui: &mut egui::Ui, app: &App) {
             ui.label(RichText::new(row.label).weak());
             ui.label(RichText::new(&row.value).size(26.0).strong());
             let Some(id) = row.formula else {
-                ui.label("Selección por tabla de nq; sin fórmula.");
+                ui.label(if row.key.starts_with("casing.") {
+                    "Comparación con la cota de [casing]; el aviso, si lo hay, dice qué hacer."
+                } else {
+                    "Selección por tabla de nq; sin fórmula."
+                });
                 return;
             };
             let Some(spec) = app.registry.get(id) else {

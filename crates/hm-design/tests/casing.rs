@@ -1322,6 +1322,46 @@ fn without_a_casing_the_early_rise_warning_keeps_qc_and_the_advice() {
 }
 
 #[test]
+fn the_statistical_eta_v_stays_for_comparison_with_leakage_data() {
+    let plain = design_with_options(&input(), &with(roomy())).unwrap();
+    let measured = design_with_options(
+        &input(),
+        &with(CasingFit {
+            leakage: Some(leakage()),
+            ..roomy()
+        }),
+    )
+    .unwrap();
+    assert_eq!(plain.statistical_eta_v, plain.eta_v);
+    assert_eq!(measured.statistical_eta_v, plain.eta_v);
+    assert_ne!(measured.eta_v, measured.statistical_eta_v);
+}
+
+#[test]
+fn mechanics_gives_the_numbers_behind_the_fit_warnings() {
+    let casing = CasingFit {
+        leakage: Some(leakage()),
+        ..roomy()
+    };
+    let result = design_with_options(&input(), &with(casing)).unwrap();
+    let mech = mechanics(&input(), &result, DEFAULT_SHAFT_SHEAR_STRESS).unwrap();
+    assert_eq!(
+        mech.eye_with_walls,
+        result.d1.si + 2.0 * mech.shroud_thickness
+    );
+    let holes = 6.0 * std::f64::consts::FRAC_PI_4 * 0.009_f64.powi(2);
+    let gap = std::f64::consts::PI * 0.080 * 0.0003;
+    assert_eq!(mech.balance_hole_area_ratio, Some(holes / gap));
+}
+
+#[test]
+fn without_leakage_data_there_is_no_hole_ratio() {
+    let result = design_with_options(&input(), &with(roomy())).unwrap();
+    let mech = mechanics(&input(), &result, DEFAULT_SHAFT_SHEAR_STRESS).unwrap();
+    assert_eq!(mech.balance_hole_area_ratio, None);
+}
+
+#[test]
 fn a_narrow_throat_is_not_blamed_on_the_inlet() {
     let options = with(CasingFit {
         throat_area: Some(0.0012),

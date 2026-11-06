@@ -93,6 +93,10 @@ pub struct Mechanics {
     pub hub_diameter: f64,
     /// Cubo mínimo que pide el par, m. Sin carcasa es `hub_diameter`.
     pub hub_min_diameter: f64,
+    /// Ojo más las dos tapas, m: lo que tiene que pasar por el cuello.
+    pub eye_with_walls: f64,
+    /// Agujeros de equilibrio frente al paso del anillo trasero gastado.
+    pub balance_hole_area_ratio: Option<f64>,
     /// Ángulo de envolvente de la voluta doble en que se basa el empuje radial,
     /// grados; `None` es una voluta simple.
     pub volute_wrap_deg: Option<f64>,
@@ -448,6 +452,8 @@ pub fn mechanics(
         shaft_min_diameter,
         hub_diameter,
         hub_min_diameter,
+        eye_with_walls: result.d1.si + 2.0 * shroud_thickness,
+        balance_hole_area_ratio: result.leakage_data().map(balance_hole_area_ratio),
         volute_wrap_deg: result.volute.wrap_deg,
         radial_coefficient_shutoff: double_k0.unwrap_or(k0),
         radial_coefficient_design: double_k0.unwrap_or(k_opt),
@@ -483,7 +489,16 @@ const SEAL_CLEARANCE_SPREAD: f64 = 0.30;
 
 /// Área mínima de los agujeros de equilibrio frente al paso del anillo trasero:
 /// Gülich 2020, p. 657, «at least 4- to 5-times», con s = 2·s0 por el desgaste.
-const BALANCE_HOLE_AREA_RATIO: f64 = 4.0;
+pub const BALANCE_HOLE_AREA_RATIO: f64 = 4.0;
+
+/// Área de los agujeros frente al paso del anillo trasero gastado. La holgura
+/// diametral nominal es 2·s0; gastada, s = 2·s0.
+fn balance_hole_area_ratio(leakage: &crate::CasingLeakage) -> f64 {
+    let holes = f64::from(leakage.balance_hole_count)
+        * std::f64::consts::FRAC_PI_4
+        * leakage.balance_hole_diameter.powi(2);
+    holes / (std::f64::consts::PI * leakage.rear_seal_diameter * leakage.seal_clearance)
+}
 
 /// Lo que no impide diseñar, pero hay que mirar antes de fabricar.
 fn casing_diagnostics(mechanics: &Mechanics, result: &DesignResult) -> Diagnostics {
@@ -492,7 +507,7 @@ fn casing_diagnostics(mechanics: &Mechanics, result: &DesignResult) -> Diagnosti
         return diagnostics;
     };
 
-    let eye_with_walls = result.d1.si + 2.0 * mechanics.shroud_thickness;
+    let eye_with_walls = mechanics.eye_with_walls;
     if eye_with_walls > casing.neck_diameter {
         diagnostics.push(
             Diagnostic::warning(
@@ -590,12 +605,7 @@ fn casing_diagnostics(mechanics: &Mechanics, result: &DesignResult) -> Diagnosti
                 ),
             );
         }
-        let holes = f64::from(leakage.balance_hole_count)
-            * std::f64::consts::FRAC_PI_4
-            * leakage.balance_hole_diameter.powi(2);
-        // La holgura diametral nominal es 2·s0; gastada, s = 2·s0.
-        let worn_gap = std::f64::consts::PI * leakage.rear_seal_diameter * leakage.seal_clearance;
-        let area_ratio = holes / worn_gap;
+        let area_ratio = balance_hole_area_ratio(leakage);
         if area_ratio < BALANCE_HOLE_AREA_RATIO {
             diagnostics.push(
                 Diagnostic::warning(

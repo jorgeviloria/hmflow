@@ -156,6 +156,8 @@ pub struct DesignResult {
     /// ηv del método: Gülich 3.5.10, el manual o, con datos de fuga, el de los
     /// anillos. Igual a `eta_v`. Se conserva como campo del informe.
     pub leakage_eta_v: f64,
+    /// ηv estadístico de Gülich (ec. 3.5.10), para contraste con el de los anillos.
+    pub statistical_eta_v: f64,
     /// ηm estimado de Gülich (ec. 3.10.14), para contraste.
     pub mechanical_eta_estimate: f64,
     /// Pérdida por rozamiento de discos frente a la potencia útil, PRR/Pu
@@ -2559,6 +2561,7 @@ fn design_once(
         transition_ratio,
         recirculation_onset,
         leakage_eta_v,
+        statistical_eta_v: gulich_volumetric_efficiency(nq, options.balance_holes)?,
         mechanical_eta_estimate,
         disk_friction_ratio,
         statistical_eta_h,

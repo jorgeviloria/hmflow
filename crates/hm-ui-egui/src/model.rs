@@ -9,7 +9,7 @@ use std::path::Path;
 
 use hm_core::{Diagnostic, Diagnostics};
 use hm_design::geometry::Geometry;
-use hm_design::mechanics::Mechanics;
+use hm_design::mechanics::{BALANCE_HOLE_AREA_RATIO, Mechanics};
 use hm_design::{CurvePoint, DesignError, DesignInput, DesignResult, ViscousCorrection};
 use hm_engine::{
     Analysis, Case, CaseField, CurvePoints, Density, DensitySource, DesignEdits, DesignOptions,
@@ -903,6 +903,130 @@ fn format_diagnostics(diagnostics: &Diagnostics) -> String {
     }
 }
 
+/// Una fila del bloque de la carcasa.
+#[derive(Debug, Clone, PartialEq)]
+pub struct CasingRow {
+    pub key: &'static str,
+    pub label: &'static str,
+    pub value: String,
+    pub formula: Option<&'static str>,
+}
+
+/// Valor y, si cruza el límite, qué pasa. La fila dice el número; el aviso, qué
+/// hacer con él.
+fn compared(value: f64, limit: f64, crossed: bool, note: &str) -> String {
+    let text = format!("{:.1} / {:.1} mm", value * 1000.0, limit * 1000.0);
+    if crossed {
+        format!("{text} ({note})")
+    } else {
+        text
+    }
+}
+
+/// Lo que importa de un rodete en su carcasa, con sus números. Vacío sin carcasa.
+///
+/// Los límites son los de `casing_diagnostics`. No calcula nada que no dé el
+/// motor: solo pone al lado las dos cifras de cada comparación.
+pub fn casing_rows(outcome: &Outcome) -> Vec<CasingRow> {
+    let result = &outcome.result;
+    let Some(casing) = &result.casing else {
+        return Vec::new();
+    };
+    let row = |key, label, value, formula| CasingRow {
+        key,
+        label,
+        value,
+        formula,
+    };
+    let mut rows = Vec::new();
+    if let Ok(mech) = &outcome.mechanics {
+        rows.extend([
+            row(
+                "casing.eye",
+                "Ojo y tapas / cuello",
+                compared(
+                    mech.eye_with_walls,
+                    casing.neck_diameter,
+                    mech.eye_with_walls > casing.neck_diameter,
+                    "no cabe",
+                ),
+                None,
+            ),
+            row(
+                "casing.shaft",
+                "Eje mínimo / agujero",
+                compared(
+                    mech.shaft_min_diameter,
+                    casing.bore_diameter,
+                    mech.shaft_min_diameter > casing.bore_diameter,
+                    "mayor",
+                ),
+                None,
+            ),
+            row(
+                "casing.hub",
+                "Cubo mínimo / cubo",
+                compared(
+                    mech.hub_min_diameter,
+                    casing.hub_diameter,
+                    casing.hub_diameter < mech.hub_min_diameter,
+                    "por debajo",
+                ),
+                None,
+            ),
+        ]);
+    }
+    rows.push(row(
+        "casing.b3",
+        "b3/b2",
+        format!("{:.2}", casing.b3 / result.b2.si),
+        None,
+    ));
+    let throat = match result.volute_matching_ratio(outcome.input.q.si) {
+        Some(ratio) => format!("{ratio:.2}·Qd"),
+        None if casing.throat_area.is_none() => "sin dato".to_string(),
+        None => "no limita".to_string(),
+    };
+    rows.push(row(
+        "casing.throat",
+        "Qc, límite de la garganta",
+        throat,
+        Some("design.volute_matching_flow_cm"),
+    ));
+    if result.leakage_data().is_some() {
+        rows.extend([
+            row(
+                "casing.qsp",
+                "Fuga delantera Qsp/Q",
+                format!("{:.2} %", 100.0 * result.seal_leakage_ratio),
+                Some("design.seal_leakage_flow"),
+            ),
+            row(
+                "casing.qe",
+                "Fuga trasera QE/Q",
+                format!("{:.2} %", 100.0 * result.rear_seal_leakage_ratio),
+                Some("design.seal_leakage_flow"),
+            ),
+            row(
+                "casing.eta_v",
+                "ηv / estadístico",
+                format!("{:.3} / {:.3}", result.eta_v, result.statistical_eta_v),
+                Some("design.volumetric_efficiency_gulich"),
+            ),
+        ]);
+    }
+    if let Ok(mech) = &outcome.mechanics
+        && let Some(ratio) = mech.balance_hole_area_ratio
+    {
+        let mut value = format!("{ratio:.1} veces");
+        if ratio < BALANCE_HOLE_AREA_RATIO {
+            value.push_str(" (pocos)");
+        }
+        rows.push(row("casing.holes", "Agujeros / paso gastado", value, None));
+    }
+    rows
+}
+
 /// Con datos de fuga, el empuje axial es el de los agujeros de equilibrio.
 pub fn balanced_axial_thrust(result: &DesignResult) -> bool {
     result.leakage_data().is_some()
@@ -999,6 +1123,118 @@ mod tests {
         let engine = hm_engine::new_project("rodete", &case, &analysis).unwrap();
         let built = super::build_project(&inputs, &basis, None, "rodete").unwrap();
         assert_eq!(built.project.to_toml().unwrap(), engine.to_toml().unwrap());
+    }
+
+    fn fit_rows(edit: impl FnOnce(&mut CasingBoxes)) -> Vec<(&'static str, String)> {
+        let outcome = super::compute(&with_casing(edit), &Basis::default()).unwrap();
+        super::casing_rows(&outcome)
+            .into_iter()
+            .map(|row| (row.key, row.value))
+            .collect()
+    }
+
+    fn value<'a>(rows: &'a [(&'static str, String)], key: &str) -> &'a str {
+        rows.iter()
+            .find(|(found, _)| *found == key)
+            .map_or("", |(_, value)| value)
+    }
+
+    fn with_leakage(boxes: &mut CasingBoxes) {
+        *boxes.text_mut("neck_diameter").unwrap() = "120 mm".to_string();
+        *boxes.text_mut("bore_diameter").unwrap() = "29 mm".to_string();
+        *boxes.text_mut("hub_diameter").unwrap() = "35 mm".to_string();
+        for (name, text) in [
+            ("seal_clearance", "0.3 mm"),
+            ("seal_length", "15 mm"),
+            ("rear_seal_diameter", "80 mm"),
+            ("rear_seal_length", "15 mm"),
+            ("balance_hole_count", "6"),
+            ("balance_hole_diameter", "9 mm"),
+            ("balance_hole_circle", "50 mm"),
+        ] {
+            *boxes.text_mut(name).unwrap() = text.to_string();
+        }
+    }
+
+    #[test]
+    fn without_a_casing_there_is_no_fit_block() {
+        let outcome = super::compute(&Inputs::default(), &Basis::default()).unwrap();
+        assert!(super::casing_rows(&outcome).is_empty());
+    }
+
+    #[test]
+    fn the_fit_rows_show_both_numbers() {
+        let rows = fit_rows(|_| ());
+        assert!(value(&rows, "casing.eye").contains("/ 90.0 mm"), "{rows:?}");
+        assert!(
+            value(&rows, "casing.shaft").contains("/ 20.0 mm"),
+            "{rows:?}"
+        );
+        assert!(value(&rows, "casing.hub").contains("/ 30.0 mm"), "{rows:?}");
+        assert!(!value(&rows, "casing.b3").is_empty(), "{rows:?}");
+        assert_eq!(value(&rows, "casing.throat"), "sin dato");
+        assert_eq!(value(&rows, "casing.qsp"), "");
+    }
+
+    #[test]
+    fn a_limit_that_is_crossed_says_so_in_the_row() {
+        let rows = fit_rows(|boxes| {
+            *boxes.text_mut("neck_diameter").unwrap() = "77 mm".to_string();
+        });
+        assert!(
+            value(&rows, "casing.eye").ends_with("(no cabe)"),
+            "{rows:?}"
+        );
+        let rows = fit_rows(|_| ());
+        assert!(!value(&rows, "casing.eye").contains("no cabe"), "{rows:?}");
+
+        let rows = fit_rows(|boxes| {
+            *boxes.text_mut("bore_diameter").unwrap() = "5 mm".to_string();
+            *boxes.text_mut("hub_diameter").unwrap() = "6 mm".to_string();
+        });
+        assert!(
+            value(&rows, "casing.shaft").ends_with("(mayor)"),
+            "{rows:?}"
+        );
+        assert!(
+            value(&rows, "casing.hub").ends_with("(por debajo)"),
+            "{rows:?}"
+        );
+    }
+
+    #[test]
+    fn a_measured_throat_shows_qc_only_if_it_limits() {
+        let rows = fit_rows(|boxes| {
+            *boxes.text_mut("throat_area").unwrap() = "0.0012 m2".to_string();
+        });
+        assert!(value(&rows, "casing.throat").ends_with("·Qd"), "{rows:?}");
+        let rows = fit_rows(|boxes| {
+            *boxes.text_mut("throat_area").unwrap() = "0.09 m2".to_string();
+        });
+        assert_eq!(value(&rows, "casing.throat"), "no limita");
+    }
+
+    #[test]
+    fn with_leakage_data_the_rows_show_the_leakage() {
+        let rows = fit_rows(with_leakage);
+        assert!(value(&rows, "casing.qsp").ends_with(" %"), "{rows:?}");
+        assert!(value(&rows, "casing.qe").ends_with(" %"), "{rows:?}");
+        assert!(value(&rows, "casing.eta_v").contains(" / "), "{rows:?}");
+        assert!(value(&rows, "casing.holes").contains("veces"), "{rows:?}");
+    }
+
+    #[test]
+    fn too_few_holes_say_so_in_the_row() {
+        let rows = fit_rows(|boxes| {
+            with_leakage(boxes);
+            *boxes.text_mut("balance_hole_diameter").unwrap() = "3 mm".to_string();
+        });
+        assert!(
+            value(&rows, "casing.holes").ends_with("(pocos)"),
+            "{rows:?}"
+        );
+        let rows = fit_rows(with_leakage);
+        assert!(!value(&rows, "casing.holes").contains("pocos"), "{rows:?}");
     }
 
     #[test]

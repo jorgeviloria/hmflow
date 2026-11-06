@@ -145,7 +145,12 @@ impl Session {
         self.opened_diagnostics = None;
         self.dirty = true;
         self.armed = None;
-        if self.discard_notice().is_some() || self.notice.as_deref() == Some(CASING_NOTICE) {
+        self.clear_gate_notice();
+    }
+
+    /// Quita el aviso de una orden armada: sin la orden no significa nada.
+    fn clear_gate_notice(&mut self) {
+        if matches!(self.notice.as_deref(), Some(DISCARD_NOTICE | CASING_NOTICE)) {
             self.notice = None;
         }
     }
@@ -153,9 +158,7 @@ impl Session {
     /// Guardar desarma el descarte: no tira el trabajo, lo escribe.
     pub fn disarm(&mut self) {
         self.armed = None;
-        if self.discard_notice().is_some() {
-            self.notice = None;
-        }
+        self.clear_gate_notice();
     }
 
     /// Reelige con el motor lo que esté en `manual`. Las cajas pasan a lo reelegido
@@ -189,10 +192,7 @@ impl Session {
             .as_ref()
             .is_some_and(|project| project.casing.is_some());
         if !saved || self.armed == Some(Command::RemoveCasing) {
-            self.armed = None;
-            if self.notice.as_deref() == Some(CASING_NOTICE) {
-                self.notice = None;
-            }
+            self.disarm();
             return Gate::Proceed;
         }
         self.armed = Some(Command::RemoveCasing);
@@ -207,7 +207,7 @@ impl Session {
     /// la anterior.
     pub fn request(&mut self, command: Command) -> Gate {
         if !self.dirty {
-            self.armed = None;
+            self.disarm();
             return Gate::Proceed;
         }
         if self.armed == Some(command) {
@@ -699,6 +699,33 @@ mod tests {
         assert!(crate::model::compute(&session.inputs, &session.basis).is_err());
         session.reselect().unwrap();
         assert!(crate::model::compute(&session.inputs, &session.basis).is_ok());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    fn with_saved_casing(name: &str) -> (PathBuf, Session) {
+        let dir = scratch(name);
+        let path = copy_fixture(&dir, "casing_v3.hmf");
+        let mut session = Session::default();
+        assert!(session.open_path(&path), "{:?}", session.notice);
+        (dir, session)
+    }
+
+    #[test]
+    fn disarming_removes_the_casing_notice() {
+        let (dir, mut session) = with_saved_casing("aviso-exportar");
+        assert_eq!(session.request_remove_casing(), Gate::Armed);
+        session.disarm();
+        assert_eq!(session.notice, None);
+        assert_eq!(session.request_remove_casing(), Gate::Armed);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn another_order_removes_the_casing_notice() {
+        let (dir, mut session) = with_saved_casing("aviso-abrir");
+        assert_eq!(session.request_remove_casing(), Gate::Armed);
+        assert_eq!(session.request(Command::Open), Gate::Proceed);
+        assert_eq!(session.notice, None);
         let _ = std::fs::remove_dir_all(&dir);
     }
 

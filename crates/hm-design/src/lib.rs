@@ -182,6 +182,7 @@ pub struct DesignResult {
     /// anillos. Igual a `eta_v`. Se conserva como campo del informe.
     pub leakage_eta_v: f64,
     /// ηv estadístico de Gülich (ec. 3.5.10), para contraste con el de los anillos.
+    /// Cuenta los agujeros de equilibrio, si los hay.
     pub statistical_eta_v: f64,
     /// Pérdidas del rodete por geometría, con carcasa. Contraste: no entran en ηh.
     pub impeller_losses: Option<ImpellerLosses>,
@@ -2765,7 +2766,11 @@ fn design_once(
         transition_ratio,
         recirculation_onset,
         leakage_eta_v,
-        statistical_eta_v: gulich_volumetric_efficiency(nq, options.balance_holes)?,
+        // Con datos de fuga siempre hay agujeros: la fuga exige al menos uno.
+        statistical_eta_v: gulich_volumetric_efficiency(
+            nq,
+            options.balance_holes || options.leakage_data().is_some(),
+        )?,
         impeller_losses,
         mechanical_eta_estimate,
         disk_friction_ratio,
@@ -3733,6 +3738,22 @@ fn diagnostics_for(
                 }
                 (false, false) => "Con 5..7 álabes β2 se sale de 15..45°; revisa ψ, φ o el ojo.",
             }),
+        );
+    }
+
+    if let Some(losses) = &result.impeller_losses
+        && losses.shock.is_none()
+    {
+        diagnostics.push(
+            Diagnostic::info(
+                "HM-DES-049",
+                format!(
+                    "w1q/w1m = {:.2}: el golpe a la entrada no se calcula, porque la ec. (T3.8.9) \
+                     de Gülich solo vale por encima de 0,65",
+                    losses.throat_ratio
+                ),
+            )
+            .with_hint("La deceleración a la entrada es fuerte: revisa β1B y la incidencia."),
         );
     }
 

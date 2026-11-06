@@ -1333,8 +1333,16 @@ fn the_statistical_eta_v_stays_for_comparison_with_leakage_data() {
     )
     .unwrap();
     assert_eq!(plain.statistical_eta_v, plain.eta_v);
-    assert_eq!(measured.statistical_eta_v, plain.eta_v);
     assert_ne!(measured.eta_v, measured.statistical_eta_v);
+
+    // Con agujeros, la estadística es la de zH = 2 (Gülich 3.5.10).
+    let holes = DesignOptions {
+        balance_holes: true,
+        ..with(roomy())
+    };
+    let with_holes = design_with_options(&input(), &holes).unwrap();
+    assert_eq!(measured.statistical_eta_v, with_holes.eta_v);
+    assert!(with_holes.eta_v < plain.eta_v);
 }
 
 #[test]
@@ -1868,4 +1876,23 @@ fn the_shock_is_only_published_inside_its_range() {
     });
     assert!(wide.throat_ratio <= 0.65, "{}", wide.throat_ratio);
     assert_eq!(wide.shock, None);
+}
+
+#[test]
+fn a_shock_out_of_range_says_so() {
+    let wide = DesignOptions {
+        cm0: Some(1.5),
+        c0: Some(9.0),
+        j: Some(0.95),
+        incidence_deg: Some(10.0),
+        ..with(sample())
+    };
+    let result = design_with_options(&input(), &wide).unwrap();
+    let note = hint_of(&result, "HM-DES-049");
+    assert!(note.contains("0,65"), "{note}");
+
+    let fine = design_with_options(&input(), &with(sample())).unwrap();
+    assert!(!codes(&fine).iter().any(|code| code == "HM-DES-049"));
+    let free = design(&input()).unwrap();
+    assert!(!codes(&free).iter().any(|code| code == "HM-DES-049"));
 }

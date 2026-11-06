@@ -340,6 +340,11 @@ pub const CODES: &[CodeInfo] = &[
         "Con agujeros de equilibrio, el empuje axial estimado puede cambiar de sentido.",
     ),
     active(
+        "HM-DES-049",
+        Info,
+        "El golpe a la entrada del rodete no se calcula: w1q/w1m queda fuera de la ec. (T3.8.9).",
+    ),
+    active(
         "HM-DES-046",
         Warning,
         "Los agujeros de equilibrio suman poca área frente al anillo trasero gastado.",

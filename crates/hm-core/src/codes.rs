@@ -335,6 +335,11 @@ pub const CODES: &[CodeInfo] = &[
         "Z par y número de lenguas de la voluta par: Gülich evita esa combinación (p. 491).",
     ),
     active(
+        "HM-DES-048",
+        Info,
+        "Con agujeros de equilibrio, el empuje axial estimado puede cambiar de sentido.",
+    ),
+    active(
         "HM-DES-046",
         Warning,
         "Los agujeros de equilibrio suman poca área frente al anillo trasero gastado.",

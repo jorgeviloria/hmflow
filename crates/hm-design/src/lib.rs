@@ -2659,7 +2659,7 @@ pub const CYLINDRICAL_BLADE_MAX_NQ: f64 = 40.0;
 
 /// Rotación del fluido en las cámaras laterales sin fuga y con cámaras
 /// abiertas (Gülich 2020, ec. 3.10.8 con rw = r2 y tax = 0).
-const DISK_K0: f64 = 0.5;
+pub(crate) const DISK_K0: f64 = 0.5;
 
 /// Pérdidas de todas las superficies del rodete frente a las de las caras
 /// planas de las tapas (Gülich 2020, tabla 3.10, rodetes radiales típicos).
@@ -2685,6 +2685,11 @@ const SEAL_ROUGHNESS: f64 = 4.0e-6;
 /// Se acepta cuando el cambio relativo baja de 1e-4 y entonces se recalcula
 /// cax con esa λ. Si ΔH ≤ 0 no hay fuga (Qsp = 0, ηv = 1) y el tercer valor
 /// es verdadero. Si no hay raíz, error.
+/// Grado de reacción cinemático, acotado.
+pub(crate) fn kinematic_reaction(cu2: f64, u2: f64) -> f64 {
+    (1.0 - cu2 / (2.0 * u2)).clamp(0.2, 0.95)
+}
+
 /// Un anillo de desgaste. Sin holgura ni largo, los típicos de Gülich.
 struct SealRing {
     diameter: f64,
@@ -2731,7 +2736,7 @@ fn seal_leakage(
     let length = seal_length.unwrap_or(SEAL_LENGTH_RATIO * d1);
     let nu = Quantity::from_si(fluid_nu(input), m2s.clone());
     let reaction = if u2 > 0.0 && cu2.is_finite() {
-        (1.0 - cu2 / (2.0 * u2)).clamp(0.2, 0.95)
+        kinematic_reaction(cu2, u2)
     } else {
         return Err(DesignError::Input(
             "el grado de reacción del anillo necesita u2 positivo y cu2 finito".to_string(),

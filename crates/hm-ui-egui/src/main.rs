@@ -754,7 +754,11 @@ fn rows(outcome: &Outcome) -> Vec<(&'static str, Vec<Row>)> {
                 "mech.axial",
                 "Empuje axial",
                 format!("{:.0}..{:.0} N", mech.axial_thrust.0, mech.axial_thrust.1),
-                Some("mech.axial_thrust_estimate"),
+                Some(if model::balanced_axial_thrust(result) {
+                    "mech.axial_thrust_balanced"
+                } else {
+                    "mech.axial_thrust_estimate"
+                }),
             ),
             (
                 "mech.driver",

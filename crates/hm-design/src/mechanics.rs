@@ -10,7 +10,7 @@ use std::collections::BTreeMap;
 
 use hm_core::{Diagnostic, Diagnostics};
 use hm_formula::Registry;
-use hm_units::{Quantity, Unit, parse_unit};
+use hm_units::{Dimension, Quantity, Unit, parse_unit};
 
 use crate::{
     DesignError, DesignInput, DesignResult, PREFERRED_OPERATING_REGION, curve_head,
@@ -41,6 +41,10 @@ pub const RADIAL_NQ_RANGE: (f64, f64) = (10.0, 95.0);
 
 /// Intervalo de f_ax de la ec. (9.2.12) de Gülich 2020.
 pub const AXIAL_THRUST_FACTOR: (f64, f64) = (0.7, 0.9);
+
+/// Residuo por falta de simetría con agujeros de equilibrio: Gülich 2020, p. 657
+/// y ec. (9.2.14).
+pub const AXIAL_RESIDUAL: (f64, f64) = (0.1, 0.2);
 
 /// Fracción del ojo que puede tapar el cubo sin aviso: (dh/D0)² = 0,25, es
 /// decir dh = D0/2. Elección del motor: D0 se calcula sin cubo (end-suction,
@@ -114,7 +118,8 @@ pub struct Mechanics {
     pub front_seal_diameter: f64,
     /// Diámetro del cierre del eje supuesto, m (el del cubo).
     pub shaft_seal_diameter: f64,
-    /// Empuje axial hidráulico estimado, extremos bajo y alto, N.
+    /// Empuje axial hidráulico, extremos bajo y alto, N. Sin datos de fuga,
+    /// la estimación (9.2.12); con ellos, la (9.2.14), que puede ser negativa.
     pub axial_thrust: (f64, f64),
     /// Holgura diametral del anillo de la tapa anterior, m (ec. 3.12).
     pub seal_clearance: f64,
@@ -240,6 +245,9 @@ pub fn mechanics(
     let m = parse_unit("m")?;
     let pure = |value: f64| Quantity::from_si(value, one.clone());
     let metres = |value: f64| Quantity::from_si(value, m.clone());
+    let pascals = |value: f64| Quantity::from_si(value, Unit::new("Pa", Dimension::PRESSURE, 1.0));
+    let newtons = |value: f64| Quantity::from_si(value, Unit::new("N", Dimension::FORCE, 1.0));
+    let speed = |value: f64| Quantity::from_si(value, Unit::new("m/s", Dimension::VELOCITY, 1.0));
 
     let shaft_torque = result.torque_max.si;
     let (shaft_min_diameter, hub_min_diameter) = shaft_and_hub(shaft_torque, shear_stress)?;
@@ -325,6 +333,66 @@ pub fn mechanics(
         )
     };
 
+    let leakage = result
+        .casing
+        .as_ref()
+        .and_then(|casing| casing.leakage.as_ref());
+    let balanced_axial = |residual: f64, rear_seal: f64| -> Result<f64, DesignError> {
+        let dp = evaluate(
+            &registry,
+            "mech.impeller_pressure_rise",
+            &[
+                ("rho", input.rho.clone()),
+                ("H", input.h.clone()),
+                (
+                    "RG",
+                    pure(crate::kinematic_reaction(result.cu2.si, result.u2.si)),
+                ),
+            ],
+        )?;
+        let between = |db: f64| {
+            evaluate(
+                &registry,
+                "mech.axial_force_between_seals",
+                &[
+                    ("da", metres(front_seal_diameter)),
+                    ("db", metres(db)),
+                    ("dp", pascals(dp)),
+                    ("rho", input.rho.clone()),
+                    ("k", pure(crate::DISK_K0)),
+                    ("u2", result.u2.clone()),
+                    ("d2", result.d2.clone()),
+                ],
+            )
+        };
+        let momentum = evaluate(
+            &registry,
+            "mech.axial_momentum",
+            &[
+                ("rho", input.rho.clone()),
+                ("Q", input.q.clone()),
+                ("c1m", speed(result.selection.cm0)),
+            ],
+        )?;
+        evaluate(
+            &registry,
+            "mech.axial_thrust_balanced",
+            &[
+                ("f_res", pure(residual)),
+                ("F_unbalanced", newtons(between(shaft_seal_diameter)?)),
+                ("F_seals", newtons(between(rear_seal)?)),
+                ("F_I", newtons(momentum)),
+            ],
+        )
+    };
+    let axial_thrust = match leakage {
+        Some(leakage) => (
+            balanced_axial(AXIAL_RESIDUAL.0, leakage.rear_seal_diameter)?,
+            balanced_axial(AXIAL_RESIDUAL.1, leakage.rear_seal_diameter)?,
+        ),
+        None => (axial(AXIAL_THRUST_FACTOR.0)?, axial(AXIAL_THRUST_FACTOR.1)?),
+    };
+
     let usual_seal_clearance = evaluate(
         &registry,
         "mech.seal_clearance",
@@ -370,7 +438,7 @@ pub fn mechanics(
         radial_thrust_overload: radial(PREFERRED_OPERATING_REGION.1)?,
         front_seal_diameter,
         shaft_seal_diameter,
-        axial_thrust: (axial(AXIAL_THRUST_FACTOR.0)?, axial(AXIAL_THRUST_FACTOR.1)?),
+        axial_thrust,
         seal_clearance: declared_clearance.unwrap_or(usual_seal_clearance),
         usual_seal_clearance,
         rated_power,
@@ -468,6 +536,22 @@ fn casing_diagnostics(mechanics: &Mechanics, result: &DesignResult) -> Diagnosti
     }
 
     if let Some(leakage) = &casing.leakage {
+        let (low, high) = mechanics.axial_thrust;
+        if low < 0.0 {
+            diagnostics.push(
+                Diagnostic::info(
+                    "HM-DES-048",
+                    format!(
+                        "empuje axial de {low:.0} a {high:.0} N, positivo hacia la aspiración: \
+                         puede cambiar de sentido. No incluye Fw ni el acople"
+                    ),
+                )
+                .with_hint(
+                    "Es el punto de diseño. A caudal parcial el sentido puede invertirse \
+                     (Gülich, tabla 9.5).",
+                ),
+            );
+        }
         let holes = f64::from(leakage.balance_hole_count)
             * std::f64::consts::FRAC_PI_4
             * leakage.balance_hole_diameter.powi(2);

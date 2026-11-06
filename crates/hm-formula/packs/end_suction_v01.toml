@@ -1374,6 +1374,99 @@ value = "kR*rho*g*H*d2*b2tot"
 assumptions = "H es la altura en el caudal considerado y b2tot la anchura a la salida con las tapas del rodete."
 
 [[formula]]
+id = "mech.impeller_pressure_rise"
+version = 1
+validation = "pilot"
+module = "mech"
+title = "Subida de presión estática en el rodete"
+source = "Gülich 2020, tabla 9.2, ec. (9.2.1), p. 656"
+units = "Pa"
+range = "0 .. 100000000"
+test = "crates/hm-formula/tests/end_suction.rs::impeller_pressure_rise"
+
+[formula.inputs]
+rho = "kg/m3"
+H = "m"
+RG = "1"
+
+[formula.expr]
+value = "rho*g*H*RG"
+
+[formula.notes]
+assumptions = "RG es el grado de reacción, el mismo del anillo: 1 − cu2/(2·u2)."
+
+[[formula]]
+id = "mech.axial_force_between_seals"
+version = 1
+validation = "pilot"
+module = "mech"
+title = "Fuerza axial entre dos diámetros de sello"
+source = "Gülich 2020, tabla 9.2, ec. (9.2.7) y (9.2.13), p. 656"
+units = "N"
+range = "-10000000 .. 10000000"
+test = "crates/hm-formula/tests/end_suction.rs::axial_force_between_seals"
+
+[formula.inputs]
+da = "m"
+db = "m"
+dp = "Pa"
+rho = "kg/m3"
+k = "1"
+u2 = "m/s"
+d2 = "m"
+
+[formula.expr]
+value = "pi/4*(da^2 - db^2)*(dp - rho/2*k^2*u2^2*(1 - (da^2 + db^2)/(2*d2^2)))"
+
+[formula.notes]
+assumptions = "Con da = dsp y db = dD es la (9.2.7), rodete sin compensar; con db = ds2, la (9.2.13). k es el factor de rotación medio, igual en las dos tapas: válido con fuga pequeña (Gülich p. 654)."
+
+[[formula]]
+id = "mech.axial_momentum"
+version = 1
+validation = "pilot"
+module = "mech"
+title = "Fuerza por el impulso del flujo"
+source = "Gülich 2020, tabla 9.2, ec. (9.2.9), p. 656"
+units = "N"
+range = "0 .. 10000000"
+test = "crates/hm-formula/tests/end_suction.rs::axial_momentum"
+
+[formula.inputs]
+rho = "kg/m3"
+Q = "m3/s"
+c1m = "m/s"
+
+[formula.expr]
+value = "rho*Q*c1m"
+
+[formula.notes]
+assumptions = "Rodete radial: ε2 = 90°, y el término de c2m se anula."
+
+[[formula]]
+id = "mech.axial_thrust_balanced"
+version = 1
+validation = "pilot"
+module = "mech"
+title = "Empuje axial con agujeros de equilibrio"
+source = "Gülich 2020, tabla 9.2, ec. (9.2.14), p. 656"
+units = "N"
+range = "-10000000 .. 10000000"
+test = "crates/hm-formula/tests/end_suction.rs::axial_thrust_balanced"
+
+[formula.inputs]
+f_res = "1"
+F_unbalanced = "N"
+F_seals = "N"
+F_I = "N"
+
+[formula.expr]
+value = "f_res*F_unbalanced + F_seals - F_I"
+
+[formula.notes]
+assumptions = "f_res = 0,1..0,2, el residuo por falta de simetría. Sin Fw, que necesita la presión de succión, ni la fuerza del acople. Positivo hacia la aspiración."
+
+[[formula]]
 id = "mech.axial_thrust_estimate"
 version = 1
 validation = "pilot"

@@ -679,6 +679,14 @@ fn format_diagnostics(diagnostics: &Diagnostics) -> String {
     }
 }
 
+/// Con datos de fuga, el empuje axial es el de los agujeros de equilibrio.
+pub fn balanced_axial_thrust(result: &DesignResult) -> bool {
+    result
+        .casing
+        .as_ref()
+        .is_some_and(|casing| casing.leakage.is_some())
+}
+
 /// Con carcasa, la voluta del modelo no es la real: no se dibuja.
 pub fn draws_model_volute(result: &DesignResult) -> bool {
     result.casing.is_none()

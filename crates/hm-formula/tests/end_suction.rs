@@ -25,14 +25,18 @@ fn pack_is_audit_clean() {
     assert!(issues.is_empty(), "problemas de auditoría: {issues:?}");
 }
 
+/// Calculados aparte con la ec. (9.2.7) de Gülich.
+const FORCE_90_30: f64 = 1182.24;
+const FORCE_90_100: f64 = -331.08;
+
 #[test]
-fn pack_has_eighty_one_formulas() {
-    assert_eq!(Registry::from_toml(END_SUCTION_V01_PACK).unwrap().len(), 81);
+fn pack_has_eighty_five_formulas() {
+    assert_eq!(Registry::from_toml(END_SUCTION_V01_PACK).unwrap().len(), 85);
 }
 
 #[test]
 fn all_merges_every_pack() {
-    assert_eq!(Registry::all().len(), 98);
+    assert_eq!(Registry::all().len(), 102);
 }
 
 #[test]
@@ -876,6 +880,67 @@ fn radial_thrust() {
         ),
         141.2158,
         1e-3,
+    );
+}
+
+#[test]
+fn impeller_pressure_rise() {
+    close(
+        evaluate(
+            "mech.impeller_pressure_rise",
+            &[("rho", "1000 kg/m3"), ("H", "45 m"), ("RG", "0.7")],
+        ),
+        308_909.5,
+        0.1,
+    );
+}
+
+#[test]
+fn axial_force_between_seals() {
+    let force = |db: &str| {
+        evaluate(
+            "mech.axial_force_between_seals",
+            &[
+                ("da", "0.09 m"),
+                ("db", db),
+                ("dp", "308909.5 Pa"),
+                ("rho", "1000 kg/m3"),
+                ("k", "0.5"),
+                ("u2", "30 m/s"),
+                ("d2", "0.2 m"),
+            ],
+        )
+    };
+    close(force("0.03 m"), FORCE_90_30, 0.1);
+    close(force("0.10 m"), FORCE_90_100, 0.1);
+}
+
+#[test]
+fn axial_momentum() {
+    close(
+        evaluate(
+            "mech.axial_momentum",
+            &[("rho", "1000 kg/m3"), ("Q", "0.03 m3/s"), ("c1m", "5 m/s")],
+        ),
+        150.0,
+        1e-6,
+    );
+}
+
+#[test]
+fn axial_thrust_balanced() {
+    close(
+        evaluate(
+            "mech.axial_thrust_balanced",
+            &[
+                ("f_res", "0.15"),
+                ("F_unbalanced", "1000 N"),
+                ("F_seals", "-200 N"),
+                ("F_I", "150 N"),
+            ],
+        ),
+        -200.0,
+        1e-6,
     );
 }
 

@@ -1078,3 +1078,72 @@ fn hole_checks_need_leakage_data() {
     assert_eq!(fit_note(roomy(), "HM-DES-046"), None);
     assert_eq!(fit_note(roomy(), "HM-DES-047"), None);
 }
+
+/// (9.2.14) calculada aparte con los valores del diseño.
+#[test]
+fn the_balanced_axial_thrust_matches_the_hand_calculation() {
+    let result = design_with_options(&input(), &with(with_holes(6, 0.009))).unwrap();
+    let mech = mechanics(&input(), &result, DEFAULT_SHAFT_SHEAR_STRESS).unwrap();
+    let (rho, g, h) = (998.2, 9.806_65, 45.0);
+    let reaction = 1.0 - result.cu2.si / (2.0 * result.u2.si);
+    let dp = rho * g * h * reaction;
+    let (u2, d2, k) = (result.u2.si, result.d2.si, 0.5);
+    let force = |a: f64, b: f64| {
+        std::f64::consts::FRAC_PI_4
+            * (a * a - b * b)
+            * (dp - rho / 2.0 * k * k * u2 * u2 * (1.0 - (a * a + b * b) / (2.0 * d2 * d2)))
+    };
+    let (neck, hub, rear) = (0.120, 0.035, 0.080);
+    let momentum = rho * input().q.si * result.selection.cm0;
+    let at = |residual: f64| residual * force(neck, hub) + force(neck, rear) - momentum;
+    assert!((mech.axial_thrust.0 - at(0.1)).abs() < 1e-6, "{}", at(0.1));
+    assert!((mech.axial_thrust.1 - at(0.2)).abs() < 1e-6, "{}", at(0.2));
+}
+
+#[test]
+fn equal_seals_leave_only_the_residual_and_the_momentum() {
+    let equal = CasingFit {
+        leakage: Some(CasingLeakage {
+            rear_seal_diameter: 0.120,
+            balance_hole_circle: 0.070,
+            ..leakage()
+        }),
+        ..roomy()
+    };
+    let result = design_with_options(&input(), &with(equal)).unwrap();
+    let mech = mechanics(&input(), &result, DEFAULT_SHAFT_SHEAR_STRESS).unwrap();
+    let momentum = 998.2 * input().q.si * result.selection.cm0;
+    let residual = (mech.axial_thrust.1 - mech.axial_thrust.0) / 0.1;
+    assert!((mech.axial_thrust.0 - (0.1 * residual - momentum)).abs() < 1e-6);
+}
+
+#[test]
+fn without_leakage_data_the_axial_thrust_stays_the_rough_estimate() {
+    let result = design_with_options(&input(), &with(roomy())).unwrap();
+    let mech = mechanics(&input(), &result, DEFAULT_SHAFT_SHEAR_STRESS).unwrap();
+    let expected = 0.9
+        * 998.2
+        * 9.806_65
+        * 45.0
+        * std::f64::consts::FRAC_PI_4
+        * (0.120_f64.powi(2) - 0.035_f64.powi(2));
+    assert!((mech.axial_thrust.1 - expected).abs() < 1e-6);
+}
+
+#[test]
+fn a_thrust_that_can_reverse_is_informed() {
+    // Anillo trasero mayor que el delantero, como en el rodete real.
+    let larger_rear = CasingFit {
+        leakage: Some(CasingLeakage {
+            rear_seal_diameter: 0.150,
+            balance_hole_circle: 0.080,
+            ..leakage()
+        }),
+        ..roomy()
+    };
+    let note = fit_note(larger_rear, "HM-DES-048").unwrap();
+    assert!(note.contains("sentido"), "{note}");
+    assert!(note.contains("Fw"), "{note}");
+    assert_eq!(fit_note(with_holes(6, 0.009), "HM-DES-048"), None);
+    assert_eq!(fit_note(roomy(), "HM-DES-048"), None);
+}

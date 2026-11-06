@@ -409,8 +409,8 @@ fn casing_diagnostics(mechanics: &Mechanics, result: &DesignResult) -> Diagnosti
             Diagnostic::warning(
                 "HM-DES-042",
                 format!(
-                    "el eje mínimo sale {:.1} mm y el agujero de la carcasa es de {:.1} mm: \
-                     con un eje en servicio, revisa el criterio de la tensión admisible",
+                    "el eje mínimo sale {:.1} mm y el agujero de la carcasa es de {:.2} mm: \
+                     revisa el criterio de tensión admisible con el material real del eje",
                     mechanics.shaft_min_diameter * 1000.0,
                     casing.bore_diameter * 1000.0
                 ),
@@ -422,14 +422,20 @@ fn casing_diagnostics(mechanics: &Mechanics, result: &DesignResult) -> Diagnosti
     }
 
     if casing.hub_diameter < mechanics.hub_min_diameter {
-        diagnostics.push(Diagnostic::warning(
-            "HM-DES-044",
-            format!(
-                "el cubo de {:.1} mm queda por debajo de los {:.1} mm que pide el par",
-                casing.hub_diameter * 1000.0,
-                mechanics.hub_min_diameter * 1000.0
+        diagnostics.push(
+            Diagnostic::warning(
+                "HM-DES-044",
+                format!(
+                    "el cubo de {:.1} mm queda por debajo de los {:.1} mm que da el criterio de \
+                     tensión admisible",
+                    casing.hub_diameter * 1000.0,
+                    mechanics.hub_min_diameter * 1000.0
+                ),
+            )
+            .with_hint(
+                "Sale de la misma tensión conservadora que el eje mínimo, no del material real.",
             ),
-        ));
+        );
     }
 
     let ratio = casing.b3 / result.b2.si;

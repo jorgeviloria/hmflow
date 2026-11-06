@@ -583,17 +583,39 @@ fn a_bore_under_the_minimum_shaft_is_warned_with_the_criterion() {
         .iter()
         .find(|diagnostic| diagnostic.code == "HM-DES-042")
         .unwrap();
-    assert!(warning.message.contains("20.0 mm"), "{}", warning.message);
+    assert!(warning.message.contains("20.00 mm"), "{}", warning.message);
     assert!(warning.message.contains("criterio"), "{}", warning.message);
 }
 
 #[test]
-fn a_hub_under_the_minimum_is_warned() {
+fn a_hub_under_the_minimum_is_warned_with_the_criterion() {
     let casing = CasingFit {
         hub_diameter: 0.030,
         ..roomy()
     };
-    assert!(fires(casing, "HM-DES-044"));
+    let result = design_with_options(&input(), &with(casing)).unwrap();
+    let mech = mechanics(&input(), &result, DEFAULT_SHAFT_SHEAR_STRESS).unwrap();
+    let diagnostics = mechanics_diagnostics(&mech, &result);
+    let warning = diagnostics
+        .iter()
+        .find(|diagnostic| diagnostic.code == "HM-DES-044")
+        .unwrap();
+    assert!(warning.message.contains("criterio"), "{}", warning.message);
+}
+
+#[test]
+fn every_fit_warning_at_once_still_gives_a_design() {
+    let casing = CasingFit {
+        neck_diameter: 0.076,
+        bore_diameter: 0.020,
+        hub_diameter: 0.030,
+        b3: 0.019,
+        ..sample()
+    };
+    let found = fit_codes(casing);
+    for code in ["HM-DES-041", "HM-DES-042", "HM-DES-043", "HM-DES-044"] {
+        assert!(found.iter().any(|item| item == code), "{code}: {found:?}");
+    }
 }
 
 #[test]
@@ -613,7 +635,7 @@ fn a_volute_width_outside_the_book_values_is_only_informed() {
 }
 
 #[test]
-fn the_fit_checks_never_stop_the_design_and_need_a_casing() {
+fn the_fit_checks_need_a_casing() {
     let free = design(&input()).unwrap();
     let mech = mechanics(&input(), &free, DEFAULT_SHAFT_SHEAR_STRESS).unwrap();
     let codes: Vec<_> = mechanics_diagnostics(&mech, &free)

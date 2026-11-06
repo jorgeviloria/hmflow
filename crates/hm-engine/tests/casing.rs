@@ -1,7 +1,7 @@
 //! `[casing]` a través del motor: lo que el proyecto declara llega al diseño
 //! y el ψ guardado no bloquea cambiar el punto.
 
-use hm_engine::{CurvePoints, analyze, audit, case_from_project, recalc};
+use hm_engine::{CurvePoints, analyze, audit, case_from_project, recalc, report};
 use hm_project::{Casing, Param, Project, PumpType};
 
 fn casing() -> Casing {
@@ -306,4 +306,61 @@ fn a_saved_throat_ratio_is_not_a_contradiction() {
         Some(Param::Manual { .. })
     ));
     assert!(recalc(project, false).is_ok());
+}
+
+#[test]
+fn a_locked_phi_survives_reselecting_and_the_rest_follows_it() {
+    let mut project = double_saved();
+    let old_beta2 = text(&project, "beta2");
+    project.params.insert(
+        "phi".to_string(),
+        Param::Locked {
+            value: "0.0785".to_string(),
+        },
+    );
+    let reselected = recalc(project, true).unwrap();
+    let project = reselected.project;
+    assert_eq!(text(&project, "phi"), "0.0785");
+    assert!(matches!(
+        project.params.get("phi"),
+        Some(Param::Locked { .. })
+    ));
+    assert_ne!(text(&project, "beta2"), old_beta2);
+    let z: u32 = text(&project, "blade_count").parse().unwrap();
+    assert_eq!(z % 2, 1);
+    let found: Vec<_> = reselected
+        .diagnostics
+        .iter()
+        .map(|diagnostic| diagnostic.code.as_str())
+        .collect();
+    assert!(!found.contains(&"HM-DES-019"), "{found:?}");
+}
+
+#[test]
+fn a_manual_phi_does_not_survive_reselecting() {
+    let mut project = double_saved();
+    project.params.insert(
+        "phi".to_string(),
+        Param::Manual {
+            value: "0.0785".to_string(),
+        },
+    );
+    let project = recalc(project, true).unwrap().project;
+    assert_ne!(text(&project, "phi"), "0.0785");
+}
+
+#[test]
+fn fit_warnings_reach_audit_and_report_once() {
+    let project = saved();
+    let audited = audit(&project);
+    let reported = report(&project, CurvePoints::MINIMUM).unwrap();
+    for code in ["HM-DES-042", "HM-DES-044"] {
+        let in_audit = audited.iter().filter(|item| item.code == code).count();
+        let in_report = reported
+            .diagnostics
+            .iter()
+            .filter(|item| item.code == code)
+            .count();
+        assert_eq!((in_audit, in_report), (1, 1), "{code}");
+    }
 }

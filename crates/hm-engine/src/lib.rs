@@ -29,8 +29,8 @@ pub use convert::{
 };
 pub use dispatch::analyze;
 pub use editor::{
-    DesignEdits, EditorError, Opened, design_edits, edited_options, open_project, update_design,
-    update_point,
+    DesignEdits, EditorError, Opened, design_edits, edited_options, open_project, reselect_design,
+    reselected_options, update_design, update_point,
 };
 pub use error::{CaseField, EngineError, Stage, cli_message};
 pub use fluid::{

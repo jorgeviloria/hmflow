@@ -15,7 +15,8 @@ use hm_engine::{
     Analysis, Case, CaseField, CurvePoints, Density, DensitySource, DesignEdits, DesignOptions,
     Duty, EditorError, EngineError, Entered, Fluid, FluidKind, Intake, Opened, PumpType,
     Temperature, analyze, cli_message, design_edits, edited_options, new_casing_project,
-    new_project, open_project, report, update_design, update_point, water_density_at,
+    new_project, open_project, report, reselect_design, reselected_options, update_design,
+    update_point, water_density_at,
 };
 use hm_project::{Casing, Project};
 use hm_units::Quantity;
@@ -329,7 +330,7 @@ fn edits_from(inputs: &Inputs) -> Result<DesignEdits, (Field, String)> {
 
 fn read_design(inputs: &Inputs, basis: &Basis, errors: &mut FieldErrors) -> Option<DesignOptions> {
     let read = edits_from(inputs).and_then(|edits| {
-        edited_options(&basis.design, &basis.reselected, &basis.edits, &edits)
+        edited_options(basis.project.as_ref(), &edits)
             .map_err(|error| engine_error_field(error, !inputs.eta_m.trim().is_empty()))
     });
     match read {
@@ -568,28 +569,25 @@ fn engine_error_field(error: EngineError, eta_m_typed: bool) -> (Field, String) 
 /// selecciones manuales valen hasta que se cierre el proyecto.
 #[derive(Debug, Clone, Default)]
 pub struct Basis {
-    pub design: DesignOptions,
+    /// El proyecto abierto. Sus selecciones y lo que esté fijado no tienen caja.
+    pub project: Option<Project>,
     /// Densidad escrita en el archivo y la caja de temperatura con que se
     /// abrió. Solo vale mientras esa caja no cambie, salvo si está bloqueada.
     pub density: Option<(String, Density)>,
     pub rho_locked: bool,
     /// El texto de una ηm bloqueada: al guardar, la caja no la pisa.
     pub locked_eta_m: Option<String>,
-    /// Carcasa, selecciones y medidas del archivo abierto.
-    pub edits: DesignEdits,
-    /// Las opciones sin lo que está en `manual`.
-    pub reselected: DesignOptions,
 }
 
 impl Basis {
-    fn from_opened(opened: &Opened, inputs: &Inputs) -> Self {
+    fn from_opened(project: &Project, opened: &Opened, inputs: &Inputs) -> Self {
         let density = &opened.case.fluid.density;
         let written = matches!(
             &density.source,
             DensitySource::Explicit { text } if !text.trim().is_empty()
         );
         Self {
-            design: opened.case.design.clone(),
+            project: Some(project.clone()),
             density: written.then(|| (inputs.temperature_c.clone(), density.clone())),
             rho_locked: opened.rho_locked,
             locked_eta_m: if opened.eta_m_locked {
@@ -597,8 +595,6 @@ impl Basis {
             } else {
                 None
             },
-            edits: opened.edits.clone(),
-            reselected: opened.reselected.clone(),
         }
     }
 
@@ -713,7 +709,7 @@ pub fn open_loaded(project: Project) -> Result<OpenedFile, String> {
     inputs.blade_count.clone_from(&opened.edits.blade_count);
     inputs.roughness.clone_from(&opened.edits.roughness);
     inputs.incidence.clone_from(&opened.edits.incidence);
-    let basis = Basis::from_opened(&opened, &inputs);
+    let basis = Basis::from_opened(&project, &opened, &inputs);
     Ok(OpenedFile {
         project,
         inputs,
@@ -828,6 +824,60 @@ pub fn build_project(
             })
         }
     }
+}
+
+/// Un proyecto reelegido, sin escribir, y lo que cambió.
+#[derive(Debug)]
+pub struct Reselected {
+    pub project: Project,
+    pub changes: Vec<String>,
+}
+
+/// Número corto: un texto del archivo lleva todas las cifras.
+fn short_value(text: &str) -> String {
+    let (number, unit) = text.split_once(' ').unwrap_or((text, ""));
+    match number.parse::<f64>() {
+        Ok(value) => format!("{value:.4} {unit}").trim().to_string(),
+        Err(_) => text.to_string(),
+    }
+}
+
+/// Rehace lo que esté en `manual` con estas cajas. Es una orden: guardar nunca
+/// reelige. No escribe el archivo. Funciona aunque el diseño de las cajas falle,
+/// porque es la salida de un φ manual que ya no cabe.
+pub fn reselect_project(inputs: &Inputs, basis: &Basis) -> Result<Reselected, String> {
+    let Some(project) = &basis.project else {
+        return Err("solo se reelige en un proyecto guardado".to_string());
+    };
+    let edits = edits_from(inputs).map_err(|(_, message)| message)?;
+    let mut case = case_from_inputs(inputs, basis).map_err(|errors| field_failure(&errors))?;
+    case.design = reselected_options(project, &edits).map_err(|error| engine_failure(&error))?;
+    let analysis = analyze(&case, CurvePoints::clamped(CURVE_POINTS))
+        .map_err(|error| engine_failure(&error))?;
+    if let Some(message) = stage_failure(&analysis) {
+        return Err(message);
+    }
+    let updated =
+        update_point(project.clone(), &case, &analysis).map_err(|error| engine_failure(&error))?;
+    let recalculated = reselect_design(updated, &edits).map_err(|error| engine_failure(&error))?;
+    let changes = recalculated
+        .changes
+        .iter()
+        .filter(|change| change.before.as_deref() != Some(change.after.as_str()))
+        .map(|change| {
+            let before = change.before.as_deref().unwrap_or("nada");
+            format!(
+                "{}: {} → {}",
+                change.name,
+                short_value(before),
+                short_value(&change.after)
+            )
+        })
+        .collect();
+    Ok(Reselected {
+        project: recalculated.project,
+        changes,
+    })
 }
 
 /// JSON del informe, con el mismo proyecto en memoria que al guardar.
@@ -1302,18 +1352,22 @@ mod tests {
 
     #[test]
     fn the_shock_says_when_it_does_not_apply() {
-        // Añadir la carcasa reelige: las selecciones van en `reselected`.
+        let mut project = hm_project::Project::new("demo", hm_engine::PumpType::EndSuction);
+        for (name, value) in [("cm0", "1.5 m/s"), ("c0", "9 m/s"), ("J", "0.95")] {
+            let value = value.to_string();
+            project
+                .params
+                .insert(name.to_string(), hm_project::Param::Locked { value });
+        }
         let basis = Basis {
-            reselected: hm_engine::DesignOptions {
-                cm0: Some(1.5),
-                c0: Some(9.0),
-                j: Some(0.95),
-                incidence_deg: Some(10.0),
-                ..Default::default()
-            },
+            project: Some(project),
             ..Basis::default()
         };
-        let outcome = super::compute(&with_casing(|_| ()), &basis).unwrap();
+        let inputs = Inputs {
+            incidence: "10 deg".to_string(),
+            ..with_casing(|_| ())
+        };
+        let outcome = super::compute(&inputs, &basis).unwrap();
         let rows: Vec<_> = super::casing_rows(&outcome)
             .into_iter()
             .map(|row| (row.key, row.value))

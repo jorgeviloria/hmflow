@@ -4,7 +4,7 @@
 use hm_engine::{
     CaseField, CurvePoints, DesignEdits, EngineError, analyze, audit, case_from_project,
     design_edits, edited_options, new_casing_project, new_project, open_project, recalc, report,
-    update_design,
+    reselect_design, update_design,
 };
 use hm_project::{Casing, Param, Project, PumpType};
 
@@ -808,6 +808,13 @@ fn edited(project: &Project, edit: impl FnOnce(&mut DesignEdits)) -> Project {
     update_design(project.clone(), &edits).unwrap().project
 }
 
+/// Lo mismo, y además reelige lo que esté en `manual`.
+fn reselected(project: &Project, edit: impl FnOnce(&mut DesignEdits)) -> Project {
+    let mut edits = design_edits(project);
+    edit(&mut edits);
+    reselect_design(project.clone(), &edits).unwrap().project
+}
+
 fn is_locked_to(project: &Project, name: &str, expected: &str) -> bool {
     matches!(project.params.get(name), Some(Param::Locked { value }) if value == expected)
 }
@@ -834,7 +841,7 @@ fn an_edit_of_the_casing_is_kept_after_reopening() {
 #[test]
 fn fixing_phi_and_z_locks_them_and_redoes_what_depends_on_them() {
     let before = saved();
-    let project = edited(&before, |edits| {
+    let project = reselected(&before, |edits| {
         edits.phi = "0.08".to_string();
         edits.blade_count = "5".to_string();
     });
@@ -852,11 +859,11 @@ fn fixing_phi_and_z_locks_them_and_redoes_what_depends_on_them() {
 #[test]
 fn releasing_leaves_the_file_as_if_it_had_never_been_fixed() {
     let never = saved();
-    let fixed = edited(&never, |edits| {
+    let fixed = reselected(&never, |edits| {
         edits.phi = "0.08".to_string();
         edits.blade_count = "5".to_string();
     });
-    let released = edited(&fixed, |edits| {
+    let released = reselected(&fixed, |edits| {
         edits.phi.clear();
         edits.blade_count.clear();
     });
@@ -881,7 +888,7 @@ fn a_fixed_eye_survives_a_fixed_phi() {
     let locked = locked_value(&project, "c0");
     project.params.insert("c0".to_string(), locked.clone());
     let reference = eye(&project);
-    let done = edited(&project, |edits| edits.phi = "0.08".to_string());
+    let done = reselected(&project, |edits| edits.phi = "0.08".to_string());
     assert_eq!(
         format!("{:?}", done.params.get("c0")),
         format!("{:?}", Some(&locked))
@@ -947,11 +954,11 @@ fn beta2_text(project: &Project) -> String {
 #[test]
 fn each_decision_alone_redoes_what_depends_on_it() {
     let before = saved();
-    let phi = edited(&before, |edits| edits.phi = "0.08".to_string());
+    let phi = reselected(&before, |edits| edits.phi = "0.08".to_string());
     assert_ne!(beta2_text(&phi), beta2_text(&before));
-    let blades = edited(&before, |edits| edits.blade_count = "6".to_string());
+    let blades = reselected(&before, |edits| edits.blade_count = "6".to_string());
     assert_ne!(beta2_text(&blades), beta2_text(&before));
-    let casing = edited(&before, |edits| {
+    let casing = reselected(&before, |edits| {
         let casing = edits.casing.as_mut().unwrap();
         casing.d2 = "220 mm".to_string();
         casing.cutwater_radius = "116 mm".to_string();
@@ -982,13 +989,7 @@ fn preview_matches_what_is_saved(project: &Project, edit: impl FnOnce(&mut Desig
     let opened = open_project(project).unwrap();
     let mut edits = opened.edits.clone();
     edit(&mut edits);
-    let design = edited_options(
-        &opened.case.design,
-        &opened.reselected,
-        &opened.edits,
-        &edits,
-    )
-    .unwrap();
+    let design = edited_options(Some(project), &edits).unwrap();
     let case = hm_engine::Case {
         design,
         ..opened.case
@@ -1072,5 +1073,90 @@ fn a_casing_replaces_a_volute_fixed_by_hand() {
     let value = "1.2".to_string();
     free.params
         .insert("k3".to_string(), Param::Locked { value });
+    preview_matches_what_is_saved(&free, |edits| edits.casing = Some(casing()));
+}
+
+/// Selecciones escritas a mano, de las que no saldría el motor.
+fn by_hand() -> Project {
+    let mut project = saved();
+    for (name, value) in [("phi", "0.09"), ("beta2", "25 deg"), ("blade_count", "5")] {
+        let value = value.to_string();
+        project
+            .params
+            .insert(name.to_string(), Param::Manual { value });
+    }
+    recalc(project, false).unwrap().project
+}
+
+fn manual_is(project: &Project, name: &str, expected: &str) -> bool {
+    matches!(project.params.get(name), Some(Param::Manual { value }) if value == expected)
+}
+
+#[test]
+fn a_space_in_a_box_changes_nothing() {
+    let project = by_hand();
+    let same = edited(&project, |edits| {
+        edits.phi = " ".to_string();
+        edits.casing.as_mut().unwrap().b3 = "30 mm ".to_string();
+    });
+    assert!(manual_is(&same, "phi", "0.09"));
+    assert!(manual_is(&same, "beta2", "25 deg"));
+    assert!(manual_is(&same, "blade_count", "5"));
+}
+
+#[test]
+fn saving_never_redoes_a_selection_by_itself() {
+    let project = by_hand();
+    let fixed = edited(&project, |edits| edits.blade_count = "5".to_string());
+    assert!(manual_is(&fixed, "beta2", "25 deg"));
+    let released = edited(&fixed, |edits| edits.blade_count.clear());
+    assert!(manual_is(&released, "beta2", "25 deg"));
+    let throat = edited(&project, |edits| {
+        edits.casing.as_mut().unwrap().throat_area = "0.002 m2".to_string();
+    });
+    assert!(manual_is(&throat, "phi", "0.09"));
+    assert!(manual_is(&throat, "beta2", "25 deg"));
+}
+
+#[test]
+fn reselecting_reports_what_it_changed() {
+    let project = by_hand();
+    let done = reselect_design(project.clone(), &design_edits(&project)).unwrap();
+    assert!(done.changes.iter().any(|change| change.name == "beta2"));
+    assert!(!manual_is(&done.project, "beta2", "25 deg"));
+}
+
+#[test]
+fn what_is_shown_is_saved_with_a_locked_eye_and_a_casing_change() {
+    // Quitar la carcasa con el ojo fijo.
+    let mut eye_locked = saved();
+    let locked = locked_value(&eye_locked, "c0");
+    eye_locked.params.insert("c0".to_string(), locked);
+    preview_matches_what_is_saved(&eye_locked, |edits| edits.casing = None);
+
+    // Ponerla con c0 en `locked` y J y cm0 en `manual`, que se conservan.
+    let mut free = edited(&saved(), |edits| edits.casing = None);
+    for (name, param) in [
+        (
+            "c0",
+            Param::Locked {
+                value: "9.5 m/s".to_string(),
+            },
+        ),
+        (
+            "cm0",
+            Param::Manual {
+                value: "9 m/s".to_string(),
+            },
+        ),
+        (
+            "J",
+            Param::Manual {
+                value: "1".to_string(),
+            },
+        ),
+    ] {
+        free.params.insert(name.to_string(), param);
+    }
     preview_matches_what_is_saved(&free, |edits| edits.casing = Some(casing()));
 }

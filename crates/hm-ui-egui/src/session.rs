@@ -9,7 +9,9 @@ use std::path::{Path, PathBuf};
 use hm_core::Diagnostic;
 use hm_project::Project;
 
-use crate::model::{Basis, Inputs, build_project, export_report, open_file, open_loaded};
+use crate::model::{
+    Basis, Inputs, build_project, export_report, open_file, open_loaded, reselect_project,
+};
 
 /// Orden del menú Archivo que puede tirar el trabajo en curso.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -154,6 +156,29 @@ impl Session {
         if self.discard_notice().is_some() {
             self.notice = None;
         }
+    }
+
+    /// Reelige con el motor lo que esté en `manual`. Las cajas pasan a lo reelegido
+    /// y queda sin guardar; el aviso dice qué cambió.
+    pub fn reselect(&mut self) -> Result<(), String> {
+        self.disarm();
+        let reselected = reselect_project(&self.inputs, &self.basis).inspect_err(|message| {
+            self.notice = Some(message.clone());
+        })?;
+        let reopened = open_loaded(reselected.project.clone()).inspect_err(|message| {
+            self.notice = Some(message.clone());
+        })?;
+        self.inputs = reopened.inputs;
+        self.basis = reopened.basis;
+        self.project = Some(reselected.project);
+        self.opened_diagnostics = None;
+        self.dirty = true;
+        self.notice = Some(if reselected.changes.is_empty() {
+            "Reelegido: no cambió nada.".to_string()
+        } else {
+            format!("Reelegido, sin guardar: {}.", reselected.changes.join("; "))
+        });
+        Ok(())
     }
 
     /// Pide quitar la carcasa. Si el archivo la tiene, la primera vez solo avisa;
@@ -490,7 +515,15 @@ mod tests {
         let mut session = Session::default();
         let path = fixture("end_suction_v0.9.hmf");
         assert!(session.open_path(&path));
-        assert!(session.basis.design.psi.is_some());
+        assert!(
+            session
+                .basis
+                .project
+                .as_ref()
+                .unwrap()
+                .params
+                .contains_key("psi")
+        );
         assert!(session.basis.density.is_some());
         assert_eq!(session.bar_label().as_deref(), Some("end_suction_v0.9.hmf"));
         session.inputs.q = "1 m3/h".into();
@@ -511,7 +544,7 @@ mod tests {
         assert!(session.file.is_none());
         assert!(session.project.is_none());
         assert!(session.basis.density.is_none());
-        assert!(session.basis.design.psi.is_none());
+        assert!(session.basis.project.is_none());
         assert!(!session.dirty);
         assert!(session.notice.is_none());
         assert!(session.opened_diagnostics.is_none());
@@ -591,27 +624,86 @@ mod tests {
     }
 
     #[test]
-    fn releasing_a_box_of_an_open_file_lets_the_engine_choose_again() {
-        let dir = scratch("seleccion-soltar");
+    fn reselecting_is_an_explicit_order_and_lists_what_changed() {
+        let dir = scratch("reelegir");
         let path = dir.join("rodete.hmf");
         let mut session = Session::default();
         session.save_to(&path).unwrap();
-        // El primer archivo sale del agua sin redondear; el reelegido, de `rho`
-        // tal como quedó escrita. Se compara desde un archivo ya reelegido.
-        session.inputs.phi = "0.08".to_string();
-        session.save_to(&path).unwrap();
-        session.inputs.phi.clear();
-        session.save_to(&path).unwrap();
+        let mut project = Project::load(&path).unwrap();
+        project.params.insert(
+            "beta2".to_string(),
+            Param::Manual {
+                value: "25 deg".to_string(),
+            },
+        );
+        project.save(&path).unwrap();
         let before = std::fs::read_to_string(&path).unwrap();
 
+        assert!(session.open_path(&path), "{:?}", session.notice);
         session.inputs.phi = "0.09".to_string();
         session.edited();
-        session.save_to(&path).unwrap();
-        session.inputs.phi.clear();
-        session.edited();
-        session.save_to(&path).unwrap();
+        session.reselect().unwrap();
+
+        // Nada se escribe hasta guardar, y el aviso dice qué cambió.
         assert_eq!(std::fs::read_to_string(&path).unwrap(), before);
+        assert!(session.dirty);
+        let notice = session.notice.clone().unwrap();
+        assert!(notice.contains("beta2"), "{notice}");
+        assert_eq!(session.inputs.phi, "0.09");
+
+        session.save_to(&path).unwrap();
+        let saved = Project::load(&path).unwrap();
+        assert!(matches!(&saved.params["phi"], Param::Locked { value } if value == "0.09"));
+        assert!(!matches!(&saved.params["beta2"], Param::Manual { value } if value == "25 deg"));
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn reselecting_without_edits_also_leaves_work_to_save() {
+        let dir = scratch("reelegir-sin-editar");
+        let path = dir.join("rodete.hmf");
+        let mut session = Session::default();
+        session.save_to(&path).unwrap();
+        let mut project = Project::load(&path).unwrap();
+        project.params.insert(
+            "beta2".to_string(),
+            Param::Manual {
+                value: "25 deg".to_string(),
+            },
+        );
+        project.save(&path).unwrap();
+        assert!(session.open_path(&path), "{:?}", session.notice);
+        assert!(!session.dirty);
+        session.reselect().unwrap();
+        assert!(session.dirty);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn reselecting_rescues_a_selection_that_no_longer_fits() {
+        let dir = scratch("reelegir-rescate");
+        let path = copy_fixture(&dir, "casing_v3.hmf");
+        let mut project = Project::load(&path).unwrap();
+        project.params.insert(
+            "phi".to_string(),
+            Param::Manual {
+                value: "0.02".to_string(),
+            },
+        );
+        project.save(&path).unwrap();
+
+        let mut session = Session::default();
+        assert!(session.open_path(&path), "{:?}", session.notice);
+        assert!(crate::model::compute(&session.inputs, &session.basis).is_err());
+        session.reselect().unwrap();
+        assert!(crate::model::compute(&session.inputs, &session.basis).is_ok());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn reselecting_needs_an_open_project() {
+        let mut session = Session::default();
+        assert!(session.reselect().is_err());
     }
 
     #[test]
@@ -964,10 +1056,7 @@ mod tests {
         );
         session.project = Some(project);
         session.basis = Basis {
-            design: hm_engine::DesignOptions {
-                volute_ratio: Some(0.5),
-                ..Default::default()
-            },
+            project: session.project.clone(),
             ..Basis::default()
         };
         session.inputs.q = "4 m3/s".into();
@@ -1168,10 +1257,7 @@ mod tests {
         );
         session.project = Some(project);
         session.basis = Basis {
-            design: hm_engine::DesignOptions {
-                volute_ratio: Some(0.5),
-                ..Default::default()
-            },
+            project: session.project.clone(),
             ..Basis::default()
         };
         session.inputs.q = "4 m3/s".into();

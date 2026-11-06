@@ -12,8 +12,7 @@ use crate::analysis::{Analysis, CurvePoints, require_stages};
 use crate::audit::audit;
 use crate::case::{Case, DensitySource, FluidKind, Temperature};
 use crate::convert::{
-    CASING_COPIES, MANUAL_PARAMS, case_from_project, casing_fit, decode, override_error,
-    param_value,
+    CASING_COPIES, case_from_project, casing_fit, design_options, override_error, param_value,
 };
 use crate::dispatch::analyze;
 use crate::error::{CaseField, EngineError, cli_message, input_error};
@@ -41,9 +40,6 @@ pub struct Opened {
     pub eta_m_locked: bool,
     /// Lo que muestran las cajas de carcasa, selecciones y medidas.
     pub edits: DesignEdits,
-    /// Las opciones sin lo que está en `manual`: de aquí parte el motor al
-    /// reelegir. Ver [`edited_options`].
-    pub reselected: DesignOptions,
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -105,9 +101,6 @@ pub fn open_project(project: &Project) -> Result<Opened, EditorError> {
             diagnostics.extend(analysis.diagnostics);
         }
     }
-    let mut free = project.clone();
-    take_manual_selections(&mut free);
-    let reselected = case_from_project(&free).map_err(invalid_from)?.design;
     let eta_m_text = project
         .params
         .get("eta_m")
@@ -120,7 +113,6 @@ pub fn open_project(project: &Project) -> Result<Opened, EditorError> {
         rho_locked: is_locked(project, "rho"),
         eta_m_locked: is_locked(project, "eta_m"),
         edits: design_edits(project),
-        reselected,
     })
 }
 
@@ -203,90 +195,71 @@ pub fn design_edits(project: &Project) -> DesignEdits {
     }
 }
 
-/// Si los cambios obligan a reelegir lo que está en `manual`.
-fn must_reselect(before: &DesignEdits, edits: &DesignEdits) -> bool {
-    before.casing != edits.casing
-        || before.phi != edits.phi
-        || before.blade_count != edits.blade_count
-}
-
-/// Las opciones con que calcular `edits` antes de guardarlos. Dan el mismo
-/// diseño que [`update_design`]: lo que la ventana muestra es lo que escribe.
-pub fn edited_options(
-    design: &DesignOptions,
-    reselected: &DesignOptions,
-    before: &DesignEdits,
-    edits: &DesignEdits,
-) -> Result<DesignOptions, EngineError> {
-    let mut options = if must_reselect(before, edits) {
-        reselected.clone()
-    } else {
-        design.clone()
-    };
-    if before.casing.is_some() != edits.casing.is_some() {
-        for param in MANUAL_PARAMS
-            .iter()
-            .filter(|param| CASING_COPIES.contains(&param.name))
-        {
-            (param.set)(&mut options, None);
-        }
-    }
-    options.casing = edits.casing.as_ref().map(casing_fit).transpose()?;
-
-    // Se leen como del archivo: mismas unidades y mismos errores.
-    let boxes = [
-        ("phi", &edits.phi, &before.phi),
-        ("blade_count", &edits.blade_count, &before.blade_count),
-        ("impeller_roughness", &edits.roughness, &before.roughness),
-        ("incidence_deg", &edits.incidence, &before.incidence),
-    ];
-    for (name, text, previous) in boxes {
-        let Some(param) = MANUAL_PARAMS.iter().find(|param| param.name == name) else {
-            continue;
-        };
-        if !text.trim().is_empty() {
-            let mut holder = Project::new("cajas", PumpType::EndSuction);
-            holder.params.insert(
-                name.to_string(),
-                Param::Manual {
-                    value: text.trim().to_string(),
-                },
-            );
-            (param.set)(&mut options, decode(&holder, param)?);
-        } else if !previous.trim().is_empty() {
-            (param.set)(&mut options, None);
-        }
-    }
-    Ok(options)
-}
-
-/// Escribe `edits` y recalcula. `update_point` escribe el punto; esto, el resto.
-///
-/// Fijar o soltar φ o Z, o cambiar la carcasa, reelige lo que esté en `manual`:
-/// un β2 guardado es de la selección anterior. Si nada de eso cambia, se conserva
-/// todo. Soltar quita el `locked`, y el motor vuelve a elegir.
-pub fn update_design(
-    mut project: Project,
-    edits: &DesignEdits,
-) -> Result<Recalculated, EngineError> {
+/// Escribe `edits` en el proyecto, sin calcular nada.
+fn apply_edits(project: &mut Project, edits: &DesignEdits) -> Result<(), EngineError> {
     if let Some(casing) = &edits.casing {
         casing_fit(casing)?;
     }
-    let before = design_edits(&project);
-    let reselect = must_reselect(&before, edits);
-
     // Con carcasa o sin ella, la voluta guardada es de la otra.
-    if before.casing.is_some() != edits.casing.is_some() {
+    if project.casing.is_some() != edits.casing.is_some() {
         for name in CASING_COPIES {
             project.params.remove(name);
         }
     }
     project.casing = edits.casing.clone();
-    write_decision(&mut project, "phi", &edits.phi);
-    write_decision(&mut project, "blade_count", &edits.blade_count);
-    write_measure(&mut project, "impeller_roughness", &edits.roughness);
-    write_measure(&mut project, "incidence_deg", &edits.incidence);
-    recalc(project, reselect)
+    write_decision(project, "phi", &edits.phi);
+    write_decision(project, "blade_count", &edits.blade_count);
+    write_measure(project, "impeller_roughness", &edits.roughness);
+    write_measure(project, "incidence_deg", &edits.incidence);
+    Ok(())
+}
+
+/// Las opciones con que calcular `edits` antes de guardarlos. Salen del mismo
+/// camino que [`update_design`]: lo que la ventana muestra es lo que escribe.
+pub fn edited_options(
+    project: Option<&Project>,
+    edits: &DesignEdits,
+) -> Result<DesignOptions, EngineError> {
+    let mut edited = project
+        .cloned()
+        .unwrap_or_else(|| Project::new("cajas", PumpType::EndSuction));
+    apply_edits(&mut edited, edits)?;
+    design_options(&edited)
+}
+
+/// Como [`edited_options`], sin lo que está en `manual`: lo que usará
+/// [`reselect_design`].
+pub fn reselected_options(
+    project: &Project,
+    edits: &DesignEdits,
+) -> Result<DesignOptions, EngineError> {
+    let mut edited = project.clone();
+    apply_edits(&mut edited, edits)?;
+    take_manual_selections(&mut edited);
+    design_options(&edited)
+}
+
+/// Escribe `edits` y recalcula. `update_point` escribe el punto; esto, el resto.
+///
+/// No reelige nunca: lo que esté en `manual` se conserva, aunque quede de otra
+/// selección, y `HM-DES-019` lo avisa. Reelegir es una orden aparte,
+/// [`reselect_design`]. Soltar un valor quita el `locked`.
+pub fn update_design(
+    mut project: Project,
+    edits: &DesignEdits,
+) -> Result<Recalculated, EngineError> {
+    apply_edits(&mut project, edits)?;
+    recalc(project, false)
+}
+
+/// Como [`update_design`], y además rehace lo que esté en `manual`. Lo `locked` se
+/// respeta. `changes` dice qué cambió.
+pub fn reselect_design(
+    mut project: Project,
+    edits: &DesignEdits,
+) -> Result<Recalculated, EngineError> {
+    apply_edits(&mut project, edits)?;
+    recalc(project, true)
 }
 
 /// Con valor, `locked`. Vacío suelta un `locked`; un `manual` se queda.

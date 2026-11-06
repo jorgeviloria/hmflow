@@ -482,7 +482,7 @@ pub(crate) fn casing_volute(project: &Project) -> Vec<&'static str> {
         .collect()
 }
 
-fn design_options(project: &Project) -> Result<DesignOptions, EngineError> {
+pub(crate) fn design_options(project: &Project) -> Result<DesignOptions, EngineError> {
     let mut options = DesignOptions::default();
 
     let from_casing = [casing_results(project), casing_volute(project)].concat();
@@ -582,7 +582,7 @@ pub fn casing_fit(casing: &Casing) -> Result<CasingFit, EngineError> {
     Ok(fit)
 }
 
-pub(crate) fn decode(project: &Project, param: &ManualParam) -> Result<Option<f64>, EngineError> {
+fn decode(project: &Project, param: &ManualParam) -> Result<Option<f64>, EngineError> {
     match param.decode {
         Decode::Float { zero_is_none } => Ok(without_zero(
             param_f64(project, param.name, param.unit)?,

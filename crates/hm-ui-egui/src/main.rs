@@ -60,6 +60,8 @@ struct App {
     registry: Registry,
     /// Captura de pantalla para revisar la interfaz sin abrirla a mano.
     capture: Option<Capture>,
+    /// Pulsaron «Reelegir» en este fotograma.
+    reselect_requested: bool,
 }
 
 /// `HMF_SCREENSHOT=ruta.ppm` (y opcionalmente `HMF_TAB=curves|geometry`)
@@ -88,6 +90,7 @@ impl App {
                 frames: 0,
                 done: Default::default(),
             }),
+            reselect_requested: false,
         };
         app.recompute();
         app
@@ -540,6 +543,13 @@ fn inputs_content(ui: &mut egui::Ui, app: &mut App) {
     ui.add_space(4.0);
     changed |= casing_section(ui, app, &errors);
     changed |= selections_section(ui, app, &errors);
+    if app.reselect_requested {
+        app.reselect_requested = false;
+        // El aviso del panel dice qué cambió o por qué no se pudo.
+        let _ = app.session.reselect();
+        changed = false;
+        app.recompute();
+    }
     for (_, message) in errors.iter().filter(|(field, _)| *field == Field::General) {
         ui.label(
             RichText::new(message)
@@ -632,6 +642,8 @@ fn selections_section(ui: &mut egui::Ui, app: &mut App, errors: &FieldErrors) ->
     });
     let open = filled || inputs.casing.is_some();
     let mut changed = false;
+    let mut requested = false;
+    let can_reselect = app.session.project.is_some();
     // Como en la carcasa: un archivo con algo fijado se abre desplegado.
     egui::CollapsingHeader::new("Selecciones y medidas")
         .id_salt(("selections", open))
@@ -643,7 +655,15 @@ fn selections_section(ui: &mut egui::Ui, app: &mut App, errors: &FieldErrors) ->
                     changed |= text_box(ui, label, value, hint, error, name);
                 }
             }
+            requested = ui
+                .add_enabled(can_reselect, egui::Button::new("Reelegir con el motor"))
+                .on_hover_text(
+                    "Rehace lo que esté en manual para este punto. Lo fijado se respeta. \
+                     No se escribe hasta guardar.",
+                )
+                .clicked();
         });
+    app.reselect_requested = requested;
     changed
 }
 

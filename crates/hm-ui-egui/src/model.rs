@@ -499,7 +499,7 @@ fn optional_suction(name: &str, text: &str, errors: &mut FieldErrors) -> Option<
 /// `Err` son errores de lectura o del motor, cada uno en su campo. Un fallo
 /// de etapa no descarta el resto: queda en el `Result` de `Outcome`.
 pub fn compute(inputs: &Inputs, basis: &Basis) -> Result<Outcome, FieldErrors> {
-    let case = case_from_inputs(inputs, basis)?;
+    let case = case_from_inputs(&with_locked_eta_m(inputs, basis), basis)?;
     let analysis = analyze(&case, CurvePoints::clamped(CURVE_POINTS))
         .map_err(|error| vec![engine_error_field(error, !inputs.eta_m.trim().is_empty())])?;
     Ok(outcome_from(inputs, analysis))
@@ -782,13 +782,7 @@ pub fn build_project(
     previous: Option<&Project>,
     name: &str,
 ) -> Result<Built, String> {
-    let inputs = match &basis.locked_eta_m {
-        Some(text) => Inputs {
-            eta_m: text.clone(),
-            ..inputs.clone()
-        },
-        None => inputs.clone(),
-    };
+    let inputs = with_locked_eta_m(inputs, basis);
     let case = case_from_inputs(&inputs, basis).map_err(|errors| field_failure(&errors))?;
     let analysis = analyze(&case, CurvePoints::clamped(CURVE_POINTS))
         .map_err(|error| engine_failure(&error))?;
@@ -837,6 +831,18 @@ pub fn build_project(
     }
 }
 
+/// Las cajas, con la ηm bloqueada en vez de lo escrito: es la que se calcula y se
+/// guarda.
+fn with_locked_eta_m(inputs: &Inputs, basis: &Basis) -> Inputs {
+    match &basis.locked_eta_m {
+        Some(text) => Inputs {
+            eta_m: text.clone(),
+            ..inputs.clone()
+        },
+        None => inputs.clone(),
+    }
+}
+
 /// Un proyecto reelegido, sin escribir, y lo que cambió.
 #[derive(Debug)]
 pub struct Reselected {
@@ -878,7 +884,8 @@ pub fn reselect_project(inputs: &Inputs, basis: &Basis) -> Result<Reselected, St
         return Err("solo se reelige en un proyecto guardado".to_string());
     };
     let edits = edits_from(inputs).map_err(|(_, message)| message)?;
-    let mut case = case_from_inputs(inputs, basis).map_err(|errors| field_failure(&errors))?;
+    let inputs = with_locked_eta_m(inputs, basis);
+    let mut case = case_from_inputs(&inputs, basis).map_err(|errors| field_failure(&errors))?;
     case.design = reselected_options(project, &edits).map_err(|error| engine_failure(&error))?;
     let analysis = analyze(&case, CurvePoints::clamped(CURVE_POINTS))
         .map_err(|error| engine_failure(&error))?;
@@ -1390,6 +1397,27 @@ mod tests {
             .map(|row| (row.key, row.value))
             .collect();
         assert_eq!(value(&rows, "casing.shock"), "fuera de rango");
+    }
+
+    #[test]
+    fn a_locked_eta_m_is_what_the_preview_uses() {
+        let basis = Basis {
+            locked_eta_m: Some("0.95".to_string()),
+            ..Basis::default()
+        };
+        let typed = Inputs {
+            eta_m: "0.90".to_string(),
+            ..Inputs::default()
+        };
+        let locked = Inputs {
+            eta_m: "0.95".to_string(),
+            ..Inputs::default()
+        };
+        let shown = super::compute(&typed, &basis).unwrap();
+        let saved = super::compute(&locked, &Basis::default()).unwrap();
+        assert_eq!(shown.result.eta, saved.result.eta);
+        // Las cajas no cambian: el resultado sigue siendo de lo que hay escrito.
+        assert_eq!(shown.inputs, typed);
     }
 
     #[test]

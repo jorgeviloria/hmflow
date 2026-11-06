@@ -149,6 +149,9 @@ pub struct ReportCasingLeakage {
     pub balance_hole_count: u32,
     pub balance_hole_diameter: Measure,
     pub balance_hole_circle: Measure,
+    /// Ausente: el empuje axial usó el cubo.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub shaft_seal_diameter: Option<Measure>,
 }
 
 /// Mecánica preliminar: eje por torsión, cubo y empujes hidráulicos.
@@ -290,6 +293,9 @@ impl ReportCasing {
                 balance_hole_count: leakage.balance_hole_count,
                 balance_hole_diameter: Measure::new(leakage.balance_hole_diameter, "m"),
                 balance_hole_circle: Measure::new(leakage.balance_hole_circle, "m"),
+                shaft_seal_diameter: leakage
+                    .shaft_seal_diameter
+                    .map(|seal| Measure::new(seal, "m")),
             }),
         }
     }

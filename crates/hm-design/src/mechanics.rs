@@ -318,7 +318,12 @@ pub fn mechanics(
         .casing
         .as_ref()
         .map_or(result.d1.si, |casing| casing.neck_diameter);
-    let shaft_seal_diameter = hub_diameter;
+    let shaft_seal_diameter = result
+        .casing
+        .as_ref()
+        .and_then(|casing| casing.leakage.as_ref())
+        .and_then(|leakage| leakage.shaft_seal_diameter)
+        .unwrap_or(hub_diameter);
     let axial = |factor: f64| -> Result<f64, DesignError> {
         evaluate(
             &registry,
@@ -386,10 +391,12 @@ pub fn mechanics(
         )
     };
     let axial_thrust = match leakage {
-        Some(leakage) => (
-            balanced_axial(AXIAL_RESIDUAL.0, leakage.rear_seal_diameter)?,
-            balanced_axial(AXIAL_RESIDUAL.1, leakage.rear_seal_diameter)?,
-        ),
+        Some(leakage) => {
+            let first = balanced_axial(AXIAL_RESIDUAL.0, leakage.rear_seal_diameter)?;
+            let second = balanced_axial(AXIAL_RESIDUAL.1, leakage.rear_seal_diameter)?;
+            // Con presión muy baja F(9.2.7) es negativa y el residuo invierte el orden.
+            (first.min(second), first.max(second))
+        }
         None => (axial(AXIAL_THRUST_FACTOR.0)?, axial(AXIAL_THRUST_FACTOR.1)?),
     };
 
@@ -542,8 +549,13 @@ fn casing_diagnostics(mechanics: &Mechanics, result: &DesignResult) -> Diagnosti
                 Diagnostic::info(
                     "HM-DES-048",
                     format!(
-                        "empuje axial de {low:.0} a {high:.0} N, positivo hacia la aspiración: \
-                         puede cambiar de sentido. No incluye Fw ni el acople"
+                        "empuje axial de {low:.0} a {high:.0} N, positivo hacia la aspiración: {}. \
+                         No incluye Fw ni el acople",
+                        if high < 0.0 {
+                            "va hacia el accionamiento, al revés de lo habitual"
+                        } else {
+                            "puede cambiar de sentido"
+                        }
                     ),
                 )
                 .with_hint(
@@ -568,7 +580,10 @@ fn casing_diagnostics(mechanics: &Mechanics, result: &DesignResult) -> Diagnosti
                         area_ratio
                     ),
                 )
-                .with_hint("Si estrangulan, sube la presión detrás de la tapa y el empuje axial."),
+                .with_hint(
+                    "Si estrangulan, sube la presión detrás de la tapa, y el empuje axial calculado \
+                     deja de valer: la ec. (9.2.14) supone agujeros suficientes.",
+                ),
             );
         }
         let channels = result.selection.blade_count;

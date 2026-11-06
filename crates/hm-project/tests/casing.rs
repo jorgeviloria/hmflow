@@ -268,3 +268,26 @@ fn has_leakage_sees_any_of_the_fields() {
     };
     assert!(!blank.has_leakage());
 }
+
+#[test]
+fn the_shaft_seal_is_optional_but_not_alone() {
+    let with_seal = Casing {
+        shaft_seal_diameter: "28 mm".to_string(),
+        ..with_leakage()
+    };
+    assert!(codes(with_seal).is_empty());
+    assert!(codes(with_leakage()).is_empty());
+
+    let alone = Casing {
+        shaft_seal_diameter: "28 mm".to_string(),
+        ..sample()
+    };
+    assert!(alone.has_leakage());
+    assert!(!codes(alone).is_empty());
+
+    let bad = Casing {
+        shaft_seal_diameter: "28 kg".to_string(),
+        ..with_leakage()
+    };
+    assert_eq!(codes(bad), ["HM-PROJ-030"]);
+}

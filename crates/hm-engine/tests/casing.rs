@@ -594,3 +594,23 @@ fn the_report_gives_the_rear_leakage_only_with_leakage_data() {
     let ratio = full.hydraulics.unwrap().rear_seal_leakage_ratio.unwrap();
     assert!(ratio.value > 0.0);
 }
+
+#[test]
+fn a_negative_axial_thrust_reaches_the_report_and_the_seal_too() {
+    let mut project = project();
+    project.casing = Some(Casing {
+        neck_diameter: "90 mm".to_string(),
+        rear_seal_diameter: "150 mm".to_string(),
+        balance_hole_circle: "80 mm".to_string(),
+        shaft_seal_diameter: "28 mm".to_string(),
+        ..with_leakage()
+    });
+    let project = recalc(project, false).unwrap().project;
+    let mechanics = report(&project, CurvePoints::MINIMUM)
+        .unwrap()
+        .mechanics
+        .unwrap();
+    assert!(mechanics.axial_thrust_low.value < 0.0);
+    assert!(mechanics.axial_thrust_low.value <= mechanics.axial_thrust_high.value);
+    assert!((mechanics.shaft_seal_diameter.value - 0.028).abs() < 1e-12);
+}

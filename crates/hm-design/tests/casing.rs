@@ -755,6 +755,7 @@ fn leakage() -> CasingLeakage {
         balance_hole_count: 6,
         balance_hole_diameter: 0.009,
         balance_hole_circle: 0.050,
+        shaft_seal_diameter: None,
     }
 }
 
@@ -1017,6 +1018,7 @@ fn the_eta_v_iteration_never_fails_to_converge() {
                         balance_hole_count: 6,
                         balance_hole_diameter: 0.05 * neck,
                         balance_hole_circle: 0.3 * d2,
+                        shaft_seal_diameter: None,
                     }),
                 };
                 match design_with_options(&point, &with(casing)) {
@@ -1135,15 +1137,88 @@ fn a_thrust_that_can_reverse_is_informed() {
     // Anillo trasero mayor que el delantero, como en el rodete real.
     let larger_rear = CasingFit {
         leakage: Some(CasingLeakage {
-            rear_seal_diameter: 0.150,
+            rear_seal_diameter: 0.1225,
             balance_hole_circle: 0.080,
             ..leakage()
         }),
         ..roomy()
     };
-    let note = fit_note(larger_rear, "HM-DES-048").unwrap();
-    assert!(note.contains("sentido"), "{note}");
+    let note = fit_note(larger_rear.clone(), "HM-DES-048").unwrap();
+    assert!(note.contains("cambiar de sentido"), "{note}");
     assert!(note.contains("Fw"), "{note}");
+
+    let largest_rear = CasingFit {
+        leakage: Some(CasingLeakage {
+            rear_seal_diameter: 0.180,
+            balance_hole_circle: 0.080,
+            ..leakage()
+        }),
+        ..roomy()
+    };
+    let note = fit_note(largest_rear, "HM-DES-048").unwrap();
+    assert!(note.contains("hacia el accionamiento"), "{note}");
+    assert!(!note.contains("cambiar de sentido"), "{note}");
     assert_eq!(fit_note(with_holes(6, 0.009), "HM-DES-048"), None);
     assert_eq!(fit_note(roomy(), "HM-DES-048"), None);
+}
+
+#[test]
+fn the_axial_band_is_always_ordered() {
+    let result = design_with_options(&input(), &with(oversized(0.080, 0.090))).unwrap();
+    let mech = mechanics(&input(), &result, DEFAULT_SHAFT_SHEAR_STRESS).unwrap();
+    assert!(
+        mech.axial_thrust.0 <= mech.axial_thrust.1,
+        "{:?}",
+        mech.axial_thrust
+    );
+}
+
+#[test]
+fn the_shaft_seal_replaces_the_hub_in_the_axial_thrust() {
+    let thrust = |shaft_seal_diameter| {
+        let casing = CasingFit {
+            leakage: Some(CasingLeakage {
+                shaft_seal_diameter,
+                ..leakage()
+            }),
+            ..roomy()
+        };
+        let result = design_with_options(&input(), &with(casing)).unwrap();
+        mechanics(&input(), &result, DEFAULT_SHAFT_SHEAR_STRESS).unwrap()
+    };
+    let hub = thrust(None);
+    let sealed = thrust(Some(0.025));
+    assert_eq!(hub.shaft_seal_diameter, 0.035);
+    assert_eq!(sealed.shaft_seal_diameter, 0.025);
+    assert!(sealed.axial_thrust.1 > hub.axial_thrust.1);
+}
+
+#[test]
+fn a_bad_shaft_seal_is_rejected_by_name() {
+    for value in [0.0, -1.0, f64::NAN, 0.120] {
+        let casing = CasingFit {
+            leakage: Some(CasingLeakage {
+                shaft_seal_diameter: Some(value),
+                ..leakage()
+            }),
+            ..roomy()
+        };
+        let error = design_with_options(&input(), &with(casing))
+            .unwrap_err()
+            .to_string();
+        assert!(error.contains("casing.shaft_seal_diameter"), "{error}");
+    }
+}
+
+#[test]
+fn small_holes_say_the_axial_figure_no_longer_holds() {
+    let result = design_with_options(&input(), &with(with_holes(6, 0.007))).unwrap();
+    let mech = mechanics(&input(), &result, DEFAULT_SHAFT_SHEAR_STRESS).unwrap();
+    let diagnostics = mechanics_diagnostics(&mech, &result);
+    let warning = diagnostics
+        .iter()
+        .find(|diagnostic| diagnostic.code == "HM-DES-046")
+        .unwrap();
+    let hint = warning.hint.clone().unwrap_or_default();
+    assert!(hint.contains("deja de valer"), "{hint}");
 }

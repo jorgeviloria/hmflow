@@ -584,6 +584,8 @@ pub struct CasingLeakage {
     pub balance_hole_diameter: f64,
     /// Diámetro del círculo de los agujeros.
     pub balance_hole_circle: f64,
+    /// Diámetro del cierre del eje. `None`: el empuje usa el cubo.
+    pub shaft_seal_diameter: Option<f64>,
 }
 
 /// Lo que una carcasa existente le impone al rodete, en SI.
@@ -741,6 +743,10 @@ impl CasingFit {
                 ("rear_seal_length", leakage.rear_seal_length),
                 ("balance_hole_diameter", leakage.balance_hole_diameter),
                 ("balance_hole_circle", leakage.balance_hole_circle),
+                (
+                    "shaft_seal_diameter",
+                    leakage.shaft_seal_diameter.unwrap_or(1.0),
+                ),
             ];
             for (name, value) in sizes {
                 if !value.is_finite() || value <= 0.0 {
@@ -760,6 +766,15 @@ impl CasingFit {
                     "rear_seal_diameter",
                     &rear.to_string(),
                     "debe quedar entre `hub_diameter` y `d2`",
+                ));
+            }
+            if let Some(seal) = leakage.shaft_seal_diameter
+                && seal >= self.neck_diameter
+            {
+                return Err(problem(
+                    "shaft_seal_diameter",
+                    &seal.to_string(),
+                    "debe ser menor que el cuello",
                 ));
             }
             leakage.validate_fit(self.hub_diameter, self.neck_diameter)?;

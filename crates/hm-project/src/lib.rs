@@ -124,6 +124,9 @@ pub struct Casing {
     /// Diámetro del círculo de los agujeros de equilibrio.
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub balance_hole_circle: String,
+    /// Diámetro del cierre del eje. Opcional: sin él, el empuje usa el cubo.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub shaft_seal_diameter: String,
 }
 
 fn is_zero(value: &u32) -> bool {
@@ -148,6 +151,7 @@ impl Casing {
                 &self.rear_seal_length,
                 &self.balance_hole_diameter,
                 &self.balance_hole_circle,
+                &self.shaft_seal_diameter,
             ]
             .iter()
             .any(|text| !text.trim().is_empty())
@@ -617,6 +621,14 @@ fn check_casing_leakage(diagnostics: &mut Diagnostics, casing: &Casing) -> Optio
     ];
     if !casing.has_leakage() {
         return None;
+    }
+    if !casing.shaft_seal_diameter.trim().is_empty() {
+        casing_value(
+            diagnostics,
+            "shaft_seal_diameter",
+            &casing.shaft_seal_diameter,
+            "m",
+        );
     }
     let mut rear = None;
     for (name, text) in lengths {

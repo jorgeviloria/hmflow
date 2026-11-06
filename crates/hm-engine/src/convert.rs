@@ -541,6 +541,10 @@ pub fn casing_fit(casing: &Casing) -> Result<CasingFit, EngineError> {
                     "m",
                 )?,
                 balance_hole_circle: si("balance_hole_circle", &casing.balance_hole_circle, "m")?,
+                shaft_seal_diameter: match casing.shaft_seal_diameter.trim() {
+                    "" => None,
+                    text => Some(si("shaft_seal_diameter", text, "m")?),
+                },
             })
         })
         .transpose()?;

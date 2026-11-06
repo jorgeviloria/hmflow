@@ -8,7 +8,20 @@ use hm_core::{CODES, CodeStatus, Severity, code_info};
 use hm_units::{Quantity, parse_quantity, parse_unit};
 use serde::Deserialize;
 
+/// Raíz del repositorio. Las puertas leen rutas relativas a ella, desde donde
+/// se las llame.
+fn repo_root() -> PathBuf {
+    Path::new(env!("CARGO_MANIFEST_DIR"))
+        .parent()
+        .map_or_else(|| PathBuf::from("."), Path::to_path_buf)
+}
+
 fn main() -> ExitCode {
+    if let Err(error) = std::env::set_current_dir(repo_root()) {
+        eprintln!("no se pudo entrar en la raíz del repositorio: {error}");
+        return ExitCode::FAILURE;
+    }
+
     let task = std::env::args().nth(1).unwrap_or_else(|| "ci".to_string());
 
     match task.as_str() {
@@ -363,24 +376,32 @@ struct Expected {
     tolerance: f64,
 }
 
+/// Carpetas de caso, ordenadas. Sin ninguna es un error: una puerta que no
+/// ejecuta nada no puede pasar en verde.
+fn case_directories(directory: &Path) -> Result<Vec<PathBuf>, String> {
+    let entries = std::fs::read_dir(directory)
+        .map_err(|error| format!("no se pudo leer {}: {error}", directory.display()))?;
+    let mut cases: Vec<PathBuf> = entries
+        .flatten()
+        .map(|entry| entry.path())
+        .filter(|path| path.is_dir())
+        .collect();
+    if cases.is_empty() {
+        return Err(format!("{} no tiene casos", directory.display()));
+    }
+    cases.sort();
+    Ok(cases)
+}
+
 /// Ejecuta los casos de `tests/cases/`.
 fn cases() -> bool {
-    let directory = Path::new("tests/cases");
-    if !directory.is_dir() {
-        println!("cases: sin casos");
-        return true;
-    }
-
-    let mut entries: Vec<PathBuf> = std::fs::read_dir(directory)
-        .map(|entries| {
-            entries
-                .flatten()
-                .map(|entry| entry.path())
-                .filter(|path| path.is_dir())
-                .collect()
-        })
-        .unwrap_or_default();
-    entries.sort();
+    let entries = match case_directories(Path::new("tests/cases")) {
+        Ok(entries) => entries,
+        Err(error) => {
+            eprintln!("cases: {error}");
+            return false;
+        }
+    };
 
     let registry = hm_formula::Registry::all();
     let mut ok = true;
@@ -678,8 +699,28 @@ fn diagnostics_markdown() -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::{Graph, check_deps, find_codes, graph_from_metadata};
+    use super::{Graph, case_directories, check_deps, find_codes, graph_from_metadata, repo_root};
     use std::collections::{BTreeMap, BTreeSet};
+    use std::path::Path;
+
+    #[test]
+    fn a_missing_folder_of_cases_is_an_error() {
+        let error = case_directories(Path::new("no/existe")).unwrap_err();
+        assert!(error.contains("no/existe"), "{error}");
+    }
+
+    #[test]
+    fn a_folder_without_cases_is_an_error() {
+        let error = case_directories(&repo_root().join("xtask/src")).unwrap_err();
+        assert!(error.contains("no tiene casos"), "{error}");
+    }
+
+    #[test]
+    fn the_cases_are_found_from_the_root() {
+        let cases = case_directories(&repo_root().join("tests/cases")).unwrap();
+        assert!(cases.len() > 1);
+        assert!(cases.is_sorted());
+    }
 
     fn graph(entries: &[(&str, &[&str])]) -> Graph {
         entries

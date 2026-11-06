@@ -65,7 +65,20 @@ fn design_check_report_and_recalc_work_end_to_end() {
     assert!(designed.status.success(), "{}", text(&designed));
     let printed = text(&designed);
     assert!(printed.contains("Carcasa"), "{printed}");
-    assert!(!printed.contains("A360"), "{printed}");
+    for model_volute in ["A360", "DN ", "difusor"] {
+        assert!(!printed.contains(model_volute), "{model_volute}: {printed}");
+    }
+    assert!(printed.contains("dz/d2"), "{printed}");
+    let z: u32 = printed
+        .split("Z = ")
+        .nth(1)
+        .and_then(|rest| rest.split_whitespace().next())
+        .and_then(|text| text.parse().ok())
+        .unwrap();
+    assert_eq!(z % 2, 1, "con dos canales, Z impar: {printed}");
+    for warning in ["HM-DES-039", "HM-DES-040"] {
+        assert!(printed.contains(warning), "{warning}: {printed}");
+    }
 
     let file = std::fs::read_to_string(dir.join("rodete.hmf")).unwrap();
     assert!(file.contains("[casing]"), "{file}");

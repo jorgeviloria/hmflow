@@ -2936,9 +2936,12 @@ fn diagnostics_for(
                      y la curva H(Q) subiría con el caudal"
                 ),
             )
-            .with_hint(
-                "ψ es mayor que ψo = 1,25·e^(−0,3·nq/100) (Gülich ec. 3.28); reduce el coeficiente de altura.",
-            ),
+            .with_hint(if options.casing.is_some() {
+                "ψ es mayor que ψo = 1,25·e^(−0,3·nq/100) (Gülich ec. 3.28) y sale del D2 de la \
+                 carcasa: esta carcasa no sirve para este punto."
+            } else {
+                "ψ es mayor que ψo = 1,25·e^(−0,3·nq/100) (Gülich ec. 3.28); reduce el coeficiente de altura."
+            }),
         );
     } else if result.nq < 40.0 && head_rise < MIN_HEAD_RISE {
         // Las correlaciones medias de Gülich (3.26) y (3.28) ya dan
@@ -2951,7 +2954,11 @@ fn diagnostics_for(
                      nq < 40 (p. 403): curva Q-H plana"
                 ),
             )
-            .with_hint("Si hace falta una curva más estable, reduce ψ o estrecha la voluta."),
+            .with_hint(if options.casing.is_some() {
+                "ψ y la voluta son datos de la carcasa: el rodete no cambia esto."
+            } else {
+                "Si hace falta una curva más estable, reduce ψ o estrecha la voluta."
+            }),
         );
     }
 
@@ -3006,7 +3013,11 @@ fn diagnostics_for(
                     result.cutwater_min_ratio
                 ),
             )
-            .with_hint("Aumenta k3 o déjalo sin fijar para que tome el valor de Gülich."),
+            .with_hint(if options.casing.is_some() {
+                "La lengua es de la carcasa: un rodete nuevo no la cambia."
+            } else {
+                "Aumenta k3 o déjalo sin fijar para que tome el valor de Gülich."
+            }),
         );
     }
 

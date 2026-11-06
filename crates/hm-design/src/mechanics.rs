@@ -409,7 +409,7 @@ fn casing_diagnostics(mechanics: &Mechanics, result: &DesignResult) -> Diagnosti
             Diagnostic::warning(
                 "HM-DES-042",
                 format!(
-                    "el eje mínimo sale {:.1} mm y el agujero de la carcasa es de {:.2} mm: \
+                    "el eje mínimo sale {:.1} mm y el agujero de la carcasa es de {:.3} mm: \
                      revisa el criterio de tensión admisible con el material real del eje",
                     mechanics.shaft_min_diameter * 1000.0,
                     casing.bore_diameter * 1000.0

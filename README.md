@@ -68,6 +68,9 @@ cargo run -p hmflow-cli -- recalc bomba.hmf
 # dependen de nq (las locked se respetan)
 cargo run -p hmflow-cli -- recalc --reselect bomba.hmf
 
+# Diseñar un rodete para una carcasa existente (archivo con una tabla [casing])
+cargo run -p hmflow-cli -- design --q "120 m3/h" --h "45 m" --n "2900 rpm" --casing carcasa.toml --out rodete.hmf
+
 # Reducir un ensayo de banco y compararlo con el .hmf que indique el caso
 cargo run -p hmflow-cli -- bench case.toml
 

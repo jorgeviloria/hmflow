@@ -10,9 +10,6 @@ use eframe::egui;
 use egui::{Color32, RichText};
 use egui_plot::{Corner, HLine, Legend, Line, Plot, PlotPoints, Points, Polygon, VLine};
 use hm_core::Severity;
-// `designed_si` no está en la fachada: es el valor calculado de un parámetro
-// y la tabla lo muestra junto a su fórmula.
-use hm_design::{MODEL_VOLUTE_RESULTS, designed_si};
 use hm_engine::{METHOD, PARAM_SPECS, PREFERRED_OPERATING_REGION};
 use hm_formula::Registry;
 
@@ -668,8 +665,7 @@ fn rows(outcome: &Outcome) -> Vec<(&'static str, Vec<Row>)> {
         },
     ];
     for spec in PARAM_SPECS.iter().filter(|spec| spec.formula.is_some()) {
-        let hidden = result.casing.is_some() && MODEL_VOLUTE_RESULTS.contains(&spec.name);
-        if let Some(value) = designed_si(result, spec.name).filter(|_| !hidden) {
+        if let Some(value) = model::shown_result(result, spec.name) {
             design.push(Row {
                 key: spec.name,
                 label: spec.name,
@@ -1176,7 +1172,7 @@ fn plan_view(ui: &mut egui::Ui, outcome: &Outcome) {
                 plot_ui.line(line("Álabes", points, blue));
             }
             // Con carcasa, la del modelo no es la real: no se dibuja.
-            if result.casing.is_none() {
+            if model::draws_model_volute(result) {
                 plot_ui.line(line("Voluta", volute, orange));
             }
         });

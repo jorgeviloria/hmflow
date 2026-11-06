@@ -10,7 +10,10 @@ use std::path::Path;
 use hm_core::{Diagnostic, Diagnostics};
 use hm_design::geometry::Geometry;
 use hm_design::mechanics::Mechanics;
-use hm_design::{CurvePoint, DesignError, DesignInput, DesignResult, ViscousCorrection};
+use hm_design::{
+    CurvePoint, DesignError, DesignInput, DesignResult, MODEL_VOLUTE_RESULTS, ViscousCorrection,
+    designed_si,
+};
 use hm_engine::{
     Analysis, Case, CaseField, CurvePoints, Density, DensitySource, DesignOptions, Duty,
     EditorError, EngineError, Entered, Fluid, FluidKind, Intake, Opened, PumpType, Temperature,
@@ -676,8 +679,59 @@ fn format_diagnostics(diagnostics: &Diagnostics) -> String {
     }
 }
 
+/// Con carcasa, la voluta del modelo no es la real: no se dibuja.
+pub fn draws_model_volute(result: &DesignResult) -> bool {
+    result.casing.is_none()
+}
+
+/// Valor de un resultado para la tabla, salvo que sea de la voluta del modelo y
+/// haya carcasa.
+pub fn shown_result(result: &DesignResult, name: &str) -> Option<f64> {
+    let hidden = result.casing.is_some() && MODEL_VOLUTE_RESULTS.contains(&name);
+    designed_si(result, name).filter(|_| !hidden)
+}
+
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn with_a_casing_the_model_volute_is_neither_drawn_nor_listed() {
+        let q = |text: &str| hm_units::parse_quantity(text).unwrap();
+        let input = hm_design::DesignInput {
+            q: q("120 m3/h"),
+            h: q("45 m"),
+            n: q("2900 rpm"),
+            rho: q("998.2 kg/m3"),
+            eta_m: 0.95,
+            npsha: None,
+            nu: None,
+        };
+        let free = hm_design::design(&input).unwrap();
+        assert!(super::draws_model_volute(&free));
+        assert!(super::shown_result(&free, "a360").is_some());
+
+        let options = hm_design::DesignOptions {
+            casing: Some(hm_design::CasingFit {
+                d2: 0.210,
+                neck_diameter: 0.090,
+                eye_diameter_max: 0.075,
+                bore_diameter: 0.020,
+                hub_diameter: 0.030,
+                b3: 0.030,
+                cutwater_radius: 0.111,
+                channels: 1,
+                wrap_deg: None,
+                throat_area: None,
+            }),
+            ..hm_design::DesignOptions::default()
+        };
+        let fitted = hm_design::design_with_options(&input, &options).unwrap();
+        assert!(!super::draws_model_volute(&fitted));
+        for name in hm_design::MODEL_VOLUTE_RESULTS {
+            assert_eq!(super::shown_result(&fitted, name), None, "{name}");
+        }
+        assert!(super::shown_result(&fitted, "b3").is_some());
+    }
+
     use super::*;
     use hm_project::Param;
 

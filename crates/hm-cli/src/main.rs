@@ -527,7 +527,7 @@ fn run(cli: Cli) -> Result<ExitCode, Box<dyn std::error::Error>> {
             match &result.casing {
                 // A360, D360 y R4 son de la voluta del modelo: no se imprimen.
                 Some(casing) => println!(
-                    "  Carcasa: {} canal(es), cuello {:.2} mm, agujero {:.2} mm",
+                    "  Carcasa: {} canal(es), cuello {:.3} mm, agujero {:.3} mm",
                     casing.channels,
                     casing.neck_diameter * 1000.0,
                     casing.bore_diameter * 1000.0
@@ -584,13 +584,21 @@ fn run(cli: Cli) -> Result<ExitCode, Box<dyn std::error::Error>> {
                 shape.impeller.beta1b.to_degrees(),
                 shape.impeller.wrap_angle.to_degrees()
             );
-            println!(
-                "  Salida: lengua dz/d2 = {:.3}   DN {:.0}   difusor ≥ {:.3} m ({:.1} deg)",
-                2.0 * shape.outlet.cutwater_radius / result.d2.si,
-                shape.outlet.nominal_diameter * 1000.0,
-                shape.outlet.min_length,
-                shape.outlet.half_angle.to_degrees()
-            );
+            if result.casing.is_some() {
+                // La tubuladura y el difusor son de la carcasa, no del modelo.
+                println!(
+                    "  Salida: lengua dz/d2 = {:.3}",
+                    2.0 * shape.outlet.cutwater_radius / result.d2.si
+                );
+            } else {
+                println!(
+                    "  Salida: lengua dz/d2 = {:.3}   DN {:.0}   difusor ≥ {:.3} m ({:.1} deg)",
+                    2.0 * shape.outlet.cutwater_radius / result.d2.si,
+                    shape.outlet.nominal_diameter * 1000.0,
+                    shape.outlet.min_length,
+                    shape.outlet.half_angle.to_degrees()
+                );
+            }
             let mech = match &analysis.mechanics {
                 Ok(mech) => mech,
                 Err(error) => return Err(error.to_string().into()),

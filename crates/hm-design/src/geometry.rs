@@ -152,7 +152,6 @@ pub fn camber_line(
 /// Geometría del rodete y de la salida de la voluta de un diseño.
 pub fn geometry(input: &DesignInput, result: &DesignResult) -> Result<Geometry, DesignError> {
     let registry = Registry::all();
-    let m = parse_unit("m")?;
 
     let beta1b = result.beta1b;
     let blade = camber_line(
@@ -164,7 +163,45 @@ pub fn geometry(input: &DesignInput, result: &DesignResult) -> Result<Geometry, 
     );
     let wrap = blade.last().map_or(0.0, |point| point.theta);
 
-    let throat_radius = result.volute.throat_diameter.si / 2.0;
+    // Con carcasa, la garganta del modelo no es la real: su salida no se calcula
+    // ni se publica, y una tubuladura fuera de tabla no debe parar el diseño.
+    let model = if result.casing.is_some() {
+        ModelOutlet::default()
+    } else {
+        model_outlet(&registry, result.volute.throat_diameter.si / 2.0)?
+    };
+
+    let k3 = result.volute.base_radius.si / (result.d2.si / 2.0);
+    let cutwater_min_ratio = cutwater_min_ratio(&registry, input, result.nq)?;
+
+    Ok(Geometry {
+        impeller: ImpellerGeometry {
+            beta1b,
+            wrap_angle: wrap,
+            blade,
+        },
+        outlet: VoluteOutlet {
+            cutwater_radius: k3 * result.d2.si / 2.0,
+            cutwater_min_radius: cutwater_min_ratio * result.d2.si / 2.0,
+            nominal_diameter: model.nominal_diameter,
+            area_ratio: model.area_ratio,
+            min_length: model.min_length,
+            half_angle: model.half_angle,
+        },
+    })
+}
+
+/// Tubuladura y difusor de la voluta del modelo.
+#[derive(Default)]
+struct ModelOutlet {
+    nominal_diameter: f64,
+    area_ratio: f64,
+    min_length: f64,
+    half_angle: f64,
+}
+
+fn model_outlet(registry: &Registry, throat_radius: f64) -> Result<ModelOutlet, DesignError> {
+    let m = parse_unit("m")?;
     let nominal = NOMINAL_DIAMETERS_MM
         .iter()
         .map(|mm| mm / 1000.0)
@@ -182,7 +219,7 @@ pub fn geometry(input: &DesignInput, result: &DesignResult) -> Result<Geometry, 
         let rise = outlet_radius - throat_radius;
         let allowable = |length: f64| -> f64 {
             evaluate(
-                &registry,
+                registry,
                 "design.diffuser_allowable_angle",
                 &[
                     ("R1", Quantity::from_si(throat_radius, m.clone())),
@@ -220,23 +257,11 @@ pub fn geometry(input: &DesignInput, result: &DesignResult) -> Result<Geometry, 
         (length, angle)
     };
 
-    let k3 = result.volute.base_radius.si / (result.d2.si / 2.0);
-    let cutwater_min_ratio = cutwater_min_ratio(&registry, input, result.nq)?;
-
-    Ok(Geometry {
-        impeller: ImpellerGeometry {
-            beta1b,
-            wrap_angle: wrap,
-            blade,
-        },
-        outlet: VoluteOutlet {
-            cutwater_radius: k3 * result.d2.si / 2.0,
-            cutwater_min_radius: cutwater_min_ratio * result.d2.si / 2.0,
-            nominal_diameter: nominal,
-            area_ratio: (outlet_radius / throat_radius).powi(2),
-            min_length,
-            half_angle,
-        },
+    Ok(ModelOutlet {
+        nominal_diameter: nominal,
+        area_ratio: (outlet_radius / throat_radius).powi(2),
+        min_length,
+        half_angle,
     })
 }
 

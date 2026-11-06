@@ -1,5 +1,6 @@
 //! Diseño de un rodete para una carcasa existente. Carcasa ficticia.
 
+use hm_design::geometry::geometry;
 use hm_design::mechanics::{DEFAULT_SHAFT_SHEAR_STRESS, mechanics, mechanics_diagnostics};
 use hm_design::{CasingFit, DesignInput, DesignOptions, design, design_with_options};
 use hm_units::parse_quantity;
@@ -583,7 +584,7 @@ fn a_bore_under_the_minimum_shaft_is_warned_with_the_criterion() {
         .iter()
         .find(|diagnostic| diagnostic.code == "HM-DES-042")
         .unwrap();
-    assert!(warning.message.contains("20.00 mm"), "{}", warning.message);
+    assert!(warning.message.contains("20.000 mm"), "{}", warning.message);
     assert!(warning.message.contains("criterio"), "{}", warning.message);
 }
 
@@ -645,4 +646,98 @@ fn the_fit_checks_need_a_casing() {
     for code in ["HM-DES-041", "HM-DES-042", "HM-DES-043", "HM-DES-044"] {
         assert!(!codes.iter().any(|item| item == code), "{code}");
     }
+}
+
+fn hint_of(result: &hm_design::DesignResult, code: &str) -> String {
+    let diagnostic = result
+        .diagnostics
+        .iter()
+        .find(|diagnostic| diagnostic.code == code)
+        .unwrap_or_else(|| panic!("falta {code}: {:?}", codes(result)));
+    format!(
+        "{} {}",
+        diagnostic.message,
+        diagnostic.hint.clone().unwrap_or_default()
+    )
+}
+
+#[test]
+fn no_warning_asks_for_what_the_casing_fixes() {
+    // Lengua pegada al rodete: HM-DES-023.
+    let result = design_with_options(&input(), &with(sample())).unwrap();
+    let cutwater = hint_of(&result, "HM-DES-023");
+    assert!(!cutwater.contains("k3"), "{cutwater}");
+
+    // D2 corto: ψ alto y curva plana.
+    let small = CasingFit {
+        d2: 0.190,
+        neck_diameter: 0.150,
+        eye_diameter_max: 0.100,
+        cutwater_radius: 0.100,
+        ..sample()
+    };
+    let result = design_with_options(&input(), &with(small)).unwrap();
+    for diagnostic in result.diagnostics.iter() {
+        let text = format!("{} {:?}", diagnostic.message, diagnostic.hint);
+        assert!(!text.contains("reduce ψ"), "{text}");
+        assert!(!text.contains("reduce el"), "{text}");
+        assert!(!text.contains("estrecha la voluta"), "{text}");
+        assert!(!text.contains("Aumenta k3"), "{text}");
+    }
+}
+
+#[test]
+fn without_a_casing_the_hints_stay() {
+    let options = DesignOptions {
+        k3: Some(1.02),
+        ..DesignOptions::default()
+    };
+    let result = design_with_options(&input(), &options).unwrap();
+    assert!(hint_of(&result, "HM-DES-023").contains("Aumenta k3"));
+}
+
+#[test]
+fn the_model_outlet_cannot_block_a_casing_design() {
+    let q = |text: &str| parse_quantity(text).unwrap();
+    let big = DesignInput {
+        q: q("30 m3/s"),
+        h: q("30 m"),
+        n: q("200 rpm"),
+        ..input()
+    };
+    let free = design(&big).unwrap();
+    assert!(geometry(&big, &free).is_err());
+
+    let d2 = free.d2.si;
+    let casing = CasingFit {
+        d2,
+        neck_diameter: 0.70 * d2,
+        eye_diameter_max: 0.65 * d2,
+        bore_diameter: 0.10 * d2,
+        hub_diameter: 0.20 * d2,
+        b3: 2.0 * free.b2.si,
+        cutwater_radius: 0.54 * d2,
+        channels: 1,
+        wrap_deg: None,
+        throat_area: None,
+    };
+    let fitted = design_with_options(&big, &with(casing)).unwrap();
+    let shape = geometry(&big, &fitted).unwrap();
+    assert_eq!(shape.outlet.cutwater_radius, 0.54 * d2);
+}
+
+#[test]
+fn a_casing_too_small_for_the_head_blames_the_casing() {
+    // D2 corto: ψ pasa de ψo y la altura a caudal cero cae bajo la de diseño.
+    let small = CasingFit {
+        d2: 0.175,
+        neck_diameter: 0.150,
+        eye_diameter_max: 0.100,
+        cutwater_radius: 0.092,
+        ..sample()
+    };
+    let result = design_with_options(&input(), &with(small)).unwrap();
+    let hint = hint_of(&result, "HM-DES-016");
+    assert!(hint.contains("esta carcasa"), "{hint}");
+    assert!(!hint.contains("reduce el"), "{hint}");
 }

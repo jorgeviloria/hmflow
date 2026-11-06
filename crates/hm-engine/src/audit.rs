@@ -351,12 +351,21 @@ fn fresh_selection_si(result: &DesignResult, name: &str) -> Option<f64> {
 }
 
 /// Selecciones `manual` que ya no coinciden con lo que el motor elegiría
-/// para el punto actual, con el fluido del proyecto y sin otras selecciones
-/// manuales. Las `locked` son decisiones explícitas y no se señalan.
+/// para el punto actual, con el fluido del proyecto, sin otras selecciones
+/// manuales y respetando las `locked`, que no se señalan.
 fn stale_selections(project: &Project, case: &Case, input: &DesignInput) -> Vec<&'static str> {
     // Sin otras selecciones manuales, pero con los datos del proyecto (ηv,
-    // rugosidad, razón de la garganta, voluta…): no son selecciones del motor.
+    // rugosidad, razón de la garganta, voluta…) y lo que esté en `locked`: es
+    // una decisión, y lo que elegiría el motor parte de ella.
+    let locked = |name: &str| matches!(project.params.get(name), Some(Param::Locked { .. }));
     let data_only = DesignOptions {
+        psi: case.design.psi.filter(|_| locked("psi")),
+        phi: case.design.phi.filter(|_| locked("phi")),
+        beta2_rad: case.design.beta2_rad.filter(|_| locked("beta2")),
+        blade_count: case.design.blade_count.filter(|_| locked("blade_count")),
+        c0: case.design.c0.filter(|_| locked("c0")),
+        cm0: case.design.cm0.filter(|_| locked("cm0")),
+        j: case.design.j.filter(|_| locked("J")),
         eta_v: case.design.eta_v,
         balance_holes: case.design.balance_holes,
         volute_ratio: case.design.volute_ratio,

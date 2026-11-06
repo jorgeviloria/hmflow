@@ -251,3 +251,22 @@ fn override_names_the_parameter_the_reader_uses() {
     assert_eq!(error.code(), Some("HM-PROJ-019"));
     assert_eq!(error.field(), Some(CaseField::Param("psi")));
 }
+
+#[test]
+fn a_locked_phi_counts_when_checking_the_blade_count_without_a_casing() {
+    let mut project = hm_engine::recalc(Project::new("demo", PumpType::EndSuction), false)
+        .unwrap()
+        .project;
+    project.params.insert(
+        "phi".to_string(),
+        Param::Locked {
+            value: "0.07".to_string(),
+        },
+    );
+    let project = hm_engine::recalc(project, true).unwrap().project;
+    let stale = hm_engine::audit(&project)
+        .iter()
+        .filter(|diagnostic| diagnostic.code == "HM-DES-013")
+        .count();
+    assert_eq!(stale, 0);
+}

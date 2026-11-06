@@ -437,3 +437,47 @@ fn update_point_keeps_the_casing() {
     let updated = hm_engine::update_point(original.clone(), &case, &analysis).unwrap();
     assert_eq!(updated.casing, original.casing);
 }
+
+fn stale_warnings(project: &Project) -> Vec<String> {
+    audit(project)
+        .iter()
+        .filter(|diagnostic| diagnostic.code == "HM-DES-013")
+        .map(|diagnostic| diagnostic.message.clone())
+        .collect()
+}
+
+#[test]
+fn a_locked_selection_counts_when_checking_the_others() {
+    let mut project = double_saved();
+    project.params.insert(
+        "phi".to_string(),
+        Param::Locked {
+            value: "0.12".to_string(),
+        },
+    );
+    let project = recalc(project, true).unwrap().project;
+    assert_eq!(stale_warnings(&project), Vec::<String>::new());
+}
+
+#[test]
+fn a_manual_selection_that_ignores_the_locked_one_is_still_stale() {
+    let mut project = double_saved();
+    project.params.insert(
+        "phi".to_string(),
+        Param::Locked {
+            value: "0.12".to_string(),
+        },
+    );
+    let mut project = recalc(project, true).unwrap().project;
+    let chosen = text(&project, "blade_count");
+    let other = if chosen == "7" { "5" } else { "7" };
+    project.params.insert(
+        "blade_count".to_string(),
+        Param::Manual {
+            value: other.to_string(),
+        },
+    );
+    let found = stale_warnings(&project);
+    assert_eq!(found.len(), 1, "{found:?}");
+    assert!(found[0].contains("blade_count"), "{found:?}");
+}

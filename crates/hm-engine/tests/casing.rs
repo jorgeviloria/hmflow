@@ -2,7 +2,8 @@
 //! y el ψ guardado no bloquea cambiar el punto.
 
 use hm_engine::{
-    CurvePoints, analyze, audit, case_from_project, new_casing_project, new_project, recalc, report,
+    CaseField, CurvePoints, DesignEdits, EngineError, analyze, audit, case_from_project,
+    design_edits, new_casing_project, new_project, recalc, report, update_design,
 };
 use hm_project::{Casing, Param, Project, PumpType};
 
@@ -798,4 +799,179 @@ fn a_selection_that_cannot_be_checked_says_so() {
     let stale = found.iter().find(|item| item.code == "HM-DES-013").unwrap();
     assert!(stale.message.contains("contrastar"), "{}", stale.message);
     assert!(stale.hint.as_deref().unwrap().contains("--reselect"));
+}
+
+fn edited(project: &Project, edit: impl FnOnce(&mut DesignEdits)) -> Project {
+    let mut edits = design_edits(project);
+    edit(&mut edits);
+    update_design(project.clone(), &edits).unwrap().project
+}
+
+fn is_locked_to(project: &Project, name: &str, expected: &str) -> bool {
+    matches!(project.params.get(name), Some(Param::Locked { value }) if value == expected)
+}
+
+#[test]
+fn editing_nothing_leaves_the_file_as_it_was() {
+    let project = saved();
+    assert_eq!(
+        edited(&project, |_| ()).to_toml().unwrap(),
+        project.to_toml().unwrap()
+    );
+}
+
+#[test]
+fn an_edit_of_the_casing_is_kept_after_reopening() {
+    let project = edited(&saved(), |edits| {
+        edits.casing.as_mut().unwrap().b3 = "28 mm".to_string();
+    });
+    let reopened = Project::from_toml(&project.to_toml().unwrap()).unwrap();
+    assert_eq!(reopened.casing.unwrap().b3, "28 mm");
+    assert!(!audit(&project).has_errors());
+}
+
+#[test]
+fn fixing_phi_and_z_locks_them_and_redoes_what_depends_on_them() {
+    let before = saved();
+    let project = edited(&before, |edits| {
+        edits.phi = "0.08".to_string();
+        edits.blade_count = "5".to_string();
+    });
+    assert!(is_locked_to(&project, "phi", "0.08"));
+    assert!(is_locked_to(&project, "blade_count", "5"));
+    assert_ne!(
+        format!("{:?}", project.params.get("beta2")),
+        format!("{:?}", before.params.get("beta2"))
+    );
+    let found = audit(&project);
+    assert!(found.iter().all(|item| item.code != "HM-DES-019"));
+    assert!(found.iter().all(|item| item.code != "HM-DES-013"));
+}
+
+#[test]
+fn releasing_leaves_the_file_as_if_it_had_never_been_fixed() {
+    let never = saved();
+    let fixed = edited(&never, |edits| {
+        edits.phi = "0.08".to_string();
+        edits.blade_count = "5".to_string();
+    });
+    let released = edited(&fixed, |edits| {
+        edits.phi.clear();
+        edits.blade_count.clear();
+    });
+    assert_eq!(released.to_toml().unwrap(), never.to_toml().unwrap());
+}
+
+#[test]
+fn the_box_shows_only_what_is_a_decision() {
+    let project = saved();
+    let edits = design_edits(&project);
+    assert_eq!(edits.phi, "");
+    assert_eq!(edits.blade_count, "");
+    assert_eq!(edits.roughness, "");
+    assert_eq!(edits.incidence, "");
+    let fixed = edited(&project, |edits| edits.phi = "0.08".to_string());
+    assert_eq!(design_edits(&fixed).phi, "0.08");
+}
+
+#[test]
+fn a_fixed_eye_survives_a_fixed_phi() {
+    let mut project = saved();
+    let locked = locked_value(&project, "c0");
+    project.params.insert("c0".to_string(), locked.clone());
+    let reference = eye(&project);
+    let done = edited(&project, |edits| edits.phi = "0.08".to_string());
+    assert_eq!(
+        format!("{:?}", done.params.get("c0")),
+        format!("{:?}", Some(&locked))
+    );
+    assert!((eye(&done) / reference - 1.0).abs() < 1e-9);
+}
+
+#[test]
+fn the_measures_are_written_and_emptying_them_goes_back_to_the_default() {
+    let project = saved();
+    let measured = edited(&project, |edits| {
+        edits.roughness = "0.05 mm".to_string();
+        edits.incidence = "4 deg".to_string();
+    });
+    assert_eq!(design_edits(&measured).roughness, "0.05 mm");
+    assert_eq!(design_edits(&measured).incidence, "4 deg");
+    assert!(matches!(
+        measured.params.get("incidence_deg"),
+        Some(Param::Manual { value }) if value == "4 deg"
+    ));
+    let back = edited(&measured, |edits| {
+        edits.roughness.clear();
+        edits.incidence.clear();
+    });
+    assert_eq!(back.to_toml().unwrap(), project.to_toml().unwrap());
+}
+
+#[test]
+fn removing_the_casing_goes_back_to_the_free_design() {
+    let double = double_saved();
+    let free = edited(&double, |edits| edits.casing = None);
+    assert_eq!(free.casing, None);
+    assert!(free.params.contains_key("a360"));
+    let case = case_from_project(&free).unwrap();
+    assert_ne!(case.design.volute_channels, Some(2));
+    assert!(!audit(&free).has_errors());
+}
+
+#[test]
+fn a_bad_box_names_its_own_field() {
+    let project = saved();
+    let mut edits = design_edits(&project);
+    edits.casing.as_mut().unwrap().neck_diameter = "mucho".to_string();
+    let Err(EngineError::Input { field, diagnostic }) = update_design(project.clone(), &edits)
+    else {
+        panic!("debía ser un error de entrada");
+    };
+    assert_eq!(field, CaseField::Casing("neck_diameter"));
+    assert_eq!(diagnostic.code, "HM-PROJ-030");
+
+    let mut edits = design_edits(&project);
+    edits.casing.as_mut().unwrap().neck_diameter = "70 mm".to_string();
+    let Err(EngineError::Input { field, .. }) = update_design(project, &edits) else {
+        panic!("debía ser un error de entrada");
+    };
+    assert_eq!(field, CaseField::Casing("eye_diameter_max"));
+}
+
+fn beta2_text(project: &Project) -> String {
+    format!("{:?}", project.params.get("beta2"))
+}
+
+#[test]
+fn each_decision_alone_redoes_what_depends_on_it() {
+    let before = saved();
+    let phi = edited(&before, |edits| edits.phi = "0.08".to_string());
+    assert_ne!(beta2_text(&phi), beta2_text(&before));
+    let blades = edited(&before, |edits| edits.blade_count = "6".to_string());
+    assert_ne!(beta2_text(&blades), beta2_text(&before));
+    let casing = edited(&before, |edits| {
+        let casing = edits.casing.as_mut().unwrap();
+        casing.d2 = "220 mm".to_string();
+        casing.cutwater_radius = "116 mm".to_string();
+    });
+    assert_ne!(beta2_text(&casing), beta2_text(&before));
+    assert!(audit(&casing).iter().all(|item| item.code != "HM-DES-019"));
+}
+
+#[test]
+fn a_measure_does_not_undo_a_selection_written_by_hand() {
+    let mut project = saved();
+    project.params.insert(
+        "phi".to_string(),
+        Param::Manual {
+            value: "0.07".to_string(),
+        },
+    );
+    let project = recalc(project, false).unwrap().project;
+    let measured = edited(&project, |edits| edits.incidence = "4 deg".to_string());
+    assert!(matches!(
+        measured.params.get("phi"),
+        Some(Param::Manual { value }) if value == "0.07"
+    ));
 }

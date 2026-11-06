@@ -28,7 +28,9 @@ pub use convert::{
     design_params,
 };
 pub use dispatch::analyze;
-pub use editor::{EditorError, Opened, open_project, update_point};
+pub use editor::{
+    DesignEdits, EditorError, Opened, design_edits, open_project, update_design, update_point,
+};
 pub use error::{CaseField, EngineError, Stage, cli_message};
 pub use fluid::{
     fluid_diagnostics, fluid_kind, kinematic_viscosity, looks_like_water, npsh_fluid_diagnostics,

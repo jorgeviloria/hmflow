@@ -633,7 +633,7 @@ impl CasingLeakage {
     /// señala `HM-DES-045`, con la ec. (3.12) de Gülich.
     fn validate_fit(&self, hub: f64, neck: f64) -> Result<(), FieldError> {
         let wrong = |name: &'static str, value: f64, wanted: &str| FieldError {
-            name: "casing",
+            name,
             message: format!("`casing.{name}` = {value} no es válido; {wanted}"),
         };
         let shortest = self.seal_length.min(self.rear_seal_length);
@@ -690,7 +690,7 @@ impl CasingFit {
     /// positivo, porque la fórmula lo eleva al cuadrado.
     pub fn validate(&self) -> Result<(), FieldError> {
         let problem = |name: &'static str, shown: &str, wanted: &str| FieldError {
-            name: "casing",
+            name,
             message: format!("`casing.{name}` = {shown} no es válido; {wanted}"),
         };
         let sizes = [

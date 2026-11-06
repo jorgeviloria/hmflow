@@ -345,7 +345,12 @@ fn engine_error_field(error: EngineError, eta_m_typed: bool) -> (Field, String) 
         Some(CaseField::MechanicalEfficiency) if eta_m_typed => Field::EtaM,
         Some(CaseField::Npsha) => Field::Npsha,
         Some(CaseField::Suction) => Field::Suction,
-        Some(CaseField::MechanicalEfficiency | CaseField::Viscosity | CaseField::Param(_))
+        Some(
+            CaseField::Casing(_)
+            | CaseField::MechanicalEfficiency
+            | CaseField::Viscosity
+            | CaseField::Param(_),
+        )
         | None => Field::General,
     };
     // La caja ya dice de qué campo se trata: sin el «entrada inválida: » de la CLI.

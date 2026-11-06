@@ -41,6 +41,8 @@ pub enum CaseField {
     Npsha,
     Suction,
     Param(&'static str),
+    /// Una cota de `[casing]`, para marcar su caja.
+    Casing(&'static str),
 }
 
 /// Etapa opcional que puede fallar sin impedir el resto del análisis.

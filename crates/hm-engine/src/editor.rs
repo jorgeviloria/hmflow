@@ -2,15 +2,16 @@
 //! abrirlo (y decir si sabe editarlo) y reescribir el punto sin tocar el resto.
 
 use hm_core::{Diagnostic, Diagnostics, PumpType};
+use hm_design::geometry::DEFAULT_INCIDENCE_DEG;
 use hm_design::{LEGACY_METHODS, METHOD};
 use hm_formula::Registry;
-use hm_project::{Param, Project};
+use hm_project::{Casing, Param, Project};
 use hm_units::parse_quantity;
 
 use crate::analysis::{Analysis, CurvePoints, require_stages};
 use crate::audit::audit;
 use crate::case::{Case, DensitySource, FluidKind, Temperature};
-use crate::convert::{case_from_project, override_error, param_value};
+use crate::convert::{CASING_COPIES, case_from_project, casing_fit, override_error, param_value};
 use crate::dispatch::analyze;
 use crate::error::{CaseField, EngineError, cli_message, input_error};
 use crate::fluid::{DEFAULT_WATER_TEMPERATURE_K, water_density_at};
@@ -18,6 +19,7 @@ use crate::project_ops::{
     check_case_matches_analysis, fluid_name, npsha_text, rho_text, same_value, suction_from,
     temperature_text, viscosity_text,
 };
+use crate::recalc::{Recalculated, recalc};
 use crate::validate::field_code;
 
 /// Densidad escrita que se admite aunque no sea la del agua a su temperatura.
@@ -150,6 +152,103 @@ pub fn update_point(
         });
     }
     Ok(project)
+}
+
+/// Lo que una ventana edita del diseño, además del punto. Textos, como en el
+/// archivo; vacío significa que decide el motor.
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct DesignEdits {
+    pub casing: Option<Casing>,
+    pub phi: String,
+    pub blade_count: String,
+    pub roughness: String,
+    pub incidence: String,
+}
+
+/// Lo que hay que mostrar en las cajas: solo las decisiones y las medidas. Un φ
+/// en `manual` es lo que eligió el motor, y la caja va vacía.
+pub fn design_edits(project: &Project) -> DesignEdits {
+    let locked = |name: &str| match project.params.get(name) {
+        Some(Param::Locked { value }) => value.clone(),
+        _ => String::new(),
+    };
+    let measure = |name: &str, default: f64| {
+        project
+            .params
+            .get(name)
+            .and_then(param_value)
+            .filter(|text| !parse_quantity(text).is_ok_and(|value| value.value() == default))
+            .unwrap_or_default()
+            .to_string()
+    };
+    DesignEdits {
+        casing: project.casing.clone(),
+        phi: locked("phi"),
+        blade_count: locked("blade_count"),
+        roughness: measure("impeller_roughness", 0.0),
+        incidence: measure("incidence_deg", DEFAULT_INCIDENCE_DEG),
+    }
+}
+
+/// Escribe `edits` y recalcula. `update_point` escribe el punto; esto, el resto.
+///
+/// Fijar o soltar φ o Z, o cambiar la carcasa, reelige lo que esté en `manual`:
+/// un β2 guardado es de la selección anterior. Si nada de eso cambia, se conserva
+/// todo. Soltar quita el `locked`, y el motor vuelve a elegir.
+pub fn update_design(
+    mut project: Project,
+    edits: &DesignEdits,
+) -> Result<Recalculated, EngineError> {
+    if let Some(casing) = &edits.casing {
+        casing_fit(casing)?;
+    }
+    let before = design_edits(&project);
+    let reselect = before.casing != edits.casing
+        || before.phi != edits.phi
+        || before.blade_count != edits.blade_count;
+
+    // Sin carcasa, sus copias de la voluta ya no dicen nada.
+    if before.casing.is_some() && edits.casing.is_none() {
+        for name in CASING_COPIES {
+            project.params.remove(name);
+        }
+    }
+    project.casing = edits.casing.clone();
+    write_decision(&mut project, "phi", &edits.phi);
+    write_decision(&mut project, "blade_count", &edits.blade_count);
+    write_measure(&mut project, "impeller_roughness", &edits.roughness);
+    write_measure(&mut project, "incidence_deg", &edits.incidence);
+    recalc(project, reselect)
+}
+
+/// Con valor, `locked`. Vacío suelta un `locked`; un `manual` se queda.
+fn write_decision(project: &mut Project, name: &str, text: &str) {
+    let text = text.trim();
+    if !text.is_empty() {
+        let value = text.to_string();
+        project
+            .params
+            .insert(name.to_string(), Param::Locked { value });
+    } else if is_locked(project, name) {
+        project.params.remove(name);
+    }
+}
+
+/// Con valor, se escribe sin cambiar de modo. Vacío vuelve al valor por defecto.
+fn write_measure(project: &mut Project, name: &str, text: &str) {
+    let text = text.trim();
+    let value = text.to_string();
+    if text.is_empty() {
+        project.params.remove(name);
+    } else if is_locked(project, name) {
+        project
+            .params
+            .insert(name.to_string(), Param::Locked { value });
+    } else {
+        project
+            .params
+            .insert(name.to_string(), Param::Manual { value });
+    }
 }
 
 /// Un `locked` no se toca; por eso tiene que ser el valor con que se calculó.

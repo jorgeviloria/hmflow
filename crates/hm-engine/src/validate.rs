@@ -89,6 +89,7 @@ pub(crate) fn field_code(field: CaseField) -> &'static str {
         CaseField::Temperature => "HM-PROJ-006",
         CaseField::Viscosity => "HM-PROJ-026",
         CaseField::Suction => "HM-PROJ-027",
+        CaseField::Casing(_) => "HM-PROJ-030",
         CaseField::Density | CaseField::MechanicalEfficiency | CaseField::Param(_) => "HM-PROJ-020",
     }
 }

@@ -461,22 +461,25 @@ pub(crate) fn casing_results(project: &Project) -> Vec<&'static str> {
     names
 }
 
+/// Parámetros de voluta que una carcasa sustituye.
+pub(crate) const CASING_COPIES: [&str; 5] = [
+    "k3",
+    "volute_c",
+    "volute_ratio",
+    "volute_channels",
+    "volute_wrap_deg",
+];
+
 /// Parámetros de voluta que, con carcasa, son copia de `[casing]`. Solo un
 /// `locked` se contrasta con ella.
 pub(crate) fn casing_volute(project: &Project) -> Vec<&'static str> {
     if project.casing.is_none() {
         return Vec::new();
     }
-    [
-        "k3",
-        "volute_c",
-        "volute_ratio",
-        "volute_channels",
-        "volute_wrap_deg",
-    ]
-    .into_iter()
-    .filter(|name| !matches!(project.params.get(*name), Some(Param::Locked { .. })))
-    .collect()
+    CASING_COPIES
+        .into_iter()
+        .filter(|name| !matches!(project.params.get(*name), Some(Param::Locked { .. })))
+        .collect()
 }
 
 fn design_options(project: &Project) -> Result<DesignOptions, EngineError> {
@@ -503,7 +506,7 @@ pub fn casing_fit(casing: &Casing) -> Result<CasingFit, EngineError> {
     let si = |name: &'static str, text: &str, unit: &str| {
         let wrong = |problem: String| {
             input_error(
-                CaseField::Param("casing"),
+                CaseField::Casing(name),
                 "HM-PROJ-030",
                 format!("[casing] `{name}` {problem}: {text}"),
             )
@@ -524,7 +527,7 @@ pub fn casing_fit(casing: &Casing) -> Result<CasingFit, EngineError> {
         .then(|| {
             if casing.balance_hole_count == 0 {
                 return Err(input_error(
-                    CaseField::Param("casing"),
+                    CaseField::Casing("balance_hole_count"),
                     "HM-PROJ-030",
                     "[casing] `balance_hole_count` hace falta con los demás datos de fuga",
                 ));
@@ -566,8 +569,9 @@ pub fn casing_fit(casing: &Casing) -> Result<CasingFit, EngineError> {
         leakage,
     };
     // Que encajen entre sí también es un problema de la carcasa, no del diseño.
-    fit.validate()
-        .map_err(|error| input_error(CaseField::Param("casing"), "HM-PROJ-030", error.message))?;
+    fit.validate().map_err(|error| {
+        input_error(CaseField::Casing(error.name), "HM-PROJ-030", error.message)
+    })?;
     Ok(fit)
 }
 

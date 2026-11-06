@@ -188,6 +188,12 @@ impl Session {
         Ok(())
     }
 
+    /// Identifica los bloques plegables. Depende del archivo, no de las cajas: si
+    /// cambiara al escribir, la caja perdería el foco en el primer carácter.
+    pub fn view_key(&self) -> Option<&Path> {
+        self.file.as_deref()
+    }
+
     /// Marca la carcasa: vuelven las cajas quitadas, o unas en blanco.
     pub fn add_casing(&mut self) {
         let boxes = self
@@ -793,6 +799,21 @@ mod tests {
             session.inputs.casing,
             Some(crate::model::CasingBoxes::blank())
         );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn the_view_key_does_not_change_while_typing() {
+        let dir = scratch("clave-vista");
+        let path = copy_fixture(&dir, "end_suction_v0.9.hmf");
+        let mut session = Session::default();
+        let before = session.view_key().map(Path::to_path_buf);
+        session.inputs.phi = "0".to_string();
+        session.edited();
+        assert_eq!(session.view_key(), before.as_deref());
+
+        assert!(session.open_path(&path), "{:?}", session.notice);
+        assert_ne!(session.view_key(), before.as_deref());
         let _ = std::fs::remove_dir_all(&dir);
     }
 

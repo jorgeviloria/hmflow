@@ -30,7 +30,7 @@ fn sample() -> CasingFit {
         b3: 0.030,
         cutwater_radius: 0.111,
         channels: 1,
-        wrap_deg: 180.0,
+        wrap_deg: None,
         throat_area: None,
     }
 }
@@ -158,7 +158,13 @@ fn a_bad_casing_value_is_rejected_by_name() {
         (|c| c.hub_diameter = -1.0, "hub_diameter"),
         (|c| c.b3 = 0.0, "b3"),
         (|c| c.channels = 3, "channels"),
-        (|c| c.wrap_deg = 200.0, "wrap"),
+        (
+            |c| {
+                c.channels = 2;
+                c.wrap_deg = Some(200.0);
+            },
+            "wrap",
+        ),
         (|c| c.throat_area = Some(-1.0), "throat_area"),
     ];
     for (edit, field) in cases {
@@ -329,7 +335,8 @@ fn without_a_casing_the_hub_is_the_required_one() {
 #[test]
 fn casing_sizes_that_do_not_nest_are_rejected() {
     type Edit = fn(&mut CasingFit);
-    let cases: [(Edit, &str); 5] = [
+    let cases: [(Edit, &str); 6] = [
+        (|c| c.cutwater_radius = 0.105, "cutwater_radius"),
         (|c| c.eye_diameter_max = 0.095, "eye_diameter_max"),
         (|c| c.neck_diameter = 0.220, "neck_diameter"),
         (|c| c.hub_diameter = 0.080, "hub_diameter"),
@@ -349,6 +356,7 @@ fn casing_sizes_that_do_not_nest_are_rejected() {
 fn double() -> CasingFit {
     CasingFit {
         channels: 2,
+        wrap_deg: Some(180.0),
         ..sample()
     }
 }
@@ -395,7 +403,8 @@ fn volute_options_that_agree_pass_and_those_that_disagree_fail() {
     assert!(design_with_options(&input(), &agreeing).is_ok());
 
     type Edit = fn(&mut DesignOptions);
-    let cases: [(Edit, &str); 4] = [
+    let cases: [(Edit, &str); 5] = [
+        (|o| o.volute_ratio = Some(0.8), "volute_ratio"),
         (|o| o.k3 = Some(1.2), "k3"),
         (|o| o.volute_channels = Some(1), "volute_channels"),
         (|o| o.volute_wrap_deg = Some(170.0), "volute_wrap_deg"),
@@ -427,6 +436,7 @@ fn a_throat_enters_equation_6_22a_per_channel() {
     let area = 0.0012;
     let fit = |channels, throat_area| CasingFit {
         channels,
+        wrap_deg: (channels == 2).then_some(180.0),
         throat_area: Some(throat_area),
         ..sample()
     };
@@ -469,4 +479,53 @@ fn an_even_blade_count_in_two_channels_is_still_warned() {
     };
     let result = design_with_options(&input(), &options).unwrap();
     assert!(has(&result, "HM-DES-037"));
+}
+
+#[test]
+fn the_wrap_goes_with_two_channels_only() {
+    let missing = CasingFit {
+        wrap_deg: None,
+        ..double()
+    };
+    let error = design_with_options(&input(), &with(missing))
+        .unwrap_err()
+        .to_string();
+    assert!(error.contains("casing.wrap"), "{error}");
+
+    let spare = CasingFit {
+        wrap_deg: Some(180.0),
+        ..sample()
+    };
+    let error = design_with_options(&input(), &with(spare))
+        .unwrap_err()
+        .to_string();
+    assert!(error.contains("casing.wrap"), "{error}");
+}
+
+#[test]
+fn an_impeller_wider_than_the_casing_inlet_is_an_error() {
+    let narrow = CasingFit {
+        b3: 0.010,
+        ..sample()
+    };
+    let error = design_with_options(&input(), &with(narrow))
+        .unwrap_err()
+        .to_string();
+    assert!(error.contains("b2"), "{error}");
+    assert!(error.contains("10.0 mm"), "{error}");
+}
+
+/// Ec. (6.22a) calculada aparte con u2, A2, deslizamiento, τ2 y β2 del diseño.
+#[test]
+fn the_matching_flow_matches_the_hand_calculation() {
+    let casing = CasingFit {
+        throat_area: Some(0.0012),
+        ..sample()
+    };
+    let options = DesignOptions {
+        blade_count: Some(7),
+        ..with(casing)
+    };
+    let result = design_with_options(&input(), &options).unwrap();
+    assert!((result.volute_matching_flow.si - 0.022_970_29).abs() < 1e-8);
 }

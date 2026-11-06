@@ -580,7 +580,8 @@ pub struct CasingFit {
     pub b3: f64,
     pub cutwater_radius: f64,
     pub channels: u32,
-    pub wrap_deg: f64,
+    /// Separación entre lenguas, grados. Solo con 2 canales.
+    pub wrap_deg: Option<f64>,
     /// Área de garganta de cada canal. `None`: sin dato.
     pub throat_area: Option<f64>,
 }
@@ -642,11 +643,11 @@ impl CasingFit {
                 ));
             }
         }
-        if 2.0 * self.cutwater_radius < self.d2 {
+        if 2.0 * self.cutwater_radius <= self.d2 {
             return Err(problem(
                 "cutwater_radius",
                 &self.cutwater_radius.to_string(),
-                "deja la lengua dentro del rodete: debe ser al menos d2/2",
+                "deja la lengua dentro del rodete: debe ser mayor que d2/2",
             ));
         }
         if !matches!(self.channels, 1 | 2) {
@@ -657,12 +658,21 @@ impl CasingFit {
             ));
         }
         let (low, high) = VOLUTE_WRAP_RANGE_DEG;
-        if !self.wrap_deg.is_finite() || !(low..=high).contains(&self.wrap_deg) {
-            return Err(problem(
-                "wrap",
-                &self.wrap_deg.to_string(),
-                &format!("debe estar entre {low} y {high} grados"),
-            ));
+        match (self.channels, self.wrap_deg) {
+            (1, None) => {}
+            (1, Some(wrap)) => {
+                return Err(problem("wrap", &wrap.to_string(), "solo va con 2 canales"));
+            }
+            (_, None) => return Err(problem("wrap", "nada", "hace falta con 2 canales")),
+            (_, Some(wrap)) => {
+                if !wrap.is_finite() || !(low..=high).contains(&wrap) {
+                    return Err(problem(
+                        "wrap",
+                        &wrap.to_string(),
+                        &format!("debe estar entre {low} y {high} grados"),
+                    ));
+                }
+            }
         }
         Ok(())
     }
@@ -1420,9 +1430,9 @@ pub fn design(input: &DesignInput) -> Result<DesignResult, DesignError> {
 /// se escriben por separado y su producto no vuelve exacto.
 const CASING_EYE_ROUNDING: f64 = 1.0e-9;
 
-/// Diferencia relativa con que un ψ manual se considera el de la carcasa.
-/// `design` escribe ψ en el `.hmf`, y `recalc` tiene que aceptar ese archivo.
-const CASING_PSI_AGREEMENT: f64 = 1.0e-9;
+/// Diferencia relativa con que un valor escrito se considera el de la carcasa:
+/// ψ y k3 vuelven del `.hmf` como texto.
+const CASING_AGREEMENT: f64 = 1.0e-9;
 
 /// Diferencia, en grados, con que una envolvente se considera la de la carcasa:
 /// el `.hmf` las guarda en grados y `[casing]` pasa por radianes.
@@ -1440,7 +1450,7 @@ fn with_casing_volute(options: &DesignOptions) -> Result<DesignOptions, DesignEr
     };
     let k3 = 2.0 * casing.cutwater_radius / casing.d2;
     if let Some(value) = options.k3
-        && (value / k3 - 1.0).abs() > CASING_PSI_AGREEMENT
+        && (value / k3 - 1.0).abs() > CASING_AGREEMENT
     {
         return Err(contradiction(
             "k3",
@@ -1455,6 +1465,13 @@ fn with_casing_volute(options: &DesignOptions) -> Result<DesignOptions, DesignEr
             "b3 ya es dato de la carcasa".to_string(),
         ));
     }
+    if let Some(value) = options.volute_ratio {
+        return Err(contradiction(
+            "volute_ratio",
+            value.to_string(),
+            "la garganta es dato de la carcasa, no una razón".to_string(),
+        ));
+    }
     if let Some(value) = options.volute_channels
         && value != casing.channels
     {
@@ -1464,7 +1481,7 @@ fn with_casing_volute(options: &DesignOptions) -> Result<DesignOptions, DesignEr
             format!("tiene {}", casing.channels),
         ));
     }
-    let wrap = (casing.channels == 2).then_some(casing.wrap_deg);
+    let wrap = casing.wrap_deg;
     if let Some(value) = options.volute_wrap_deg
         && wrap.is_none_or(|wrap| (value - wrap).abs() > CASING_WRAP_AGREEMENT_DEG)
     {
@@ -1517,7 +1534,7 @@ fn selected_psi(
         return Ok(options.psi.unwrap_or(table_psi));
     };
     if let Some(manual) = options.psi {
-        let agrees = (manual / psi - 1.0).abs() <= CASING_PSI_AGREEMENT;
+        let agrees = (manual / psi - 1.0).abs() <= CASING_AGREEMENT;
         if !agrees {
             return Err(DesignError::Input(format!(
                 "`psi` = {manual} contradice [casing]: con ese D2 sale ψ = {psi:.3}"
@@ -1990,6 +2007,13 @@ pub fn design_with_options(
         &[("D2", d2.clone()), ("k3", k3)],
     )?;
     let b3 = match &options.casing {
+        Some(casing) if b2.si >= casing.b3 => {
+            return Err(DesignError::Input(format!(
+                "b2 = {:.1} mm no cabe en el b3 = {:.1} mm de [casing]: sube φ",
+                b2.si * 1000.0,
+                casing.b3 * 1000.0
+            )));
+        }
         Some(casing) => Quantity::from_si(casing.b3, m.clone()),
         None => evaluate(
             &registry,

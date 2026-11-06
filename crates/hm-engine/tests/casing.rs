@@ -14,7 +14,7 @@ fn casing() -> Casing {
         b3: "30 mm".to_string(),
         cutwater_radius: "111 mm".to_string(),
         channels: 1,
-        wrap: "180 deg".to_string(),
+        wrap: String::new(),
         throat_area: String::new(),
     }
 }
@@ -43,7 +43,7 @@ fn the_casing_reaches_the_design_in_si() {
     assert_eq!(fit.d2, 0.21);
     assert_eq!(fit.neck_diameter, 0.09);
     assert_eq!(fit.channels, 1);
-    assert!((fit.wrap_deg - 180.0).abs() < 1e-9);
+    assert_eq!(fit.wrap_deg, None);
     assert_eq!(fit.throat_area, None);
     let analysis = analyze(&case, CurvePoints::MINIMUM).unwrap();
     assert!((analysis.result.d2.si - 0.21).abs() < 1e-12);
@@ -217,7 +217,9 @@ fn locking_the_eye_as_saved_keeps_the_eye() {
 
 fn double_saved() -> Project {
     let mut project = project();
-    project.casing.as_mut().unwrap().channels = 2;
+    let casing = project.casing.as_mut().unwrap();
+    casing.channels = 2;
+    casing.wrap = "180 deg".to_string();
     recalc(project, false).unwrap().project
 }
 
@@ -245,8 +247,11 @@ fn a_casing_added_to_a_saved_project_wins_over_its_volute() {
     let mut project = recalc(Project::new("demo", PumpType::EndSuction), false)
         .unwrap()
         .project;
-    project.casing = Some(casing());
-    project.casing.as_mut().unwrap().channels = 2;
+    project.casing = Some(Casing {
+        channels: 2,
+        wrap: "180 deg".to_string(),
+        ..casing()
+    });
     let project = recalc(project, false).unwrap().project;
     assert_eq!(text(&project, "volute_channels"), "2");
 }
@@ -278,4 +283,27 @@ fn a_locked_wrap_equal_to_the_casing_passes_after_the_unit_round_trip() {
         },
     );
     recalc(project, false).unwrap();
+}
+
+#[test]
+fn a_locked_throat_ratio_contradicts_the_casing() {
+    let mut project = saved();
+    project.params.insert(
+        "volute_ratio".to_string(),
+        Param::Locked {
+            value: "0.7".to_string(),
+        },
+    );
+    let error = recalc(project, false).unwrap_err().to_string();
+    assert!(error.contains("[casing]"), "{error}");
+}
+
+#[test]
+fn a_saved_throat_ratio_is_not_a_contradiction() {
+    let project = saved();
+    assert!(matches!(
+        project.params.get("volute_ratio"),
+        Some(Param::Manual { .. })
+    ));
+    assert!(recalc(project, false).is_ok());
 }

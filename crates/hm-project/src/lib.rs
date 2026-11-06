@@ -97,7 +97,8 @@ pub struct Casing {
     pub cutwater_radius: String,
     /// Canales de la voluta: 1 o 2.
     pub channels: u32,
-    /// Envolvente de la voluta interior.
+    /// Separación entre las dos lenguas (Gülich sec. 9.3.4). Solo con 2 canales.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
     pub wrap: String,
     /// Área de garganta de cada canal. Vacía: sin dato, y no se inventa.
     #[serde(default, skip_serializing_if = "String::is_empty")]
@@ -568,15 +569,22 @@ fn check_casing(diagnostics: &mut Diagnostics, casing: &Casing) {
             &format!("debe ser 1 o 2: {}", casing.channels),
         );
     }
-    if let Some(wrap) = casing_value(diagnostics, "wrap", &casing.wrap, "rad") {
-        let (low, high) = CASING_WRAP_RANGE_DEG;
-        if !(low..=high).contains(&wrap.to_degrees()) {
-            casing_problem(
-                diagnostics,
-                "wrap",
-                &format!("debe estar entre {low} y {high} grados: {}", casing.wrap),
-            );
+    match (casing.channels, casing.wrap.trim().is_empty()) {
+        (1, false) => casing_problem(diagnostics, "wrap", "solo va con 2 canales"),
+        (2, true) => casing_problem(diagnostics, "wrap", "hace falta con 2 canales"),
+        (2, false) => {
+            if let Some(wrap) = casing_value(diagnostics, "wrap", &casing.wrap, "rad") {
+                let (low, high) = CASING_WRAP_RANGE_DEG;
+                if !(low..=high).contains(&wrap.to_degrees()) {
+                    casing_problem(
+                        diagnostics,
+                        "wrap",
+                        &format!("debe estar entre {low} y {high} grados: {}", casing.wrap),
+                    );
+                }
+            }
         }
+        _ => {}
     }
     if !casing.throat_area.trim().is_empty() {
         casing_value(diagnostics, "throat_area", &casing.throat_area, "m2");
@@ -596,11 +604,11 @@ fn check_casing(diagnostics: &mut Diagnostics, casing: &Casing) {
                 casing_problem(diagnostics, small, &format!("debe ser menor que `{large}`"));
             }
         }
-        if 2.0 * cutwater < d2 {
+        if 2.0 * cutwater <= d2 {
             casing_problem(
                 diagnostics,
                 "cutwater_radius",
-                "deja la lengua dentro del rodete: debe ser al menos d2/2",
+                "deja la lengua dentro del rodete: debe ser mayor que d2/2",
             );
         }
     }

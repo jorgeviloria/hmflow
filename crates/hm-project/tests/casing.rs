@@ -111,7 +111,8 @@ fn each_bad_field_is_reported_by_name() {
 #[test]
 fn the_sizes_must_nest() {
     type Edit = fn(&mut Casing);
-    let cases: [Edit; 5] = [
+    let cases: [Edit; 6] = [
+        |c| c.cutwater_radius = "105 mm".to_string(),
         |c| c.neck_diameter = "210 mm".to_string(),
         |c| c.eye_diameter_max = "90 mm".to_string(),
         |c| c.hub_diameter = "75 mm".to_string(),
@@ -123,4 +124,23 @@ fn the_sizes_must_nest() {
         edit(&mut casing);
         assert_eq!(codes(casing), ["HM-PROJ-030"]);
     }
+}
+
+#[test]
+fn the_wrap_goes_with_two_channels_only() {
+    let mut missing = sample();
+    missing.wrap = String::new();
+    assert_eq!(codes(missing), ["HM-PROJ-030"]);
+
+    let mut spare = sample();
+    spare.channels = 1;
+    assert_eq!(codes(spare), ["HM-PROJ-030"]);
+
+    let mut single = sample();
+    single.channels = 1;
+    single.wrap = String::new();
+    assert!(codes(single.clone()).is_empty());
+    let mut project = Project::new("demo", PumpType::EndSuction);
+    project.casing = Some(single);
+    assert!(!project.to_toml().unwrap().contains("wrap"));
 }

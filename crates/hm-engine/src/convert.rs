@@ -454,10 +454,16 @@ pub(crate) fn casing_volute(project: &Project) -> Vec<&'static str> {
     if project.casing.is_none() {
         return Vec::new();
     }
-    ["k3", "volute_c", "volute_channels", "volute_wrap_deg"]
-        .into_iter()
-        .filter(|name| !matches!(project.params.get(*name), Some(Param::Locked { .. })))
-        .collect()
+    [
+        "k3",
+        "volute_c",
+        "volute_ratio",
+        "volute_channels",
+        "volute_wrap_deg",
+    ]
+    .into_iter()
+    .filter(|name| !matches!(project.params.get(*name), Some(Param::Locked { .. })))
+    .collect()
 }
 
 fn design_options(project: &Project) -> Result<DesignOptions, EngineError> {
@@ -482,6 +488,7 @@ fn design_options(project: &Project) -> Result<DesignOptions, EngineError> {
                 "k3" => options.k3 = None,
                 "volute_channels" => options.volute_channels = None,
                 "volute_wrap_deg" => options.volute_wrap_deg = None,
+                "volute_ratio" => options.volute_ratio = None,
                 _ => options.volute_width_factor = None,
             }
         }
@@ -512,6 +519,10 @@ fn casing_fit(casing: &Casing) -> Result<CasingFit, EngineError> {
         "" => None,
         text => Some(si("throat_area", text, "m2")?),
     };
+    let wrap_deg = match casing.wrap.trim() {
+        "" => None,
+        text => Some(si("wrap", text, "rad")?.to_degrees()),
+    };
     Ok(CasingFit {
         d2: si("d2", &casing.d2, "m")?,
         neck_diameter: si("neck_diameter", &casing.neck_diameter, "m")?,
@@ -521,7 +532,7 @@ fn casing_fit(casing: &Casing) -> Result<CasingFit, EngineError> {
         b3: si("b3", &casing.b3, "m")?,
         cutwater_radius: si("cutwater_radius", &casing.cutwater_radius, "m")?,
         channels: casing.channels,
-        wrap_deg: si("wrap", &casing.wrap, "rad")?.to_degrees(),
+        wrap_deg,
         throat_area,
     })
 }

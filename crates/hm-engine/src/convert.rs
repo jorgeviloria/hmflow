@@ -511,6 +511,13 @@ pub fn casing_fit(casing: &Casing) -> Result<CasingFit, EngineError> {
                 format!("[casing] `{name}` {problem}: {text}"),
             )
         };
+        if text.trim().is_empty() {
+            return Err(input_error(
+                CaseField::Casing(name),
+                "HM-PROJ-030",
+                format!("[casing] `{name}` hace falta"),
+            ));
+        }
         let quantity = parse_quantity(text).map_err(|error| wrong(error.to_string()))?;
         let expected = parse_unit(unit).map_err(|error| wrong(error.to_string()))?;
         if quantity.dim() != expected.dim {
@@ -575,7 +582,7 @@ pub fn casing_fit(casing: &Casing) -> Result<CasingFit, EngineError> {
     Ok(fit)
 }
 
-fn decode(project: &Project, param: &ManualParam) -> Result<Option<f64>, EngineError> {
+pub(crate) fn decode(project: &Project, param: &ManualParam) -> Result<Option<f64>, EngineError> {
     match param.decode {
         Decode::Float { zero_is_none } => Ok(without_zero(
             param_f64(project, param.name, param.unit)?,

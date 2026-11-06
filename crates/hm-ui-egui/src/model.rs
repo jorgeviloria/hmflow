@@ -12,12 +12,12 @@ use hm_design::geometry::Geometry;
 use hm_design::mechanics::Mechanics;
 use hm_design::{CurvePoint, DesignError, DesignInput, DesignResult, ViscousCorrection};
 use hm_engine::{
-    Analysis, Case, CaseField, CurvePoints, Density, DensitySource, DesignOptions, Duty,
-    EditorError, EngineError, Entered, Fluid, FluidKind, Intake, Opened, PumpType, Temperature,
-    analyze, cli_message, new_project, open_project, recalc, report, update_point,
-    water_density_at,
+    Analysis, Case, CaseField, CurvePoints, Density, DensitySource, DesignEdits, DesignOptions,
+    Duty, EditorError, EngineError, Entered, Fluid, FluidKind, Intake, Opened, PumpType,
+    Temperature, analyze, cli_message, edited_options, new_casing_project, new_project,
+    open_project, report, update_design, update_point, water_density_at,
 };
-use hm_project::Project;
+use hm_project::{Casing, Project};
 use hm_units::Quantity;
 
 /// Puntos de la curva que se dibujan.
@@ -52,6 +52,118 @@ pub struct Inputs {
     pub suction_height: String,
     pub suction_losses: String,
     pub suction_vapor: String,
+    /// Carcasa, si el rodete es para una existente.
+    pub casing: Option<CasingBoxes>,
+}
+
+/// Las cajas de `[casing]`. Dos son números en el archivo, pero aquí se escriben:
+/// una caja a medias no puede ser un número.
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct CasingBoxes {
+    pub fields: Casing,
+    pub channels: String,
+    pub hole_count: String,
+}
+
+/// Cajas de la carcasa: campo, etiqueta y ejemplo.
+pub const CASING_BOXES: [(&str, &str, &str); 10] = [
+    ("d2", "D2", "425 mm"),
+    ("neck_diameter", "Cuello", "160 mm"),
+    ("eye_diameter_max", "Ojo máximo", "140 mm"),
+    ("bore_diameter", "Agujero del eje", "41 mm"),
+    ("hub_diameter", "Cubo mínimo", "58 mm"),
+    ("b3", "b3", "32 mm"),
+    ("cutwater_radius", "Radio de lengua", "220 mm"),
+    ("channels", "Canales", "1 o 2"),
+    ("wrap", "Entre lenguas (2 canales)", "180 deg"),
+    ("throat_area", "Garganta (opcional)", "vacío si no se midió"),
+];
+
+/// Cajas de los datos de fuga: todos o ninguno.
+pub const LEAKAGE_BOXES: [(&str, &str, &str); 8] = [
+    ("seal_clearance", "Holgura diametral", "0.3 mm"),
+    ("seal_length", "Largo del anillo delantero", "15 mm"),
+    ("rear_seal_diameter", "Anillo trasero", "170 mm"),
+    ("rear_seal_length", "Largo del anillo trasero", "15 mm"),
+    ("balance_hole_count", "Agujeros de equilibrio", "7"),
+    ("balance_hole_diameter", "Diámetro de agujero", "11 mm"),
+    ("balance_hole_circle", "Círculo de agujeros", "120 mm"),
+    (
+        "shaft_seal_diameter",
+        "Cierre del eje (opcional)",
+        "vacío: el cubo",
+    ),
+];
+
+impl CasingBoxes {
+    /// Una carcasa sin escribir: un canal, el caso simple.
+    pub fn blank() -> Self {
+        Self {
+            channels: "1".to_string(),
+            ..Self::default()
+        }
+    }
+
+    fn from_casing(casing: &Casing) -> Self {
+        let count = casing.balance_hole_count;
+        Self {
+            fields: casing.clone(),
+            channels: casing.channels.to_string(),
+            hole_count: if count == 0 {
+                String::new()
+            } else {
+                count.to_string()
+            },
+        }
+    }
+
+    /// El texto de una caja. `None` si el nombre no es de una caja.
+    pub fn text_mut(&mut self, name: &str) -> Option<&mut String> {
+        let fields = &mut self.fields;
+        Some(match name {
+            "d2" => &mut fields.d2,
+            "neck_diameter" => &mut fields.neck_diameter,
+            "eye_diameter_max" => &mut fields.eye_diameter_max,
+            "bore_diameter" => &mut fields.bore_diameter,
+            "hub_diameter" => &mut fields.hub_diameter,
+            "b3" => &mut fields.b3,
+            "cutwater_radius" => &mut fields.cutwater_radius,
+            "channels" => &mut self.channels,
+            "wrap" => &mut fields.wrap,
+            "throat_area" => &mut fields.throat_area,
+            "seal_clearance" => &mut fields.seal_clearance,
+            "seal_length" => &mut fields.seal_length,
+            "rear_seal_diameter" => &mut fields.rear_seal_diameter,
+            "rear_seal_length" => &mut fields.rear_seal_length,
+            "balance_hole_count" => &mut self.hole_count,
+            "balance_hole_diameter" => &mut fields.balance_hole_diameter,
+            "balance_hole_circle" => &mut fields.balance_hole_circle,
+            "shaft_seal_diameter" => &mut fields.shaft_seal_diameter,
+            _ => return None,
+        })
+    }
+
+    /// La carcasa de las cajas. Solo lee los dos números: las cotas las juzga el
+    /// motor.
+    fn to_casing(&self) -> Result<Casing, (Field, String)> {
+        let number = |name: &'static str, text: &str| {
+            let text = text.trim();
+            if text.is_empty() {
+                return Ok(0);
+            }
+            text.parse::<u32>().map_err(|_| {
+                (
+                    Field::Casing(name),
+                    "un número entero, p. ej. 2".to_string(),
+                )
+            })
+        };
+        Ok(Casing {
+            channels: number("channels", &self.channels)?,
+            balance_hole_count: number("balance_hole_count", &self.hole_count)?,
+            ..self.fields.clone()
+        })
+    }
 }
 
 impl Default for Inputs {
@@ -68,6 +180,7 @@ impl Default for Inputs {
             suction_height: String::new(),
             suction_losses: String::new(),
             suction_vapor: String::new(),
+            casing: None,
         }
     }
 }
@@ -86,6 +199,8 @@ pub enum Field {
     Npsha,
     /// El grupo de las cuatro cajas de la instalación de aspiración.
     Suction,
+    /// Una cota de `[casing]`.
+    Casing(&'static str),
     General,
 }
 
@@ -130,10 +245,18 @@ fn case_from_inputs(inputs: &Inputs, basis: &Basis) -> Result<Case, FieldErrors>
     let temperature = read_temperature(inputs, &mut errors);
     let eta_m = read_eta_m(inputs, &mut errors);
     let intake = read_intake(inputs, &mut errors);
+    let design = read_design(inputs, basis, &mut errors);
 
     // Los `Option` solo son `None` si hay un error en `errors`.
-    let (Some(q), Some(h), Some(n), Some((temperature, rho)), Some(eta_m), Some(intake)) =
-        (q, h, n, temperature, eta_m, intake)
+    let (
+        Some(q),
+        Some(h),
+        Some(n),
+        Some((temperature, rho)),
+        Some(eta_m),
+        Some(intake),
+        Some(design),
+    ) = (q, h, n, temperature, eta_m, intake, design)
     else {
         return Err(errors);
     };
@@ -152,8 +275,34 @@ fn case_from_inputs(inputs: &Inputs, basis: &Basis) -> Result<Case, FieldErrors>
         },
         intake,
         mechanical_efficiency: eta_m,
-        design: basis.design.clone(),
+        design,
     })
+}
+
+/// Lo que las cajas piden del diseño, además del punto.
+fn edits_from(inputs: &Inputs, basis: &Basis) -> Result<DesignEdits, (Field, String)> {
+    Ok(DesignEdits {
+        casing: inputs
+            .casing
+            .as_ref()
+            .map(CasingBoxes::to_casing)
+            .transpose()?,
+        ..basis.edits.clone()
+    })
+}
+
+fn read_design(inputs: &Inputs, basis: &Basis, errors: &mut FieldErrors) -> Option<DesignOptions> {
+    let read = edits_from(inputs, basis).and_then(|edits| {
+        edited_options(&basis.design, &basis.reselected, &basis.edits, &edits)
+            .map_err(|error| engine_error_field(error, !inputs.eta_m.trim().is_empty()))
+    });
+    match read {
+        Ok(design) => Some(design),
+        Err(error) => {
+            errors.push(error);
+            None
+        }
+    }
 }
 
 fn entered(field: Field, text: &str, errors: &mut FieldErrors) -> Option<Entered> {
@@ -345,12 +494,8 @@ fn engine_error_field(error: EngineError, eta_m_typed: bool) -> (Field, String) 
         Some(CaseField::MechanicalEfficiency) if eta_m_typed => Field::EtaM,
         Some(CaseField::Npsha) => Field::Npsha,
         Some(CaseField::Suction) => Field::Suction,
-        Some(
-            CaseField::Casing(_)
-            | CaseField::MechanicalEfficiency
-            | CaseField::Viscosity
-            | CaseField::Param(_),
-        )
+        Some(CaseField::Casing(name)) => Field::Casing(name),
+        Some(CaseField::MechanicalEfficiency | CaseField::Viscosity | CaseField::Param(_))
         | None => Field::General,
     };
     // La caja ya dice de qué campo se trata: sin el «entrada inválida: » de la CLI.
@@ -358,7 +503,12 @@ fn engine_error_field(error: EngineError, eta_m_typed: bool) -> (Field, String) 
     let message = message
         .strip_prefix("entrada inválida: ")
         .map_or_else(|| message.clone(), str::to_string);
-    let message = if field == Field::Suction {
+    let message = if let Field::Casing(name) = field {
+        // La caja ya nombra la cota: «[casing] `b3` hace falta» -> «hace falta».
+        message
+            .strip_prefix(&format!("[casing] `{name}` "))
+            .map_or_else(|| message.clone(), str::to_string)
+    } else if field == Field::Suction {
         // «[suction] `pressure`: ...» del motor -> «presión: ...», como las cajas.
         SUCTION_BOXES.iter().fold(message, |message, (name, _)| {
             message.replace(&format!("[suction] `{name}`: "), &suction_prefix(name))
@@ -382,6 +532,10 @@ pub struct Basis {
     pub rho_locked: bool,
     /// El texto de una ηm bloqueada: al guardar, la caja no la pisa.
     pub locked_eta_m: Option<String>,
+    /// Carcasa, selecciones y medidas del archivo abierto.
+    pub edits: DesignEdits,
+    /// Las opciones sin lo que está en `manual`.
+    pub reselected: DesignOptions,
 }
 
 impl Basis {
@@ -400,6 +554,8 @@ impl Basis {
             } else {
                 None
             },
+            edits: opened.edits.clone(),
+            reselected: opened.reselected.clone(),
         }
     }
 
@@ -481,6 +637,7 @@ pub fn case_to_inputs(case: &Case) -> Inputs {
         suction_height,
         suction_losses,
         suction_vapor,
+        casing: None,
     }
 }
 
@@ -504,6 +661,7 @@ pub fn open_loaded(project: Project) -> Result<OpenedFile, String> {
     if let Some(text) = &opened.eta_m_text {
         inputs.eta_m.clone_from(text);
     }
+    inputs.casing = opened.edits.casing.as_ref().map(CasingBoxes::from_casing);
     let basis = Basis::from_opened(&opened, &inputs);
     Ok(OpenedFile {
         project,
@@ -587,10 +745,14 @@ pub fn build_project(
     if let Some(message) = stage_failure(&analysis) {
         return Err(message);
     }
+    let edits = edits_from(&inputs, basis).map_err(|(_, message)| message)?;
     match previous {
         None => {
-            let project =
-                new_project(name, &case, &analysis).map_err(|error| engine_failure(&error))?;
+            let project = match &edits.casing {
+                Some(casing) => new_casing_project(name, &case, &analysis, casing),
+                None => new_project(name, &case, &analysis),
+            }
+            .map_err(|error| engine_failure(&error))?;
             Ok(Built {
                 project,
                 diagnostics: analysis.diagnostics,
@@ -599,7 +761,8 @@ pub fn build_project(
         Some(project) => {
             let project = update_point(project.clone(), &case, &analysis)
                 .map_err(|error| engine_failure(&error))?;
-            let recalculated = recalc(project, false).map_err(|error| engine_failure(&error))?;
+            let recalculated =
+                update_design(project, &edits).map_err(|error| engine_failure(&error))?;
             Ok(Built {
                 project: recalculated.project,
                 diagnostics: recalculated.diagnostics.into_vec(),
@@ -688,6 +851,90 @@ pub fn balanced_axial_thrust(result: &DesignResult) -> bool {
 
 #[cfg(test)]
 mod tests {
+    use super::{Basis, CasingBoxes, Field, Inputs};
+
+    fn with_casing(edit: impl FnOnce(&mut CasingBoxes)) -> Inputs {
+        let mut boxes = CasingBoxes::blank();
+        for (name, text) in [
+            ("d2", "210 mm"),
+            ("neck_diameter", "90 mm"),
+            ("eye_diameter_max", "75 mm"),
+            ("bore_diameter", "20 mm"),
+            ("hub_diameter", "30 mm"),
+            ("b3", "30 mm"),
+            ("cutwater_radius", "111 mm"),
+        ] {
+            *boxes.text_mut(name).unwrap() = text.to_string();
+        }
+        edit(&mut boxes);
+        Inputs {
+            casing: Some(boxes),
+            ..Inputs::default()
+        }
+    }
+
+    fn errors_of(inputs: &Inputs) -> Vec<(Field, String)> {
+        super::compute(inputs, &Basis::default())
+            .err()
+            .unwrap_or_default()
+    }
+
+    #[test]
+    fn the_casing_boxes_reach_the_design() {
+        let outcome = super::compute(&with_casing(|_| ()), &Basis::default()).unwrap();
+        assert_eq!(outcome.result.d2.si, 0.210);
+    }
+
+    #[test]
+    fn a_bad_box_is_marked_on_that_box() {
+        let inputs = with_casing(|boxes| *boxes.text_mut("b3").unwrap() = "mucho".to_string());
+        let errors = errors_of(&inputs);
+        assert_eq!(errors.len(), 1, "{errors:?}");
+        assert_eq!(errors[0].0, Field::Casing("b3"));
+    }
+
+    #[test]
+    fn an_empty_box_only_says_that_it_is_missing() {
+        let inputs = with_casing(|boxes| boxes.text_mut("d2").unwrap().clear());
+        assert_eq!(
+            errors_of(&inputs),
+            vec![(Field::Casing("d2"), "hace falta".to_string())]
+        );
+    }
+
+    #[test]
+    fn half_the_leakage_data_marks_what_is_missing() {
+        let inputs = with_casing(|boxes| {
+            *boxes.text_mut("seal_clearance").unwrap() = "0.3 mm".to_string();
+            *boxes.text_mut("balance_hole_count").unwrap() = "6".to_string();
+        });
+        assert_eq!(
+            errors_of(&inputs),
+            vec![(Field::Casing("seal_length"), "hace falta".to_string())]
+        );
+    }
+
+    #[test]
+    fn a_count_that_is_not_a_number_is_marked_on_its_box() {
+        for name in ["channels", "balance_hole_count"] {
+            let inputs = with_casing(|boxes| *boxes.text_mut(name).unwrap() = "dos".to_string());
+            let errors = errors_of(&inputs);
+            assert_eq!(errors.len(), 1, "{errors:?}");
+            assert!(
+                matches!(errors[0].0, Field::Casing(found) if found == name),
+                "{errors:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn every_box_of_the_panel_has_a_text() {
+        let mut boxes = CasingBoxes::blank();
+        for (name, _, _) in super::CASING_BOXES.iter().chain(&super::LEAKAGE_BOXES) {
+            assert!(boxes.text_mut(name).is_some(), "{name}");
+        }
+    }
+
     #[test]
     fn with_a_casing_the_model_volute_is_neither_drawn_nor_listed() {
         let q = |text: &str| hm_units::parse_quantity(text).unwrap();

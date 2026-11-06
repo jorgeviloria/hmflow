@@ -16,6 +16,7 @@ use crate::model::{Basis, Inputs, build_project, export_report, open_file, open_
 pub enum Command {
     New,
     Open,
+    RemoveCasing,
 }
 
 /// Si la orden actúa ya, o si quedó armada y hay que repetirla.
@@ -29,6 +30,10 @@ pub enum Gate {
 
 /// Aviso cuando Nuevo o Abrir no actúan porque hay cambios.
 pub const DISCARD_NOTICE: &str = "Hay cambios sin guardar. Repite la orden para descartarlos.";
+
+/// Quitar la carcasa de un archivo no puede ocurrir por un clic suelto.
+pub const CASING_NOTICE: &str =
+    "Esto quita la carcasa del archivo al guardar. Repite para confirmarlo.";
 
 /// Lo que la ventana recuerda entre un fotograma y el siguiente.
 #[derive(Default)]
@@ -138,7 +143,7 @@ impl Session {
         self.opened_diagnostics = None;
         self.dirty = true;
         self.armed = None;
-        if self.discard_notice().is_some() {
+        if self.discard_notice().is_some() || self.notice.as_deref() == Some(CASING_NOTICE) {
             self.notice = None;
         }
     }
@@ -149,6 +154,25 @@ impl Session {
         if self.discard_notice().is_some() {
             self.notice = None;
         }
+    }
+
+    /// Pide quitar la carcasa. Si el archivo la tiene, la primera vez solo avisa;
+    /// repetida, actúa. Con una que aún no está en el archivo no hay nada que perder.
+    pub fn request_remove_casing(&mut self) -> Gate {
+        let saved = self
+            .project
+            .as_ref()
+            .is_some_and(|project| project.casing.is_some());
+        if !saved || self.armed == Some(Command::RemoveCasing) {
+            self.armed = None;
+            if self.notice.as_deref() == Some(CASING_NOTICE) {
+                self.notice = None;
+            }
+            return Gate::Proceed;
+        }
+        self.armed = Some(Command::RemoveCasing);
+        self.notice = Some(CASING_NOTICE.to_string());
+        Gate::Armed
     }
 
     /// Pide Nuevo o Abrir.
@@ -510,6 +534,104 @@ mod tests {
         let dest = dir.join(name);
         std::fs::copy(fixture(name), &dest).unwrap();
         dest
+    }
+
+    fn sample_boxes() -> crate::model::CasingBoxes {
+        let mut boxes = crate::model::CasingBoxes::blank();
+        for (name, text) in [
+            ("d2", "210 mm"),
+            ("neck_diameter", "90 mm"),
+            ("eye_diameter_max", "75 mm"),
+            ("bore_diameter", "20 mm"),
+            ("hub_diameter", "30 mm"),
+            ("b3", "30 mm"),
+            ("cutwater_radius", "111 mm"),
+        ] {
+            *boxes.text_mut(name).unwrap() = text.to_string();
+        }
+        boxes
+    }
+
+    #[test]
+    fn a_new_design_with_a_casing_is_saved_and_reopened_with_its_boxes() {
+        let dir = scratch("carcasa-nueva");
+        let path = dir.join("rodete.hmf");
+        let mut session = Session::default();
+        session.inputs.casing = Some(sample_boxes());
+        session.edited();
+        session.save_to(&path).unwrap();
+
+        let saved = Project::load(&path).unwrap();
+        assert_eq!(saved.casing.as_ref().unwrap().b3, "30 mm");
+        let mut again = Session::default();
+        assert!(again.open_path(&path), "{:?}", again.notice);
+        assert_eq!(again.inputs.casing, session.inputs.casing);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn saving_an_edited_box_writes_it_and_reselects_what_depends_on_it() {
+        let dir = scratch("carcasa-editada");
+        let path = copy_fixture(&dir, "casing_v3.hmf");
+        let mut session = Session::default();
+        assert!(session.open_path(&path), "{:?}", session.notice);
+        let boxes = session.inputs.casing.as_mut().unwrap();
+        *boxes.text_mut("b3").unwrap() = "28 mm".to_string();
+        session.edited();
+        session.save_to(&path).unwrap();
+        assert_eq!(Project::load(&path).unwrap().casing.unwrap().b3, "28 mm");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn saving_without_touching_the_casing_leaves_the_file_as_it_was() {
+        let dir = scratch("carcasa-igual");
+        let path = copy_fixture(&dir, "casing_v3.hmf");
+        let recalculated = hm_engine::recalc(Project::load(&path).unwrap(), false).unwrap();
+        recalculated.project.save(&path).unwrap();
+        let before = std::fs::read_to_string(&path).unwrap();
+        let mut session = Session::default();
+        assert!(session.open_path(&path), "{:?}", session.notice);
+        session.save_to(&path).unwrap();
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), before);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn removing_a_saved_casing_needs_a_second_click() {
+        let dir = scratch("carcasa-quitar");
+        let path = copy_fixture(&dir, "casing_v3.hmf");
+        let mut session = Session::default();
+        assert!(session.open_path(&path), "{:?}", session.notice);
+
+        assert_eq!(session.request_remove_casing(), Gate::Armed);
+        assert_eq!(session.notice.as_deref(), Some(CASING_NOTICE));
+        session.edited();
+        assert_eq!(session.notice, None);
+        assert_eq!(session.request_remove_casing(), Gate::Armed);
+        assert_eq!(session.request_remove_casing(), Gate::Proceed);
+        assert_eq!(session.notice, None);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_casing_not_yet_saved_goes_away_at_once() {
+        let mut session = Session::default();
+        session.inputs.casing = Some(sample_boxes());
+        assert_eq!(session.request_remove_casing(), Gate::Proceed);
+    }
+
+    #[test]
+    fn saving_without_the_casing_removes_it_from_the_file() {
+        let dir = scratch("carcasa-fuera");
+        let path = copy_fixture(&dir, "casing_v3.hmf");
+        let mut session = Session::default();
+        assert!(session.open_path(&path), "{:?}", session.notice);
+        session.inputs.casing = None;
+        session.edited();
+        session.save_to(&path).unwrap();
+        assert_eq!(Project::load(&path).unwrap().casing, None);
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]

@@ -155,7 +155,7 @@ fn unknown_param(name: &str) -> EngineError {
 }
 
 /// Quita las selecciones manuales del punto y devuelve su texto anterior.
-fn take_manual_selections(project: &mut Project) -> Vec<(&'static str, String)> {
+pub(crate) fn take_manual_selections(project: &mut Project) -> Vec<(&'static str, String)> {
     let mut reselected = Vec::new();
     let eye_fixed = eye_is_fixed(project);
     for name in NQ_SELECTIONS {

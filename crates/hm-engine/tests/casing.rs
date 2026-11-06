@@ -3,7 +3,8 @@
 
 use hm_engine::{
     CaseField, CurvePoints, DesignEdits, EngineError, analyze, audit, case_from_project,
-    design_edits, new_casing_project, new_project, recalc, report, update_design,
+    design_edits, edited_options, new_casing_project, new_project, open_project, recalc, report,
+    update_design,
 };
 use hm_project::{Casing, Param, Project, PumpType};
 
@@ -974,4 +975,102 @@ fn a_measure_does_not_undo_a_selection_written_by_hand() {
         measured.params.get("phi"),
         Some(Param::Manual { value }) if value == "0.07"
     ));
+}
+
+/// La ventana calcula con `edited_options` y guarda con `update_design`.
+fn preview_matches_what_is_saved(project: &Project, edit: impl FnOnce(&mut DesignEdits)) {
+    let opened = open_project(project).unwrap();
+    let mut edits = opened.edits.clone();
+    edit(&mut edits);
+    let design = edited_options(
+        &opened.case.design,
+        &opened.reselected,
+        &opened.edits,
+        &edits,
+    )
+    .unwrap();
+    let case = hm_engine::Case {
+        design,
+        ..opened.case
+    };
+    let shown = analyze(&case, CurvePoints::MINIMUM).unwrap();
+    let saved = update_design(project.clone(), &edits).unwrap().project;
+    let again = analyze(&case_from_project(&saved).unwrap(), CurvePoints::MINIMUM).unwrap();
+    // La marca sale distinta en cualquier archivo: el ojo del motor se relee como
+    // `manual`. No es un número del diseño.
+    let text = |result: &hm_design::DesignResult| {
+        format!("{result:?}").replace("eye_excludes_hub: false", "eye_excludes_hub: true")
+    };
+    let (shown, again) = (text(&shown.result), text(&again.result));
+    let from = shown
+        .chars()
+        .zip(again.chars())
+        .position(|(a, b)| a != b)
+        .unwrap_or(0);
+    let near = |text: &str| {
+        text.chars()
+            .skip(from.saturating_sub(40))
+            .take(90)
+            .collect::<String>()
+    };
+    assert_eq!(near(&shown), near(&again), "{edits:?}");
+    assert_eq!(shown, again);
+}
+
+#[test]
+fn what_is_shown_is_what_is_saved() {
+    preview_matches_what_is_saved(&saved(), |_| ());
+    preview_matches_what_is_saved(&saved(), |edits| edits.phi = "0.08".to_string());
+    preview_matches_what_is_saved(&saved(), |edits| edits.blade_count = "6".to_string());
+    preview_matches_what_is_saved(&saved(), |edits| {
+        edits.roughness = "0.05 mm".to_string();
+        edits.incidence = "4 deg".to_string();
+    });
+    preview_matches_what_is_saved(&saved(), |edits| {
+        edits.casing.as_mut().unwrap().b3 = "28 mm".to_string();
+    });
+    preview_matches_what_is_saved(&double_saved(), |edits| edits.casing = None);
+
+    let fixed = edited(&saved(), |edits| edits.phi = "0.08".to_string());
+    preview_matches_what_is_saved(&fixed, |edits| edits.phi.clear());
+    let measured = edited(&saved(), |edits| edits.incidence = "4 deg".to_string());
+    preview_matches_what_is_saved(&measured, |edits| edits.incidence.clear());
+}
+
+#[test]
+fn a_casing_can_be_added_to_a_free_project() {
+    let free = edited(&saved(), |edits| edits.casing = None);
+    preview_matches_what_is_saved(&free, |edits| edits.casing = Some(casing()));
+}
+
+#[test]
+fn a_missing_box_says_it_is_missing() {
+    let mut empty = casing();
+    empty.b3.clear();
+    let error = hm_engine::casing_fit(&empty).unwrap_err();
+    assert_eq!(error.field(), Some(CaseField::Casing("b3")));
+    assert!(error.to_string().contains("hace falta"), "{error}");
+}
+
+#[test]
+fn half_the_leakage_data_names_what_is_missing() {
+    let mut half = casing();
+    half.seal_clearance = "0.3 mm".to_string();
+    let error = hm_engine::casing_fit(&half).unwrap_err();
+    assert_eq!(error.field(), Some(CaseField::Casing("balance_hole_count")));
+    assert!(error.to_string().contains("hace falta"), "{error}");
+
+    half.balance_hole_count = 6;
+    let error = hm_engine::casing_fit(&half).unwrap_err();
+    assert_eq!(error.field(), Some(CaseField::Casing("seal_length")));
+    assert!(error.to_string().contains("hace falta"), "{error}");
+}
+
+#[test]
+fn a_casing_replaces_a_volute_fixed_by_hand() {
+    let mut free = edited(&saved(), |edits| edits.casing = None);
+    let value = "1.2".to_string();
+    free.params
+        .insert("k3".to_string(), Param::Locked { value });
+    preview_matches_what_is_saved(&free, |edits| edits.casing = Some(casing()));
 }

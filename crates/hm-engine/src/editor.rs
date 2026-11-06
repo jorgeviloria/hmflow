@@ -200,10 +200,13 @@ fn apply_edits(project: &mut Project, edits: &DesignEdits) -> Result<(), EngineE
     if let Some(casing) = &edits.casing {
         casing_fit(casing)?;
     }
-    // Con carcasa o sin ella, la voluta guardada es de la otra.
+    // Con carcasa o sin ella, la voluta guardada es de la otra. Un `locked` es una
+    // decisión: se queda, y el diseño dice si contradice a la carcasa.
     if project.casing.is_some() != edits.casing.is_some() {
         for name in CASING_COPIES {
-            project.params.remove(name);
+            if !is_locked(project, name) {
+                project.params.remove(name);
+            }
         }
     }
     project.casing = edits.casing.clone();

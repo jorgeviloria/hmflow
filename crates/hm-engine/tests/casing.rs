@@ -1067,13 +1067,48 @@ fn half_the_leakage_data_names_what_is_missing() {
     assert!(error.to_string().contains("hace falta"), "{error}");
 }
 
+fn lock(project: &mut Project, name: &str, text: &str) {
+    let value = text.to_string();
+    project
+        .params
+        .insert(name.to_string(), Param::Locked { value });
+}
+
 #[test]
-fn a_casing_replaces_a_volute_fixed_by_hand() {
+fn a_locked_volute_that_contradicts_the_new_casing_is_an_error() {
     let mut free = edited(&saved(), |edits| edits.casing = None);
-    let value = "1.2".to_string();
-    free.params
-        .insert("k3".to_string(), Param::Locked { value });
+    lock(&mut free, "k3", "1.2");
+    let mut edits = design_edits(&free);
+    edits.casing = Some(casing());
+
+    let error = update_design(free.clone(), &edits).unwrap_err().to_string();
+    assert!(error.contains("contradice"), "{error}");
+    let design = edited_options(Some(&free), &edits).unwrap();
+    assert_eq!(design.k3, Some(1.2), "la vista previa ve el mismo locked");
+}
+
+#[test]
+fn a_locked_volute_that_agrees_with_the_new_casing_stays_locked() {
+    let mut free = edited(&saved(), |edits| edits.casing = None);
+    // 2·111/210, lo que da la carcasa.
+    let k3 = (2.0_f64 * 111.0 / 210.0).to_string();
+    lock(&mut free, "k3", &k3);
+    let done = edited(&free, |edits| edits.casing = Some(casing()));
+    assert!(is_locked_to(&done, "k3", &k3));
     preview_matches_what_is_saved(&free, |edits| edits.casing = Some(casing()));
+}
+
+#[test]
+fn removing_the_casing_keeps_what_is_locked_and_drops_its_copies() {
+    let mut double = double_saved();
+    lock(&mut double, "volute_channels", "2");
+    let free = edited(&double, |edits| edits.casing = None);
+    assert!(is_locked_to(&free, "volute_channels", "2"));
+    let case = case_from_project(&free).unwrap();
+    assert_eq!(case.design.volute_channels, Some(2));
+    // La copia en `manual` de la lengua sí se va.
+    assert!(!matches!(free.params.get("k3"), Some(Param::Locked { .. })));
+    preview_matches_what_is_saved(&double, |edits| edits.casing = None);
 }
 
 /// Selecciones escritas a mano, de las que no saldría el motor.

@@ -182,7 +182,11 @@ pub fn design_edits(project: &Project) -> DesignEdits {
             .params
             .get(name)
             .and_then(param_value)
-            .filter(|text| !parse_quantity(text).is_ok_and(|value| value.value() == default))
+            // Un `locked` es una decisión aunque valga el defecto: se muestra.
+            .filter(|text| {
+                is_locked(project, name)
+                    || !parse_quantity(text).is_ok_and(|value| value.value() == default)
+            })
             .unwrap_or_default()
             .to_string()
     };

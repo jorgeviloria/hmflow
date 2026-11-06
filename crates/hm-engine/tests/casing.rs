@@ -1195,3 +1195,29 @@ fn what_is_shown_is_saved_with_a_locked_eye_and_a_casing_change() {
     }
     preview_matches_what_is_saved(&free, |edits| edits.casing = Some(casing()));
 }
+
+#[test]
+fn a_locked_measure_at_its_default_stays_locked() {
+    let mut project = saved();
+    lock(&mut project, "incidence_deg", "2 deg");
+    lock(&mut project, "impeller_roughness", "0 m");
+
+    let edits = design_edits(&project);
+    assert_eq!(edits.incidence, "2 deg");
+    assert_eq!(edits.roughness, "0 m");
+
+    let done = edited(&project, |_| ());
+    assert!(is_locked_to(&done, "incidence_deg", "2 deg"));
+    assert!(is_locked_to(&done, "impeller_roughness", "0 m"));
+}
+
+#[test]
+fn emptying_a_locked_measure_releases_it() {
+    let mut project = saved();
+    lock(&mut project, "incidence_deg", "2 deg");
+    let done = edited(&project, |edits| edits.incidence.clear());
+    assert!(matches!(
+        done.params.get("incidence_deg"),
+        Some(Param::Manual { .. })
+    ));
+}

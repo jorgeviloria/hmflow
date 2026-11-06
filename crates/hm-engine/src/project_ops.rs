@@ -98,6 +98,9 @@ fn build_project(
             diagnostics: validation,
         });
     }
+    // Lo que se escribe tiene que poder leerse: el diseño acepta valores que el
+    // archivo no, como Z = 101.
+    case_from_project(&project)?;
     Ok(project)
 }
 

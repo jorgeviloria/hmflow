@@ -337,9 +337,53 @@ fn the_options_work_without_a_casing() {
 #[test]
 fn a_bad_value_is_rejected_and_nothing_is_written() {
     let dir = temp_dir("bad-phi");
-    for extra in [["--phi", "-0.1"], ["--blade-count", "0"]] {
+    for extra in [
+        ["--phi", "-0.1"],
+        ["--blade-count", "0"],
+        ["--blade-count", "101"],
+    ] {
         let done = design_with(&dir, &extra);
         assert!(!done.status.success(), "{}", text(&done));
         assert!(!dir.join("rodete.hmf").exists());
     }
+}
+
+#[test]
+fn a_blade_count_the_file_cannot_hold_names_the_limit() {
+    let dir = temp_dir("z-limit");
+    let done = design_with(&dir, &["--blade-count", "101"]);
+    assert!(text(&done).contains("entre 1 y 100"), "{}", text(&done));
+}
+
+#[test]
+fn a_rare_blade_count_is_still_a_readable_project() {
+    for z in ["16", "100"] {
+        let dir = temp_dir(&format!("z-{z}"));
+        let done = design_with(&dir, &["--blade-count", z]);
+        assert!(done.status.success(), "{z}: {}", text(&done));
+        let checked = run(&dir, &["check", "rodete.hmf"]);
+        assert!(checked.status.success(), "{z}: {}", text(&checked));
+    }
+}
+
+#[test]
+fn a_channel_count_the_file_cannot_hold_is_not_written() {
+    let dir = temp_dir("channels-limit");
+    let done = run(
+        &dir,
+        &[
+            "design",
+            "--q",
+            "120 m3/h",
+            "--h",
+            "45 m",
+            "--n",
+            "2900 rpm",
+            "--volute-channels",
+            "101",
+            "--out",
+            "libre.hmf",
+        ],
+    );
+    assert!(!dir.join("libre.hmf").exists(), "{}", text(&done));
 }

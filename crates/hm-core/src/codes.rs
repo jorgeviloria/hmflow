@@ -335,6 +335,16 @@ pub const CODES: &[CodeInfo] = &[
         "Z par y número de lenguas de la voluta par: Gülich evita esa combinación (p. 491).",
     ),
     active(
+        "HM-DES-046",
+        Warning,
+        "Los agujeros de equilibrio suman poca área frente al anillo trasero gastado.",
+    ),
+    active(
+        "HM-DES-047",
+        Info,
+        "Número de agujeros de equilibrio distinto de Z: lo usual es uno por canal.",
+    ),
+    active(
         "HM-DES-045",
         Info,
         "Holgura de los anillos lejos de la típica de Gülich, ec. (3.12).",

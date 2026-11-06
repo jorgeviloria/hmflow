@@ -390,6 +390,10 @@ pub const VOLUTE_WIDTH_RATIO_RANGE: (f64, f64) = (1.05, 4.0);
 /// Dispersión de las holguras ejecutadas frente a la ec. (3.12), Gülich p. 110.
 const SEAL_CLEARANCE_SPREAD: f64 = 0.30;
 
+/// Área mínima de los agujeros de equilibrio frente al paso del anillo trasero:
+/// Gülich 2020, p. 657, «at least 4- to 5-times», con s = 2·s0 por el desgaste.
+const BALANCE_HOLE_AREA_RATIO: f64 = 4.0;
+
 /// Lo que no impide diseñar, pero hay que mirar antes de fabricar.
 fn casing_diagnostics(mechanics: &Mechanics, result: &DesignResult) -> Diagnostics {
     let mut diagnostics = Diagnostics::new();
@@ -461,6 +465,39 @@ fn casing_diagnostics(mechanics: &Mechanics, result: &DesignResult) -> Diagnosti
                 mechanics.usual_seal_clearance * 1000.0
             ),
         ));
+    }
+
+    if let Some(leakage) = &casing.leakage {
+        let holes = f64::from(leakage.balance_hole_count)
+            * std::f64::consts::FRAC_PI_4
+            * leakage.balance_hole_diameter.powi(2);
+        // La holgura diametral nominal es 2·s0; gastada, s = 2·s0.
+        let worn_gap = std::f64::consts::PI * leakage.rear_seal_diameter * leakage.seal_clearance;
+        let area_ratio = holes / worn_gap;
+        if area_ratio < BALANCE_HOLE_AREA_RATIO {
+            diagnostics.push(
+                Diagnostic::warning(
+                    "HM-DES-046",
+                    format!(
+                        "los agujeros de equilibrio suman {:.2} veces el paso del anillo trasero \
+                         gastado; Gülich (p. 657) pide al menos {BALANCE_HOLE_AREA_RATIO:.0} a 5",
+                        area_ratio
+                    ),
+                )
+                .with_hint("Si estrangulan, sube la presión detrás de la tapa y el empuje axial."),
+            );
+        }
+        let channels = result.selection.blade_count;
+        if leakage.balance_hole_count != channels {
+            diagnostics.push(Diagnostic::info(
+                "HM-DES-047",
+                format!(
+                    "{} agujeros de equilibrio con Z = {channels}: lo usual es uno por canal \
+                     (Gülich, p. 657)",
+                    leakage.balance_hole_count
+                ),
+            ));
+        }
     }
 
     let ratio = casing.b3 / result.b2.si;

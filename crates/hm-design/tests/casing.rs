@@ -1031,3 +1031,50 @@ fn the_eta_v_iteration_never_fails_to_converge() {
     }
     assert!(designs >= 15, "solo {designs} diseños");
 }
+
+fn with_holes(count: u32, diameter: f64) -> CasingFit {
+    CasingFit {
+        leakage: Some(CasingLeakage {
+            balance_hole_count: count,
+            balance_hole_diameter: diameter,
+            ..leakage()
+        }),
+        ..roomy()
+    }
+}
+
+fn fit_note(casing: CasingFit, code: &str) -> Option<String> {
+    let result = design_with_options(&input(), &with(casing)).unwrap();
+    let mech = mechanics(&input(), &result, DEFAULT_SHAFT_SHEAR_STRESS).unwrap();
+    mechanics_diagnostics(&mech, &result)
+        .iter()
+        .find(|diagnostic| diagnostic.code == code)
+        .map(|diagnostic| diagnostic.message.clone())
+}
+
+/// Gülich p. 657: suma de áreas ≥ 4 veces π·ds2·s, con s = 2·s0 por el desgaste.
+#[test]
+fn small_balance_holes_are_warned_counting_the_worn_seal() {
+    // 6×Ø7 = 231 mm²; paso gastado = π·80·0,30 = 75,4 mm²; razón 3,06.
+    let note = fit_note(with_holes(6, 0.007), "HM-DES-046").unwrap();
+    assert!(note.contains("3.06"), "{note}");
+    // Con el anillo nuevo pasaría: 231/37,7 = 6,1. El desgaste es lo que dispara.
+    assert_eq!(fit_note(with_holes(6, 0.009), "HM-DES-046"), None);
+}
+
+#[test]
+fn a_hole_per_channel_is_the_usual() {
+    let z = design_with_options(&input(), &with(with_holes(5, 0.009)))
+        .unwrap()
+        .selection
+        .blade_count;
+    assert_eq!(fit_note(with_holes(z, 0.009), "HM-DES-047"), None);
+    let note = fit_note(with_holes(z + 1, 0.009), "HM-DES-047").unwrap();
+    assert!(note.contains(&format!("Z = {z}")), "{note}");
+}
+
+#[test]
+fn hole_checks_need_leakage_data() {
+    assert_eq!(fit_note(roomy(), "HM-DES-046"), None);
+    assert_eq!(fit_note(roomy(), "HM-DES-047"), None);
+}

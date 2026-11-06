@@ -10,7 +10,8 @@ use hm_core::Diagnostic;
 use hm_project::Project;
 
 use crate::model::{
-    Basis, Inputs, build_project, export_report, open_file, open_loaded, reselect_project,
+    Basis, CasingBoxes, Inputs, build_project, export_report, open_file, open_loaded,
+    reselect_project,
 };
 
 /// Orden del menú Archivo que puede tirar el trabajo en curso.
@@ -54,6 +55,8 @@ pub struct Session {
     armed: Option<Command>,
     /// El último título enviado a la ventana.
     shown_title: Option<String>,
+    /// Las cajas de una carcasa quitada, por si se vuelve a marcar.
+    removed_casing: Option<CasingBoxes>,
 }
 
 impl Session {
@@ -130,6 +133,7 @@ impl Session {
                 self.notice = None;
                 self.armed = None;
                 self.opened_diagnostics = Some(opened.diagnostics);
+                self.removed_casing = None;
                 true
             }
             Err(message) => {
@@ -182,6 +186,24 @@ impl Session {
             format!("Reelegido, sin guardar: {}.", reselected.changes.join("; "))
         });
         Ok(())
+    }
+
+    /// Marca la carcasa: vuelven las cajas quitadas, o unas en blanco.
+    pub fn add_casing(&mut self) {
+        let boxes = self
+            .removed_casing
+            .take()
+            .unwrap_or_else(CasingBoxes::blank);
+        self.inputs.casing = Some(boxes);
+    }
+
+    /// Desmarca la carcasa, si la confirmación lo deja. Devuelve si se quitó.
+    pub fn remove_casing(&mut self) -> bool {
+        if self.request_remove_casing() == Gate::Armed {
+            return false;
+        }
+        self.removed_casing = self.inputs.casing.take();
+        true
     }
 
     /// Pide quitar la carcasa. Si el archivo la tiene, la primera vez solo avisa;
@@ -726,6 +748,51 @@ mod tests {
         assert_eq!(session.request_remove_casing(), Gate::Armed);
         assert_eq!(session.request(Command::Open), Gate::Proceed);
         assert_eq!(session.notice, None);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn marking_the_casing_again_brings_its_boxes_back() {
+        let mut session = Session::default();
+        session.inputs.casing = Some(sample_boxes());
+        assert!(session.remove_casing());
+        assert_eq!(session.inputs.casing, None);
+        session.add_casing();
+        assert_eq!(session.inputs.casing, Some(sample_boxes()));
+    }
+
+    #[test]
+    fn a_new_casing_starts_blank() {
+        let mut session = Session::default();
+        session.add_casing();
+        assert_eq!(
+            session.inputs.casing,
+            Some(crate::model::CasingBoxes::blank())
+        );
+    }
+
+    #[test]
+    fn a_first_click_does_not_remove_a_saved_casing() {
+        let (dir, mut session) = with_saved_casing("casilla-armada");
+        assert!(!session.remove_casing());
+        assert!(session.inputs.casing.is_some());
+        assert!(session.remove_casing());
+        assert!(session.inputs.casing.is_none());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn opening_another_file_forgets_the_removed_casing() {
+        let (dir, mut session) = with_saved_casing("casilla-otro");
+        assert!(!session.remove_casing());
+        assert!(session.remove_casing());
+        let other = copy_fixture(&dir, "end_suction_v0.9.hmf");
+        assert!(session.open_path(&other), "{:?}", session.notice);
+        session.add_casing();
+        assert_eq!(
+            session.inputs.casing,
+            Some(crate::model::CasingBoxes::blank())
+        );
         let _ = std::fs::remove_dir_all(&dir);
     }
 

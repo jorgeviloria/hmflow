@@ -606,10 +606,9 @@ fn casing_section(ui: &mut egui::Ui, app: &mut App, errors: &FieldErrors) -> boo
                 .changed()
             {
                 if wanted {
-                    app.session.inputs.casing = Some(CasingBoxes::blank());
+                    app.session.add_casing();
                     changed = true;
-                } else if app.session.request_remove_casing() == Gate::Proceed {
-                    app.session.inputs.casing = None;
+                } else if app.session.remove_casing() {
                     changed = true;
                 }
             }

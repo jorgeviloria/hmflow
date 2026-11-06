@@ -91,6 +91,31 @@ pub struct DesignSelection {
     pub margin: f64,
 }
 
+/// Pérdidas del rodete de Gülich 2020, tabla 3.8 (1), referidas a u2²/2g.
+///
+/// Solo contraste. El libro (sec. 3.10.2) admite las diferencias, no el valor
+/// absoluto, porque las pérdidas de mezcla no se evalúan bien: comparan
+/// candidatos o rugosidades, y ηh sigue siendo el estadístico.
+#[derive(Debug, Clone, PartialEq)]
+pub struct ImpellerLosses {
+    /// Longitud de la línea media del álabe, m.
+    pub blade_length: f64,
+    /// Re = w_av·L/ν.
+    pub reynolds: f64,
+    pub cf_smooth: f64,
+    pub cf_rough: f64,
+    /// ζLa,R liso.
+    pub friction_smooth: f64,
+    /// ζLa,R con la rugosidad del proyecto.
+    pub friction_rough: f64,
+    /// w1q/w1m en el punto de diseño.
+    pub throat_ratio: f64,
+    /// ζLa,C. `None` si w1q/w1m no pasa de 0,65, donde la ecuación no vale.
+    pub shock: Option<f64>,
+    /// Lo que la rugosidad cambia ηh, por T3.8.1. `None` con rodete liso.
+    pub roughness_eta_h: Option<f64>,
+}
+
 /// Resultado del diseño preliminar.
 #[derive(Debug, Clone)]
 pub struct DesignResult {
@@ -158,6 +183,8 @@ pub struct DesignResult {
     pub leakage_eta_v: f64,
     /// ηv estadístico de Gülich (ec. 3.5.10), para contraste con el de los anillos.
     pub statistical_eta_v: f64,
+    /// Pérdidas del rodete por geometría, con carcasa. Contraste: no entran en ηh.
+    pub impeller_losses: Option<ImpellerLosses>,
     /// ηm estimado de Gülich (ec. 3.10.14), para contraste.
     pub mechanical_eta_estimate: f64,
     /// Pérdida por rozamiento de discos frente a la potencia útil, PRR/Pu
@@ -1170,6 +1197,152 @@ pub fn inlet_throat_ratio(q_la: f64, a1q_total: f64, c1m: f64, u1m: f64) -> f64 
 /// es `A1·sen β1B` y QW coincide con QSF.
 pub fn inlet_throat_area(a1: f64, beta1b_rad: f64, tau1: f64) -> f64 {
     a1 * beta1b_rad.sin() / tau1
+}
+
+/// Lo que la ec. (T3.8.9) exige de w1q/w1m (Gülich 2020, tabla 3.8).
+const SHOCK_MIN_THROAT_RATIO: f64 = 0.65;
+
+/// Datos del rodete para [`impeller_losses`], en SI.
+struct ImpellerChannel {
+    /// Qth, el caudal del rodete.
+    flow: f64,
+    blades: f64,
+    d2: f64,
+    b1: f64,
+    b2: f64,
+    /// Área de garganta de un canal a la entrada.
+    inlet_throat: f64,
+    /// Ancho de garganta a la salida.
+    outlet_throat: f64,
+    blade_length: f64,
+    c1m: f64,
+    u1: f64,
+    u2: f64,
+    nu: f64,
+    roughness: f64,
+    psi: f64,
+    eta_h: f64,
+}
+
+/// Tabla 3.8 (1). Entrada axial, c1u = 0, y un solo flujo, fq = 1.
+fn impeller_losses(
+    registry: &Registry,
+    channel: &ImpellerChannel,
+) -> Result<ImpellerLosses, DesignError> {
+    let m = unit("m")?;
+    let ms = unit("m/s")?;
+    let m2 = unit("m2")?;
+    let m3s = unit("m3/s")?;
+    let one = unit("1")?;
+    let metres = |value: f64| Quantity::from_si(value, m.clone());
+    let speed = |value: f64| Quantity::from_si(value, ms.clone());
+    let number = |value: f64| Quantity::from_si(value, one.clone());
+    let flow = Quantity::from_si(channel.flow, m3s.clone());
+    let inlet_throat = Quantity::from_si(channel.inlet_throat, m2.clone());
+    let w_av = evaluate(
+        registry,
+        "design.impeller_mean_velocity",
+        &[
+            ("Q", flow.clone()),
+            ("z", number(channel.blades)),
+            ("a2", metres(channel.outlet_throat)),
+            ("b2", metres(channel.b2)),
+            ("A1q", inlet_throat.clone()),
+        ],
+    )?;
+    let reynolds = w_av.si * channel.blade_length / channel.nu;
+    let dh = evaluate(
+        registry,
+        "design.impeller_hydraulic_diameter",
+        &[
+            ("a1", metres(channel.inlet_throat / channel.b1)),
+            ("b1", metres(channel.b1)),
+            ("a2", metres(channel.outlet_throat)),
+            ("b2", metres(channel.b2)),
+            ("A1q", inlet_throat.clone()),
+        ],
+    )?;
+    let with_roughness = |eps: f64| -> Result<(f64, f64), DesignError> {
+        let cf = evaluate(
+            registry,
+            "design.impeller_friction_coefficient",
+            &[
+                ("eps", metres(eps)),
+                ("L", metres(channel.blade_length)),
+                ("Re", number(reynolds)),
+            ],
+        )?;
+        let cd = evaluate(
+            registry,
+            "design.impeller_dissipation_coefficient",
+            &[
+                ("cf", cf.clone()),
+                ("b2", metres(channel.b2)),
+                ("d2", metres(channel.d2)),
+            ],
+        )?;
+        let friction = evaluate(
+            registry,
+            "design.impeller_friction_loss",
+            &[
+                ("cd", cd),
+                ("L", metres(channel.blade_length)),
+                ("Dh", dh.clone()),
+                ("w_av", w_av.clone()),
+                ("u2", speed(channel.u2)),
+            ],
+        )?;
+        Ok((cf.si, friction.si))
+    };
+    let (cf_smooth, friction_smooth) = with_roughness(0.0)?;
+    let (cf_rough, friction_rough) = with_roughness(channel.roughness)?;
+
+    let w1m = evaluate(
+        registry,
+        "design.impeller_inlet_relative_velocity",
+        &[
+            ("c1m", speed(channel.c1m)),
+            ("u1", speed(channel.u1)),
+            ("c1u", speed(0.0)),
+        ],
+    )?;
+    let w1q = evaluate(
+        registry,
+        "design.impeller_throat_velocity",
+        &[
+            ("Q", flow),
+            ("z", number(channel.blades)),
+            ("A1q", inlet_throat),
+        ],
+    )?;
+    let throat_ratio = w1q.si / w1m.si;
+    let shock = if throat_ratio > SHOCK_MIN_THROAT_RATIO {
+        let loss = evaluate(
+            registry,
+            "design.impeller_shock_loss",
+            &[("w1m", w1m), ("w1q", w1q), ("u2", speed(channel.u2))],
+        )?;
+        Some(loss.si)
+    } else {
+        None
+    };
+
+    // T3.8.1: ψ/ηh = ψ + Σζ, así que la pérdida extra no necesita conocer Σζ.
+    let roughness_eta_h = (channel.roughness > 0.0).then(|| {
+        channel.psi / (channel.psi / channel.eta_h + friction_rough - friction_smooth)
+            - channel.eta_h
+    });
+    Ok(ImpellerLosses {
+        blade_length: channel.blade_length,
+        reynolds,
+        cf_smooth,
+        cf_rough,
+        friction_smooth,
+        friction_rough,
+        throat_ratio,
+        shock,
+        roughness_eta_h,
+    })
 }
 
 /// Viscosidad cinemática que usan discos y anillo, m²/s.
@@ -2511,6 +2684,37 @@ fn design_once(
         qth.si,
         geometry::BLADE_STEPS,
     );
+    let blades = f64::from(selection.blade_count);
+    let impeller_losses = options
+        .casing
+        .as_ref()
+        .map(|_| {
+            impeller_losses(
+                &registry,
+                &ImpellerChannel {
+                    flow: qth.si,
+                    blades,
+                    d2: d2.si,
+                    b1: b1.si,
+                    b2: b2.si,
+                    inlet_throat: inlet_throat_area(inlet_area, beta1b, tau1) / blades,
+                    outlet_throat: std::f64::consts::PI
+                        * d2.si
+                        * selection.beta2_deg.to_radians().sin()
+                        / tau2
+                        / blades,
+                    blade_length: geometry::blade_length(&blade),
+                    c1m: selection.cm0,
+                    u1: u1.si,
+                    u2: u2.si,
+                    nu: fluid_nu(input),
+                    roughness: options.impeller_roughness.unwrap_or(0.0),
+                    psi: selection.psi,
+                    eta_h,
+                },
+            )
+        })
+        .transpose()?;
     let blade_loading = 2.0 * std::f64::consts::PI * selection.psi
         / (eta_h
             * f64::from(selection.blade_count)
@@ -2562,6 +2766,7 @@ fn design_once(
         recirculation_onset,
         leakage_eta_v,
         statistical_eta_v: gulich_volumetric_efficiency(nq, options.balance_holes)?,
+        impeller_losses,
         mechanical_eta_estimate,
         disk_friction_ratio,
         statistical_eta_h,

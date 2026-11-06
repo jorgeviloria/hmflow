@@ -1763,3 +1763,109 @@ fn without_a_casing_the_eye_is_not_compared_with_the_hub() {
     };
     assert!(design_with_options(&input(), &options).is_ok());
 }
+
+fn losses_of(options: &DesignOptions) -> hm_design::ImpellerLosses {
+    let result = design_with_options(&input(), options).unwrap();
+    result.impeller_losses.unwrap()
+}
+
+#[test]
+fn a_free_design_has_no_impeller_losses() {
+    assert!(design(&input()).unwrap().impeller_losses.is_none());
+}
+
+#[test]
+fn the_impeller_losses_match_a_hand_calculation() {
+    let result = design_with_options(&input(), &with(sample())).unwrap();
+    let losses = result.impeller_losses.clone().unwrap();
+    let pi = std::f64::consts::PI;
+    let z = f64::from(result.selection.blade_count);
+    let (d1, d2, b1, b2) = (result.d1.si, result.d2.si, result.b1.si, result.b2.si);
+    let q = result.qth.si;
+    let n = input().n.si;
+    let u2 = pi * d2 * n;
+
+    // Gargantas: el área de paso por el seno del ángulo, sin el bloqueo.
+    let mech = mechanics(&input(), &result, DEFAULT_SHAFT_SHEAR_STRESS).unwrap();
+    let blades = result.selection.blade_count;
+    let tau1 = hm_design::blade_blockage(blades, mech.blade_thickness, d1, result.beta1b);
+    let a1q = pi * d1 * b1 * result.beta1b.sin() / tau1 / z;
+    let beta2 = result.selection.beta2_deg.to_radians();
+    let tau2 = hm_design::blade_blockage(blades, mech.trailing_edge_thickness, d2, beta2);
+    let a2 = pi * d2 * beta2.sin() / tau2 / z;
+    let a1 = a1q / b1;
+
+    let w_av = 2.0 * q / (z * (a2 * b2 + a1q));
+    let length = losses.blade_length;
+    let re = w_av * length / 1.0e-6;
+    assert!((losses.reynolds / re - 1.0).abs() < 0.01, "{re}");
+
+    let cf = 0.136 / (-(12.5 / losses.reynolds).log10()).powf(2.15);
+    assert!((losses.cf_smooth / cf - 1.0).abs() < 1e-9);
+    let dh = 2.0 * (a2 * b2 + a1q) / (a1 + b1 + a2 + b2);
+    let cd = (cf + 0.0015) * (1.1 + 4.0 * b2 / d2);
+    let friction = 4.0 * cd * length / dh * (w_av / u2).powi(2);
+    assert!((losses.friction_smooth / friction - 1.0).abs() < 1e-9);
+}
+
+#[test]
+fn more_blades_lose_more_in_friction() {
+    let blades = |z| {
+        losses_of(&DesignOptions {
+            blade_count: Some(z),
+            phi: Some(0.1),
+            ..with(sample())
+        })
+        .friction_smooth
+    };
+    assert!(blades(7) > blades(6));
+    assert!(blades(6) > blades(5));
+}
+
+#[test]
+fn roughness_shows_up_only_in_the_difference() {
+    let smooth = with(sample());
+    let rough = DesignOptions {
+        impeller_roughness: Some(32.0e-6),
+        ..with(sample())
+    };
+    let plain = design_with_options(&input(), &smooth).unwrap();
+    let worn = design_with_options(&input(), &rough).unwrap();
+    let (flat, coarse) = (
+        plain.impeller_losses.clone().unwrap(),
+        worn.impeller_losses.clone().unwrap(),
+    );
+    assert_eq!(flat.friction_smooth, flat.friction_rough);
+    assert_eq!(flat.roughness_eta_h, None);
+    assert!(coarse.friction_rough > coarse.friction_smooth);
+    assert!(coarse.cf_rough > coarse.cf_smooth);
+    assert_eq!(coarse.friction_smooth, flat.friction_smooth);
+
+    // Δηh de T3.8.1: ηh = ψ/(ψ + Σζ), con Σζ implícita en el ηh del método.
+    let psi = worn.selection.psi;
+    let extra = coarse.friction_rough - coarse.friction_smooth;
+    let expected = psi / (psi / worn.eta_h + extra) - worn.eta_h;
+    assert_eq!(coarse.roughness_eta_h, Some(expected));
+    assert!(expected < 0.0);
+
+    // Es un contraste: ηh no se mueve.
+    assert_eq!(worn.eta_h, plain.eta_h);
+}
+
+#[test]
+fn the_shock_is_only_published_inside_its_range() {
+    let losses = losses_of(&with(sample()));
+    assert!(losses.throat_ratio > 0.65);
+    let shock = losses.shock.unwrap();
+    assert!(shock >= 0.0);
+
+    let wide = losses_of(&DesignOptions {
+        cm0: Some(1.5),
+        c0: Some(9.0),
+        j: Some(0.95),
+        incidence_deg: Some(10.0),
+        ..with(sample())
+    });
+    assert!(wide.throat_ratio <= 0.65, "{}", wide.throat_ratio);
+    assert_eq!(wide.shock, None);
+}

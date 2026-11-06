@@ -30,13 +30,13 @@ const FORCE_90_30: f64 = 1182.24;
 const FORCE_90_100: f64 = -331.08;
 
 #[test]
-fn pack_has_eighty_five_formulas() {
-    assert_eq!(Registry::from_toml(END_SUCTION_V01_PACK).unwrap().len(), 85);
+fn pack_has_ninety_three_formulas() {
+    assert_eq!(Registry::from_toml(END_SUCTION_V01_PACK).unwrap().len(), 93);
 }
 
 #[test]
 fn all_merges_every_pack() {
-    assert_eq!(Registry::all().len(), 102);
+    assert_eq!(Registry::all().len(), 110);
 }
 
 #[test]
@@ -1318,5 +1318,133 @@ fn seal_volumetric_efficiency() {
         ),
         0.973_799,
         1e-5,
+    );
+}
+
+/// Canal de ejemplo: Q = 0,1 m³/s, 6 canales, a2·b2 = 0,002 m² y A1q = 0,003 m².
+#[test]
+fn impeller_mean_velocity() {
+    close(
+        evaluate(
+            "design.impeller_mean_velocity",
+            &[
+                ("Q", "0.1 m3/s"),
+                ("z", "6"),
+                ("a2", "0.08 m"),
+                ("b2", "0.025 m"),
+                ("A1q", "0.003 m2"),
+            ],
+        ),
+        // 2·0,1/(6·(0,002 + 0,003))
+        6.6667,
+        1e-3,
+    );
+}
+
+#[test]
+fn impeller_friction_coefficient() {
+    let cf = |eps: &str| {
+        evaluate(
+            "design.impeller_friction_coefficient",
+            &[("eps", eps), ("L", "0.3 m"), ("Re", "3.3e6")],
+        )
+    };
+    // Liso: solo queda el término de Re. Del orden de 0,0036, el de una placa plana.
+    close(
+        cf("0 m"),
+        0.136 / (12.5f64 / 3.3e6).log10().abs().powf(2.15),
+        1e-12,
+    );
+    // Con ε = 32 µm: −log10(0,2·32e-6/0,3 + 12,5/3,3e6).
+    let rough: f64 = 0.2 * 32.0e-6 / 0.3 + 12.5 / 3.3e6;
+    close(cf("32e-6 m"), 0.136 / rough.log10().abs().powf(2.15), 1e-12);
+    assert!(cf("32e-6 m") > cf("0 m"));
+}
+
+#[test]
+fn impeller_hydraulic_diameter() {
+    close(
+        evaluate(
+            "design.impeller_hydraulic_diameter",
+            &[
+                ("a1", "0.03 m"),
+                ("b1", "0.03 m"),
+                ("a2", "0.08 m"),
+                ("b2", "0.02 m"),
+                ("A1q", "0.0009 m2"),
+            ],
+        ),
+        // 2·(0,0016 + 0,0009)/0,16
+        0.03125,
+        1e-9,
+    );
+}
+
+#[test]
+fn impeller_dissipation_coefficient() {
+    close(
+        evaluate(
+            "design.impeller_dissipation_coefficient",
+            &[("cf", "0.0035"), ("b2", "0.02 m"), ("d2", "0.4 m")],
+        ),
+        // (0,0035 + 0,0015)·(1,1 + 4·0,05)
+        0.0065,
+        1e-9,
+    );
+}
+
+#[test]
+fn impeller_friction_loss() {
+    close(
+        evaluate(
+            "design.impeller_friction_loss",
+            &[
+                ("cd", "0.0065"),
+                ("L", "0.3 m"),
+                ("Dh", "0.05 m"),
+                ("w_av", "10 m/s"),
+                ("u2", "40 m/s"),
+            ],
+        ),
+        // 4·0,0065·6·(0,25)²
+        0.00975,
+        1e-9,
+    );
+}
+
+#[test]
+fn impeller_inlet_relative_velocity() {
+    close(
+        evaluate(
+            "design.impeller_inlet_relative_velocity",
+            &[("c1m", "3 m/s"), ("u1", "10 m/s"), ("c1u", "6 m/s")],
+        ),
+        5.0,
+        1e-9,
+    );
+}
+
+#[test]
+fn impeller_throat_velocity() {
+    close(
+        evaluate(
+            "design.impeller_throat_velocity",
+            &[("Q", "0.06 m3/s"), ("z", "6"), ("A1q", "0.002 m2")],
+        ),
+        5.0,
+        1e-9,
+    );
+}
+
+#[test]
+fn impeller_shock_loss() {
+    close(
+        evaluate(
+            "design.impeller_shock_loss",
+            &[("w1m", "20 m/s"), ("w1q", "12 m/s"), ("u2", "40 m/s")],
+        ),
+        // 0,3·(8/40)²
+        0.012,
+        1e-9,
     );
 }

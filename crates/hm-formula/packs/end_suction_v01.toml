@@ -1868,3 +1868,192 @@ value = "Q/(Q + Qsp + QE)"
 
 [formula.notes]
 assumptions = "Una etapa: sin el término de los anillos entre etapas Qs3. QE es la fuga por el anillo trasero, que vuelve a la aspiración por los agujeros de equilibrio."
+
+[[formula]]
+id = "design.impeller_mean_velocity"
+version = 1
+validation = "pilot"
+module = "design"
+title = "Velocidad relativa media en el canal del rodete"
+source = "Gülich 2020, tabla 3.8 (1), p. 161, ec. (T3.8.2)"
+units = "m/s"
+range = "0 .. 100"
+test = "crates/hm-formula/tests/end_suction.rs::impeller_mean_velocity"
+
+[formula.inputs]
+Q = "m3/s"
+z = "1"
+a2 = "m"
+b2 = "m"
+A1q = "m2"
+
+[formula.expr]
+value = "2*Q/(z*(a2*b2 + A1q))"
+
+[formula.notes]
+assumptions = "Q es el caudal del rodete, QLa, y un solo flujo: fq = 1. a2 es el ancho de garganta a la salida y A1q el área de garganta de un canal. Contraste: no entra en ηh."
+
+
+[[formula]]
+id = "design.impeller_friction_coefficient"
+version = 1
+validation = "pilot"
+module = "design"
+title = "Coeficiente de rozamiento del canal, como placa plana"
+source = "Gülich 2020, tabla 3.8 (1), p. 161, ec. (T3.8.3)"
+units = "1"
+range = "0.001 .. 0.05"
+test = "crates/hm-formula/tests/end_suction.rs::impeller_friction_coefficient"
+
+[formula.inputs]
+eps = "m"
+L = "m"
+Re = "1"
+
+[formula.expr]
+value = "0.136/(-log10(0.2*eps/L + 12.5/Re))^2.15"
+
+[formula.notes]
+assumptions = "Modelo de placa plana porque el flujo no llega a desarrollarse en un álabe corto. Re = w_av*L/nu. Con eps = 0 da el caso liso."
+
+
+[[formula]]
+id = "design.impeller_hydraulic_diameter"
+version = 1
+validation = "pilot"
+module = "design"
+title = "Diámetro hidráulico del canal del rodete"
+source = "Gülich 2020, tabla 3.8 (1), p. 161, ec. (T3.8.4)"
+units = "m"
+range = "0 .. 2"
+test = "crates/hm-formula/tests/end_suction.rs::impeller_hydraulic_diameter"
+
+[formula.inputs]
+a1 = "m"
+b1 = "m"
+a2 = "m"
+b2 = "m"
+A1q = "m2"
+
+[formula.expr]
+value = "2*(a2*b2 + A1q)/(a1 + b1 + a2 + b2)"
+
+[formula.notes]
+assumptions = "a1 y a2 son anchos de garganta, a la entrada y a la salida."
+
+
+[[formula]]
+id = "design.impeller_dissipation_coefficient"
+version = 1
+validation = "pilot"
+module = "design"
+title = "Coeficiente de disipación del rodete"
+source = "Gülich 2020, tabla 3.8 (1), p. 161, ec. (T3.8.5)"
+units = "1"
+range = "0.001 .. 0.1"
+test = "crates/hm-formula/tests/end_suction.rs::impeller_dissipation_coefficient"
+
+[formula.inputs]
+cf = "1"
+b2 = "m"
+d2 = "m"
+
+[formula.expr]
+value = "(cf + 0.0015)*(1.1 + 4*b2/d2)"
+
+[formula.notes]
+assumptions = "0,0015 por el flujo decelerado. El factor con b2* = b2/d2 es empírico: el libro lo interpreta como velocidades desiguales y flujo secundario."
+
+
+[[formula]]
+id = "design.impeller_friction_loss"
+version = 1
+validation = "pilot"
+module = "design"
+title = "Pérdida de rozamiento y mezcla en el rodete"
+source = "Gülich 2020, tabla 3.8 (1), p. 161, ec. (T3.8.6)"
+units = "1"
+range = "0 .. 1"
+test = "crates/hm-formula/tests/end_suction.rs::impeller_friction_loss"
+
+[formula.inputs]
+cd = "1"
+L = "m"
+Dh = "m"
+w_av = "m/s"
+u2 = "m/s"
+
+[formula.expr]
+value = "4*cd*L/Dh*(w_av/u2)^2"
+
+[formula.notes]
+assumptions = "Referida a u2²/2g. Gülich, sec. 3.10.2: las diferencias valen, el valor absoluto no, porque las pérdidas de mezcla no se evalúan bien. Contraste."
+
+
+[[formula]]
+id = "design.impeller_inlet_relative_velocity"
+version = 1
+validation = "pilot"
+module = "design"
+title = "Velocidad relativa a la entrada del rodete"
+source = "Gülich 2020, tabla 3.8 (1), p. 161, ec. (T3.8.7)"
+units = "m/s"
+range = "0 .. 200"
+test = "crates/hm-formula/tests/end_suction.rs::impeller_inlet_relative_velocity"
+
+[formula.inputs]
+c1m = "m/s"
+u1 = "m/s"
+c1u = "m/s"
+
+[formula.expr]
+value = "sqrt(c1m^2 + (u1 - c1u)^2)"
+
+[formula.notes]
+assumptions = "Vector del triángulo de velocidades a la entrada, w1m."
+
+
+[[formula]]
+id = "design.impeller_throat_velocity"
+version = 1
+validation = "pilot"
+module = "design"
+title = "Velocidad en la garganta del rodete"
+source = "Gülich 2020, tabla 3.8 (1), p. 161, ec. (T3.8.8)"
+units = "m/s"
+range = "0 .. 200"
+test = "crates/hm-formula/tests/end_suction.rs::impeller_throat_velocity"
+
+[formula.inputs]
+Q = "m3/s"
+z = "1"
+A1q = "m2"
+
+[formula.expr]
+value = "Q/(z*A1q)"
+
+[formula.notes]
+assumptions = "Q es QLa, con un solo flujo: fq = 1."
+
+
+[[formula]]
+id = "design.impeller_shock_loss"
+version = 1
+validation = "pilot"
+module = "design"
+title = "Golpe a la entrada del rodete"
+source = "Gülich 2020, tabla 3.8 (1), p. 161, ec. (T3.8.9)"
+units = "1"
+range = "0 .. 1"
+test = "crates/hm-formula/tests/end_suction.rs::impeller_shock_loss"
+
+[formula.inputs]
+w1m = "m/s"
+w1q = "m/s"
+u2 = "m/s"
+
+[formula.expr]
+value = "0.3*((w1m - w1q)/u2)^2"
+
+[formula.notes]
+assumptions = "30 % de un golpe de Carnot. Solo vale con w1q/w1m > 0,65: fuera de ahí no se publica."

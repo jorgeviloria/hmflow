@@ -1024,6 +1024,38 @@ pub fn casing_rows(outcome: &Outcome) -> Vec<CasingRow> {
         }
         rows.push(row("casing.holes", "Agujeros / paso gastado", value, None));
     }
+    if let Some(losses) = &result.impeller_losses {
+        let friction = if losses.friction_rough > losses.friction_smooth {
+            format!(
+                "{:.4} → {:.4}",
+                losses.friction_smooth, losses.friction_rough
+            )
+        } else {
+            format!("{:.4}", losses.friction_smooth)
+        };
+        rows.push(row(
+            "casing.friction",
+            "Pérdida del rodete ζLa,R (contraste)",
+            friction,
+            Some("design.impeller_friction_loss"),
+        ));
+        rows.push(row(
+            "casing.shock",
+            "Golpe a la entrada ζLa,C (contraste)",
+            losses
+                .shock
+                .map_or("fuera de rango".to_string(), |shock| format!("{shock:.4}")),
+            Some("design.impeller_shock_loss"),
+        ));
+        if let Some(change) = losses.roughness_eta_h {
+            rows.push(row(
+                "casing.roughness",
+                "Rugosidad en ηh (contraste)",
+                format!("{:+.2} puntos", 100.0 * change),
+                Some("design.impeller_friction_coefficient"),
+            ));
+        }
+    }
     rows
 }
 
@@ -1235,6 +1267,58 @@ mod tests {
         );
         let rows = fit_rows(with_leakage);
         assert!(!value(&rows, "casing.holes").contains("pocos"), "{rows:?}");
+    }
+
+    #[test]
+    fn the_impeller_losses_are_rows_of_the_casing_block() {
+        let rows = fit_rows(|_| ());
+        assert!(!value(&rows, "casing.friction").is_empty(), "{rows:?}");
+        assert!(!value(&rows, "casing.friction").contains("→"), "{rows:?}");
+        assert!(!value(&rows, "casing.shock").is_empty(), "{rows:?}");
+        assert_eq!(value(&rows, "casing.roughness"), "");
+    }
+
+    #[test]
+    fn with_roughness_the_rows_show_what_it_costs() {
+        let inputs = Inputs {
+            roughness: "0.032 mm".to_string(),
+            ..with_casing(|_| ())
+        };
+        let outcome = super::compute(&inputs, &Basis::default()).unwrap();
+        let rows: Vec<_> = super::casing_rows(&outcome)
+            .into_iter()
+            .map(|row| (row.key, row.value))
+            .collect();
+        assert!(value(&rows, "casing.friction").contains("→"), "{rows:?}");
+        assert!(
+            value(&rows, "casing.roughness").ends_with(" puntos"),
+            "{rows:?}"
+        );
+        assert!(
+            value(&rows, "casing.roughness").starts_with('-'),
+            "{rows:?}"
+        );
+    }
+
+    #[test]
+    fn the_shock_says_when_it_does_not_apply() {
+        // Añadir la carcasa reelige: las selecciones van en `reselected`.
+        let basis = Basis {
+            reselected: hm_engine::DesignOptions {
+                cm0: Some(1.5),
+                c0: Some(9.0),
+                j: Some(0.95),
+                incidence_deg: Some(10.0),
+                ..Default::default()
+            },
+            ..Basis::default()
+        };
+        let outcome = super::compute(&with_casing(|_| ()), &basis).unwrap();
+        let rows: Vec<_> = super::casing_rows(&outcome)
+            .into_iter()
+            .map(|row| (row.key, row.value))
+            .collect();
+        assert_eq!(value(&rows, "casing.shock"), "fuera de rango");
     }
 
     #[test]

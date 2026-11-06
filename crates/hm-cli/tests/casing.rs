@@ -387,3 +387,40 @@ fn a_channel_count_the_file_cannot_hold_is_not_written() {
     );
     assert!(!dir.join("libre.hmf").exists(), "{}", text(&done));
 }
+
+#[test]
+fn the_report_carries_the_impeller_losses_only_with_a_casing() {
+    let dir = temp_dir("losses");
+    let done = design_with(&dir, &["--roughness", "0.032 mm"]);
+    assert!(done.status.success(), "{}", text(&done));
+    let reported = run(&dir, &["report", "rodete.hmf"]);
+    let json = String::from_utf8_lossy(&reported.stdout);
+    for field in [
+        "\"impeller_losses\"",
+        "\"friction_smooth\"",
+        "\"friction_rough\"",
+        "\"roughness_eta_h\"",
+        "\"shock\"",
+    ] {
+        assert!(json.contains(field), "{field}");
+    }
+
+    let free = run(
+        &dir,
+        &[
+            "design",
+            "--q",
+            "120 m3/h",
+            "--h",
+            "45 m",
+            "--n",
+            "2900 rpm",
+            "--out",
+            "libre.hmf",
+        ],
+    );
+    assert!(free.status.success(), "{}", text(&free));
+    let reported = run(&dir, &["report", "libre.hmf"]);
+    let json = String::from_utf8_lossy(&reported.stdout);
+    assert!(!json.contains("impeller_losses"));
+}

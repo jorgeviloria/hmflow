@@ -19,8 +19,8 @@ mod viscous;
 pub use fluid::{WATER_DENSITY_RANGE_C, water_density};
 pub use report::{
     DesignReport, Measure, REPORT_FORMAT, REPORT_VERSION, ReportBladePoint, ReportGeometry,
-    ReportHydraulics, ReportImpeller, ReportMechanics, ReportPoint, ReportSection, ReportViscous,
-    ReportVoluteOutlet,
+    ReportHydraulics, ReportImpeller, ReportImpellerLosses, ReportMechanics, ReportPoint,
+    ReportSection, ReportViscous, ReportVoluteOutlet,
 };
 pub use viscous::{
     REFERENCE_WATER_NU, VISCOUS_EFFICIENCY_LOSS, VISCOUS_HEAD_LOSS, ViscousCorrection,

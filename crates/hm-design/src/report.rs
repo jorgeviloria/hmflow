@@ -17,8 +17,8 @@ use serde::{Deserialize, Serialize};
 use crate::geometry::Geometry;
 use crate::mechanics::Mechanics;
 use crate::{
-    CasingFit, DesignInput, DesignResult, METHOD, PARAM_SPECS, ViscousCorrection, designed_si,
-    performance_curve,
+    CasingFit, DesignInput, DesignResult, ImpellerLosses, METHOD, PARAM_SPECS, ViscousCorrection,
+    designed_si, performance_curve,
 };
 
 /// Identificador del formato del informe.
@@ -115,6 +115,42 @@ pub struct ReportGeometry {
     /// De la voluta del modelo: ausente con carcasa, que tiene la suya.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub volute_outlet: Option<ReportVoluteOutlet>,
+}
+
+/// Pérdidas del rodete, referidas a u2²/2g. Contraste: sirven para comparar
+/// candidatos o rugosidades, y no entran en ηh.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct ReportImpellerLosses {
+    pub blade_length: Measure,
+    pub reynolds: Measure,
+    pub cf_smooth: Measure,
+    pub cf_rough: Measure,
+    pub friction_smooth: Measure,
+    pub friction_rough: Measure,
+    pub throat_ratio: Measure,
+    /// Falta con w1q/w1m ≤ 0,65, donde la ecuación no vale.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub shock: Option<Measure>,
+    /// Falta con rodete liso.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub roughness_eta_h: Option<Measure>,
+}
+
+impl ReportImpellerLosses {
+    fn new(losses: &ImpellerLosses) -> Self {
+        let number = |value: f64| Measure::new(value, "1");
+        Self {
+            blade_length: Measure::new(losses.blade_length, "m"),
+            reynolds: number(losses.reynolds),
+            cf_smooth: number(losses.cf_smooth),
+            cf_rough: number(losses.cf_rough),
+            friction_smooth: number(losses.friction_smooth),
+            friction_rough: number(losses.friction_rough),
+            throat_ratio: number(losses.throat_ratio),
+            shock: losses.shock.map(number),
+            roughness_eta_h: losses.roughness_eta_h.map(number),
+        }
+    }
 }
 
 /// Lo que fija la carcasa existente. Las comprobaciones van en `diagnostics`.
@@ -263,6 +299,9 @@ pub struct DesignReport {
     /// Carcasa existente para la que se diseñó el rodete.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub casing: Option<ReportCasing>,
+    /// Pérdidas del rodete, con carcasa.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub impeller_losses: Option<ReportImpellerLosses>,
     pub diagnostics: Vec<Diagnostic>,
 }
 
@@ -385,6 +424,10 @@ impl DesignReport {
             volute_sections,
             curve,
             casing,
+            impeller_losses: result
+                .impeller_losses
+                .as_ref()
+                .map(ReportImpellerLosses::new),
             hydraulics: Some(ReportHydraulics {
                 beta1b: Measure::new(result.beta1b, "rad"),
                 shockless_flow: Measure::new(result.shockless_flow.si, "m3/s"),

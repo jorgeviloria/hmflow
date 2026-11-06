@@ -579,6 +579,8 @@ pub struct CasingLeakage {
     pub rear_seal_length: f64,
     pub balance_hole_count: u32,
     pub balance_hole_diameter: f64,
+    /// Diámetro del círculo de los agujeros.
+    pub balance_hole_circle: f64,
 }
 
 /// Lo que una carcasa existente le impone al rodete, en SI.
@@ -598,6 +600,63 @@ pub struct CasingFit {
     pub throat_area: Option<f64>,
     /// `None`: sin datos de fuga.
     pub leakage: Option<CasingLeakage>,
+}
+
+impl CasingLeakage {
+    /// Que quepan: solo geometría, sin rangos inventados. La holgura rara la
+    /// señala `HM-DES-045`, con la ec. (3.12) de Gülich.
+    fn validate_fit(&self, hub: f64, neck: f64) -> Result<(), FieldError> {
+        let wrong = |name: &'static str, value: f64, wanted: &str| FieldError {
+            name: "casing",
+            message: format!("`casing.{name}` = {value} no es válido; {wanted}"),
+        };
+        let shortest = self.seal_length.min(self.rear_seal_length);
+        if self.seal_clearance >= shortest {
+            return Err(wrong(
+                "seal_clearance",
+                self.seal_clearance,
+                "debe ser menor que el largo de los anillos",
+            ));
+        }
+        if self.seal_length >= neck {
+            return Err(wrong(
+                "seal_length",
+                self.seal_length,
+                "debe ser menor que el cuello",
+            ));
+        }
+        if self.rear_seal_length >= self.rear_seal_diameter {
+            return Err(wrong(
+                "rear_seal_length",
+                self.rear_seal_length,
+                "debe ser menor que su diámetro",
+            ));
+        }
+        let (circle, hole) = (self.balance_hole_circle, self.balance_hole_diameter);
+        if hole >= self.rear_seal_diameter - hub {
+            return Err(wrong(
+                "balance_hole_diameter",
+                hole,
+                "no cabe entre el cubo y el anillo trasero",
+            ));
+        }
+        if circle - hole <= hub || circle + hole >= self.rear_seal_diameter {
+            return Err(wrong(
+                "balance_hole_circle",
+                circle,
+                "los agujeros deben quedar entre el cubo y el anillo trasero",
+            ));
+        }
+        let spacing = circle * (std::f64::consts::PI / f64::from(self.balance_hole_count)).sin();
+        if self.balance_hole_count > 1 && spacing <= hole {
+            return Err(wrong(
+                "balance_hole_count",
+                f64::from(self.balance_hole_count),
+                "los agujeros se solapan en su círculo",
+            ));
+        }
+        Ok(())
+    }
 }
 
 impl CasingFit {
@@ -678,6 +737,7 @@ impl CasingFit {
                 ("rear_seal_diameter", leakage.rear_seal_diameter),
                 ("rear_seal_length", leakage.rear_seal_length),
                 ("balance_hole_diameter", leakage.balance_hole_diameter),
+                ("balance_hole_circle", leakage.balance_hole_circle),
             ];
             for (name, value) in sizes {
                 if !value.is_finite() || value <= 0.0 {
@@ -699,6 +759,7 @@ impl CasingFit {
                     "debe quedar entre `hub_diameter` y `d2`",
                 ));
             }
+            leakage.validate_fit(self.hub_diameter, self.neck_diameter)?;
         }
         let (low, high) = VOLUTE_WRAP_RANGE_DEG;
         match (self.channels, self.wrap_deg) {
@@ -1535,6 +1596,18 @@ fn with_casing_volute(options: &DesignOptions) -> Result<DesignOptions, DesignEr
                 format!("tiene {wrap}°")
             }),
         ));
+    }
+    if let Some(leakage) = &casing.leakage {
+        if let Some(value) = options.seal_clearance
+            && (value / leakage.seal_clearance - 1.0).abs() > CASING_AGREEMENT
+        {
+            return Err(contradiction(
+                "seal_clearance",
+                value.to_string(),
+                format!("declara {}", leakage.seal_clearance),
+            ));
+        }
+        fitted.seal_clearance = Some(leakage.seal_clearance);
     }
     fitted.k3 = Some(k3);
     fitted.volute_channels = Some(casing.channels);

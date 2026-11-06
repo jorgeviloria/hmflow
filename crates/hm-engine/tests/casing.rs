@@ -491,6 +491,7 @@ fn with_leakage() -> Casing {
         rear_seal_length: "15 mm".to_string(),
         balance_hole_count: 6,
         balance_hole_diameter: "9 mm".to_string(),
+        balance_hole_circle: "50 mm".to_string(),
         ..casing()
     }
 }
@@ -513,6 +514,7 @@ fn the_leakage_data_reaches_the_design_in_si() {
     close(data.rear_seal_length, 0.015);
     assert_eq!(data.balance_hole_count, 6);
     close(data.balance_hole_diameter, 0.009);
+    close(data.balance_hole_circle, 0.05);
 }
 
 #[test]

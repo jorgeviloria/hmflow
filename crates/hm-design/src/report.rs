@@ -148,6 +148,7 @@ pub struct ReportCasingLeakage {
     pub rear_seal_length: Measure,
     pub balance_hole_count: u32,
     pub balance_hole_diameter: Measure,
+    pub balance_hole_circle: Measure,
 }
 
 /// Mecánica preliminar: eje por torsión, cubo y empujes hidráulicos.
@@ -285,6 +286,7 @@ impl ReportCasing {
                 rear_seal_length: Measure::new(leakage.rear_seal_length, "m"),
                 balance_hole_count: leakage.balance_hole_count,
                 balance_hole_diameter: Measure::new(leakage.balance_hole_diameter, "m"),
+                balance_hole_circle: Measure::new(leakage.balance_hole_circle, "m"),
             }),
         }
     }

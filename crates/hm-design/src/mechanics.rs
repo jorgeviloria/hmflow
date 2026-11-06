@@ -118,6 +118,8 @@ pub struct Mechanics {
     pub axial_thrust: (f64, f64),
     /// Holgura diametral del anillo de la tapa anterior, m (ec. 3.12).
     pub seal_clearance: f64,
+    /// Holgura típica de Gülich, ec. (3.12), m. Sin datos de fuga, la de arriba.
+    pub usual_seal_clearance: f64,
     /// Potencia en el eje en el punto nominal, W.
     pub rated_power: f64,
     /// Margen del motor de API 610 para esa potencia.
@@ -323,7 +325,7 @@ pub fn mechanics(
         )
     };
 
-    let seal_clearance = evaluate(
+    let usual_seal_clearance = evaluate(
         &registry,
         "mech.seal_clearance",
         &[
@@ -331,6 +333,11 @@ pub fn mechanics(
             ("d_ref", metres(SEAL_CLEARANCE_REFERENCE)),
         ],
     )?;
+    let declared_clearance = result
+        .casing
+        .as_ref()
+        .and_then(|casing| casing.leakage.as_ref())
+        .map(|leakage| leakage.seal_clearance);
 
     let rated_power = result.p_shaft.si;
     let margin = driver_margin(rated_power);
@@ -364,7 +371,8 @@ pub fn mechanics(
         front_seal_diameter,
         shaft_seal_diameter,
         axial_thrust: (axial(AXIAL_THRUST_FACTOR.0)?, axial(AXIAL_THRUST_FACTOR.1)?),
-        seal_clearance,
+        seal_clearance: declared_clearance.unwrap_or(usual_seal_clearance),
+        usual_seal_clearance,
         rated_power,
         driver_margin: margin,
         driver_power,
@@ -378,6 +386,9 @@ pub fn mechanics(
 /// a 2,0..4,0 con nq bajo. No es un límite: el libro dice que se elige «in wide
 /// limits without major effect on the efficiency». Fuera, solo se informa.
 pub const VOLUTE_WIDTH_RATIO_RANGE: (f64, f64) = (1.05, 4.0);
+
+/// Dispersión de las holguras ejecutadas frente a la ec. (3.12), Gülich p. 110.
+const SEAL_CLEARANCE_SPREAD: f64 = 0.30;
 
 /// Lo que no impide diseñar, pero hay que mirar antes de fabricar.
 fn casing_diagnostics(mechanics: &Mechanics, result: &DesignResult) -> Diagnostics {
@@ -436,6 +447,20 @@ fn casing_diagnostics(mechanics: &Mechanics, result: &DesignResult) -> Diagnosti
                 "Sale de la misma tensión conservadora que el eje mínimo, no del material real.",
             ),
         );
+    }
+
+    let clearance = mechanics.seal_clearance / mechanics.usual_seal_clearance - 1.0;
+    if clearance.abs() > SEAL_CLEARANCE_SPREAD {
+        diagnostics.push(Diagnostic::info(
+            "HM-DES-045",
+            format!(
+                "holgura de {:.2} mm, a {:+.0} % de los {:.2} mm de Gülich, ec. (3.12): las \
+                 ejecutadas quedan en ±30 %",
+                mechanics.seal_clearance * 1000.0,
+                100.0 * clearance,
+                mechanics.usual_seal_clearance * 1000.0
+            ),
+        ));
     }
 
     let ratio = casing.b3 / result.b2.si;

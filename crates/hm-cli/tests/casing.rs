@@ -147,3 +147,40 @@ fn a_volute_flag_that_contradicts_the_casing_is_an_error() {
     assert!(text(&output).contains("[casing]"), "{}", text(&output));
     std::fs::remove_dir_all(&dir).ok();
 }
+
+const LEAKAGE: &str = "seal_clearance = \"0.3 mm\"
+seal_length = \"15 mm\"
+rear_seal_diameter = \"80 mm\"
+rear_seal_length = \"15 mm\"
+balance_hole_count = 6
+balance_hole_diameter = \"9 mm\"
+balance_hole_circle = \"50 mm\"
+";
+
+#[test]
+fn the_leakage_data_goes_through_the_whole_flow() {
+    let dir = temp_dir("fuga");
+    std::fs::write(dir.join("carcasa.toml"), format!("{CASING}{LEAKAGE}")).unwrap();
+    let designed = design(&dir);
+    assert!(designed.status.success(), "{}", text(&designed));
+    assert!(
+        text(&designed).contains("Δd = 0.30 mm"),
+        "{}",
+        text(&designed)
+    );
+
+    let file = std::fs::read_to_string(dir.join("rodete.hmf")).unwrap();
+    assert!(file.contains("rear_seal_diameter = \"80 mm\""), "{file}");
+
+    let checked = run(&dir, &["check", "rodete.hmf"]);
+    assert!(checked.status.success(), "{}", text(&checked));
+    let reported = run(&dir, &["report", "rodete.hmf"]);
+    assert!(String::from_utf8_lossy(&reported.stdout).contains("\"leakage\""));
+    let recalculated = run(&dir, &["recalc", "rodete.hmf"]);
+    assert!(recalculated.status.success(), "{}", text(&recalculated));
+    assert_eq!(
+        file,
+        std::fs::read_to_string(dir.join("rodete.hmf")).unwrap()
+    );
+    std::fs::remove_dir_all(&dir).ok();
+}

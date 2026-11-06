@@ -164,6 +164,7 @@ fn with_leakage() -> Casing {
         rear_seal_length: "15 mm".to_string(),
         balance_hole_count: 6,
         balance_hole_diameter: "9 mm".to_string(),
+        balance_hole_circle: "50 mm".to_string(),
         ..sample()
     }
 }
@@ -191,7 +192,8 @@ fn the_leakage_data_round_trips_and_stays_out_when_absent() {
 #[test]
 fn the_leakage_data_goes_all_or_nothing() {
     type Edit = fn(&mut Casing);
-    let cases: [(Edit, &str); 6] = [
+    let cases: [(Edit, &str); 7] = [
+        (|c| c.balance_hole_circle.clear(), "balance_hole_circle"),
         (|c| c.seal_clearance.clear(), "seal_clearance"),
         (|c| c.seal_length.clear(), "seal_length"),
         (|c| c.rear_seal_diameter.clear(), "rear_seal_diameter"),
@@ -249,4 +251,20 @@ fn bad_leakage_values_are_reported_by_name() {
             found[0].message
         );
     }
+}
+
+#[test]
+fn has_leakage_sees_any_of_the_fields() {
+    assert!(!sample().has_leakage());
+    assert!(with_leakage().has_leakage());
+    let only_count = Casing {
+        balance_hole_count: 6,
+        ..sample()
+    };
+    assert!(only_count.has_leakage());
+    let blank = Casing {
+        seal_length: "   ".to_string(),
+        ..sample()
+    };
+    assert!(!blank.has_leakage());
 }

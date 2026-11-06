@@ -335,6 +335,11 @@ pub const CODES: &[CodeInfo] = &[
         "Z par y número de lenguas de la voluta par: Gülich evita esa combinación (p. 491).",
     ),
     active(
+        "HM-DES-045",
+        Info,
+        "Holgura de los anillos lejos de la típica de Gülich, ec. (3.12).",
+    ),
+    active(
         "HM-DES-041",
         Warning,
         "El ojo más las tapas no cabe en el cuello de la carcasa.",

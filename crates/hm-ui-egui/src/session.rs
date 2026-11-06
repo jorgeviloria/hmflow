@@ -516,8 +516,18 @@ mod tests {
     fn the_window_keeps_the_casing_through_edit_and_save() {
         let dir = scratch("carcasa");
         let path = copy_fixture(&dir, "casing_v3.hmf");
-        let project = Project::load(&path).unwrap();
-        let casing = project.casing.clone().unwrap();
+        let mut project = Project::load(&path).unwrap();
+        let casing = hm_project::Casing {
+            seal_clearance: "0.3 mm".into(),
+            seal_length: "15 mm".into(),
+            rear_seal_diameter: "80 mm".into(),
+            rear_seal_length: "15 mm".into(),
+            balance_hole_count: 6,
+            balance_hole_diameter: "9 mm".into(),
+            balance_hole_circle: "50 mm".into(),
+            ..project.casing.clone().unwrap()
+        };
+        project.casing = Some(casing.clone());
         hm_engine::recalc(project, false)
             .unwrap()
             .project

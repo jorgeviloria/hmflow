@@ -121,6 +121,9 @@ pub struct Casing {
     /// Diámetro de cada agujero de equilibrio.
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub balance_hole_diameter: String,
+    /// Diámetro del círculo de los agujeros de equilibrio.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub balance_hole_circle: String,
 }
 
 fn is_zero(value: &u32) -> bool {
@@ -135,6 +138,21 @@ struct CasingFile {
 }
 
 impl Casing {
+    /// Si declara algún dato de fuga. Van todos o ninguno: lo comprueba `validate`.
+    pub fn has_leakage(&self) -> bool {
+        self.balance_hole_count > 0
+            || [
+                &self.seal_clearance,
+                &self.seal_length,
+                &self.rear_seal_diameter,
+                &self.rear_seal_length,
+                &self.balance_hole_diameter,
+                &self.balance_hole_circle,
+            ]
+            .iter()
+            .any(|text| !text.trim().is_empty())
+    }
+
     /// Lee un archivo con una tabla `[casing]`.
     pub fn from_toml(text: &str) -> Result<Self, ProjectError> {
         Ok(toml::from_str::<CasingFile>(text)?.casing)
@@ -595,10 +613,9 @@ fn check_casing_leakage(diagnostics: &mut Diagnostics, casing: &Casing) -> Optio
             "balance_hole_diameter",
             casing.balance_hole_diameter.as_str(),
         ),
+        ("balance_hole_circle", casing.balance_hole_circle.as_str()),
     ];
-    let declared =
-        casing.balance_hole_count > 0 || lengths.iter().any(|(_, text)| !text.trim().is_empty());
-    if !declared {
+    if !casing.has_leakage() {
         return None;
     }
     let mut rear = None;

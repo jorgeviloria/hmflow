@@ -754,13 +754,22 @@ fn leakage() -> CasingLeakage {
         rear_seal_length: 0.015,
         balance_hole_count: 6,
         balance_hole_diameter: 0.009,
+        balance_hole_circle: 0.050,
     }
 }
 
 #[test]
 fn bad_leakage_data_is_rejected_by_name() {
     type Edit = fn(&mut CasingLeakage);
-    let cases: [(Edit, &str); 7] = [
+    let cases: [(Edit, &str); 15] = [
+        (|l| l.balance_hole_circle = 0.0, "balance_hole_circle"),
+        (|l| l.seal_clearance = 0.020, "seal_clearance"),
+        (|l| l.seal_length = 0.0001, "seal_clearance"),
+        (|l| l.seal_length = 0.100, "seal_length"),
+        (|l| l.rear_seal_length = 0.100, "rear_seal_length"),
+        (|l| l.balance_hole_diameter = 0.060, "balance_hole_diameter"),
+        (|l| l.balance_hole_count = 500, "balance_hole_count"),
+        (|l| l.balance_hole_circle = 0.035, "balance_hole_circle"),
         (|l| l.seal_clearance = 0.0, "seal_clearance"),
         (|l| l.seal_length = -1.0, "seal_length"),
         (|l| l.rear_seal_diameter = f64::NAN, "rear_seal_diameter"),
@@ -793,4 +802,64 @@ fn leakage_data_does_not_change_the_design_yet() {
     let with_data = design_with_options(&input(), &with(casing)).unwrap();
     assert_eq!(plain.eta, with_data.eta);
     assert_eq!(plain.leakage_eta_v, with_data.leakage_eta_v);
+}
+
+fn leaky() -> CasingFit {
+    CasingFit {
+        leakage: Some(leakage()),
+        ..sample()
+    }
+}
+
+#[test]
+fn the_declared_clearance_is_the_one_shown_and_contrasted() {
+    let plain = design_with_options(&input(), &with(sample())).unwrap();
+    let fitted = design_with_options(&input(), &with(leaky())).unwrap();
+    let mech = mechanics(&input(), &fitted, DEFAULT_SHAFT_SHEAR_STRESS).unwrap();
+    assert_eq!(mech.seal_clearance, 0.0003);
+    assert!(fitted.seal_leakage_ratio < plain.seal_leakage_ratio);
+}
+
+#[test]
+fn two_clearances_that_disagree_are_an_error() {
+    let options = DesignOptions {
+        seal_clearance: Some(0.0005),
+        ..with(leaky())
+    };
+    let error = design_with_options(&input(), &options)
+        .unwrap_err()
+        .to_string();
+    assert!(error.contains("seal_clearance"), "{error}");
+    assert!(error.contains("[casing]"), "{error}");
+
+    let agreeing = DesignOptions {
+        seal_clearance: Some(0.0003),
+        ..with(leaky())
+    };
+    assert!(design_with_options(&input(), &agreeing).is_ok());
+}
+
+#[test]
+fn a_clearance_far_from_the_usual_is_informed() {
+    let tight = CasingFit {
+        leakage: Some(CasingLeakage {
+            seal_clearance: 0.0002,
+            ..leakage()
+        }),
+        ..sample()
+    };
+    let found = fit_codes(tight);
+    assert!(found.iter().any(|code| code == "HM-DES-045"), "{found:?}");
+
+    let result = design_with_options(&input(), &with(sample())).unwrap();
+    let mech = mechanics(&input(), &result, DEFAULT_SHAFT_SHEAR_STRESS).unwrap();
+    let usual = mech.seal_clearance;
+    let close = CasingFit {
+        leakage: Some(CasingLeakage {
+            seal_clearance: usual,
+            ..leakage()
+        }),
+        ..sample()
+    };
+    assert!(!fit_codes(close).iter().any(|code| code == "HM-DES-045"));
 }

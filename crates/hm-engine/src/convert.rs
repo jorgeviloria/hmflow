@@ -519,17 +519,8 @@ pub fn casing_fit(casing: &Casing) -> Result<CasingFit, EngineError> {
         "" => None,
         text => Some(si("throat_area", text, "m2")?),
     };
-    let has_leakage = casing.balance_hole_count > 0
-        || [
-            &casing.seal_clearance,
-            &casing.seal_length,
-            &casing.rear_seal_diameter,
-            &casing.rear_seal_length,
-            &casing.balance_hole_diameter,
-        ]
-        .iter()
-        .any(|text| !text.trim().is_empty());
-    let leakage = has_leakage
+    let leakage = casing
+        .has_leakage()
         .then(|| {
             if casing.balance_hole_count == 0 {
                 return Err(input_error(
@@ -549,6 +540,7 @@ pub fn casing_fit(casing: &Casing) -> Result<CasingFit, EngineError> {
                     &casing.balance_hole_diameter,
                     "m",
                 )?,
+                balance_hole_circle: si("balance_hole_circle", &casing.balance_hole_circle, "m")?,
             })
         })
         .transpose()?;

@@ -5,8 +5,9 @@
 
 use hm_core::{Diagnostic, Diagnostics, PumpType};
 use hm_design::{
-    DesignInput, DesignOptions, DesignResult, LEGACY_METHODS, METHOD, PARAM_SPECS,
-    design_with_options, designed_si, param_spec, stored_si_matches,
+    DesignError, DesignInput, DesignOptions, DesignResult, LEGACY_METHODS, METHOD,
+    MODEL_VOLUTE_PARAMS, PARAM_SPECS, design_with_options, designed_si, param_spec,
+    stored_si_matches,
 };
 use hm_formula::Registry;
 use hm_project::{Param, Project};
@@ -14,9 +15,11 @@ use hm_units::{Quantity, parse_quantity, parse_unit};
 
 use crate::analysis::{Analysis, CurvePoints, require_mechanics_and_viscosity};
 use crate::case::Case;
-use crate::convert::{MAX_COUNT, case_from_project, casing_results};
+use crate::convert::{
+    MAX_COUNT, case_from_project, casing_results, eye_is_fixed, is_eye_selection,
+};
 use crate::dispatch::analyze;
-use crate::error::cli_message;
+use crate::error::{EngineError, cli_message};
 
 /// Selecciones que `recalc --reselect` vuelve a tomar del motor para el punto.
 ///
@@ -124,13 +127,20 @@ fn design_audit(project: &Project) -> Diagnostics {
         )),
         // El fallo se resume en HM-PROJ-014, como `check`. El texto de un
         // `Input` entra en el mensaje, sin su código, y no se lista otra vez.
+        Err(EngineError::Input { diagnostic, .. }) if diagnostic.code == "HM-PROJ-030" => {
+            diagnostics.push(diagnostic);
+        }
         Err(error) => {
             diagnostics.push(
                 Diagnostic::error(
                     "HM-PROJ-014",
                     format!("no se pudo recalcular el diseño: {}", cli_message(&error)),
                 )
-                .with_hint("Revisa la densidad, la eficiencia mecánica y el punto de operación."),
+                .with_hint(if project.casing.is_some() {
+                    "Revisa [casing], las selecciones y el punto de operación."
+                } else {
+                    "Revisa la densidad, la eficiencia mecánica y el punto de operación."
+                }),
             );
         }
     }
@@ -181,6 +191,9 @@ fn validate_design_schema(project: &Project, diagnostics: &mut Diagnostics) {
 
     for spec in PARAM_SPECS {
         let Some(param) = project.params.get(spec.name) else {
+            if project.casing.is_some() && MODEL_VOLUTE_PARAMS.contains(&spec.name) {
+                continue;
+            }
             diagnostics.push(
                 Diagnostic::error("HM-PROJ-017", format!("falta el parámetro `{}`", spec.name))
                     .with_hint("Vuelve a ejecutar el diseño."),
@@ -353,19 +366,30 @@ fn fresh_selection_si(result: &DesignResult, name: &str) -> Option<f64> {
 /// Selecciones `manual` que ya no coinciden con lo que el motor elegiría
 /// para el punto actual, con el fluido del proyecto, sin otras selecciones
 /// manuales y respetando las `locked`, que no se señalan.
-fn stale_selections(project: &Project, case: &Case, input: &DesignInput) -> Vec<&'static str> {
+///
+/// `Err` si el motor no encuentra diseño sin esas selecciones.
+fn stale_selections(
+    project: &Project,
+    case: &Case,
+    input: &DesignInput,
+) -> Result<Vec<&'static str>, DesignError> {
     // Sin otras selecciones manuales, pero con los datos del proyecto (ηv,
     // rugosidad, razón de la garganta, voluta…) y lo que esté en `locked`: es
     // una decisión, y lo que elegiría el motor parte de ella.
+    // Con carcasa, un valor del ojo en `locked` conserva los otros dos: el ojo
+    // fijo es el grupo, y Z depende de él.
     let locked = |name: &str| matches!(project.params.get(name), Some(Param::Locked { .. }));
+    let eye_fixed = eye_is_fixed(project);
+    let eye_kept = |name: &str| eye_fixed || locked(name);
     let data_only = DesignOptions {
         psi: case.design.psi.filter(|_| locked("psi")),
         phi: case.design.phi.filter(|_| locked("phi")),
         beta2_rad: case.design.beta2_rad.filter(|_| locked("beta2")),
         blade_count: case.design.blade_count.filter(|_| locked("blade_count")),
-        c0: case.design.c0.filter(|_| locked("c0")),
-        cm0: case.design.cm0.filter(|_| locked("cm0")),
-        j: case.design.j.filter(|_| locked("J")),
+        c0: case.design.c0.filter(|_| eye_kept("c0")),
+        cm0: case.design.cm0.filter(|_| eye_kept("cm0")),
+        j: case.design.j.filter(|_| eye_kept("J")),
+        margin: case.design.margin,
         eta_v: case.design.eta_v,
         balance_holes: case.design.balance_holes,
         volute_ratio: case.design.volute_ratio,
@@ -376,13 +400,12 @@ fn stale_selections(project: &Project, case: &Case, input: &DesignInput) -> Vec<
         casing: case.design.casing.clone(),
         ..DesignOptions::default()
     };
-    let Ok(fresh) = design_with_options(input, &data_only) else {
-        return Vec::new();
-    };
+    let fresh = design_with_options(input, &data_only)?;
     let results = casing_results(project);
-    NQ_SELECTIONS
+    Ok(NQ_SELECTIONS
         .into_iter()
         .filter(|name| !results.contains(name))
+        .filter(|name| !(eye_fixed && is_eye_selection(name)))
         .filter(|name| {
             let Some(Param::Manual { value }) = project.params.get(*name) else {
                 return false;
@@ -394,7 +417,7 @@ fn stale_selections(project: &Project, case: &Case, input: &DesignInput) -> Vec<
             };
             !stored_si_matches(expected, quantity.si)
         })
-        .collect()
+        .collect())
 }
 
 /// Añade `HM-DES-013` si una selección manual ya no es la del motor.
@@ -408,7 +431,28 @@ pub(crate) fn selection_diagnostics(
     result: &DesignResult,
     diagnostics: &mut Diagnostics,
 ) {
-    let stale = stale_selections(project, case, input);
+    let stale = match stale_selections(project, case, input) {
+        Ok(stale) => stale,
+        // Con carcasa puede pasar: sin las selecciones guardadas el rodete no cabe.
+        Err(error) if project.casing.is_some() => {
+            diagnostics.push(
+                Diagnostic::warning(
+                    "HM-DES-013",
+                    format!(
+                        "las selecciones guardadas no se pudieron contrastar: sin ellas no hay \
+                         diseño para este punto ({})",
+                        cli_message(&EngineError::Design(error))
+                    ),
+                )
+                .with_hint(
+                    "`recalc --reselect` fallaría igual. Conserva las selecciones, márcalas \
+                     locked si son decisiones tuyas, o revisa el punto.",
+                ),
+            );
+            return;
+        }
+        Err(_) => return,
+    };
     if stale.is_empty() {
         return;
     }

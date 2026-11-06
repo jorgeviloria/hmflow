@@ -60,14 +60,8 @@ pub struct VoluteOutlet {
     pub cutwater_radius: f64,
     /// Radio mínimo de la lengua según Gülich, tabla 10.2, m.
     pub cutwater_min_radius: f64,
-    /// Diámetro nominal de la tubuladura, m.
-    pub nominal_diameter: f64,
-    /// Relación de áreas del difusor, salida/garganta.
-    pub area_ratio: f64,
-    /// Longitud mínima del difusor para no superar el semiángulo admisible, m.
-    pub min_length: f64,
-    /// Semiángulo con esa longitud, rad.
-    pub half_angle: f64,
+    /// Tubuladura y difusor del modelo. `None` con carcasa, que tiene los suyos.
+    pub model: Option<ModelOutlet>,
 }
 
 /// Geometría completa.
@@ -163,13 +157,12 @@ pub fn geometry(input: &DesignInput, result: &DesignResult) -> Result<Geometry, 
     );
     let wrap = blade.last().map_or(0.0, |point| point.theta);
 
-    // Con carcasa, la garganta del modelo no es la real: su salida no se calcula
-    // ni se publica, y una tubuladura fuera de tabla no debe parar el diseño.
-    let model = if result.casing.is_some() {
-        ModelOutlet::default()
-    } else {
-        model_outlet(&registry, result.volute.throat_diameter.si / 2.0)?
-    };
+    // Con carcasa no hay voluta del modelo: ni se calcula ni puede parar el diseño.
+    let model = result
+        .model_volute
+        .as_ref()
+        .map(|model| model_outlet(&registry, model.throat_diameter.si / 2.0))
+        .transpose()?;
 
     let k3 = result.volute.base_radius.si / (result.d2.si / 2.0);
     let cutwater_min_ratio = cutwater_min_ratio(&registry, input, result.nq)?;
@@ -183,21 +176,22 @@ pub fn geometry(input: &DesignInput, result: &DesignResult) -> Result<Geometry, 
         outlet: VoluteOutlet {
             cutwater_radius: k3 * result.d2.si / 2.0,
             cutwater_min_radius: cutwater_min_ratio * result.d2.si / 2.0,
-            nominal_diameter: model.nominal_diameter,
-            area_ratio: model.area_ratio,
-            min_length: model.min_length,
-            half_angle: model.half_angle,
+            model,
         },
     })
 }
 
 /// Tubuladura y difusor de la voluta del modelo.
-#[derive(Default)]
-struct ModelOutlet {
-    nominal_diameter: f64,
-    area_ratio: f64,
-    min_length: f64,
-    half_angle: f64,
+#[derive(Debug, Clone)]
+pub struct ModelOutlet {
+    /// Diámetro nominal de la tubuladura, m.
+    pub nominal_diameter: f64,
+    /// Relación de áreas del difusor, salida/garganta.
+    pub area_ratio: f64,
+    /// Longitud mínima del difusor para no superar el semiángulo admisible, m.
+    pub min_length: f64,
+    /// Semiángulo con esa longitud, rad.
+    pub half_angle: f64,
 }
 
 fn model_outlet(registry: &Registry, throat_radius: f64) -> Result<ModelOutlet, DesignError> {

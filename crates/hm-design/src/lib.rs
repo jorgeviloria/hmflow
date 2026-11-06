@@ -18,9 +18,9 @@ mod viscous;
 
 pub use fluid::{WATER_DENSITY_RANGE_C, water_density};
 pub use report::{
-    DesignReport, MODEL_VOLUTE_RESULTS, Measure, REPORT_FORMAT, REPORT_VERSION, ReportBladePoint,
-    ReportGeometry, ReportHydraulics, ReportImpeller, ReportMechanics, ReportPoint, ReportSection,
-    ReportViscous, ReportVoluteOutlet,
+    DesignReport, Measure, REPORT_FORMAT, REPORT_VERSION, ReportBladePoint, ReportGeometry,
+    ReportHydraulics, ReportImpeller, ReportMechanics, ReportPoint, ReportSection, ReportViscous,
+    ReportVoluteOutlet,
 };
 pub use viscous::{
     REFERENCE_WATER_NU, VISCOUS_EFFICIENCY_LOSS, VISCOUS_HEAD_LOSS, ViscousCorrection,
@@ -185,15 +185,32 @@ pub struct DesignResult {
     /// recta que pasa por Q(Hth = 0) (Gülich §4.3.5).
     pub head_slope: f64,
     pub volute: VoluteResult,
+    /// `None` con carcasa.
+    pub model_volute: Option<ModelVolute>,
     /// El ojo automático descuenta el cubo: `d0` es el diámetro equivalente
     /// del área libre. Con `c0`, `cm0` o `J` manuales, `d0` es el de
-    /// Srinivasan y el cubo no entra en el área.
+    /// Srinivasan y el cubo no entra en el área, salvo que el cubo de la carcasa
+    /// deje libre al menos esa área.
     pub eye_excludes_hub: bool,
     /// Ojo óptimo, m, si el cuello de la carcasa no lo dejó usar.
     pub eye_limited_from: Option<f64>,
     /// Carcasa con que se diseñó.
     pub casing: Option<CasingFit>,
     pub diagnostics: Diagnostics,
+}
+
+impl DesignResult {
+    /// Qc/Qd, si la voluta limita de verdad. Sin garganta o con a ≤ 1 no hay Qc:
+    /// `volute_matching_flow` guarda entonces [`NO_MATCHING_FLOW_RATIO`].
+    pub fn volute_matching_ratio(&self, design_flow: f64) -> Option<f64> {
+        Some(self.volute_matching_flow.si / design_flow)
+            .filter(|ratio| *ratio < NO_MATCHING_FLOW_RATIO * (1.0 - 1.0e-9))
+    }
+
+    /// Anillos y agujeros reales, si la carcasa los declara.
+    pub fn leakage_data(&self) -> Option<&CasingLeakage> {
+        self.casing.as_ref()?.leakage.as_ref()
+    }
 }
 
 /// Sección circular de la voluta en un ángulo dado.
@@ -211,14 +228,19 @@ pub struct VoluteResult {
     pub base_radius: Quantity,
     pub width: Quantity,
     pub inlet_velocity: Quantity,
+    /// Ángulo de envolvente de la voluta doble, grados; `None` si es simple.
+    pub wrap_deg: Option<f64>,
+}
+
+/// Voluta que dimensiona el modelo. Con carcasa no existe: la real es otra.
+#[derive(Debug, Clone)]
+pub struct ModelVolute {
     pub throat_area: Quantity,
     pub throat_diameter: Quantity,
     pub outer_radius: Quantity,
     /// Diámetro de la garganta circular por conservación del momento cinético
     /// (Gülich T7.7.7), de contraste: el motor dimensiona con la razón c3q/c2.
     pub momentum_throat_diameter: Quantity,
-    /// Ángulo de envolvente de la voluta doble, grados; `None` si es simple.
-    pub wrap_deg: Option<f64>,
     pub sections: Vec<VoluteSection>,
 }
 
@@ -571,7 +593,6 @@ pub const VOLUTE_WRAP_RANGE_DEG: (f64, f64) = (90.0, 180.0);
 /// Espesor del borde de ataque de la lengua frente a d2 (Gülich 2020, p. 493).
 const CUTWATER_THICKNESS_RATIO: f64 = 0.02;
 
-/// Selecciones que se pueden fijar desde el proyecto.
 /// Anillos y agujeros de equilibrio reales, en SI.
 #[derive(Debug, Clone, PartialEq)]
 pub struct CasingLeakage {
@@ -638,7 +659,7 @@ impl CasingLeakage {
             ));
         }
         let (circle, hole) = (self.balance_hole_circle, self.balance_hole_diameter);
-        if hole >= self.rear_seal_diameter - hub {
+        if hole >= (self.rear_seal_diameter - hub) / 2.0 {
             return Err(wrong(
                 "balance_hole_diameter",
                 hole,
@@ -667,7 +688,7 @@ impl CasingLeakage {
 impl CasingFit {
     /// Una cota fuera de dominio no debe dar un diseño: D2 negativo daría ψ
     /// positivo, porque la fórmula lo eleva al cuadrado.
-    fn validate(&self) -> Result<(), FieldError> {
+    pub fn validate(&self) -> Result<(), FieldError> {
         let problem = |name: &'static str, shown: &str, wanted: &str| FieldError {
             name: "casing",
             message: format!("`casing.{name}` = {shown} no es válido; {wanted}"),
@@ -768,16 +789,22 @@ impl CasingFit {
                     "debe quedar entre `hub_diameter` y `d2`",
                 ));
             }
-            if let Some(seal) = leakage.shaft_seal_diameter
-                && seal >= self.neck_diameter
-            {
-                return Err(problem(
-                    "shaft_seal_diameter",
-                    &seal.to_string(),
-                    "debe ser menor que el cuello",
-                ));
-            }
+            // Después del encaje: el borde de los agujeros solo significa algo si
+            // estos caben entre el cubo y el anillo trasero.
             leakage.validate_fit(self.hub_diameter, self.neck_diameter)?;
+            if let Some(seal) = leakage.shaft_seal_diameter {
+                let limits = [
+                    (self.neck_diameter, "debe ser menor que `neck_diameter`"),
+                    (rear, "debe ser menor que `rear_seal_diameter`"),
+                    (
+                        leakage.balance_hole_circle - leakage.balance_hole_diameter,
+                        "debe quedar por dentro de los agujeros de equilibrio",
+                    ),
+                ];
+                if let Some((_, wanted)) = limits.iter().find(|(limit, _)| seal >= *limit) {
+                    return Err(problem("shaft_seal_diameter", &seal.to_string(), wanted));
+                }
+            }
         }
         let (low, high) = VOLUTE_WRAP_RANGE_DEG;
         match (self.channels, self.wrap_deg) {
@@ -800,6 +827,7 @@ impl CasingFit {
     }
 }
 
+/// Selecciones que se pueden fijar desde el proyecto.
 #[derive(Debug, Clone, Default)]
 pub struct DesignOptions {
     pub psi: Option<f64>,
@@ -849,6 +877,11 @@ pub struct DesignOptions {
 }
 
 impl DesignOptions {
+    /// Anillos y agujeros reales, si la carcasa los declara.
+    fn leakage_data(&self) -> Option<&CasingLeakage> {
+        self.casing.as_ref()?.leakage.as_ref()
+    }
+
     /// Valida las opciones que no dependen de valores calculados.
     pub fn validate(&self) -> Result<(), FieldError> {
         if let Some(casing) = &self.casing {
@@ -1066,6 +1099,7 @@ pub fn table_selection(nq: f64, eta_h: f64) -> Result<DesignSelection, DesignErr
             trailing_thickness: 0.0,
             radius_ratio: 0.0,
             casing_d2: None,
+            blade_count_fixed: false,
         },
     )?;
     Ok(selection)
@@ -1157,6 +1191,8 @@ struct EulerTarget {
     radius_ratio: f64,
     /// D2 impuesto por una carcasa: cambia el consejo del error.
     casing_d2: Option<f64>,
+    /// Z impuesto: la búsqueda no lo ha cambiado.
+    blade_count_fixed: bool,
 }
 
 /// Ángulo de salida del álabe β2, en grados, que hace que el rodete dé la
@@ -1218,7 +1254,11 @@ fn euler_blade_angle(registry: &Registry, target: &EulerTarget) -> Result<f64, D
     if reachable < needed {
         // cu2/u2 no llega a 1 con ningún Z: más álabes solo acercan a ese límite.
         let advice = match target.casing_d2 {
-            // Con carcasa, ψ es resultado y la búsqueda ya probó los Z.
+            // Con carcasa ψ es resultado: solo queda Z, si la búsqueda no lo probó.
+            Some(d2) if target.blade_count_fixed && needed < 1.0 => format!(
+                "con D2 = {:.1} mm y este Z no se alcanza: sube Z o déjalo sin fijar",
+                d2 * 1000.0
+            ),
             Some(d2) => format!(
                 "con D2 = {:.1} mm no se alcanza: cambia H, n o la carcasa",
                 d2 * 1000.0
@@ -1309,6 +1349,7 @@ fn select_outlet(
                     trailing_thickness: trailing,
                     radius_ratio: eps,
                     casing_d2: request.casing_d2,
+                    blade_count_fixed: request.blade_count.is_some(),
                 },
             )?
         };
@@ -1700,32 +1741,30 @@ pub fn design_with_options(
     input: &DesignInput,
     options: &DesignOptions,
 ) -> Result<DesignResult, DesignError> {
-    let has_leakage = options
-        .casing
-        .as_ref()
-        .is_some_and(|casing| casing.leakage.is_some());
-    if !has_leakage || options.eta_v.is_some() {
-        return design_once(input, options);
+    if options.leakage_data().is_none() || options.eta_v.is_some() {
+        return design_once(input, options, true);
     }
 
     // ηv depende de la fuga, y la fuga de cu2, que depende de ηv. El acople es
-    // débil: el punto fijo converge en pocas pasadas.
-    let mut current = design_once(input, options)?;
+    // débil: el punto fijo converge en pocas pasadas. Mientras tanto no se juzga
+    // si el rodete cabe: la primera pasada usa el ηv estadístico, y b2 y el ojo
+    // salen distintos de los del diseño final.
+    let mut current = design_once(input, options, false)?;
     for _ in 0..ETA_V_ITERATIONS {
         let next = current.seal_eta_v;
-        if (next - current.eta_v).abs() <= ETA_V_TOLERANCE {
-            return Ok(current);
-        }
         // Sin fuga por ningún anillo no hay ηv que calcular: se queda el
         // estadístico, y `HM-DES-032` lo dice.
         if next >= 1.0 {
-            return Ok(current);
+            return design_once(input, options, true);
         }
         let fixed = DesignOptions {
             eta_v: Some(next),
             ..options.clone()
         };
-        current = design_once(input, &fixed)?;
+        if (next - current.eta_v).abs() <= ETA_V_TOLERANCE {
+            return design_once(input, &fixed, true);
+        }
+        current = design_once(input, &fixed, false)?;
     }
     Err(DesignError::Input(
         "ηv por la fuga de los anillos no converge".to_string(),
@@ -1735,10 +1774,19 @@ pub fn design_with_options(
 /// Pasadas máximas del punto fijo de ηv.
 const ETA_V_ITERATIONS: usize = 30;
 
+/// Holgura relativa para reconocer un ojo guardado con su texto redondeado.
+const EYE_AREA_TOLERANCE: f64 = 1.0e-9;
+
 /// Diferencia de ηv con que se da por convergido.
 const ETA_V_TOLERANCE: f64 = 1.0e-10;
 
-fn design_once(input: &DesignInput, options: &DesignOptions) -> Result<DesignResult, DesignError> {
+/// `judge_fit`: si comprueba que el rodete cabe en la carcasa. La iteración de ηv
+/// solo lo pide en la pasada final.
+fn design_once(
+    input: &DesignInput,
+    options: &DesignOptions,
+    judge_fit: bool,
+) -> Result<DesignResult, DesignError> {
     input
         .validate()
         .map_err(|error| DesignError::Input(error.message))?;
@@ -2077,6 +2125,7 @@ fn design_once(input: &DesignInput, options: &DesignOptions) -> Result<DesignRes
         ],
     )?;
     if let Some(casing) = &options.casing
+        && judge_fit
         && d1.si > casing.eye_diameter_max + CASING_EYE_ROUNDING
     {
         return Err(DesignError::Input(format!(
@@ -2086,6 +2135,16 @@ fn design_once(input: &DesignInput, options: &DesignOptions) -> Result<DesignRes
             selection.j,
             d1.si * 1000.0,
             casing.eye_diameter_max * 1000.0
+        )));
+    }
+    if options.casing.is_some() && judge_fit && d1.si <= hub {
+        return Err(DesignError::Input(format!(
+            "con c0 = {:.3} m/s y J = {:.3} el ojo sale {:.1} mm, sin paso alrededor del cubo \
+             de {:.1} mm; ajústalos o quítalos de `locked`",
+            selection.c0,
+            selection.j,
+            d1.si * 1000.0,
+            hub * 1000.0
         )));
     }
     let b1 = evaluate(
@@ -2180,7 +2239,7 @@ fn design_once(input: &DesignInput, options: &DesignOptions) -> Result<DesignRes
         &[("D2", d2.clone()), ("k3", k3)],
     )?;
     let b3 = match &options.casing {
-        Some(casing) if b2.si >= casing.b3 => {
+        Some(casing) if judge_fit && b2.si >= casing.b3 => {
             return Err(DesignError::Input(format!(
                 "b2 = {:.1} mm no cabe en el b3 = {:.1} mm de [casing]: sube φ",
                 b2.si * 1000.0,
@@ -2203,72 +2262,75 @@ fn design_once(input: &DesignInput, options: &DesignOptions) -> Result<DesignRes
         "design.volute_inlet_velocity",
         &[("cm2", cm2.clone()), ("cu2", cu2.clone())],
     )?;
-    let a360 = evaluate(
-        &registry,
-        "design.volute_throat_area_ratio",
-        &[
-            ("Q", input.q.clone()),
-            ("c2", c3.clone()),
-            ("ratio", quantity(volute_ratio_value, one.clone())),
-        ],
-    )?;
-    let d360 = evaluate(
-        &registry,
-        "design.volute_throat_diameter",
-        &[("A360", a360.clone()), ("k_eff", k_eff)],
-    )?;
-    let r4 = evaluate(
-        &registry,
-        "design.volute_outer_radius",
-        &[("R3", r3.clone()), ("D360", d360.clone())],
-    )?;
+    let model_volute = if options.casing.is_some() {
+        None
+    } else {
+        let a360 = evaluate(
+            &registry,
+            "design.volute_throat_area_ratio",
+            &[
+                ("Q", input.q.clone()),
+                ("c2", c3.clone()),
+                ("ratio", quantity(volute_ratio_value, one.clone())),
+            ],
+        )?;
+        let d360 = evaluate(
+            &registry,
+            "design.volute_throat_diameter",
+            &[("A360", a360.clone()), ("k_eff", k_eff)],
+        )?;
+        let r4 = evaluate(
+            &registry,
+            "design.volute_outer_radius",
+            &[("R3", r3.clone()), ("D360", d360.clone())],
+        )?;
 
-    let m2 = Unit::new("m2", Dimension::AREA, 1.0);
-    let mut sections = Vec::with_capacity(9);
-    for index in 0..=8 {
-        let angle_deg = 45.0 * index as f64;
-        let area_si = a360.si * angle_deg / 360.0;
-        let diameter_si = k_eff_value * (4.0 * area_si / std::f64::consts::PI).sqrt();
-        let outer_si = r3.si + diameter_si / 2.0;
-        sections.push(VoluteSection {
-            angle_deg,
-            area: Quantity::from_si(area_si, m2.clone()),
-            diameter: Quantity::from_si(diameter_si, m.clone()),
-            outer_radius: Quantity::from_si(outer_si, m.clone()),
-        });
-    }
+        let m2 = Unit::new("m2", Dimension::AREA, 1.0);
+        let mut sections = Vec::with_capacity(9);
+        for index in 0..=8 {
+            let angle_deg = 45.0 * index as f64;
+            let area_si = a360.si * angle_deg / 360.0;
+            let diameter_si = k_eff_value * (4.0 * area_si / std::f64::consts::PI).sqrt();
+            let outer_si = r3.si + diameter_si / 2.0;
+            sections.push(VoluteSection {
+                angle_deg,
+                area: Quantity::from_si(area_si, m2.clone()),
+                diameter: Quantity::from_si(diameter_si, m.clone()),
+                outer_radius: Quantity::from_si(outer_si, m.clone()),
+            });
+        }
 
-    let momentum_throat_diameter = evaluate(
-        &registry,
-        "design.volute_momentum_throat_diameter",
-        &[
-            ("Q", input.q.clone()),
-            ("c2u", cu2.clone()),
-            ("r2", Quantity::from_si(0.5 * d2.si, m.clone())),
-            (
-                "dz",
-                Quantity::from_si((k3_value + CUTWATER_THICKNESS_RATIO) * d2.si, m.clone()),
-            ),
-            ("eps_sp", quantity(2.0 * std::f64::consts::PI, one.clone())),
-        ],
-    )?;
+        let momentum_throat_diameter = evaluate(
+            &registry,
+            "design.volute_momentum_throat_diameter",
+            &[
+                ("Q", input.q.clone()),
+                ("c2u", cu2.clone()),
+                ("r2", Quantity::from_si(0.5 * d2.si, m.clone())),
+                (
+                    "dz",
+                    Quantity::from_si((k3_value + CUTWATER_THICKNESS_RATIO) * d2.si, m.clone()),
+                ),
+                ("eps_sp", quantity(2.0 * std::f64::consts::PI, one.clone())),
+            ],
+        )?;
+        Some(ModelVolute {
+            throat_area: with_unit(a360, &m2),
+            throat_diameter: with_unit(d360, &m),
+            outer_radius: with_unit(r4, &m),
+            momentum_throat_diameter: with_unit(momentum_throat_diameter, &m),
+            sections,
+        })
+    };
 
     let volute = VoluteResult {
         base_radius: with_unit(r3, &m),
         width: with_unit(b3, &m),
         inlet_velocity: with_unit(c3, &ms),
-        throat_area: with_unit(a360, &m2),
-        throat_diameter: with_unit(d360, &m),
-        outer_radius: with_unit(r4, &m),
-        momentum_throat_diameter: with_unit(momentum_throat_diameter, &m),
         wrap_deg: options.volute_wrap_deg,
-        sections,
     };
 
-    let leakage = options
-        .casing
-        .as_ref()
-        .and_then(|casing| casing.leakage.as_ref());
+    let leakage = options.leakage_data();
     let (seal_leakage_ratio, front_eta_v, front_without_drive) = seal_leakage(
         &registry,
         input,
@@ -2409,7 +2471,7 @@ fn design_once(input: &DesignInput, options: &DesignOptions) -> Result<DesignRes
         Some(casing) => casing
             .throat_area
             .map(|area| f64::from(casing.channels) * area),
-        None => Some(volute.throat_area.si),
+        None => model_volute.as_ref().map(|model| model.throat_area.si),
     };
     let a_ratio = total_throat.map(|area| a2_outlet * input.q.si / (area * qth.si));
     let volute_matching_flow = if let Some(a_ratio) = a_ratio.filter(|a_ratio| *a_ratio > 1.0) {
@@ -2452,6 +2514,11 @@ fn design_once(input: &DesignInput, options: &DesignOptions) -> Result<DesignRes
             * f64::from(selection.blade_count)
             * (geometry::blade_length(&blade) / d2.si)
             * ((w1.si + w2.si) / u2.si));
+    // Con carcasa, un ojo fijado también descuenta el cubo si su área libre llega
+    // al D0 pedido: es el caso de una copia del ojo automático.
+    let eye_excludes_hub = inlet.eye_excludes_hub
+        || (options.casing.is_some()
+            && d1.si * d1.si - hub * hub >= d0.si * d0.si * (1.0 - EYE_AREA_TOLERANCE));
     let mut result = DesignResult {
         nq,
         specific_diameter_mm,
@@ -2504,7 +2571,8 @@ fn design_once(input: &DesignInput, options: &DesignOptions) -> Result<DesignRes
         zero_head_flow_ratio,
         head_slope,
         volute,
-        eye_excludes_hub: inlet.eye_excludes_hub,
+        model_volute,
+        eye_excludes_hub,
         eye_limited_from: inlet.limited_from,
         casing: options.casing.clone(),
         diagnostics: Diagnostics::new(),
@@ -2525,27 +2593,39 @@ fn design_once(input: &DesignInput, options: &DesignOptions) -> Result<DesignRes
 
     result.diagnostics = diagnostics_for(&result, input, options);
     let rings_without_drive = match (front_without_drive, rear_without_drive) {
-        (true, true) => Some("de los anillos delantero y trasero"),
-        (true, false) => Some("del anillo delantero"),
-        (false, true) => Some("del anillo trasero"),
+        (true, true) => Some(("de los anillos delantero y trasero", "Qsp = QE = 0")),
+        (true, false) => Some(("del anillo delantero", "Qsp = 0")),
+        (false, true) => Some(("del anillo trasero", "QE = 0")),
         (false, false) => None,
     };
-    if let Some(rings) = rings_without_drive {
+    if let Some((rings, zeroed)) = rings_without_drive {
+        // Con datos de fuga no es un contraste: ηv = 1 no vale para el método.
+        let (flows, effect) = match (leakage.is_some(), front_without_drive && rear_without_drive) {
+            (false, _) => (format!("{zeroed}, ηv = 1"), "El ηv del método no cambia."),
+            (true, true) => (
+                zeroed.to_string(),
+                "Sin fuga por ningún anillo, el ηv del método no cambia: sigue el estadístico o \
+                 el escrito.",
+            ),
+            (true, false) => (
+                zeroed.to_string(),
+                "Si ηv no está escrito, sale de la fuga del otro anillo.",
+            ),
+        };
+        let kind = if leakage.is_some() {
+            "la fuga"
+        } else {
+            "la fuga de contraste"
+        };
         result.diagnostics.push(
             Diagnostic::info(
                 "HM-DES-032",
-                format!(
-                    "la altura a través {rings} no es positiva: la fuga de contraste se tomó \
-                     nula (Qsp = 0, ηv = 1)"
-                ),
+                format!("la altura a través {rings} no es positiva: {kind} se tomó nula ({flows})"),
             )
-            .with_hint(if leakage.is_some() {
+            .with_hint(format!(
                 "El grado de reacción cinemático y la rotación de la cámara lateral no dejan ΔH. \
-                 Esa fuga cuenta como cero en ηv."
-            } else {
-                "El grado de reacción cinemático y la rotación de la cámara lateral \
-                 no dejan ΔH. El ηv del método no cambia."
-            }),
+                 {effect}"
+            )),
         );
     }
     Ok(result)
@@ -2664,6 +2744,10 @@ pub const EULER_HEAD_TOLERANCE: f64 = 0.03;
 /// motor.
 pub const MIN_TRANSITION_RATIO: f64 = 0.95;
 
+/// Parámetros que describen la voluta del modelo. Con carcasa no existen, y un
+/// `.hmf` no tiene por qué traerlos.
+pub const MODEL_VOLUTE_PARAMS: [&str; 3] = ["a360", "d360", "r4"];
+
 /// Dispersión del inicio de la recirculación según Gülich 2020, p. 237.
 pub const RECIRCULATION_SCATTER: f64 = 0.1;
 
@@ -2674,7 +2758,7 @@ pub const CYLINDRICAL_BLADE_MAX_NQ: f64 = 40.0;
 
 /// Rotación del fluido en las cámaras laterales sin fuga y con cámaras
 /// abiertas (Gülich 2020, ec. 3.10.8 con rw = r2 y tax = 0).
-pub(crate) const DISK_K0: f64 = 0.5;
+const DISK_K0: f64 = 0.5;
 
 /// Pérdidas de todas las superficies del rodete frente a las de las caras
 /// planas de las tapas (Gülich 2020, tabla 3.10, rodetes radiales típicos).
@@ -2691,15 +2775,6 @@ const SEAL_ZETA: f64 = 1.1;
 /// p. 111: 4 µm).
 const SEAL_ROUGHNESS: f64 = 4.0e-6;
 
-/// Fuga por el anillo delantero (Gülich 2020, tabla 3.7).
-///
-/// Devuelve `(Qsp/Q, ηv, sin altura motriz)`. El anillo está en el ojo
-/// (dsp = d1). RG es cinemático, `(1 − cu2/(2·u2))` entre 0,2 y 0,95, no
-/// la constante 0,75. λ se resuelve por bisección: cax(λ) y λ(cax) se
-/// cruzan, y la sustitución directa oscila cuando manda el régimen laminar.
-/// Se acepta cuando el cambio relativo baja de 1e-4 y entonces se recalcula
-/// cax con esa λ. Si ΔH ≤ 0 no hay fuga (Qsp = 0, ηv = 1) y el tercer valor
-/// es verdadero. Si no hay raíz, error.
 /// Grado de reacción cinemático, acotado.
 pub(crate) fn kinematic_reaction(cu2: f64, u2: f64) -> f64 {
     (1.0 - cu2 / (2.0 * u2)).clamp(0.2, 0.95)
@@ -2712,6 +2787,14 @@ struct SealRing {
     length: Option<f64>,
 }
 
+/// Fuga por un anillo de desgaste (Gülich 2020, tabla 3.7).
+///
+/// Devuelve `(Qsp/Q, ηv, sin altura motriz)`. RG es cinemático,
+/// `(1 − cu2/(2·u2))` entre 0,2 y 0,95, no la constante 0,75. λ se resuelve por
+/// bisección: cax(λ) y λ(cax) se cruzan, y la sustitución directa oscila cuando
+/// manda el régimen laminar. Se acepta cuando el cambio relativo baja de 1e-4 y
+/// entonces se recalcula cax con esa λ. Si ΔH ≤ 0 no hay fuga (Qsp = 0, ηv = 1)
+/// y el tercer valor es verdadero. Si no hay raíz, error.
 fn seal_leakage(
     registry: &Registry,
     input: &DesignInput,
@@ -3049,9 +3132,9 @@ pub fn designed_si(result: &DesignResult, name: &str) -> Option<f64> {
         "r3" => result.volute.base_radius.si,
         "b3" => result.volute.width.si,
         "c3" => result.volute.inlet_velocity.si,
-        "a360" => result.volute.throat_area.si,
-        "d360" => result.volute.throat_diameter.si,
-        "r4" => result.volute.outer_radius.si,
+        "a360" => result.model_volute.as_ref()?.throat_area.si,
+        "d360" => result.model_volute.as_ref()?.throat_diameter.si,
+        "r4" => result.model_volute.as_ref()?.outer_radius.si,
         _ => return None,
     })
 }
@@ -3093,12 +3176,16 @@ fn diagnostics_for(
             Diagnostic::warning(
                 "HM-DES-039",
                 format!(
-                    "el cuello limita el ojo a {:.1} mm; el óptimo para el NPSH3 sería {:.1} mm",
+                    "`eye_diameter_max` limita el ojo a {:.1} mm; el óptimo para el NPSH3 sería \
+                     {:.1} mm",
                     result.d1.si * 1000.0,
                     free * 1000.0
                 ),
             )
-            .with_hint("Un ojo mayor exige otro cuello y otro anillo."),
+            .with_hint(
+                "Sube `eye_diameter_max` si el cuello deja sitio para las tapas; si no, un ojo \
+                 mayor exige otro cuello y otro anillo.",
+            ),
         );
     }
 
@@ -3121,7 +3208,11 @@ fn diagnostics_for(
                     result.u2.si
                 ),
             )
-            .with_hint("Revisa el coeficiente de altura o la velocidad de giro."),
+            .with_hint(if result.casing.is_some() {
+                "Con el D2 de la carcasa, u2 solo depende de la velocidad de giro."
+            } else {
+                "Revisa el coeficiente de altura o la velocidad de giro."
+            }),
         );
     }
 
@@ -3154,9 +3245,12 @@ fn diagnostics_for(
                     high * reference_width
                 ),
             )
-            .with_hint(
-                "Revisa el coeficiente de caudal y el diámetro exterior (Gülich 2020, ec. 7.1).",
-            ),
+            .with_hint(if result.casing.is_some() {
+                "Revisa el coeficiente de caudal; el diámetro exterior es el de la carcasa \
+                 (Gülich 2020, ec. 7.1)."
+            } else {
+                "Revisa el coeficiente de caudal y el diámetro exterior (Gülich 2020, ec. 7.1)."
+            }),
         );
     }
 
@@ -3240,10 +3334,13 @@ fn diagnostics_for(
                     100.0 * head_error
                 ),
             )
-            .with_hint(
+            .with_hint(if result.casing.is_some() {
+                "Deja β2 sin fijar para que se calcule por Euler, o ajusta φ o Z: ψ sale del D2 \
+                 de la carcasa (recalc --reselect lo vuelve a calcular si el rodete cabe)."
+            } else {
                 "Deja β2 sin fijar para que se calcule por Euler, o ajusta ψ, φ o Z \
-                 (recalc --reselect lo vuelve a calcular).",
-            ),
+                 (recalc --reselect lo vuelve a calcular)."
+            }),
         );
     }
 
@@ -3267,21 +3364,45 @@ fn diagnostics_for(
     }
 
     if result.transition_ratio < MIN_TRANSITION_RATIO {
+        let pressure_side = 0.5 * (result.shockless_flow.si + result.throat_flow.si);
+        let matching = result.volute_matching_ratio(input.q.si);
+        let qc = matching.map_or(String::new(), |ratio| format!(" y Qc = {ratio:.2}·Qd"));
+        let hint = if result.casing.is_none() {
+            "Con Qc bajo, agranda la garganta de la voluta; con QSF bajo, sube β1B o el área de \
+             entrada."
+                .to_string()
+        } else {
+            // Solo el término que queda bajo: la garganta de una carcasa no se
+            // cambia, y Qc no depende de la entrada del rodete.
+            let low = MIN_TRANSITION_RATIO * input.q.si;
+            let mut advice = Vec::new();
+            if matching.is_some() && result.volute_matching_flow.si < low {
+                advice.push(
+                    "Qc lo limita la garganta de la carcasa: la entrada no lo mueve, solo la \
+                     salida del rodete (φ, β2, Z).",
+                );
+            }
+            if pressure_side < low {
+                advice.push(if result.eye_limited_from.is_some() {
+                    "Sube β1B; el tope del ojo ya está alcanzado."
+                } else {
+                    "Sube β1B o el área de entrada."
+                });
+            }
+            advice.join(" ")
+        };
         diagnostics.push(
             Diagnostic::warning(
                 "HM-DES-025",
                 format!(
                     "el NPSH3 empieza a subir con fuerza en {:.2}·Qd, antes del punto de diseño \
-                     (Gülich 2020, §6.3.3): QSF = {:.2}·Qd y Qc = {:.2}·Qd",
+                     (Gülich 2020, §6.3.3): QSF = {:.2}·Qd, QPS = {:.2}·Qd{qc}",
                     result.transition_ratio,
                     result.shockless_flow.si / input.q.si,
-                    result.volute_matching_flow.si / input.q.si
+                    pressure_side / input.q.si,
                 ),
             )
-            .with_hint(
-                "Con Qc bajo, agranda la garganta de la voluta; con QSF bajo, sube β1B o el \
-                 área de entrada.",
-            ),
+            .with_hint(hint),
         );
     }
 
@@ -3290,7 +3411,12 @@ fn diagnostics_for(
         let (what, hint) = if result.inlet_deceleration > ratio_high {
             (
                 "garganta estrecha",
-                "Riesgo de cavitación a caudal alto: sube β1B o el área de entrada.",
+                if result.eye_limited_from.is_some() {
+                    "Riesgo de cavitación a caudal alto: sube β1B; el tope del ojo ya está \
+                     alcanzado."
+                } else {
+                    "Riesgo de cavitación a caudal alto: sube β1B o el área de entrada."
+                },
             )
         } else {
             (
@@ -3390,11 +3516,14 @@ fn diagnostics_for(
                     result.selection.blade_count
                 ),
             )
-            .with_hint(if options.blade_count.is_some() {
-                "Z fijado a mano: el motor no lo eligió. Con 5..7 álabes mira si β2 queda en \
-                 15..45°."
-            } else {
-                "Con 5..7 álabes β2 se sale de 15..45°; revisa ψ, φ o el ojo."
+            // Un Z del archivo también llega aquí: `design` lo guarda como `manual`.
+            .with_hint(match (options.blade_count.is_some(), result.casing.is_some()) {
+                (true, _) => "Z viene fijado. Con 5..7 álabes mira si β2 queda en 15..45°.",
+                (false, true) => {
+                    "Con 5..7 álabes β2 se sale de 15..45°; revisa φ o el ojo: ψ sale del D2 de \
+                     la carcasa."
+                }
+                (false, false) => "Con 5..7 álabes β2 se sale de 15..45°; revisa ψ, φ o el ojo.",
             }),
         );
     }

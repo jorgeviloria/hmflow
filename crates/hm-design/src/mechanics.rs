@@ -46,6 +46,9 @@ pub const AXIAL_THRUST_FACTOR: (f64, f64) = (0.7, 0.9);
 /// y ec. (9.2.14).
 pub const AXIAL_RESIDUAL: (f64, f64) = (0.1, 0.2);
 
+/// Factor de rotación con anillo trasero y agujeros: Gülich 2020, tabla 9.4, p. 669.
+pub const AXIAL_ROTATION: (f64, f64) = (0.55, 0.65);
+
 /// Fracción del ojo que puede tapar el cubo sin aviso: (dh/D0)² = 0,25, es
 /// decir dh = D0/2. Elección del motor: D0 se calcula sin cubo (end-suction,
 /// Srinivasan ec. 4.2) y, si el cubo entra en el ojo, por encima de este
@@ -125,6 +128,8 @@ pub struct Mechanics {
     pub seal_clearance: f64,
     /// Holgura típica de Gülich, ec. (3.12), m. Sin datos de fuga, la de arriba.
     pub usual_seal_clearance: f64,
+    /// La misma holgura de Gülich en el anillo trasero, si se declara.
+    pub usual_rear_seal_clearance: Option<f64>,
     /// Potencia en el eje en el punto nominal, W.
     pub rated_power: f64,
     /// Margen del motor de API 610 para esa potencia.
@@ -319,9 +324,7 @@ pub fn mechanics(
         .as_ref()
         .map_or(result.d1.si, |casing| casing.neck_diameter);
     let shaft_seal_diameter = result
-        .casing
-        .as_ref()
-        .and_then(|casing| casing.leakage.as_ref())
+        .leakage_data()
         .and_then(|leakage| leakage.shaft_seal_diameter)
         .unwrap_or(hub_diameter);
     let axial = |factor: f64| -> Result<f64, DesignError> {
@@ -338,64 +341,68 @@ pub fn mechanics(
         )
     };
 
-    let leakage = result
-        .casing
-        .as_ref()
-        .and_then(|casing| casing.leakage.as_ref());
-    let balanced_axial = |residual: f64, rear_seal: f64| -> Result<f64, DesignError> {
-        let dp = evaluate(
-            &registry,
-            "mech.impeller_pressure_rise",
-            &[
-                ("rho", input.rho.clone()),
-                ("H", input.h.clone()),
-                (
-                    "RG",
-                    pure(crate::kinematic_reaction(result.cu2.si, result.u2.si)),
-                ),
-            ],
-        )?;
-        let between = |db: f64| {
+    let leakage = result.leakage_data();
+    let balanced_axial =
+        |residual: f64, rotation: f64, rear_seal: f64| -> Result<f64, DesignError> {
+            let dp = evaluate(
+                &registry,
+                "mech.impeller_pressure_rise",
+                &[
+                    ("rho", input.rho.clone()),
+                    ("H", input.h.clone()),
+                    (
+                        "RG",
+                        pure(crate::kinematic_reaction(result.cu2.si, result.u2.si)),
+                    ),
+                ],
+            )?;
+            let between = |db: f64| {
+                evaluate(
+                    &registry,
+                    "mech.axial_force_between_seals",
+                    &[
+                        ("da", metres(front_seal_diameter)),
+                        ("db", metres(db)),
+                        ("dp", pascals(dp)),
+                        ("rho", input.rho.clone()),
+                        ("k", pure(rotation)),
+                        ("u2", result.u2.clone()),
+                        ("d2", result.d2.clone()),
+                    ],
+                )
+            };
+            let momentum = evaluate(
+                &registry,
+                "mech.axial_momentum",
+                &[
+                    ("rho", input.rho.clone()),
+                    ("Q", input.q.clone()),
+                    ("c1m", speed(result.selection.cm0)),
+                ],
+            )?;
             evaluate(
                 &registry,
-                "mech.axial_force_between_seals",
+                "mech.axial_thrust_balanced",
                 &[
-                    ("da", metres(front_seal_diameter)),
-                    ("db", metres(db)),
-                    ("dp", pascals(dp)),
-                    ("rho", input.rho.clone()),
-                    ("k", pure(crate::DISK_K0)),
-                    ("u2", result.u2.clone()),
-                    ("d2", result.d2.clone()),
+                    ("f_res", pure(residual)),
+                    ("F_unbalanced", newtons(between(shaft_seal_diameter)?)),
+                    ("F_seals", newtons(between(rear_seal)?)),
+                    ("F_I", newtons(momentum)),
                 ],
             )
         };
-        let momentum = evaluate(
-            &registry,
-            "mech.axial_momentum",
-            &[
-                ("rho", input.rho.clone()),
-                ("Q", input.q.clone()),
-                ("c1m", speed(result.selection.cm0)),
-            ],
-        )?;
-        evaluate(
-            &registry,
-            "mech.axial_thrust_balanced",
-            &[
-                ("f_res", pure(residual)),
-                ("F_unbalanced", newtons(between(shaft_seal_diameter)?)),
-                ("F_seals", newtons(between(rear_seal)?)),
-                ("F_I", newtons(momentum)),
-            ],
-        )
-    };
     let axial_thrust = match leakage {
         Some(leakage) => {
-            let first = balanced_axial(AXIAL_RESIDUAL.0, leakage.rear_seal_diameter)?;
-            let second = balanced_axial(AXIAL_RESIDUAL.1, leakage.rear_seal_diameter)?;
-            // Con presión muy baja F(9.2.7) es negativa y el residuo invierte el orden.
-            (first.min(second), first.max(second))
+            let mut low = f64::INFINITY;
+            let mut high = f64::NEG_INFINITY;
+            for residual in [AXIAL_RESIDUAL.0, AXIAL_RESIDUAL.1] {
+                for rotation in [AXIAL_ROTATION.0, AXIAL_ROTATION.1] {
+                    let force = balanced_axial(residual, rotation, leakage.rear_seal_diameter)?;
+                    low = low.min(force);
+                    high = high.max(force);
+                }
+            }
+            (low, high)
         }
         None => (axial(AXIAL_THRUST_FACTOR.0)?, axial(AXIAL_THRUST_FACTOR.1)?),
     };
@@ -408,11 +415,20 @@ pub fn mechanics(
             ("d_ref", metres(SEAL_CLEARANCE_REFERENCE)),
         ],
     )?;
-    let declared_clearance = result
-        .casing
-        .as_ref()
-        .and_then(|casing| casing.leakage.as_ref())
-        .map(|leakage| leakage.seal_clearance);
+    let declared_clearance = result.leakage_data().map(|leakage| leakage.seal_clearance);
+    let usual_rear_seal_clearance = result
+        .leakage_data()
+        .map(|leakage| {
+            evaluate(
+                &registry,
+                "mech.seal_clearance",
+                &[
+                    ("dsp", metres(leakage.rear_seal_diameter)),
+                    ("d_ref", metres(SEAL_CLEARANCE_REFERENCE)),
+                ],
+            )
+        })
+        .transpose()?;
 
     let rated_power = result.p_shaft.si;
     let margin = driver_margin(rated_power);
@@ -448,6 +464,7 @@ pub fn mechanics(
         axial_thrust,
         seal_clearance: declared_clearance.unwrap_or(usual_seal_clearance),
         usual_seal_clearance,
+        usual_rear_seal_clearance,
         rated_power,
         driver_margin: margin,
         driver_power,
@@ -456,7 +473,6 @@ pub fn mechanics(
     })
 }
 
-/// Avisos de la mecánica preliminar.
 /// b3/b2 que cita Gülich 2020, sec. 7.8, pp. 492–493: de 1,05..1,2 con nq alto
 /// a 2,0..4,0 con nq bajo. No es un límite: el libro dice que se elige «in wide
 /// limits without major effect on the efficiency». Fuera, solo se informa.
@@ -490,7 +506,10 @@ fn casing_diagnostics(mechanics: &Mechanics, result: &DesignResult) -> Diagnosti
                     casing.neck_diameter * 1000.0
                 ),
             )
-            .with_hint("Baja `eye_diameter_max` o revisa el espesor de la tapa en el cuello."),
+            .with_hint(
+                "Baja `eye_diameter_max`, o c0 y J si están en `locked`, o revisa el espesor de \
+                 la tapa en el cuello.",
+            ),
         );
     }
 
@@ -528,18 +547,25 @@ fn casing_diagnostics(mechanics: &Mechanics, result: &DesignResult) -> Diagnosti
         );
     }
 
-    let clearance = mechanics.seal_clearance / mechanics.usual_seal_clearance - 1.0;
-    if clearance.abs() > SEAL_CLEARANCE_SPREAD {
-        diagnostics.push(Diagnostic::info(
-            "HM-DES-045",
-            format!(
-                "holgura de {:.2} mm, a {:+.0} % de los {:.2} mm de Gülich, ec. (3.12): las \
-                 ejecutadas quedan en ±30 %",
-                mechanics.seal_clearance * 1000.0,
-                100.0 * clearance,
-                mechanics.usual_seal_clearance * 1000.0
-            ),
-        ));
+    let rings = [
+        ("delantero", Some(mechanics.usual_seal_clearance)),
+        ("trasero", mechanics.usual_rear_seal_clearance),
+    ];
+    for (ring, usual) in rings {
+        let Some(usual) = usual else { continue };
+        let clearance = mechanics.seal_clearance / usual - 1.0;
+        if clearance.abs() > SEAL_CLEARANCE_SPREAD {
+            diagnostics.push(Diagnostic::info(
+                "HM-DES-045",
+                format!(
+                    "holgura de {:.2} mm en el anillo {ring}, a {:+.0} % de los {:.2} mm de \
+                     Gülich, ec. (3.12): las ejecutadas quedan en ±30 %",
+                    mechanics.seal_clearance * 1000.0,
+                    100.0 * clearance,
+                    usual * 1000.0
+                ),
+            ));
+        }
     }
 
     if let Some(leakage) = &casing.leakage {
@@ -613,6 +639,7 @@ fn casing_diagnostics(mechanics: &Mechanics, result: &DesignResult) -> Diagnosti
     diagnostics
 }
 
+/// Avisos de la mecánica preliminar.
 pub fn mechanics_diagnostics(mechanics: &Mechanics, result: &DesignResult) -> Diagnostics {
     let mut diagnostics = casing_diagnostics(mechanics, result);
     let d0 = result.d0.si;
@@ -620,11 +647,16 @@ pub fn mechanics_diagnostics(mechanics: &Mechanics, result: &DesignResult) -> Di
     // El ojo automático ya restó el cubo del área. El aviso es para el ojo
     // de Srinivasan, que se calcula sin él.
     if !result.eye_excludes_hub && blockage > HUB_EYE_BLOCKAGE {
+        let hub_name = if result.casing.is_some() {
+            "el cubo de la carcasa"
+        } else {
+            "el cubo del eje mínimo"
+        };
         diagnostics.push(
             Diagnostic::warning(
                 "HM-DES-027",
                 format!(
-                    "el cubo del eje mínimo (dh = {:.1} mm) equivale al {:.0} % del ojo \
+                    "{hub_name} (dh = {:.1} mm) equivale al {:.0} % del ojo \
                      (D0 = {:.1} mm, calculado sin cubo): si el cubo o la tuerca entran \
                      en el ojo, c0 sube",
                     mechanics.hub_diameter * 1000.0,

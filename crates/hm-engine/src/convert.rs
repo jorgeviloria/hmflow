@@ -6,7 +6,8 @@ use std::collections::BTreeMap;
 use hm_design::geometry::DEFAULT_INCIDENCE_DEG;
 use hm_design::{
     CasingFit, CasingLeakage, DEFAULT_K_EFF, DEFAULT_VOLUTE_C, DEFAULT_VOLUTE_RATIO, DesignError,
-    DesignOptions, DesignResult, PARAM_SPECS, ParamSpec, designed_si, water_density,
+    DesignOptions, DesignResult, MODEL_VOLUTE_PARAMS, PARAM_SPECS, ParamSpec, designed_si,
+    water_density,
 };
 use hm_project::{Casing, Param, Project};
 use hm_units::{Quantity, parse_quantity, parse_unit};
@@ -429,6 +430,18 @@ fn default_density(
 /// Las tres cotas que fijan el ojo: van juntas.
 const EYE_SELECTIONS: [&str; 3] = ["c0", "cm0", "J"];
 
+/// Con carcasa, un valor del ojo en `locked` fija el ojo entero.
+pub(crate) fn eye_is_fixed(project: &Project) -> bool {
+    project.casing.is_some()
+        && EYE_SELECTIONS
+            .iter()
+            .any(|name| matches!(project.params.get(*name), Some(Param::Locked { .. })))
+}
+
+pub(crate) fn is_eye_selection(name: &str) -> bool {
+    EYE_SELECTIONS.contains(&name)
+}
+
 /// Selecciones que, en este proyecto, son resultado y no decisión: ψ sale de
 /// D2 y el ojo del cuello. Las que `design` dejó como `manual` quedan viejas
 /// al cambiar el punto. `locked` es la decisión: ψ se fija solo, y un valor
@@ -469,29 +482,16 @@ pub(crate) fn casing_volute(project: &Project) -> Vec<&'static str> {
 fn design_options(project: &Project) -> Result<DesignOptions, EngineError> {
     let mut options = DesignOptions::default();
 
+    let from_casing = [casing_results(project), casing_volute(project)].concat();
     for param in MANUAL_PARAMS {
-        (param.set)(&mut options, decode(project, param)?);
+        let value = decode(project, param)?;
+        if !from_casing.contains(&param.name) {
+            (param.set)(&mut options, value);
+        }
     }
 
     if let Some(casing) = &project.casing {
         options.casing = Some(casing_fit(casing)?);
-        for name in casing_results(project) {
-            match name {
-                "psi" => options.psi = None,
-                "c0" => options.c0 = None,
-                "cm0" => options.cm0 = None,
-                _ => options.j = None,
-            }
-        }
-        for name in casing_volute(project) {
-            match name {
-                "k3" => options.k3 = None,
-                "volute_channels" => options.volute_channels = None,
-                "volute_wrap_deg" => options.volute_wrap_deg = None,
-                "volute_ratio" => options.volute_ratio = None,
-                _ => options.volute_width_factor = None,
-            }
-        }
     }
 
     Ok(options)
@@ -552,7 +552,7 @@ pub fn casing_fit(casing: &Casing) -> Result<CasingFit, EngineError> {
         "" => None,
         text => Some(si("wrap", text, "rad")?.to_degrees()),
     };
-    Ok(CasingFit {
+    let fit = CasingFit {
         d2: si("d2", &casing.d2, "m")?,
         neck_diameter: si("neck_diameter", &casing.neck_diameter, "m")?,
         eye_diameter_max: si("eye_diameter_max", &casing.eye_diameter_max, "m")?,
@@ -564,7 +564,11 @@ pub fn casing_fit(casing: &Casing) -> Result<CasingFit, EngineError> {
         wrap_deg,
         throat_area,
         leakage,
-    })
+    };
+    // Que encajen entre sí también es un problema de la carcasa, no del diseño.
+    fit.validate()
+        .map_err(|error| input_error(CaseField::Param("casing"), "HM-PROJ-030", error.message))?;
+    Ok(fit)
 }
 
 fn decode(project: &Project, param: &ManualParam) -> Result<Option<f64>, EngineError> {
@@ -871,6 +875,9 @@ pub fn design_params(
 
     for spec in PARAM_SPECS {
         let param = if let Some(formula) = spec.formula {
+            if result.model_volute.is_none() && MODEL_VOLUTE_PARAMS.contains(&spec.name) {
+                continue;
+            }
             auto(formula, auto_text(result, spec)?)
         } else {
             match existing.and_then(|params| params.get(spec.name)) {

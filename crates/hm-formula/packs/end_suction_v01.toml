@@ -1419,7 +1419,7 @@ d2 = "m"
 value = "pi/4*(da^2 - db^2)*(dp - rho/2*k^2*u2^2*(1 - (da^2 + db^2)/(2*d2^2)))"
 
 [formula.notes]
-assumptions = "Con da = dsp y db = dD es la (9.2.7), rodete sin compensar; con db = ds2, la (9.2.13). k es el factor de rotación medio, igual en las dos tapas: válido con fuga pequeña (Gülich p. 654)."
+assumptions = "Con da = dsp y db = dD es la (9.2.7), rodete sin compensar; con db = ds2, la (9.2.13). k es el factor de rotación medio, igual en las dos tapas: 0,55..0,65 con anillo trasero y agujeros (Gülich tabla 9.4, p. 669)."
 
 [[formula]]
 id = "mech.axial_momentum"

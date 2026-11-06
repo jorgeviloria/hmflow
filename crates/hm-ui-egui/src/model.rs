@@ -10,10 +10,7 @@ use std::path::Path;
 use hm_core::{Diagnostic, Diagnostics};
 use hm_design::geometry::Geometry;
 use hm_design::mechanics::Mechanics;
-use hm_design::{
-    CurvePoint, DesignError, DesignInput, DesignResult, MODEL_VOLUTE_RESULTS, ViscousCorrection,
-    designed_si,
-};
+use hm_design::{CurvePoint, DesignError, DesignInput, DesignResult, ViscousCorrection};
 use hm_engine::{
     Analysis, Case, CaseField, CurvePoints, Density, DensitySource, DesignOptions, Duty,
     EditorError, EngineError, Entered, Fluid, FluidKind, Intake, Opened, PumpType, Temperature,
@@ -681,22 +678,7 @@ fn format_diagnostics(diagnostics: &Diagnostics) -> String {
 
 /// Con datos de fuga, el empuje axial es el de los agujeros de equilibrio.
 pub fn balanced_axial_thrust(result: &DesignResult) -> bool {
-    result
-        .casing
-        .as_ref()
-        .is_some_and(|casing| casing.leakage.is_some())
-}
-
-/// Con carcasa, la voluta del modelo no es la real: no se dibuja.
-pub fn draws_model_volute(result: &DesignResult) -> bool {
-    result.casing.is_none()
-}
-
-/// Valor de un resultado para la tabla, salvo que sea de la voluta del modelo y
-/// haya carcasa.
-pub fn shown_result(result: &DesignResult, name: &str) -> Option<f64> {
-    let hidden = result.casing.is_some() && MODEL_VOLUTE_RESULTS.contains(&name);
-    designed_si(result, name).filter(|_| !hidden)
+    result.leakage_data().is_some()
 }
 
 #[cfg(test)]
@@ -714,8 +696,8 @@ mod tests {
             nu: None,
         };
         let free = hm_design::design(&input).unwrap();
-        assert!(super::draws_model_volute(&free));
-        assert!(super::shown_result(&free, "a360").is_some());
+        assert!(free.model_volute.is_some());
+        assert!(hm_design::designed_si(&free, "a360").is_some());
 
         let options = hm_design::DesignOptions {
             casing: Some(hm_design::CasingFit {
@@ -734,11 +716,11 @@ mod tests {
             ..hm_design::DesignOptions::default()
         };
         let fitted = hm_design::design_with_options(&input, &options).unwrap();
-        assert!(!super::draws_model_volute(&fitted));
-        for name in hm_design::MODEL_VOLUTE_RESULTS {
-            assert_eq!(super::shown_result(&fitted, name), None, "{name}");
+        assert!(fitted.model_volute.is_none());
+        for name in ["a360", "d360", "r4"] {
+            assert_eq!(hm_design::designed_si(&fitted, name), None, "{name}");
         }
-        assert!(super::shown_result(&fitted, "b3").is_some());
+        assert!(hm_design::designed_si(&fitted, "b3").is_some());
     }
 
     use super::*;

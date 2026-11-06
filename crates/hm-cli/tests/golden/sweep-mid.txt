@@ -309,7 +309,7 @@ $ hmflow-cli report sweep-mid.hmf --curve-points 11
 # stdout
 {
   "format": "hmflow.design-report",
-  "version": 1,
+  "version": 2,
   "method": "end_suction_v0.9",
   "input": {
     "H": {

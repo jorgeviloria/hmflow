@@ -299,7 +299,10 @@ fn stored_snapshot_tolerates_rounding_only() {
         .unwrap();
     assert!(stored_si_matches(result.specific_diameter_mm, rounded));
     assert!(!stored_si_matches(result.d2.si, 9.0));
-    assert!(!stored_si_matches(result.volute.throat_area.si, 0.0018));
+    assert!(!stored_si_matches(
+        result.model_volute.as_ref().unwrap().throat_area.si,
+        0.0018
+    ));
     assert_eq!(designed_si(&result, "d2"), Some(result.d2.si));
     assert!(designed_si(&result, "psi").is_none());
 }
@@ -1014,7 +1017,8 @@ fn default_volute_leaves_margin_over_the_design_flow() {
 /// la forma del libro, `(√(a²−1) − t)/(a² − 1 − t²)`, y vale para todo a > 1.
 fn matching_flow_ratio(input: &DesignInput, result: &hm_design::DesignResult) -> (f64, f64) {
     let a2 = std::f64::consts::PI * result.d2.si * result.b2.si;
-    let a = a2 * input.q.si / (result.volute.throat_area.si * result.qth.si);
+    let a =
+        a2 * input.q.si / (result.model_volute.as_ref().unwrap().throat_area.si * result.qth.si);
     let beta2 = result.selection.beta2_deg.to_radians();
     let tau2 = (result.u2.si * result.slip - result.cu2.si) * beta2.tan() / result.cm2.si;
     let impeller_flow =
@@ -1088,9 +1092,18 @@ fn volute_throat_follows_the_deceleration_ratio() {
     let input = input("1060 gpm", "83 m", "1750 rpm");
     let result = design(&input).unwrap();
     let c2 = result.volute.inlet_velocity.si;
-    close(result.volute.throat_area.si, input.q.si / (0.8 * c2), 1e-9);
-    let equivalent = (4.0 * result.volute.throat_area.si / std::f64::consts::PI).sqrt();
-    close(result.volute.throat_diameter.si, 1.1 * equivalent, 1e-9);
+    close(
+        result.model_volute.as_ref().unwrap().throat_area.si,
+        input.q.si / (0.8 * c2),
+        1e-9,
+    );
+    let equivalent =
+        (4.0 * result.model_volute.as_ref().unwrap().throat_area.si / std::f64::consts::PI).sqrt();
+    close(
+        result.model_volute.as_ref().unwrap().throat_diameter.si,
+        1.1 * equivalent,
+        1e-9,
+    );
 
     let srinivasan = design_with_options(
         &input,
@@ -1101,12 +1114,13 @@ fn volute_throat_follows_the_deceleration_ratio() {
     )
     .unwrap();
     close(
-        srinivasan.volute.throat_area.si,
+        srinivasan.model_volute.as_ref().unwrap().throat_area.si,
         input.q.si / srinivasan.volute.inlet_velocity.si,
         1e-9,
     );
     close(
-        result.volute.throat_area.si / srinivasan.volute.throat_area.si,
+        result.model_volute.as_ref().unwrap().throat_area.si
+            / srinivasan.model_volute.as_ref().unwrap().throat_area.si,
         1.0 / 0.8,
         1e-9,
     );
@@ -1133,13 +1147,26 @@ fn invalid_volute_ratio_is_rejected() {
 fn momentum_throat_is_a_contrast_that_agrees_at_low_nq() {
     // T7.7.7 (momento cinético) y la razón 0,8 coinciden en B1 (nq 16,5) y
     // se separan con nq alto, donde el momento cinético pide c3q/c2 ≈ 0,4.
-    let equivalent =
-        |r: &hm_design::DesignResult| (4.0 * r.volute.throat_area.si / std::f64::consts::PI).sqrt();
+    let equivalent = |r: &hm_design::DesignResult| {
+        (4.0 * r.model_volute.as_ref().unwrap().throat_area.si / std::f64::consts::PI).sqrt()
+    };
     let b1 = design(&input("1060 gpm", "83 m", "1750 rpm")).unwrap();
-    let low = b1.volute.momentum_throat_diameter.si / equivalent(&b1);
+    let low = b1
+        .model_volute
+        .as_ref()
+        .unwrap()
+        .momentum_throat_diameter
+        .si
+        / equivalent(&b1);
     assert!((low - 1.0).abs() < 0.03, "B1: {low}");
     let high = design(&input("200 m3/h", "8 m", "1750 rpm")).unwrap();
-    let ratio = high.volute.momentum_throat_diameter.si / equivalent(&high);
+    let ratio = high
+        .model_volute
+        .as_ref()
+        .unwrap()
+        .momentum_throat_diameter
+        .si
+        / equivalent(&high);
     assert!(ratio > 1.25, "nq 87: {ratio}");
 }
 

@@ -123,8 +123,13 @@ fn a_thick_hub_in_a_small_eye_is_flagged() {
     )
     .unwrap();
     let mech = mechanics(&input, &result, DEFAULT_SHAFT_SHEAR_STRESS).unwrap();
-    let found = codes(&mechanics_diagnostics(&mech, &result));
-    assert!(found.contains(&"HM-DES-027".to_string()), "{found:?}");
+    let diagnostics = mechanics_diagnostics(&mech, &result);
+    let hub = diagnostics
+        .iter()
+        .find(|diagnostic| diagnostic.code == "HM-DES-027")
+        .unwrap();
+    assert!(hub.message.contains("eje mínimo"), "{}", hub.message);
+    let found = codes(&diagnostics);
     assert!(found.contains(&"HM-DES-028".to_string()), "{found:?}");
 }
 

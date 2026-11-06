@@ -164,7 +164,10 @@ fn results_use_the_hmf_parameter_names() {
     }
     assert_eq!(report.results["d2"].value, result.d2.si);
     assert_eq!(report.results["d2"].unit, "m");
-    assert_eq!(report.volute_sections.len(), result.volute.sections.len());
+    assert_eq!(
+        report.volute_sections.len(),
+        result.model_volute.as_ref().unwrap().sections.len()
+    );
     assert_eq!(report.curve.len(), 11);
 }
 

@@ -25,7 +25,7 @@ use crate::{
 pub const REPORT_FORMAT: &str = "hmflow.design-report";
 
 /// Versión del formato del informe.
-pub const REPORT_VERSION: u32 = 1;
+pub const REPORT_VERSION: u32 = 2;
 
 /// Un valor en SI con su unidad.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -266,10 +266,6 @@ pub struct DesignReport {
     pub diagnostics: Vec<Diagnostic>,
 }
 
-/// Resultados que describen la voluta del modelo. Con carcasa no se publican:
-/// la voluta real es otra.
-pub const MODEL_VOLUTE_RESULTS: [&str; 3] = ["a360", "d360", "r4"];
-
 impl ReportCasing {
     fn new(casing: &CasingFit) -> Self {
         Self {
@@ -352,21 +348,12 @@ impl DesignReport {
             results.insert(name.to_string(), Measure::new(value, unit));
         }
 
-        // Con carcasa, la voluta del modelo no es la real: no se publica.
         let casing = result.casing.as_ref().map(ReportCasing::new);
-        if casing.is_some() {
-            for name in MODEL_VOLUTE_RESULTS {
-                results.remove(name);
-            }
-        }
-        let model_sections: &[crate::VoluteSection] = if casing.is_some() {
-            &[]
-        } else {
-            &result.volute.sections
-        };
 
-        let volute_sections = model_sections
+        let volute_sections = result
+            .model_volute
             .iter()
+            .flat_map(|model| model.sections.iter())
             .map(|section| ReportSection {
                 angle: Measure::new(section.angle_deg.to_radians(), "rad"),
                 area: Measure::new(section.area.si, "m2"),
@@ -414,9 +401,7 @@ impl DesignReport {
                 head_slope: Measure::new(result.head_slope, "1"),
                 seal_leakage_ratio: Measure::new(result.seal_leakage_ratio, "1"),
                 rear_seal_leakage_ratio: result
-                    .casing
-                    .as_ref()
-                    .and_then(|casing| casing.leakage.as_ref())
+                    .leakage_data()
                     .map(|_| Measure::new(result.rear_seal_leakage_ratio, "1")),
                 seal_eta_v: Measure::new(result.seal_eta_v, "1"),
                 inlet_deceleration: Some(Measure::new(result.inlet_deceleration, "1")),
@@ -426,9 +411,9 @@ impl DesignReport {
                 blade_loading_allowable: cylindrical
                     .then(|| Measure::new(crate::blade_loading_allowable(result.nq), "1")),
                 momentum_throat_diameter: result
-                    .casing
-                    .is_none()
-                    .then(|| Measure::new(result.volute.momentum_throat_diameter.si, "m")),
+                    .model_volute
+                    .as_ref()
+                    .map(|model| Measure::new(model.momentum_throat_diameter.si, "m")),
             }),
             viscous: None,
             geometry: None,
@@ -456,13 +441,13 @@ impl DesignReport {
                     })
                     .collect(),
             },
-            volute_outlet: self.casing.is_none().then(|| ReportVoluteOutlet {
+            volute_outlet: outlet.model.as_ref().map(|model| ReportVoluteOutlet {
                 cutwater_radius: Measure::new(outlet.cutwater_radius, "m"),
                 cutwater_min_radius: Measure::new(outlet.cutwater_min_radius, "m"),
-                nominal_diameter: Measure::new(outlet.nominal_diameter, "m"),
-                area_ratio: Measure::new(outlet.area_ratio, "1"),
-                min_length: Measure::new(outlet.min_length, "m"),
-                half_angle: Measure::new(outlet.half_angle, "rad"),
+                nominal_diameter: Measure::new(model.nominal_diameter, "m"),
+                area_ratio: Measure::new(model.area_ratio, "1"),
+                min_length: Measure::new(model.min_length, "m"),
+                half_angle: Measure::new(model.half_angle, "rad"),
             }),
         });
         self

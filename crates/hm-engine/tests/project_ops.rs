@@ -270,3 +270,22 @@ fn a_locked_phi_counts_when_checking_the_blade_count_without_a_casing() {
         .count();
     assert_eq!(stale, 0);
 }
+
+#[test]
+fn a_manual_margin_does_not_make_the_eye_look_stale() {
+    let mut project = hm_engine::recalc(Project::new("demo", PumpType::EndSuction), false)
+        .unwrap()
+        .project;
+    project.params.insert(
+        "margin".to_string(),
+        Param::Manual {
+            value: "1.5".to_string(),
+        },
+    );
+    let project = hm_engine::recalc(project, true).unwrap().project;
+    let stale = hm_engine::audit(&project)
+        .iter()
+        .filter(|diagnostic| diagnostic.code == "HM-DES-013")
+        .count();
+    assert_eq!(stale, 0);
+}

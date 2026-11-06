@@ -11,7 +11,8 @@ use crate::audit::{NQ_SELECTIONS, selection_diagnostics};
 use crate::case::Case;
 use crate::changes::{ChangeKind, ParamChange};
 use crate::convert::{
-    ManualDefaults, case_from_project, casing_results, casing_volute, design_params, param_value,
+    ManualDefaults, case_from_project, casing_results, casing_volute, design_params, eye_is_fixed,
+    is_eye_selection, param_value,
 };
 use crate::dispatch::analyze;
 use crate::error::EngineError;
@@ -156,7 +157,11 @@ fn unknown_param(name: &str) -> EngineError {
 /// Quita las selecciones manuales del punto y devuelve su texto anterior.
 fn take_manual_selections(project: &mut Project) -> Vec<(&'static str, String)> {
     let mut reselected = Vec::new();
+    let eye_fixed = eye_is_fixed(project);
     for name in NQ_SELECTIONS {
+        if eye_fixed && is_eye_selection(name) {
+            continue;
+        }
         if let Some(Param::Manual { value }) = project.params.get(name) {
             reselected.push((name, value.clone()));
         }
@@ -231,15 +236,11 @@ fn assemble_changes(
     changes
 }
 
-/// Diferencia relativa que no es un cambio: el redondeo de `rho` en el archivo
-/// mueve la duodécima cifra de lo que depende de ν.
-const SAME_VALUE_TOLERANCE: f64 = 1.0e-9;
-
+/// Con tolerancia: el redondeo de `rho` en el archivo mueve la duodécima cifra de
+/// lo que depende de ν.
 fn same_value(old: &str, new: &str) -> bool {
     match (parse_quantity(old), parse_quantity(new)) {
-        (Ok(old), Ok(new)) if old.si != 0.0 => {
-            (new.si / old.si - 1.0).abs() <= SAME_VALUE_TOLERANCE
-        }
+        (Ok(old), Ok(new)) => crate::project_ops::same_value(old.si, new.si),
         _ => old == new,
     }
 }

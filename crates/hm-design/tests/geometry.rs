@@ -106,9 +106,9 @@ fn d1a1_blade_with_published_selections() {
 fn discharge_diffuser_meets_the_allowable_angle() {
     let input = input("120 m3/h", "45 m", "2900 rpm");
     let result = design(&input).unwrap();
-    let outlet = geometry(&input, &result).unwrap().outlet;
+    let outlet = geometry(&input, &result).unwrap().outlet.model.unwrap();
 
-    let throat = result.volute.throat_diameter.si;
+    let throat = result.model_volute.as_ref().unwrap().throat_diameter.si;
     assert!(outlet.nominal_diameter >= throat);
     close(
         outlet.area_ratio,

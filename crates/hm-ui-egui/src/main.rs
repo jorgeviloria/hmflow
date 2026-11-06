@@ -665,7 +665,7 @@ fn rows(outcome: &Outcome) -> Vec<(&'static str, Vec<Row>)> {
         },
     ];
     for spec in PARAM_SPECS.iter().filter(|spec| spec.formula.is_some()) {
-        if let Some(value) = model::shown_result(result, spec.name) {
+        if let Some(value) = hm_design::designed_si(result, spec.name) {
             design.push(Row {
                 key: spec.name,
                 label: spec.name,
@@ -1115,9 +1115,9 @@ fn plan_view(ui: &mut egui::Ui, outcome: &Outcome) {
     let mut stations = vec![(0.0, result.volute.base_radius.si)];
     stations.extend(
         result
-            .volute
-            .sections
+            .model_volute
             .iter()
+            .flat_map(|model| model.sections.iter())
             .map(|section| (section.angle_deg, section.outer_radius.si)),
     );
     let mut volute = Vec::new();
@@ -1175,8 +1175,8 @@ fn plan_view(ui: &mut egui::Ui, outcome: &Outcome) {
                     .collect();
                 plot_ui.line(line("Álabes", points, blue));
             }
-            // Con carcasa, la del modelo no es la real: no se dibuja.
-            if model::draws_model_volute(result) {
+            // Con carcasa no hay voluta del modelo que dibujar.
+            if result.model_volute.is_some() {
                 plot_ui.line(line("Voluta", volute, orange));
             }
         });

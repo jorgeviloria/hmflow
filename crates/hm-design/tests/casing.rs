@@ -1089,34 +1089,22 @@ fn the_balanced_axial_thrust_matches_the_hand_calculation() {
     let (rho, g, h) = (998.2, 9.806_65, 45.0);
     let reaction = 1.0 - result.cu2.si / (2.0 * result.u2.si);
     let dp = rho * g * h * reaction;
-    let (u2, d2, k) = (result.u2.si, result.d2.si, 0.5);
-    let force = |a: f64, b: f64| {
+    let (u2, d2) = (result.u2.si, result.d2.si);
+    let force = |a: f64, b: f64, k: f64| {
         std::f64::consts::FRAC_PI_4
             * (a * a - b * b)
             * (dp - rho / 2.0 * k * k * u2 * u2 * (1.0 - (a * a + b * b) / (2.0 * d2 * d2)))
     };
     let (neck, hub, rear) = (0.120, 0.035, 0.080);
     let momentum = rho * input().q.si * result.selection.cm0;
-    let at = |residual: f64| residual * force(neck, hub) + force(neck, rear) - momentum;
-    assert!((mech.axial_thrust.0 - at(0.1)).abs() < 1e-6, "{}", at(0.1));
-    assert!((mech.axial_thrust.1 - at(0.2)).abs() < 1e-6, "{}", at(0.2));
-}
-
-#[test]
-fn equal_seals_leave_only_the_residual_and_the_momentum() {
-    let equal = CasingFit {
-        leakage: Some(CasingLeakage {
-            rear_seal_diameter: 0.120,
-            balance_hole_circle: 0.070,
-            ..leakage()
-        }),
-        ..roomy()
-    };
-    let result = design_with_options(&input(), &with(equal)).unwrap();
-    let mech = mechanics(&input(), &result, DEFAULT_SHAFT_SHEAR_STRESS).unwrap();
-    let momentum = 998.2 * input().q.si * result.selection.cm0;
-    let residual = (mech.axial_thrust.1 - mech.axial_thrust.0) / 0.1;
-    assert!((mech.axial_thrust.0 - (0.1 * residual - momentum)).abs() < 1e-6);
+    let corners: Vec<f64> = [(0.1, 0.55), (0.1, 0.65), (0.2, 0.55), (0.2, 0.65)]
+        .iter()
+        .map(|&(residual, k)| residual * force(neck, hub, k) + force(neck, rear, k) - momentum)
+        .collect();
+    let lowest = corners.iter().copied().fold(f64::MAX, f64::min);
+    let highest = corners.iter().copied().fold(f64::MIN, f64::max);
+    assert!((mech.axial_thrust.0 - lowest).abs() < 1e-6, "{lowest}");
+    assert!((mech.axial_thrust.1 - highest).abs() < 1e-6, "{highest}");
 }
 
 #[test]
@@ -1137,7 +1125,7 @@ fn a_thrust_that_can_reverse_is_informed() {
     // Anillo trasero mayor que el delantero, como en el rodete real.
     let larger_rear = CasingFit {
         leakage: Some(CasingLeakage {
-            rear_seal_diameter: 0.1225,
+            rear_seal_diameter: 0.1205,
             balance_hole_circle: 0.080,
             ..leakage()
         }),
@@ -1221,4 +1209,517 @@ fn small_holes_say_the_axial_figure_no_longer_holds() {
         .unwrap();
     let hint = warning.hint.clone().unwrap_or_default();
     assert!(hint.contains("deja de valer"), "{hint}");
+}
+
+/// Con la holgura muy cerrada, el ηv final sube y b2 baja: la primera pasada,
+/// con el ηv estadístico, no debe rechazar lo que al converger sí cabe.
+#[test]
+fn the_fit_is_judged_on_the_converged_design() {
+    let tight = CasingFit {
+        b3: 0.0189,
+        leakage: Some(CasingLeakage {
+            seal_clearance: 0.000_05,
+            ..leakage()
+        }),
+        ..sample()
+    };
+    let first = design_with_options(&input(), &with(tight.clone())).unwrap();
+    assert!(first.b2.si < 0.0189);
+    let options = DesignOptions {
+        phi: Some(first.selection.phi),
+        ..with(tight)
+    };
+    let again = design_with_options(&input(), &options).unwrap();
+    assert!((again.b2.si - first.b2.si).abs() < 1e-6);
+}
+
+#[test]
+fn an_impeller_that_does_not_fit_at_convergence_is_still_an_error() {
+    let narrow = CasingFit {
+        b3: 0.010,
+        leakage: Some(leakage()),
+        ..sample()
+    };
+    let error = design_with_options(&input(), &with(narrow))
+        .unwrap_err()
+        .to_string();
+    assert!(error.contains("no cabe"), "{error}");
+}
+
+#[test]
+fn a_shaft_seal_outside_the_rear_ring_or_over_the_holes_is_rejected() {
+    for value in [0.085, 0.045] {
+        let casing = CasingFit {
+            leakage: Some(CasingLeakage {
+                shaft_seal_diameter: Some(value),
+                ..leakage()
+            }),
+            ..roomy()
+        };
+        let error = design_with_options(&input(), &with(casing))
+            .unwrap_err()
+            .to_string();
+        assert!(
+            error.contains("casing.shaft_seal_diameter"),
+            "{value}: {error}"
+        );
+    }
+}
+
+/// Ojo tan pequeño que la garganta de entrada adelanta la subida del NPSH3.
+fn early_rise(throat_area: Option<f64>) -> hm_design::DesignResult {
+    let options = with(CasingFit {
+        eye_diameter_max: 0.05,
+        throat_area,
+        ..sample()
+    });
+    design_with_options(&input(), &options).unwrap()
+}
+
+#[test]
+fn without_a_throat_the_early_rise_warning_hides_qc() {
+    let result = early_rise(None);
+    let warning = result
+        .diagnostics
+        .iter()
+        .find(|diagnostic| diagnostic.code == "HM-DES-025")
+        .unwrap();
+    assert!(!warning.message.contains("Qc"), "{}", warning.message);
+    assert!(warning.message.contains("QSF"), "{}", warning.message);
+    let hint = warning.hint.as_deref().unwrap();
+    assert!(!hint.contains("agranda"), "{hint}");
+}
+
+#[test]
+fn with_a_throat_the_early_rise_warning_shows_qc_but_cannot_widen_it() {
+    let result = early_rise(Some(0.005));
+    let warning = result
+        .diagnostics
+        .iter()
+        .find(|diagnostic| diagnostic.code == "HM-DES-025")
+        .unwrap();
+    assert!(warning.message.contains("Qc"), "{}", warning.message);
+    let hint = warning.hint.as_deref().unwrap();
+    assert!(!hint.contains("agranda"), "{hint}");
+    assert!(hint.contains("Sube β1B"), "{hint}");
+}
+
+#[test]
+fn without_a_casing_the_early_rise_warning_keeps_qc_and_the_advice() {
+    let options = DesignOptions {
+        cm0: Some(14.0),
+        ..DesignOptions::default()
+    };
+    let result = design_with_options(&input(), &options).unwrap();
+    let warning = result
+        .diagnostics
+        .iter()
+        .find(|diagnostic| diagnostic.code == "HM-DES-025")
+        .unwrap();
+    assert!(warning.message.contains("Qc"), "{}", warning.message);
+    let hint = warning.hint.as_deref().unwrap();
+    assert!(hint.contains("agranda"), "{hint}");
+}
+
+#[test]
+fn a_narrow_throat_is_not_blamed_on_the_inlet() {
+    let options = with(CasingFit {
+        throat_area: Some(0.0012),
+        ..sample()
+    });
+    let result = design_with_options(&input(), &options).unwrap();
+    let pressure_side = 0.5 * (result.shockless_flow.si + result.throat_flow.si);
+    assert!(result.volute_matching_flow.si < pressure_side);
+    let warning = result
+        .diagnostics
+        .iter()
+        .find(|diagnostic| diagnostic.code == "HM-DES-025")
+        .unwrap();
+    let hint = warning.hint.as_deref().unwrap();
+    assert!(hint.contains("garganta"), "{hint}");
+    assert!(!hint.contains("Sube"), "{hint}");
+}
+
+#[test]
+fn holes_inside_the_hub_are_blamed_on_the_holes_not_on_the_shaft_seal() {
+    let casing = CasingFit {
+        leakage: Some(CasingLeakage {
+            balance_hole_circle: 0.040,
+            shaft_seal_diameter: Some(0.032),
+            ..leakage()
+        }),
+        ..roomy()
+    };
+    let error = design_with_options(&input(), &with(casing))
+        .unwrap_err()
+        .to_string();
+    assert!(error.contains("casing.balance_hole_circle"), "{error}");
+    assert!(!error.contains("shaft_seal_diameter"), "{error}");
+}
+
+#[test]
+fn a_bad_shaft_seal_names_the_limit_it_crosses() {
+    for (value, rear, limit) in [
+        (0.122, 0.130, "neck_diameter"),
+        (0.085, 0.080, "rear_seal_diameter"),
+        (0.045, 0.080, "agujeros"),
+    ] {
+        let casing = CasingFit {
+            leakage: Some(CasingLeakage {
+                rear_seal_diameter: rear,
+                shaft_seal_diameter: Some(value),
+                ..leakage()
+            }),
+            ..roomy()
+        };
+        let error = design_with_options(&input(), &with(casing))
+            .unwrap_err()
+            .to_string();
+        assert!(error.contains("casing.shaft_seal_diameter"), "{error}");
+        assert!(error.contains(limit), "{value}: {error}");
+        for other in ["neck_diameter", "rear_seal_diameter", "agujeros"] {
+            assert!(other == limit || !error.contains(other), "{value}: {error}");
+        }
+    }
+}
+
+#[test]
+fn a_capped_eye_is_not_asked_to_grow() {
+    let result = early_rise(Some(0.005));
+    assert!(result.eye_limited_from.is_some());
+    let hint = hint_of(&result, "HM-DES-025");
+    assert!(hint.contains("tope del ojo"), "{hint}");
+    assert!(!hint.contains("área de entrada"), "{hint}");
+}
+
+#[test]
+fn an_inlet_that_is_free_can_still_be_enlarged() {
+    let options = DesignOptions {
+        cm0: Some(14.0),
+        ..with(sample())
+    };
+    let result = design_with_options(&input(), &options).unwrap();
+    assert!(result.eye_limited_from.is_none());
+    let hint = hint_of(&result, "HM-DES-025");
+    assert!(hint.contains("Sube β1B o el área de entrada"), "{hint}");
+}
+
+#[test]
+fn when_throat_and_inlet_both_fall_short_the_hint_says_both() {
+    let result = early_rise(Some(0.0012));
+    let low = 0.95 * input().q.si;
+    assert!(result.volute_matching_flow.si < low);
+    assert!(0.5 * (result.shockless_flow.si + result.throat_flow.si) < low);
+    let hint = hint_of(&result, "HM-DES-025");
+    assert!(hint.contains("garganta de la carcasa"), "{hint}");
+    assert!(hint.contains("Sube β1B"), "{hint}");
+}
+
+fn drive_note(rear: f64, neck: f64) -> (hm_design::DesignResult, String) {
+    let result = design_with_options(&input(), &with(oversized(rear, neck))).unwrap();
+    let note = hint_of(&result, "HM-DES-032");
+    (result, note)
+}
+
+#[test]
+fn only_the_rear_ring_without_drive_zeroes_qe_not_eta_v() {
+    let (result, note) = drive_note(0.080, 0.200);
+    assert!(result.eta_v < 1.0);
+    assert!(note.contains("QE = 0"), "{note}");
+    assert!(!note.contains("Qsp = 0"), "{note}");
+    assert!(!note.contains("ηv = 1"), "{note}");
+    assert!(note.contains("otro anillo"), "{note}");
+}
+
+#[test]
+fn both_rings_without_drive_keep_the_method_eta_v() {
+    let (_, note) = drive_note(0.080, 0.090);
+    assert!(note.contains("Qsp = QE = 0"), "{note}");
+    assert!(!note.contains("cuenta como cero"), "{note}");
+    assert!(!note.contains("ηv = 1"), "{note}");
+    assert!(note.contains("estadístico"), "{note}");
+}
+
+/// Cubo que tapa más de la cuarta parte del ojo.
+fn big_hub() -> CasingFit {
+    CasingFit {
+        hub_diameter: 0.040,
+        ..sample()
+    }
+}
+
+fn hub_warning(options: &DesignOptions) -> Option<String> {
+    let result = design_with_options(&input(), options).unwrap();
+    let mech = mechanics(&input(), &result, DEFAULT_SHAFT_SHEAR_STRESS).unwrap();
+    mechanics_diagnostics(&mech, &result)
+        .iter()
+        .find(|diagnostic| diagnostic.code == "HM-DES-027")
+        .map(|diagnostic| {
+            format!(
+                "{} {}",
+                diagnostic.message,
+                diagnostic.hint.clone().unwrap_or_default()
+            )
+        })
+}
+
+#[test]
+fn a_locked_copy_of_the_casing_eye_keeps_the_hub_discounted() {
+    let auto = design_with_options(&input(), &with(big_hub())).unwrap();
+    assert!(auto.eye_excludes_hub);
+    let options = DesignOptions {
+        c0: Some(auto.selection.c0),
+        cm0: Some(auto.selection.cm0),
+        j: Some(auto.selection.j),
+        ..with(big_hub())
+    };
+    let locked = design_with_options(&input(), &options).unwrap();
+    assert!(locked.eye_excludes_hub);
+    assert_eq!(hub_warning(&options), None);
+}
+
+#[test]
+fn an_eye_that_ignores_the_casing_hub_is_warned_as_the_casing_hub() {
+    let options = DesignOptions {
+        c0: Some(9.0),
+        ..with(big_hub())
+    };
+    let warning = hub_warning(&options).unwrap();
+    assert!(warning.contains("cubo de la carcasa"), "{warning}");
+    assert!(warning.contains("dh = 40.0 mm"), "{warning}");
+    assert!(!warning.contains("eje mínimo"), "{warning}");
+}
+
+#[test]
+fn only_the_front_ring_without_drive_zeroes_qsp_not_eta_v() {
+    let (result, note) = drive_note(0.200, 0.090);
+    assert!(result.eta_v < 1.0);
+    assert!(note.contains("delantero"), "{note}");
+    assert!(!note.contains("trasero"), "{note}");
+    assert!(note.contains("Qsp = 0"), "{note}");
+    assert!(!note.contains("QE = 0"), "{note}");
+    assert!(!note.contains("ηv = 1"), "{note}");
+}
+
+#[test]
+fn without_leakage_data_the_contrast_still_says_eta_v_one() {
+    let plain = CasingFit {
+        leakage: None,
+        ..oversized(0.080, 0.090)
+    };
+    let result = design_with_options(&input(), &with(plain)).unwrap();
+    let note = hint_of(&result, "HM-DES-032");
+    assert!(note.contains("fuga de contraste"), "{note}");
+    assert!(note.contains("Qsp = 0, ηv = 1"), "{note}");
+    assert!(note.contains("El ηv del método no cambia."), "{note}");
+}
+
+#[test]
+fn without_a_casing_a_fixed_eye_never_counts_as_excluding_the_hub() {
+    let options = DesignOptions {
+        c0: Some(6.0),
+        j: Some(1.3),
+        ..DesignOptions::default()
+    };
+    let result = design_with_options(&input(), &options).unwrap();
+    assert!(!result.eye_excludes_hub);
+}
+
+fn at(q: &str, h: &str, n: &str) -> DesignInput {
+    let value = |text: &str| parse_quantity(text).unwrap();
+    DesignInput {
+        q: value(q),
+        h: value(h),
+        n: value(n),
+        ..input()
+    }
+}
+
+#[test]
+fn a_wide_throat_that_does_not_limit_hides_qc_and_shows_what_does() {
+    let result = early_rise(Some(0.03));
+    assert_eq!(result.volute_matching_ratio(input().q.si), None);
+    let note = hint_of(&result, "HM-DES-025");
+    assert!(!note.contains("Qc ="), "{note}");
+    assert!(note.contains("QPS ="), "{note}");
+}
+
+#[test]
+fn a_blade_count_given_by_hand_is_named_when_the_head_is_out_of_reach() {
+    let options = DesignOptions {
+        blade_count: Some(3),
+        ..with(sample())
+    };
+    let tall = at("120 m3/h", "62 m", "2900 rpm");
+    let error = design_with_options(&tall, &options)
+        .unwrap_err()
+        .to_string();
+    assert!(error.contains("sube Z"), "{error}");
+    assert!(design_with_options(&tall, &with(sample())).is_ok());
+}
+
+#[test]
+fn the_eye_limit_blames_the_limit_not_the_neck() {
+    let result = early_rise(None);
+    let note = hint_of(&result, "HM-DES-039");
+    assert!(note.contains("eye_diameter_max"), "{note}");
+    assert!(!note.contains("el cuello limita"), "{note}");
+    assert!(note.contains("Sube `eye_diameter_max`"), "{note}");
+}
+
+#[test]
+fn a_saved_blade_count_is_not_called_handmade() {
+    let options = DesignOptions {
+        blade_count: Some(9),
+        ..with(sample())
+    };
+    let result = design_with_options(&input(), &options).unwrap();
+    let note = hint_of(&result, "HM-DES-034");
+    assert!(!note.contains("a mano"), "{note}");
+}
+
+#[test]
+fn hints_never_ask_to_change_what_the_casing_fixes() {
+    let fast = at("190 m3/h", "185 m", "6000 rpm");
+    let note = hint_of(
+        &design_with_options(&fast, &with(sample())).unwrap(),
+        "HM-DES-002",
+    );
+    assert!(note.contains("solo depende de la velocidad"), "{note}");
+
+    let narrow = DesignOptions {
+        phi: Some(0.2),
+        ..with(sample())
+    };
+    let note = hint_of(
+        &design_with_options(&input(), &narrow).unwrap(),
+        "HM-DES-003",
+    );
+    assert!(note.contains("es el de la carcasa"), "{note}");
+
+    let forced = DesignOptions {
+        beta2_rad: Some(40.0_f64.to_radians()),
+        ..with(sample())
+    };
+    let note = hint_of(
+        &design_with_options(&input(), &forced).unwrap(),
+        "HM-DES-019",
+    );
+    assert!(note.contains("ajusta φ o Z"), "{note}");
+
+    let small = at("20 m3/h", "57 m", "2900 rpm");
+    let note = hint_of(
+        &design_with_options(&small, &with(sample())).unwrap(),
+        "HM-DES-034",
+    );
+    assert!(note.contains("revisa φ o el ojo"), "{note}");
+}
+
+#[test]
+fn a_reached_eye_limit_is_not_told_to_enlarge_the_inlet() {
+    let note = hint_of(&early_rise(None), "HM-DES-035");
+    assert!(!note.contains("área de entrada"), "{note}");
+    assert!(note.contains("tope del ojo"), "{note}");
+}
+
+#[test]
+fn the_throat_hint_says_the_outlet_still_moves_qc() {
+    let options = with(CasingFit {
+        throat_area: Some(0.0012),
+        ..sample()
+    });
+    let result = design_with_options(&input(), &options).unwrap();
+    let note = hint_of(&result, "HM-DES-025");
+    assert!(note.contains("salida del rodete"), "{note}");
+}
+
+fn mechanics_notes(casing: CasingFit) -> Vec<(String, String)> {
+    let result = design_with_options(&input(), &with(casing)).unwrap();
+    let mech = mechanics(&input(), &result, DEFAULT_SHAFT_SHEAR_STRESS).unwrap();
+    mechanics_diagnostics(&mech, &result)
+        .iter()
+        .map(|item| {
+            let hint = item.hint.clone().unwrap_or_default();
+            (item.code.to_string(), format!("{} {hint}", item.message))
+        })
+        .collect()
+}
+
+#[test]
+fn an_eye_too_wide_for_the_neck_also_points_at_locked_values() {
+    let notes = mechanics_notes(CasingFit {
+        neck_diameter: 0.077,
+        ..sample()
+    });
+    let note = &notes
+        .iter()
+        .find(|(code, _)| code == "HM-DES-041")
+        .unwrap()
+        .1;
+    assert!(note.contains("locked"), "{note}");
+}
+
+#[test]
+fn each_ring_is_compared_with_its_own_usual_clearance() {
+    let notes = mechanics_notes(CasingFit {
+        leakage: Some(CasingLeakage {
+            seal_clearance: 0.0005,
+            ..leakage()
+        }),
+        ..roomy()
+    });
+    let rings: Vec<_> = notes
+        .iter()
+        .filter(|(code, _)| code == "HM-DES-045")
+        .collect();
+    assert_eq!(rings.len(), 1, "{rings:?}");
+    assert!(rings[0].1.contains("trasero"), "{}", rings[0].1);
+}
+
+#[test]
+fn a_hole_too_big_for_the_gap_is_blamed_on_the_hole() {
+    let casing = CasingFit {
+        leakage: Some(CasingLeakage {
+            balance_hole_diameter: 0.030,
+            ..leakage()
+        }),
+        ..roomy()
+    };
+    let error = design_with_options(&input(), &with(casing))
+        .unwrap_err()
+        .to_string();
+    assert!(error.contains("casing.balance_hole_diameter"), "{error}");
+}
+
+#[test]
+fn an_eye_smaller_than_the_hub_is_rejected() {
+    let options = DesignOptions {
+        c0: Some(40.0),
+        j: Some(0.8),
+        ..with(sample())
+    };
+    let error = design_with_options(&input(), &options)
+        .unwrap_err()
+        .to_string();
+    assert!(error.contains("cubo"), "{error}");
+}
+
+#[test]
+fn a_blade_count_the_engine_searched_is_not_blamed() {
+    let tall = at("14 m3/h", "64 m", "2900 rpm");
+    let error = design_with_options(&tall, &with(sample()))
+        .unwrap_err()
+        .to_string();
+    assert!(error.contains("cambia H, n o la carcasa"), "{error}");
+    assert!(!error.contains("sube Z"), "{error}");
+}
+
+#[test]
+fn without_a_casing_the_eye_is_not_compared_with_the_hub() {
+    let options = DesignOptions {
+        c0: Some(40.0),
+        j: Some(0.8),
+        ..DesignOptions::default()
+    };
+    assert!(design_with_options(&input(), &options).is_ok());
 }

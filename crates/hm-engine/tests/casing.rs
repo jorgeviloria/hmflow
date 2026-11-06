@@ -614,3 +614,188 @@ fn a_negative_axial_thrust_reaches_the_report_and_the_seal_too() {
     assert!(mechanics.axial_thrust_low.value <= mechanics.axial_thrust_high.value);
     assert!((mechanics.shaft_seal_diameter.value - 0.028).abs() < 1e-12);
 }
+
+fn eye_locked(name: &str) -> Project {
+    let mut project = saved();
+    let locked = locked_value(&project, name);
+    project.params.insert(name.to_string(), locked);
+    project
+}
+
+#[test]
+fn reselecting_keeps_the_whole_eye_when_one_value_is_locked() {
+    for name in ["c0", "cm0", "J"] {
+        let project = eye_locked(name);
+        let before = project.params.clone();
+        let after = recalc(project, true).unwrap().project;
+        for other in ["c0", "cm0", "J"] {
+            assert_eq!(
+                format!("{:?}", after.params.get(other)),
+                format!("{:?}", before.get(other)),
+                "{name}: {other}"
+            );
+        }
+    }
+}
+
+#[test]
+fn a_locked_eye_is_not_reported_as_stale() {
+    for name in ["c0", "cm0", "J"] {
+        assert_eq!(
+            stale_warnings(&eye_locked(name)),
+            Vec::<String>::new(),
+            "{name}"
+        );
+    }
+}
+
+#[test]
+fn a_locked_eye_as_saved_passes_after_the_first_pass_too() {
+    // Con datos de fuga, la primera pasada usa el ηv estadístico: el ojo bloqueado
+    // no debe rechazarse por una diferencia que al converger desaparece.
+    let mut project = saved_with_leakage();
+    let locked = locked_value(&project, "c0");
+    project.params.insert("c0".to_string(), locked);
+    recalc(project, false).unwrap();
+}
+
+#[test]
+fn the_model_volute_is_not_saved_and_an_older_file_still_passes() {
+    let fresh = saved();
+    for name in ["a360", "d360", "r4"] {
+        assert!(!fresh.params.contains_key(name), "{name}");
+    }
+    assert!(!audit(&fresh).has_errors());
+
+    // Un archivo guardado antes los traía como `auto`: se acepta, y `recalc` los quita.
+    let mut older = saved();
+    older.params.insert(
+        "a360".to_string(),
+        Param::Auto {
+            formula: "design.volute_throat_area_ratio".to_string(),
+            value: Some("0.1 m2".to_string()),
+        },
+    );
+    assert!(!audit(&older).has_errors());
+    let recalculated = recalc(older, false).unwrap();
+    assert!(!recalculated.project.params.contains_key("a360"));
+}
+
+#[test]
+fn without_a_casing_the_model_volute_is_still_required() {
+    let mut free = saved();
+    free.casing = None;
+    let mut free = recalc(free, false).unwrap().project;
+    assert!(free.params.contains_key("a360"));
+    free.params.remove("a360");
+    assert!(
+        audit(&free)
+            .iter()
+            .any(|item| item.code == "HM-PROJ-017" && item.message.contains("a360"))
+    );
+}
+
+#[test]
+fn a_fixed_eye_does_not_make_the_blade_count_look_stale() {
+    // Ojo grande frente a D2: ahí el ojo mueve el deslizamiento, y con él Z. La
+    // comparación tiene que partir del ojo entero, no del único valor bloqueado.
+    let mut wide = project();
+    let casing = wide.casing.as_mut().unwrap();
+    casing.d2 = "160 mm".to_string();
+    casing.neck_diameter = "140 mm".to_string();
+    casing.eye_diameter_max = "120 mm".to_string();
+    casing.hub_diameter = "50 mm".to_string();
+    casing.cutwater_radius = "85 mm".to_string();
+    casing.b3 = "45 mm".to_string();
+    wide.operating.q = "480 m3/h".to_string();
+    wide.operating.h = "18 m".to_string();
+    let mut wide = recalc(wide, false).unwrap().project;
+    let locked = locked_value(&wide, "c0");
+    wide.params.insert("c0".to_string(), locked);
+    let stale: Vec<_> = audit(&wide)
+        .iter()
+        .filter(|item| item.code == "HM-DES-013")
+        .map(|item| item.message.clone())
+        .collect();
+    assert!(stale.is_empty(), "{stale:?}");
+}
+
+#[test]
+fn without_a_casing_the_locked_value_still_drives_the_comparison() {
+    let mut stale = 0;
+    for c0 in [1.5, 2.0, 2.5, 3.0, 3.5, 4.0] {
+        for (q, h) in [
+            ("480 m3/h", "18 m"),
+            ("300 m3/h", "12 m"),
+            ("120 m3/h", "45 m"),
+        ] {
+            let mut free = Project::new("demo", PumpType::EndSuction);
+            free.operating.q = q.to_string();
+            free.operating.h = h.to_string();
+            free.params.insert(
+                "c0".to_string(),
+                Param::Locked {
+                    value: format!("{c0} m/s"),
+                },
+            );
+            let Ok(done) = recalc(free, false) else {
+                continue;
+            };
+            stale += audit(&done.project)
+                .iter()
+                .filter(|item| item.code == "HM-DES-013")
+                .count();
+        }
+    }
+    assert_eq!(stale, 0);
+}
+
+#[test]
+fn holes_that_do_not_fit_are_a_casing_problem() {
+    let mut bad = project();
+    let casing = bad.casing.as_mut().unwrap();
+    casing.seal_clearance = "0.3 mm".to_string();
+    casing.seal_length = "15 mm".to_string();
+    casing.rear_seal_diameter = "80 mm".to_string();
+    casing.rear_seal_length = "15 mm".to_string();
+    casing.balance_hole_count = 6;
+    casing.balance_hole_diameter = "9 mm".to_string();
+    casing.balance_hole_circle = "300 mm".to_string();
+    let found = audit(&bad);
+    assert!(found.iter().any(|item| item.code == "HM-PROJ-030"));
+    assert!(found.iter().all(|item| item.code != "HM-PROJ-014"));
+}
+
+#[test]
+fn a_rotor_that_does_not_fit_points_at_the_casing_not_the_density() {
+    let mut tight = saved();
+    tight.params.insert(
+        "phi".to_string(),
+        Param::Locked {
+            value: "0.02".to_string(),
+        },
+    );
+    let found = audit(&tight);
+    let error = found
+        .iter()
+        .find(|item| item.code == "HM-PROJ-014")
+        .unwrap();
+    assert!(error.message.contains("no cabe"), "{}", error.message);
+    let hint = error.hint.as_deref().unwrap();
+    assert!(hint.contains("[casing]"), "{hint}");
+    assert!(!hint.contains("densidad"), "{hint}");
+}
+
+#[test]
+fn a_selection_that_cannot_be_checked_says_so() {
+    // b3 justo: al bajar H, el φ del motor pide un b2 que no cabe.
+    let mut narrow = project();
+    narrow.casing.as_mut().unwrap().b3 = "22 mm".to_string();
+    let mut low = recalc(narrow, false).unwrap().project;
+    low.operating.h = "22 m".to_string();
+    assert!(recalc(low.clone(), true).is_err());
+    let found = audit(&low);
+    let stale = found.iter().find(|item| item.code == "HM-DES-013").unwrap();
+    assert!(stale.message.contains("contrastar"), "{}", stale.message);
+    assert!(stale.hint.as_deref().unwrap().contains("--reselect"));
+}

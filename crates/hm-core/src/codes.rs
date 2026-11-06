@@ -312,7 +312,7 @@ pub const CODES: &[CodeInfo] = &[
     active(
         "HM-DES-032",
         Info,
-        "La altura a través del anillo delantero no empuja fuga.",
+        "La altura a través de un anillo de desgaste no empuja fuga.",
     ),
     active(
         "HM-DES-033",

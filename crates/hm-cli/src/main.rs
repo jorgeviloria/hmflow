@@ -524,20 +524,21 @@ fn run(cli: Cli) -> Result<ExitCode, Box<dyn std::error::Error>> {
                 result.volute.width.value(),
                 result.volute.inlet_velocity.value()
             );
-            match &result.casing {
-                // A360, D360 y R4 son de la voluta del modelo: no se imprimen.
-                Some(casing) => println!(
+            if let Some(model) = &result.model_volute {
+                println!(
+                    "  A360 = {:.6} m2   D360 = {:.4} m   R4 = {:.4} m",
+                    model.throat_area.value(),
+                    model.throat_diameter.value(),
+                    model.outer_radius.value()
+                );
+            }
+            if let Some(casing) = &result.casing {
+                println!(
                     "  Carcasa: {} canal(es), cuello {:.3} mm, agujero {:.3} mm",
                     casing.channels,
                     casing.neck_diameter * 1000.0,
                     casing.bore_diameter * 1000.0
-                ),
-                None => println!(
-                    "  A360 = {:.6} m2   D360 = {:.4} m   R4 = {:.4} m",
-                    result.volute.throat_area.value(),
-                    result.volute.throat_diameter.value(),
-                    result.volute.outer_radius.value()
-                ),
+                );
             }
             println!(
                 "  Pérdidas: hyd = {:.0} W   vol = {:.0} W   discos = {:.0} W   mech = {:.0} W",
@@ -547,8 +548,9 @@ fn run(cli: Cli) -> Result<ExitCode, Box<dyn std::error::Error>> {
                 result.p_mech_loss.value()
             );
             // Sin garganta de la carcasa, Qc no se calcula: no es un límite real.
-            let volute_limit = match &result.casing {
-                Some(casing) if casing.throat_area.is_none() => "sin dato".to_string(),
+            let volute_limit = match (&result.casing, result.volute_matching_ratio(input.q.si)) {
+                (Some(casing), None) if casing.throat_area.is_none() => "sin dato".to_string(),
+                (Some(_), None) => "no limita".to_string(),
                 _ => format!("{:.2}·Qd", result.volute_matching_flow.si / input.q.si),
             };
             println!(
@@ -598,20 +600,16 @@ fn run(cli: Cli) -> Result<ExitCode, Box<dyn std::error::Error>> {
                 shape.impeller.beta1b.to_degrees(),
                 shape.impeller.wrap_angle.to_degrees()
             );
-            if result.casing.is_some() {
-                // La tubuladura y el difusor son de la carcasa, no del modelo.
-                println!(
-                    "  Salida: lengua dz/d2 = {:.3}",
-                    2.0 * shape.outlet.cutwater_radius / result.d2.si
-                );
-            } else {
-                println!(
+            let cutwater = 2.0 * shape.outlet.cutwater_radius / result.d2.si;
+            match &shape.outlet.model {
+                Some(model) => println!(
                     "  Salida: lengua dz/d2 = {:.3}   DN {:.0}   difusor ≥ {:.3} m ({:.1} deg)",
-                    2.0 * shape.outlet.cutwater_radius / result.d2.si,
-                    shape.outlet.nominal_diameter * 1000.0,
-                    shape.outlet.min_length,
-                    shape.outlet.half_angle.to_degrees()
-                );
+                    cutwater,
+                    model.nominal_diameter * 1000.0,
+                    model.min_length,
+                    model.half_angle.to_degrees()
+                ),
+                None => println!("  Salida: lengua dz/d2 = {cutwater:.3}"),
             }
             let mech = match &analysis.mechanics {
                 Ok(mech) => mech,

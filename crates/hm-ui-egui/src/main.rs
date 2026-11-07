@@ -161,6 +161,7 @@ fn top_bar(ui: &mut egui::Ui, app: &mut App) {
     let mut save_file = save_requested(ui.ctx());
     let mut save_as = false;
     let mut export_file = export_requested(ui.ctx());
+    let mut export_geometry = false;
     egui::Panel::top("top").show(ui, |ui| {
         let menu = file_menu(ui);
         new_design |= menu.new_design;
@@ -168,6 +169,7 @@ fn top_bar(ui: &mut egui::Ui, app: &mut App) {
         save_file |= menu.save;
         save_as |= menu.save_as;
         export_file |= menu.export_report;
+        export_geometry |= menu.export_geometry;
         ui.horizontal(|ui| {
             ui.heading("HidroMac Flow");
             if let Some(name) = app.session.bar_label() {
@@ -198,6 +200,9 @@ fn top_bar(ui: &mut egui::Ui, app: &mut App) {
     }
     if export_file {
         choose_and_export(app);
+    }
+    if export_geometry {
+        choose_and_export_geometry(app);
     }
 }
 
@@ -255,9 +260,11 @@ struct MenuChoice {
     save: bool,
     save_as: bool,
     export_report: bool,
+    export_geometry: bool,
 }
 
-/// Archivo → Nuevo, Abrir…, Guardar, Guardar como… y Exportar informe….
+/// Archivo → Nuevo, Abrir…, Guardar, Guardar como…, Exportar informe… y
+/// Exportar geometría….
 fn file_menu(ui: &mut egui::Ui) -> MenuChoice {
     let mut choice = MenuChoice {
         new_design: false,
@@ -265,6 +272,7 @@ fn file_menu(ui: &mut egui::Ui) -> MenuChoice {
         save: false,
         save_as: false,
         export_report: false,
+        export_geometry: false,
     };
     egui::MenuBar::new().ui(ui, |ui| {
         ui.menu_button("Archivo", |ui| {
@@ -297,6 +305,10 @@ fn file_menu(ui: &mut egui::Ui) -> MenuChoice {
             if ui.add(export_button).clicked() {
                 ui.close();
                 choice.export_report = true;
+            }
+            if ui.button("Exportar geometría…").clicked() {
+                ui.close();
+                choice.export_geometry = true;
             }
         });
     });
@@ -396,7 +408,25 @@ fn choose_and_export(app: &mut App) {
         return;
     };
     // Si falla, el error ya está en `notice`.
-    let _ = app.session.export_to(&path, &json);
+    let _ = app.session.export_to(&path, &json, "json");
+}
+
+/// La vista en planta en CSV, la misma que dibuja el visor. Con errores de
+/// caja o de etapa no abre el diálogo ni escribe.
+fn choose_and_export_geometry(app: &mut App) {
+    let Ok(csv) = app.session.export_csv() else {
+        return;
+    };
+    let Some(path) = rfd::FileDialog::new()
+        .set_title("Exportar geometría")
+        .add_filter("CSV", &["csv"])
+        .set_file_name(app.session.project_name())
+        .save_file()
+    else {
+        return;
+    };
+    // Si falla, el error ya está en `notice`.
+    let _ = app.session.export_to(&path, &csv, "csv");
 }
 
 fn status(ui: &egui::Ui, app: &App) -> (&'static str, Color32) {

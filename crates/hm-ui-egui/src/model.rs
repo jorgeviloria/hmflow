@@ -1034,6 +1034,19 @@ pub fn export_report(
     Ok(format!("{json}\n"))
 }
 
+/// CSV de la vista en planta, con el mismo proyecto en memoria que al
+/// guardar: lo que daría `hmflow-cli geometry` con el `.hmf` guardado.
+pub fn export_geometry(
+    inputs: &Inputs,
+    basis: &Basis,
+    previous: Option<&Project>,
+    name: &str,
+) -> Result<String, String> {
+    let built = build_project(inputs, basis, previous, name)?;
+    let plan = hm_engine::plan(&built.project).map_err(|error| engine_failure(&error))?;
+    Ok(plan.to_csv())
+}
+
 fn field_failure(errors: &FieldErrors) -> String {
     if errors.is_empty() {
         return "hay errores en las cajas".to_string();
@@ -2392,5 +2405,42 @@ mod tests {
         let _ = std::fs::remove_file(&path);
         let from_file = report(&loaded, points).unwrap();
         assert_eq!(exported, serde_json::to_value(&from_file).unwrap());
+    }
+
+    /// El CSV es lo que dibuja el visor y lo que daría `hmflow-cli geometry`
+    /// con el `.hmf` guardado: las tres huellas son la misma.
+    #[test]
+    fn exported_geometry_is_what_the_viewer_draws() {
+        let inputs = Inputs {
+            q: "90 m3/h".into(),
+            ..Inputs::default()
+        };
+        let basis = Basis::default();
+        let csv = export_geometry(&inputs, &basis, None, "sin título").unwrap();
+
+        let outcome = crate::model::compute(&inputs, &basis).unwrap();
+        let viewer = hm_design::plan::plan_model(
+            &outcome.result,
+            outcome.geometry.as_ref().expect("geometría"),
+        )
+        .unwrap();
+        assert_eq!(csv, viewer.to_csv());
+
+        let built = build_project(&inputs, &basis, None, "sin título").unwrap();
+        let path = std::env::temp_dir().join(format!("hmflow-geometria-{}", std::process::id()));
+        built.project.save(&path).unwrap();
+        let loaded = Project::load(&path).unwrap();
+        let _ = std::fs::remove_file(&path);
+        assert_eq!(csv, hm_engine::plan(&loaded).unwrap().to_csv());
+    }
+
+    #[test]
+    fn geometry_with_a_bad_box_is_not_exported() {
+        let inputs = Inputs {
+            q: "mucho".into(),
+            ..Inputs::default()
+        };
+        let error = export_geometry(&inputs, &Basis::default(), None, "sin título").unwrap_err();
+        assert!(!error.is_empty());
     }
 }

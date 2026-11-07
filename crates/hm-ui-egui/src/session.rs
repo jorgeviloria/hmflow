@@ -10,8 +10,8 @@ use hm_core::Diagnostic;
 use hm_project::Project;
 
 use crate::model::{
-    Basis, CasingBoxes, Inputs, IntakeMode, build_project, export_report, open_file, open_loaded,
-    reselect_project,
+    Basis, CasingBoxes, Inputs, IntakeMode, build_project, export_geometry, export_report,
+    open_file, open_loaded, reselect_project,
 };
 
 /// Orden del menú Archivo que puede tirar el trabajo en curso.
@@ -386,15 +386,29 @@ impl Session {
         exported
     }
 
-    /// Escribe el informe en `path`. Si falta, añade `.json`. Si falla, `notice`.
-    pub fn export_to(&mut self, path: &Path, json: &str) -> Result<(), String> {
+    /// El CSV de la vista en planta, antes de abrir el diálogo. Como
+    /// `export_json`: si no se puede armar, queda en `notice`, y desarma el
+    /// descarte.
+    pub fn export_csv(&mut self) -> Result<String, String> {
+        self.disarm();
+        let name = self.project_name();
+        let exported = export_geometry(&self.inputs, &self.basis, self.project.as_ref(), &name);
+        if let Err(message) = &exported {
+            self.notice = Some(message.clone());
+        }
+        exported
+    }
+
+    /// Escribe `text` en `path`. Si falta, añade `extension`. Si falla,
+    /// `notice`.
+    pub fn export_to(&mut self, path: &Path, text: &str, extension: &str) -> Result<(), String> {
         let chosen = path;
-        let path = with_extension(chosen, "json");
+        let path = with_extension(chosen, extension);
         if let Some(message) = unasked_collision(chosen, &path) {
             self.notice = Some(message.clone());
             return Err(message);
         }
-        if let Err(error) = std::fs::write(&path, json) {
+        if let Err(error) = std::fs::write(&path, text) {
             let message = error.to_string();
             self.notice = Some(message.clone());
             return Err(message);
@@ -1985,7 +1999,9 @@ mod tests {
         session.edited();
         session.notice = Some("aviso viejo".into());
 
-        session.export_to(&dir.join("informe"), "{}\n").unwrap();
+        session
+            .export_to(&dir.join("informe"), "{}\n", "json")
+            .unwrap();
 
         assert_eq!(
             std::fs::read_to_string(dir.join("informe.json")).unwrap(),
@@ -2002,8 +2018,8 @@ mod tests {
         let dir = scratch("export-extension");
         let mut session = Session::default();
 
-        session.export_to(&dir.join("a.JSON"), "a").unwrap();
-        session.export_to(&dir.join("b.hmf"), "b").unwrap();
+        session.export_to(&dir.join("a.JSON"), "a", "json").unwrap();
+        session.export_to(&dir.join("b.hmf"), "b", "json").unwrap();
 
         assert_eq!(
             dir_listing(&dir),
@@ -2018,7 +2034,9 @@ mod tests {
         std::fs::write(dir.join("bomba.json"), "mío").unwrap();
         let mut session = Session::default();
 
-        let error = session.export_to(&dir.join("bomba"), "nuevo").unwrap_err();
+        let error = session
+            .export_to(&dir.join("bomba"), "nuevo", "json")
+            .unwrap_err();
 
         assert!(error.contains("bomba.json"), "{error}");
         assert_eq!(session.notice, Some(error));
@@ -2029,7 +2047,9 @@ mod tests {
         assert_eq!(dir_listing(&dir), vec![dir.join("bomba.json")]);
 
         // El nombre exacto sí lo preguntó el diálogo.
-        session.export_to(&dir.join("bomba.json"), "nuevo").unwrap();
+        session
+            .export_to(&dir.join("bomba.json"), "nuevo", "json")
+            .unwrap();
         assert_eq!(
             std::fs::read_to_string(dir.join("bomba.json")).unwrap(),
             "nuevo"
@@ -2044,7 +2064,7 @@ mod tests {
         session.edited();
 
         let error = session
-            .export_to(&dir.join("no-existe").join("informe.json"), "x")
+            .export_to(&dir.join("no-existe").join("informe.json"), "x", "json")
             .unwrap_err();
 
         assert_eq!(session.notice, Some(error));
@@ -2081,5 +2101,37 @@ mod tests {
         session.export_json().unwrap_err();
 
         assert_eq!(session.request(Command::New), Gate::Armed);
+    }
+
+    #[test]
+    fn geometry_is_exported_with_the_csv_extension() {
+        let dir = scratch("export-csv");
+        let mut session = Session::default();
+        session.edited();
+        let csv = session.export_csv().unwrap();
+        assert!(csv.starts_with("\u{feff}# hmflow vista en planta"));
+
+        session.export_to(&dir.join("curvas"), &csv, "csv").unwrap();
+
+        assert_eq!(
+            std::fs::read_to_string(dir.join("curvas.csv")).unwrap(),
+            csv
+        );
+        assert_eq!(dir_listing(&dir), vec![dir.join("curvas.csv")]);
+        assert!(session.dirty);
+        assert_eq!(session.file, None);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_failed_geometry_export_says_why_and_disarms() {
+        let mut session = armed_session();
+        session.inputs.q = "mucho".into();
+
+        let error = session.export_csv().unwrap_err();
+
+        assert_eq!(session.notice.take(), Some(error));
+        assert_eq!(session.request(Command::New), Gate::Armed);
+        assert_eq!(session.inputs.q, "mucho");
     }
 }

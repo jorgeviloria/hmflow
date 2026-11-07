@@ -135,12 +135,17 @@ impl Session {
                 self.file = Some(path.to_path_buf());
                 self.project = Some(opened.project);
                 self.dirty = !opened.migrated.is_empty();
-                self.notice = (!opened.migrated.is_empty()).then(|| {
-                    format!(
-                        "Migrado al abrir, sin guardar: {}.",
-                        opened.migrated.join("; ")
-                    )
-                });
+                self.notice = match &opened.migration_failure {
+                    Some(reason) => Some(format!(
+                        "No se pudo migrar este método al abrir ({reason}). Pulsa «Reelegir con                          el motor»."
+                    )),
+                    None => (!opened.migrated.is_empty()).then(|| {
+                        format!(
+                            "Migrado al abrir, sin guardar: {}.",
+                            opened.migrated.join("; ")
+                        )
+                    }),
+                };
                 self.armed = None;
                 self.opened_diagnostics = Some(opened.diagnostics);
                 self.removed_casing = None;
@@ -1075,6 +1080,39 @@ mod tests {
         };
         session.edited();
         assert_eq!(session.notice.as_deref(), Some("no se pudo escribir"));
+    }
+
+    fn very_old_file(name: &str, phi: &str) -> (PathBuf, PathBuf) {
+        let dir = scratch(name);
+        let path = copy_fixture(&dir, "end_suction_v0.2.hmf");
+        let mut project = Project::load(&path).unwrap();
+        project.params.insert(
+            "phi".to_string(),
+            Param::Manual {
+                value: phi.to_string(),
+            },
+        );
+        project.save(&path).unwrap();
+        (dir, path)
+    }
+
+    #[test]
+    fn a_very_old_file_whose_migration_fails_still_opens() {
+        let (dir, path) = very_old_file("migrar-falla", "0.3");
+        let mut session = Session::default();
+        assert!(session.open_path(&path), "{:?}", session.notice);
+        let notice = session.notice.clone().unwrap();
+        assert!(notice.contains("No se pudo migrar"), "{notice}");
+        assert!(notice.contains("Reelegir"), "{notice}");
+        assert!(!session.dirty);
+
+        // La salida es la de siempre: reelegir migra y rehace la selección.
+        session.reselect().unwrap();
+        assert_eq!(
+            session.project.as_ref().unwrap().design.method,
+            hm_engine::METHOD
+        );
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]

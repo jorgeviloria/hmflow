@@ -663,6 +663,8 @@ pub struct OpenedFile {
     pub diagnostics: Vec<Diagnostic>,
     /// Lo que cambió al migrar en memoria. Vacío si no hizo falta.
     pub migrated: Vec<String>,
+    /// Por qué no se pudo migrar. El proyecto queda como estaba.
+    pub migration_failure: Option<String>,
 }
 
 /// Cajas a partir de un caso.
@@ -747,11 +749,19 @@ pub fn open_file(path: &Path) -> Result<OpenedFile, String> {
 /// calcular con el viejo mostraría algo que luego no se guarda. `migrated` lo dice
 /// antes de escribir nada.
 pub fn open_loaded(project: Project) -> Result<OpenedFile, String> {
+    let mut migration_failure = None;
     let (project, migrated) = if redefines_eta_m(&project.design.method) {
-        let recalculated =
-            hm_engine::recalc(project, false).map_err(|error| engine_failure(&error))?;
-        let migrated = migration_lines(&recalculated.changes);
-        (recalculated.project, migrated)
+        // Si no se puede migrar, se abre igual: antes abría, y reelegir es la salida.
+        match hm_engine::recalc(project.clone(), false) {
+            Ok(recalculated) => {
+                let migrated = migration_lines(&recalculated.changes);
+                (recalculated.project, migrated)
+            }
+            Err(error) => {
+                migration_failure = Some(engine_failure(&error));
+                (project, Vec::new())
+            }
+        }
     } else {
         (project, Vec::new())
     };
@@ -776,6 +786,7 @@ pub fn open_loaded(project: Project) -> Result<OpenedFile, String> {
         basis,
         diagnostics: opened.diagnostics.into_vec(),
         migrated,
+        migration_failure,
     })
 }
 

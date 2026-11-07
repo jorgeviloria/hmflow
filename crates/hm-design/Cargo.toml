@@ -9,6 +9,7 @@ authors.workspace = true
 [dependencies]
 hm-core = { path = "../hm-core" }
 hm-formula = { path = "../hm-formula" }
+hm-geometry = { path = "../hm-geometry" }
 hm-math = { path = "../hm-math" }
 hm-units = { path = "../hm-units" }
 serde = { workspace = true }

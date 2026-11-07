@@ -1481,6 +1481,7 @@ version = "0.0.1"
 dependencies = [
  "hm-core",
  "hm-formula",
+ "hm-geometry",
  "hm-math",
  "hm-units",
  "serde",
@@ -1509,6 +1510,10 @@ dependencies = [
  "thiserror 2.0.21",
  "toml",
 ]
+
+[[package]]
+name = "hm-geometry"
+version = "0.0.1"
 
 [[package]]
 name = "hm-math"

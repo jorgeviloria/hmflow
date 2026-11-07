@@ -246,6 +246,7 @@ version = "0.0.1"
 dependencies = [
  "hm-core",
  "hm-formula",
+ "hm-geometry",
  "hm-math",
  "hm-units",
  "serde",

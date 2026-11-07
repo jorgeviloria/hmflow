@@ -67,7 +67,7 @@ pub fn export_cylinder_stl(
     #[cfg(not(hm_occt))]
     {
         let _ = path;
-        return Err(CadError::Unavailable);
+        Err(CadError::Unavailable)
     }
 
     #[cfg(hm_occt)]

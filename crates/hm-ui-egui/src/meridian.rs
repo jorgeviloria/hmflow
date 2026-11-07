@@ -9,8 +9,8 @@ use egui_plot::{Legend, Plot, PlotPoint, Points};
 
 use crate::curves::line;
 use hm_design::meridian::{
-    AUTO_END_ANGLE, AUTO_START_ANGLE, ChannelStation, ControlPoint, MeridianEdits, MeridionalModel, Moved, Wall, meridional_model,
-    meridional_model_with,
+    AUTO_END_ANGLE, AUTO_START_ANGLE, ChannelStation, ControlPoint, MeridianEdits, MeridionalModel,
+    Moved, Wall, meridional_model, meridional_model_with,
 };
 use hm_project::{Meridian, MeridianWall};
 
@@ -351,7 +351,10 @@ fn edited_note(edits: &MeridianEdits) -> String {
         let edit = edits.wall(wall);
         for (present, point) in [
             (edit.p2.is_some(), "P2"),
-            (edit.start_angle.is_some() || edit.start_length.is_some(), "P1"),
+            (
+                edit.start_angle.is_some() || edit.start_length.is_some(),
+                "P1",
+            ),
             (edit.end_angle.is_some() || edit.end_length.is_some(), "P3"),
         ] {
             if present {
@@ -370,11 +373,14 @@ fn edited_note(edits: &MeridianEdits) -> String {
 /// álabes. No predicen rendimiento.
 fn channel_graphs(ui: &mut egui::Ui, model: &MeridionalModel, qth: f64) {
     let channel = model.channel();
-    let (area, velocity) = profiles(&channel, qth);
+    let (_, velocity) = profiles(&channel, qth);
+    let (area, reference) = area_against_length(&channel);
     ui.label(
         RichText::new(
-            "Sobre la línea media, m en mm desde el borde de ataque. A = 2π·r·b y cm = Qth/A, sin \
-             bloqueo de álabes: es geometría del corte, no una predicción de rendimiento.",
+            "Sobre la línea media. A = 2π·r·b frente a M/Mmax (fracción de la longitud de la línea media), \
+             con la recta de la entrada a la salida como referencia; cm = Qth/A con m en mm desde el \
+             borde de ataque. Sin bloqueo de álabes: es geometría del corte, no una predicción de \
+             rendimiento.",
         )
         .small()
         .weak(),
@@ -384,6 +390,11 @@ fn channel_graphs(ui: &mut egui::Ui, model: &MeridionalModel, qth: f64) {
             .legend(Legend::default())
             .show(&mut columns[0], |plot_ui| {
                 plot_ui.line(line("A, cm²", area, Color32::from_rgb(70, 150, 240)));
+                plot_ui.line(
+                    line("Recta entrada–salida", reference, Color32::GRAY)
+                        .width(1.0)
+                        .style(egui_plot::LineStyle::dashed_loose()),
+                );
             });
         Plot::new("channel_cm")
             .legend(Legend::default())
@@ -404,6 +415,24 @@ fn profiles(channel: &[ChannelStation], qth: f64) -> (Vec<[f64; 2]>, Vec<[f64; 2
         .map(|station| [station.m, station.cm(qth)])
         .collect();
     (area, velocity)
+}
+
+/// A(M/Mmax) en cm² y la recta de referencia de la entrada a la salida. Sin
+/// estaciones, o con una línea media de longitud nula, no hay gráfica.
+fn area_against_length(channel: &[ChannelStation]) -> (Vec<[f64; 2]>, Vec<[f64; 2]>) {
+    let (Some(first), Some(last)) = (channel.first(), channel.last()) else {
+        return (Vec::new(), Vec::new());
+    };
+    let total = last.m - first.m;
+    if total <= 0.0 {
+        return (Vec::new(), Vec::new());
+    }
+    let area = channel
+        .iter()
+        .map(|station| [(station.m - first.m) / total, station.area / 100.0])
+        .collect();
+    let reference = vec![[0.0, first.area / 100.0], [1.0, last.area / 100.0]];
+    (area, reference)
 }
 
 #[cfg(test)]
@@ -533,5 +562,24 @@ mod tests {
             assert!(text.contains("Gülich:"), "{text}");
         }
         assert!(text.contains(&model.fingerprint_text()));
+    }
+
+    #[test]
+    fn the_area_graph_runs_from_0_to_1_with_a_straight_reference() {
+        let station = |m: f64, area: f64| ChannelStation {
+            m,
+            r: 50.0,
+            width: 20.0,
+            area: area * 100.0,
+        };
+        let channel = [station(5.0, 40.0), station(25.0, 30.0), station(45.0, 20.0)];
+        let (area, reference) = area_against_length(&channel);
+        assert_eq!(area, [[0.0, 40.0], [0.5, 30.0], [1.0, 20.0]]);
+        assert_eq!(reference, [[0.0, 40.0], [1.0, 20.0]]);
+        assert_eq!(area_against_length(&[]), (Vec::new(), Vec::new()));
+        assert_eq!(
+            area_against_length(&[station(3.0, 1.0)]),
+            (Vec::new(), Vec::new())
+        );
     }
 }

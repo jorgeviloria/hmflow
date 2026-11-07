@@ -415,3 +415,28 @@ fn the_meridian_is_the_meridian_of_the_analysis() {
         "{error:?}"
     );
 }
+
+/// Los brazos de `[meridian]` llegan al corte, en mm, y uno que no cabe es un
+/// error que lo nombra.
+#[test]
+fn the_meridian_reads_the_edited_arms() {
+    let mut project = fixture("end_suction_v0.9.hmf");
+    let analysis = analyze(&case_from_project(&project).unwrap(), points()).unwrap();
+    project.meridian = Some(hm_project::Meridian {
+        front_radial_arm: "2 cm".to_string(),
+        ..hm_project::Meridian::default()
+    });
+    let edits = hm_design::meridian::MeridianEdits {
+        front_radial_arm: Some(20.0),
+        ..hm_design::meridian::MeridianEdits::default()
+    };
+    let expected = hm_design::meridian::meridional_model_with(&analysis.result, &edits).unwrap();
+    assert_eq!(hm_engine::meridian(&project).unwrap(), expected);
+
+    project.meridian = Some(hm_project::Meridian {
+        rear_axial_arm: "2 m".to_string(),
+        ..hm_project::Meridian::default()
+    });
+    let error = hm_engine::meridian(&project).unwrap_err().to_string();
+    assert!(error.contains("brazo axial de la tapa trasera"), "{error}");
+}

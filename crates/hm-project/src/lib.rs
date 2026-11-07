@@ -18,10 +18,11 @@ use thiserror::Error;
 /// - 1: proyecto, diseño, punto de operación y parámetros.
 /// - 2: añade `viscosity` en `[operating]` y la sección opcional `[suction]`.
 /// - 3: añade la sección opcional `[casing]`.
-pub const SCHEMA_VERSION: u32 = 3;
+/// - 4: añade la sección opcional `[meridian]`.
+pub const SCHEMA_VERSION: u32 = 4;
 
 /// Esquemas anteriores que se migran al cargar.
-pub const MIGRATABLE_SCHEMAS: &[u32] = &[1, 2];
+pub const MIGRATABLE_SCHEMAS: &[u32] = &[1, 2, 3];
 
 #[derive(Debug, Error)]
 pub enum ProjectError {
@@ -52,8 +53,45 @@ pub struct Project {
     /// Carcasa existente para la que se diseña el rodete (esquema 3).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub casing: Option<Casing>,
+    /// Brazos editados del corte meridional (esquema 4).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub meridian: Option<Meridian>,
     #[serde(default)]
     pub params: BTreeMap<String, Param>,
+}
+
+/// Brazos editados de las dos Bézier del corte meridional, con su unidad.
+/// Vacío es automático: el motor lo calcula. Cada punto de control solo se
+/// desliza por su recta, así que ninguna tangencia se rompe; si un brazo no
+/// cabe en el corte, lo dice el motor al trazarlo.
+#[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct Meridian {
+    /// Tapa delantera: del final de g1 hacia la esquina, sobre r = d1/2.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub front_axial_arm: String,
+    /// Tapa delantera: desde d2 hacia el eje, sobre el plano de salida.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub front_radial_arm: String,
+    /// Tapa trasera: del cubo hacia el disco, sobre r = d1i/2.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub rear_axial_arm: String,
+    /// Tapa trasera: desde la unión con el disco en d1/2 hacia el eje.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub rear_radial_arm: String,
+}
+
+impl Meridian {
+    /// Los cuatro brazos con su nombre en el archivo.
+    #[must_use]
+    pub fn arms(&self) -> [(&'static str, &str); 4] {
+        [
+            ("front_axial_arm", self.front_axial_arm.as_str()),
+            ("front_radial_arm", self.front_radial_arm.as_str()),
+            ("rear_axial_arm", self.rear_axial_arm.as_str()),
+            ("rear_radial_arm", self.rear_radial_arm.as_str()),
+        ]
+    }
 }
 
 /// Instalación de aspiración: NPSHa = (p − pv)/(ρg) + z − hf
@@ -308,13 +346,14 @@ impl Project {
             },
             suction: None,
             casing: None,
+            meridian: None,
             params: BTreeMap::new(),
         }
     }
 
     /// Lleva un proyecto de un esquema anterior al actual.
     ///
-    /// Los esquemas 2 y 3 solo añaden campos opcionales, así que basta con
+    /// Los esquemas 2, 3 y 4 solo añaden campos opcionales, así que basta con
     /// cambiar el número. Un esquema desconocido se deja como está y lo
     /// señala `validate` con `HM-PROJ-001`.
     fn migrated(mut self) -> Self {
@@ -445,6 +484,20 @@ impl Project {
 
         if let Some(casing) = &self.casing {
             check_casing(&mut diagnostics, casing);
+        }
+
+        if let Some(meridian) = &self.meridian {
+            for (name, text) in meridian.arms() {
+                if text.trim().is_empty() {
+                    continue;
+                }
+                if let Err(problem) = positive_value(text, "m") {
+                    diagnostics.push(
+                        Diagnostic::error("HM-PROJ-031", format!("[meridian] `{name}` {problem}"))
+                            .with_hint("Escribe una longitud positiva, como \"14 mm\", o déjalo vacío para el valor automático."),
+                    );
+                }
+            }
         }
 
         if let Some(suction) = &self.suction {
@@ -590,19 +643,30 @@ fn casing_problem(diagnostics: &mut Diagnostics, name: &str, problem: &str) {
 
 /// Valor en SI, positivo y finito, o el diagnóstico que nombra el campo.
 fn casing_value(diagnostics: &mut Diagnostics, name: &str, text: &str, unit: &str) -> Option<f64> {
-    let problem = match (parse_quantity(text), parse_unit(unit)) {
+    match positive_value(text, unit) {
+        Ok(value) => Some(value),
+        Err(problem) => {
+            casing_problem(diagnostics, name, &problem);
+            None
+        }
+    }
+}
+
+/// Valor en SI, positivo, finito y de la dimensión de `unit`, o el problema.
+fn positive_value(text: &str, unit: &str) -> Result<f64, String> {
+    match (parse_quantity(text), parse_unit(unit)) {
         (Ok(quantity), Ok(expected)) if quantity.dim() != expected.dim => {
-            format!("debe ser {unit}: {text}")
+            Err(format!("debe ser {unit}: {text}"))
         }
-        (Ok(quantity), Ok(_)) if !quantity.si.is_finite() => format!("debe ser finito: {text}"),
-        (Ok(quantity), Ok(_)) if quantity.si <= 0.0 => format!("debe ser positivo: {text}"),
-        (Ok(quantity), Ok(_)) => return Some(quantity.si),
+        (Ok(quantity), Ok(_)) if !quantity.si.is_finite() => {
+            Err(format!("debe ser finito: {text}"))
+        }
+        (Ok(quantity), Ok(_)) if quantity.si <= 0.0 => Err(format!("debe ser positivo: {text}")),
+        (Ok(quantity), Ok(_)) => Ok(quantity.si),
         (Err(error), _) | (_, Err(error)) => {
-            format!("no se puede interpretar ({error}): {text}")
+            Err(format!("no se puede interpretar ({error}): {text}"))
         }
-    };
-    casing_problem(diagnostics, name, &problem);
-    None
+    }
 }
 
 /// Los datos de fuga van todos o ninguno: con la mitad no hay cálculo posible.

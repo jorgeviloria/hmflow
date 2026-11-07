@@ -38,7 +38,7 @@ escrito sweep-mid.hmf
 # status
 0
 # file sweep-mid.hmf
-schema = 3
+schema = 4
 
 [project]
 name = "sweep-mid"

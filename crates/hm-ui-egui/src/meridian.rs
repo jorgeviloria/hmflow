@@ -5,7 +5,7 @@ use egui::{Color32, RichText};
 use egui_plot::{Legend, Plot};
 
 use crate::curves::line;
-use hm_design::meridian::{ChannelStation, MeridionalModel};
+use hm_design::meridian::{ChannelStation, MeridianEdits, MeridionalModel};
 
 use crate::model::Outcome;
 
@@ -21,9 +21,10 @@ fn meridian_color(name: &str) -> Color32 {
     }
 }
 
-pub(super) fn meridian_view(ui: &mut egui::Ui, outcome: &Outcome) {
+/// `edits`: los brazos de `[meridian]` del proyecto abierto.
+pub(super) fn meridian_view(ui: &mut egui::Ui, outcome: &Outcome, edits: &MeridianEdits) {
     // El visor no calcula: dibuja el mismo modelo que se exporta.
-    let model = match hm_design::meridian::meridional_model(&outcome.result) {
+    let model = match hm_design::meridian::meridional_model_with(&outcome.result, edits) {
         Ok(model) => model,
         Err(error) => {
             ui.label(format!("Sin meridiano: {error}."));
@@ -35,12 +36,13 @@ pub(super) fn meridian_view(ui: &mut egui::Ui, outcome: &Outcome) {
         RichText::new(format!(
             "Corte meridional, mm: z axial en el sentido del flujo (0 en el borde de ataque), r radial. \
              zE = {:.1}, RDs = {:.1}, g1 = {:.1}, d1i = {:.1}, anchura de entrada = {:.1}. \
-             Gülich §7.2.2.1. El álabe sigue siendo 2D hasta F4. Huella {}.",
+             Gülich §7.2.2.1.{} El álabe sigue siendo 2D hasta F4. Huella {}.",
             p.z_e,
             p.r_ds,
             p.g1,
             p.d1i,
             p.inlet_width,
+            edited_note(edits),
             model.fingerprint_text()
         ))
         .small()
@@ -58,6 +60,24 @@ pub(super) fn meridian_view(ui: &mut egui::Ui, outcome: &Outcome) {
             }
         });
     channel_graphs(ui, &model, outcome.result.qth.si);
+}
+
+/// Qué brazos vienen del archivo, para la cabecera.
+fn edited_note(edits: &MeridianEdits) -> String {
+    let names: Vec<&str> = [
+        (edits.front_axial_arm, "axial delantero"),
+        (edits.front_radial_arm, "radial delantero"),
+        (edits.rear_axial_arm, "axial trasero"),
+        (edits.rear_radial_arm, "radial trasero"),
+    ]
+    .into_iter()
+    .filter_map(|(arm, name)| arm.map(|_| name))
+    .collect();
+    if names.is_empty() {
+        String::new()
+    } else {
+        format!(" Brazos editados en [meridian]: {}.", names.join(", "))
+    }
 }
 
 /// A(m) y cm(m) sobre la línea media: geometría del corte, sin bloqueo de
@@ -148,5 +168,19 @@ mod tests {
         let (area, velocity) = profiles(std::slice::from_ref(&station), 0.01);
         assert_eq!(area, vec![[12.0, station.area / 100.0]]);
         assert_eq!(velocity, vec![[12.0, 0.01 / (station.area * 1e-6)]]);
+    }
+
+    #[test]
+    fn the_header_names_the_edited_arms() {
+        assert_eq!(edited_note(&MeridianEdits::default()), "");
+        let edits = MeridianEdits {
+            front_radial_arm: Some(20.0),
+            rear_axial_arm: Some(30.0),
+            ..MeridianEdits::default()
+        };
+        assert_eq!(
+            edited_note(&edits),
+            " Brazos editados en [meridian]: radial delantero, axial trasero."
+        );
     }
 }

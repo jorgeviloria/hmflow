@@ -2475,4 +2475,37 @@ mod tests {
         let built = build_project(&inputs, &basis, None, "sin título").unwrap();
         assert_eq!(csv, hm_engine::meridian(&built.project).unwrap().to_csv());
     }
+
+    /// Un proyecto con `[meridian]` conserva sus brazos al guardar, y la
+    /// pestaña y el CSV usan los mismos.
+    #[test]
+    fn edited_meridian_arms_survive_saving_and_reach_the_export() {
+        let inputs = Inputs::default();
+        let basis = Basis::default();
+        let mut project = build_project(&inputs, &basis, None, "sin título")
+            .unwrap()
+            .project;
+        project.meridian = Some(hm_project::Meridian {
+            front_radial_arm: "20 mm".into(),
+            ..hm_project::Meridian::default()
+        });
+
+        let saved = build_project(&inputs, &basis, Some(&project), "sin título").unwrap();
+        assert_eq!(saved.project.meridian, project.meridian);
+
+        let csv = export_meridian(&inputs, &basis, Some(&project), "sin título").unwrap();
+        let outcome = crate::model::compute(&inputs, &basis).unwrap();
+        let tab = hm_design::meridian::meridional_model_with(
+            &outcome.result,
+            &hm_engine::meridian_edits(&project),
+        )
+        .unwrap();
+        assert_eq!(csv, tab.to_csv());
+        assert_ne!(
+            csv,
+            hm_design::meridian::meridional_model(&outcome.result)
+                .unwrap()
+                .to_csv()
+        );
+    }
 }

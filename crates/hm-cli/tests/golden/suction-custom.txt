@@ -39,7 +39,7 @@ escrito suction-custom.hmf
 # status
 0
 # file suction-custom.hmf
-schema = 3
+schema = 4
 
 [project]
 name = "suction-custom"

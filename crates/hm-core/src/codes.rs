@@ -169,6 +169,11 @@ pub const CODES: &[CodeInfo] = &[
         Error,
         "Una cota de [casing] no se entiende, no es positiva o no encaja con las demás.",
     ),
+    active(
+        "HM-PROJ-031",
+        Error,
+        "Un brazo de [meridian] no se entiende o no es una longitud positiva.",
+    ),
     // Diseño
     active(
         "HM-DES-001",

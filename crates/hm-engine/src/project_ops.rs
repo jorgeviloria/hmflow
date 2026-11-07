@@ -1,7 +1,7 @@
 //! Crear un proyecto y pedir su informe, sin imprimir ni guardar.
 
 use hm_core::PumpType;
-use hm_design::meridian::{MeridionalModel, meridional_model};
+use hm_design::meridian::{MeridianEdits, MeridionalModel, meridional_model_with};
 use hm_design::plan::{PlanModel, plan_model};
 use hm_design::{DesignInput, DesignReport, LEGACY_METHODS, METHOD, design_with_options};
 use hm_formula::Registry;
@@ -301,10 +301,32 @@ pub fn plan(project: &Project) -> Result<PlanModel, EngineError> {
 /// lo mismo que el informe; solo necesita el diseño 1D.
 pub fn meridian(project: &Project) -> Result<MeridionalModel, EngineError> {
     let analysis = drawable(project)?;
-    meridional_model(&analysis.result).map_err(|source| EngineError::Stage {
+    let edits = meridian_edits(project);
+    meridional_model_with(&analysis.result, &edits).map_err(|source| EngineError::Stage {
         stage: Stage::Geometry,
         source,
     })
+}
+
+/// Los brazos de `[meridian]` en mm. Vacío o sin sección es automático. Un
+/// texto que no se entienda ya lo rechazó `validate` (HM-PROJ-031).
+#[must_use]
+pub fn meridian_edits(project: &Project) -> MeridianEdits {
+    let Some(section) = &project.meridian else {
+        return MeridianEdits::default();
+    };
+    let mm = |text: &str| {
+        (!text.trim().is_empty())
+            .then(|| hm_units::parse_quantity(text).ok())
+            .flatten()
+            .map(|quantity| quantity.si * 1000.0)
+    };
+    MeridianEdits {
+        front_axial_arm: mm(&section.front_axial_arm),
+        front_radial_arm: mm(&section.front_radial_arm),
+        rear_axial_arm: mm(&section.rear_axial_arm),
+        rear_radial_arm: mm(&section.rear_radial_arm),
+    }
 }
 
 /// Las comprobaciones del informe y el análisis, para dibujar.

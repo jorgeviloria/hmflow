@@ -41,6 +41,8 @@ pub use hm_core::PumpType;
 pub use hm_design::{
     DesignOptions, DesignReport, METHOD, PARAM_SPECS, PREFERRED_OPERATING_REGION, REPORT_FORMAT,
 };
-pub use project_ops::{lock_selection, meridian, new_casing_project, new_project, plan, report};
+pub use project_ops::{
+    lock_selection, meridian, meridian_edits, new_casing_project, new_project, plan, report,
+};
 pub use recalc::{Recalculated, recalc, redefines_eta_m, same_value};
 pub use validate::{design_input, validate_case};

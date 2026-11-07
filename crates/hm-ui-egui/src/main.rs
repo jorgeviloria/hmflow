@@ -63,6 +63,8 @@ struct App {
     capture: Option<Capture>,
     /// Pulsaron «Reelegir» en este fotograma.
     reselect_requested: bool,
+    /// Deshacer y rehacer de la pestaña Meridiano.
+    meridian_history: meridian::History,
 }
 
 /// `HMF_SCREENSHOT=ruta.ppm` (y opcionalmente `HMF_TAB=curves|geometry|meridian`)
@@ -93,6 +95,7 @@ impl App {
                 done: Default::default(),
             }),
             reselect_requested: false,
+            meridian_history: meridian::History::default(),
         };
         app.recompute();
         app
@@ -152,7 +155,12 @@ impl eframe::App for App {
                 Tab::Curves => curves(ui, outcome),
                 Tab::Geometry => plan_view(ui, outcome),
                 Tab::Meridian => {
-                    if meridian_view(ui, outcome, &mut self.session.inputs.meridian) {
+                    if meridian_view(
+                        ui,
+                        outcome,
+                        &mut self.session.inputs.meridian,
+                        &mut self.meridian_history,
+                    ) {
                         self.session.edited();
                     }
                 }

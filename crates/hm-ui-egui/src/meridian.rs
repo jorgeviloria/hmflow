@@ -37,9 +37,121 @@ const AREA_CIRCLES: usize = 24;
 /// Rango de RDs de Gülich, en veces b1 (ec. 7.2, p. 416).
 const RDS_RANGE: (f64, f64) = (0.6, 0.8);
 
+/// Pasos que se recuerdan para deshacer.
+const HISTORY_STEPS: usize = 200;
+
+/// Cambios seguidos a menos de esto (segundos) forman un solo paso: un
+/// arrastre o una cifra tras otra se deshacen de una vez.
+const HISTORY_GAP: f64 = 0.6;
+
+/// Deshacer y rehacer de lo editado en el meridiano. Guarda copias de
+/// `[meridian]`; si el archivo se abre o se cambia desde fuera, empieza de nuevo.
+#[derive(Debug, Default)]
+pub(super) struct History {
+    /// Lo que había al final del fotograma anterior.
+    last: Meridian,
+    undo: Vec<Meridian>,
+    redo: Vec<Meridian>,
+    /// Instante, en segundos, del último cambio.
+    last_change: f64,
+}
+
+impl History {
+    /// Lo editado cambió por otra vía que no es esta pestaña: se olvida lo anterior.
+    fn follow(&mut self, now: &Meridian) {
+        if *now != self.last {
+            self.last = now.clone();
+            self.undo.clear();
+            self.redo.clear();
+        }
+    }
+
+    /// Anota un cambio hecho en la pestaña, en el instante `time`.
+    fn record(&mut self, now: &Meridian, time: f64) {
+        if time - self.last_change > HISTORY_GAP || self.undo.is_empty() {
+            self.undo.push(self.last.clone());
+            if self.undo.len() > HISTORY_STEPS {
+                self.undo.remove(0);
+            }
+        }
+        self.redo.clear();
+        self.last_change = time;
+        self.last = now.clone();
+    }
+
+    fn can_undo(&self) -> bool {
+        !self.undo.is_empty()
+    }
+
+    fn can_redo(&self) -> bool {
+        !self.redo.is_empty()
+    }
+
+    /// Vuelve al paso anterior; `false` si no hay.
+    fn undo(&mut self, boxes: &mut Meridian) -> bool {
+        let Some(previous) = self.undo.pop() else {
+            return false;
+        };
+        self.redo.push(std::mem::replace(boxes, previous));
+        self.last = boxes.clone();
+        self.last_change = f64::NEG_INFINITY;
+        true
+    }
+
+    /// Rehace el paso deshecho; `false` si no hay.
+    fn redo(&mut self, boxes: &mut Meridian) -> bool {
+        let Some(next) = self.redo.pop() else {
+            return false;
+        };
+        self.undo.push(std::mem::replace(boxes, next));
+        self.last = boxes.clone();
+        self.last_change = f64::NEG_INFINITY;
+        true
+    }
+}
+
+/// La pestaña con deshacer y rehacer (botones y Cmd/Ctrl+Z, Mayús+Cmd+Z o
+/// Cmd+Y; los atajos no actúan mientras se escribe en una caja, que tiene el suyo).
+pub(super) fn meridian_view(
+    ui: &mut egui::Ui,
+    outcome: &Outcome,
+    boxes: &mut Meridian,
+    history: &mut History,
+) -> bool {
+    use egui::{Key, KeyboardShortcut, Modifiers};
+    history.follow(boxes);
+    let typing = ui.memory(|memory| memory.focused().is_some());
+    let (redo_keys, undo_key) = ui.input_mut(|input| {
+        let redo = !typing
+            && (input.consume_shortcut(&KeyboardShortcut::new(
+                Modifiers::COMMAND | Modifiers::SHIFT,
+                Key::Z,
+            )) || input.consume_shortcut(&KeyboardShortcut::new(Modifiers::COMMAND, Key::Y)));
+        let undo =
+            !typing && input.consume_shortcut(&KeyboardShortcut::new(Modifiers::COMMAND, Key::Z));
+        (redo, undo)
+    });
+    let mut changed = false;
+    ui.horizontal(|ui| {
+        let undo = ui.add_enabled(history.can_undo(), egui::Button::new("Deshacer"));
+        let redo = ui.add_enabled(history.can_redo(), egui::Button::new("Rehacer"));
+        if (undo.clicked() || undo_key) && history.undo(boxes) {
+            changed = true;
+        }
+        if (redo.clicked() || redo_keys) && history.redo(boxes) {
+            changed = true;
+        }
+    });
+    if meridian_edit(ui, outcome, boxes) {
+        history.record(boxes, ui.input(|input| input.time));
+        changed = true;
+    }
+    changed
+}
+
 /// Edita `[meridian]` en `boxes` con texto o arrastrando los puntos de
 /// control. Devuelve si cambió algo.
-pub(super) fn meridian_view(ui: &mut egui::Ui, outcome: &Outcome, boxes: &mut Meridian) -> bool {
+fn meridian_edit(ui: &mut egui::Ui, outcome: &Outcome, boxes: &mut Meridian) -> bool {
     let auto = meridional_model(&outcome.result);
     let mut changed = wall_boxes(ui, boxes, auto.as_ref().ok());
     let edits = hm_engine::meridian_edits_of(boxes);
@@ -768,5 +880,61 @@ mod tests {
                 .iter()
                 .all(|p| ((p[0] - 1.0).hypot(p[1] - 2.0) - 3.0).abs() < 1e-9)
         );
+    }
+
+    fn edits(start_angle: &str) -> Meridian {
+        Meridian {
+            shroud: MeridianWall {
+                start_angle_deg: start_angle.into(),
+                ..MeridianWall::default()
+            },
+            ..Meridian::default()
+        }
+    }
+
+    #[test]
+    fn a_burst_of_changes_is_one_undo_step_and_undo_and_redo_walk_it() {
+        let mut history = History::default();
+        let mut boxes = Meridian::default();
+        history.follow(&boxes);
+        // Un arrastre: tres cambios seguidos.
+        for (time, value) in [(1.0, "10"), (1.1, "20"), (1.2, "30")] {
+            boxes = edits(value);
+            history.record(&boxes, time);
+        }
+        // Otro, más tarde.
+        boxes = edits("45");
+        history.record(&boxes, 5.0);
+        assert_eq!(history.undo.len(), 2);
+
+        assert!(history.undo(&mut boxes));
+        assert_eq!(boxes, edits("30"));
+        assert!(history.undo(&mut boxes));
+        assert_eq!(boxes, Meridian::default());
+        assert!(!history.can_undo());
+        assert!(!history.undo(&mut boxes));
+
+        assert!(history.redo(&mut boxes));
+        assert_eq!(boxes, edits("30"));
+        assert!(history.redo(&mut boxes));
+        assert_eq!(boxes, edits("45"));
+        assert!(!history.can_redo());
+    }
+
+    #[test]
+    fn a_new_change_clears_redo_and_an_outside_change_starts_over() {
+        let mut history = History::default();
+        let mut boxes = edits("10");
+        history.record(&boxes, 1.0);
+        assert!(history.undo(&mut boxes));
+        assert!(history.can_redo());
+        boxes = edits("50");
+        history.record(&boxes, 9.0);
+        assert!(!history.can_redo());
+
+        // Se abre otro archivo: lo editado cambia sin pasar por la pestaña.
+        let opened = edits("-5");
+        history.follow(&opened);
+        assert!(!history.can_undo() && !history.can_redo());
     }
 }

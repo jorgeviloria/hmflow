@@ -20,10 +20,10 @@ use crate::model::Outcome;
 /// igual, en gris: no desaparece.
 fn meridian_color(name: &str) -> Color32 {
     match name {
-        "Tapa delantera" => Color32::from_rgb(240, 160, 50),
-        "Tapa trasera" => Color32::from_rgb(70, 150, 240),
-        "Borde de ataque" => Color32::from_rgb(220, 70, 70),
-        "Borde de salida" => Color32::from_rgb(80, 170, 90),
+        "Tapa delantera" => Color32::from_rgb(0, 128, 0),
+        "Tapa trasera" => Color32::from_rgb(30, 30, 255),
+        "Borde de ataque" => Color32::from_rgb(20, 20, 20),
+        "Borde de salida" => Color32::from_rgb(70, 70, 70),
         _ => Color32::GRAY,
     }
 }
@@ -105,24 +105,28 @@ pub(super) fn meridian_view(ui: &mut egui::Ui, outcome: &Outcome, boxes: &mut Me
                     line(
                         "Puntos de control",
                         model.params.wall(wall).points.to_vec(),
-                        Color32::DARK_GRAY,
+                        meridian_color(wall.name()).gamma_multiply(0.6),
                     )
                     .width(1.0)
                     .style(egui_plot::LineStyle::dashed_dense()),
                 );
             }
-            plot_ui.points(
-                Points::new(
-                    "Puntos de control",
-                    model
-                        .handles()
-                        .iter()
-                        .map(|handle| handle.at)
-                        .collect::<Vec<_>>(),
-                )
-                .radius(5.0)
-                .color(Color32::DARK_GRAY),
-            );
+            for wall in Wall::ALL {
+                let colour = meridian_color(wall.name());
+                plot_ui.points(
+                    Points::new(
+                        "Puntos de control",
+                        model
+                            .handles()
+                            .iter()
+                            .filter(|handle| handle.control.wall == wall)
+                            .map(|handle| handle.at)
+                            .collect::<Vec<_>>(),
+                    )
+                    .radius(5.0)
+                    .color(colour),
+                );
+            }
             // La curvatura máxima de cada tapa: donde está su radio mínimo.
             for wall in Wall::ALL {
                 let shape = model.params.wall(wall);

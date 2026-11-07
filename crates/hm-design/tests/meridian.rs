@@ -589,3 +589,24 @@ fn the_leading_edge_ends_are_draggable_along_their_curves() {
             .is_some()
     );
 }
+
+/// El perfil de curvatura va de 0 a 1 en M/Mmax y su máximo en valor absoluto
+/// es la inversa del radio mínimo de la cabecera.
+#[test]
+fn the_curvature_profile_spans_the_wall_and_peaks_at_the_minimum_radius() {
+    let (_, model) = model();
+    for wall in Wall::ALL {
+        let shape = model.params.wall(wall);
+        let profile = shape.curvature_profile(400).unwrap();
+        assert_eq!(profile.first().unwrap()[0], 0.0);
+        assert!((profile.last().unwrap()[0] - 1.0).abs() < 1e-12);
+        assert!(profile.windows(2).all(|pair| pair[1][0] >= pair[0][0]));
+        let peak = profile.iter().map(|row| row[1].abs()).fold(0.0, f64::max);
+        assert!(
+            (1.0 / peak - shape.min_radius).abs() < 1e-6 * shape.min_radius,
+            "{wall:?}: {} frente a {}",
+            1.0 / peak,
+            shape.min_radius
+        );
+    }
+}

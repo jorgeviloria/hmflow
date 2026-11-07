@@ -296,7 +296,8 @@ fn meridian_edit(ui: &mut egui::Ui, outcome: &Outcome, boxes: &mut Meridian) -> 
     let graphs = egui::collapsing_header::CollapsingState::load_with_default_open(
         ui.ctx(),
         graphs_id,
-        false,
+        // Solo para las capturas: `HMF_GRAPHS=1` las abre.
+        std::env::var_os("HMF_GRAPHS").is_some(),
     );
     let graphs_height = if graphs.is_open() {
         (ui.available_height() * 0.35).max(140.0)
@@ -351,6 +352,9 @@ fn section_bounds(model: &MeridionalModel) -> Option<([f64; 2], [f64; 2])> {
         [max[0] + margin[0], max[1] + margin[1]],
     ))
 }
+
+/// Puntos por tapa de la gráfica de curvatura.
+const CURVATURE_SAMPLES: usize = 200;
 
 /// Una línea de una sola frase con lo esencial del corte.
 fn summary(model: &MeridionalModel, edits: &MeridianEdits) -> String {
@@ -857,12 +861,13 @@ fn channel_graphs(ui: &mut egui::Ui, model: &MeridionalModel, qth: f64) {
             "Sobre la línea media. A = 2π·r·b frente a M/Mmax (fracción de la longitud de la línea media), \
              con la recta de la entrada a la salida como referencia; cm = Qth/A con m en mm desde el \
              borde de ataque. Sin bloqueo de álabes: es geometría del corte, no una predicción de \
-             rendimiento.",
+             rendimiento. A la derecha, la curvatura κ (1/mm) de cada tapa frente a su M/Mmax, con el rombo \
+             rojo en su máximo.",
         )
         .small()
         .weak(),
     );
-    ui.columns(2, |columns| {
+    ui.columns(3, |columns| {
         Plot::new("channel_area")
             .legend(Legend::default())
             .show(&mut columns[0], |plot_ui| {
@@ -877,6 +882,31 @@ fn channel_graphs(ui: &mut egui::Ui, model: &MeridionalModel, qth: f64) {
             .legend(Legend::default())
             .show(&mut columns[1], |plot_ui| {
                 plot_ui.line(line("cm, m/s", velocity, Color32::from_rgb(240, 160, 50)));
+            });
+        Plot::new("wall_curvature")
+            .legend(Legend::default().position(egui_plot::Corner::RightTop))
+            .show(&mut columns[2], |plot_ui| {
+                for wall in Wall::ALL {
+                    let Ok(profile) = model.params.wall(wall).curvature_profile(CURVATURE_SAMPLES)
+                    else {
+                        continue;
+                    };
+                    let colour = meridian_color(wall.name());
+                    // La marca de curvatura máxima, la misma del corte.
+                    let peak = profile
+                        .iter()
+                        .copied()
+                        .max_by(|a, b| a[1].abs().total_cmp(&b[1].abs()));
+                    plot_ui.line(line(wall.name(), profile, colour));
+                    if let Some(peak) = peak {
+                        plot_ui.points(
+                            Points::new("Curvatura máxima", vec![peak])
+                                .shape(egui_plot::MarkerShape::Diamond)
+                                .radius(5.0)
+                                .color(RED),
+                        );
+                    }
+                }
             });
     });
 }

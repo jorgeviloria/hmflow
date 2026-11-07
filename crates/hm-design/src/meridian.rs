@@ -597,6 +597,35 @@ fn min_radius(points: &[[f64; 2]; 5]) -> Result<(f64, [f64; 2]), DesignError> {
     Ok((radius, [at.x, at.y]))
 }
 
+impl WallShape {
+    /// Curvatura con signo de la tapa frente a la fracción de su longitud
+    /// desarrollada (M/Mmax), como `[fracción, κ en 1/mm]`. Muestrea la Bézier
+    /// completa, con `samples` + 1 puntos.
+    pub fn curvature_profile(&self, samples: usize) -> Result<Vec<[f64; 2]>, DesignError> {
+        let curve = bezier(&self.points)?;
+        let samples = samples.max(2);
+        let mut length = 0.0;
+        let mut previous: Option<[f64; 2]> = None;
+        let mut rows = Vec::with_capacity(samples + 1);
+        for index in 0..=samples {
+            let t = index as f64 / samples as f64;
+            let at = curve.point_at(t).map_err(geometry_failed)?;
+            if let Some(last) = previous {
+                length += (at.x - last[0]).hypot(at.y - last[1]);
+            }
+            previous = Some([at.x, at.y]);
+            let curvature = curve.curvature_at(t).map_err(geometry_failed)?;
+            rows.push([length, curvature]);
+        }
+        if length > 0.0 {
+            for row in &mut rows {
+                row[0] /= length;
+            }
+        }
+        Ok(rows)
+    }
+}
+
 fn min_radius_sampled(points: &[[f64; 2]; 5], samples: usize) -> Result<f64, DesignError> {
     Ok(min_radius_with_t(points, samples)?.0)
 }

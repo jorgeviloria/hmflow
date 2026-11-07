@@ -392,7 +392,7 @@ version = 1
 validation = "pilot"
 module = "design"
 title = "Área de la garganta de la voluta por razón de deceleración c3q/c2"
-source = "Gülich 2020, ec. (T7.7.11), p. 507, y tabla 10.2, p. 729"
+source = "Gülich 2020, tabla 7.7, ec. (T7.7.11), p. 489, texto en p. 508, y tabla 10.2, p. 729"
 units = "m2"
 range = "0 .. 10"
 test = "crates/hm-formula/tests/end_suction.rs::volute_throat_area_ratio"
@@ -414,7 +414,7 @@ version = 1
 validation = "pilot"
 module = "design"
 title = "Diámetro de la garganta circular por conservación del momento cinético"
-source = "Gülich 2020, tabla 7.7, ec. (7.7.7), p. 505"
+source = "Gülich 2020, tabla 7.7, ec. (T7.7.7), p. 489, texto en p. 494"
 units = "m"
 range = "0 .. 5"
 test = "crates/hm-formula/tests/end_suction.rs::volute_momentum_throat_diameter"
@@ -932,7 +932,7 @@ eta_v = "1"
 value = "eta_v*A1*u1m/sqrt((A1/A1q)^2 - 1)"
 
 [formula.notes]
-assumptions = "QW = fq A1 u1m/√((A1/(zLa A1q))² − 1 + 1/tan α1) con α1 = 90°; A1q es el área de garganta total zLa·A1q. Sin espesor de álabe, zLa A1q = π d1 b1 sen β1B y QW coincide con QSF. Con espesor, el motor pasa zLa A1q = A1 sen β1B/τ1."
+assumptions = "QW = fq A1 u1m/(√((A1/(zLa A1q))² − 1) + 1/tan α1) con α1 = 90°; A1q es el área de garganta total zLa·A1q. Sin espesor de álabe, zLa A1q = π d1 b1 sen β1B y QW coincide con QSF. Con espesor, el motor pasa zLa A1q = A1 sen β1B/τ1."
 
 [[formula]]
 id = "design.volute_matching_flow"
@@ -1713,7 +1713,7 @@ d2 = "m"
 value = "RG*H - k^2*u2^2/(2*g)*(1 - dsp^2/d2^2)"
 
 [formula.notes]
-assumptions = "Hp = RG·H. El motor pasa RG = (1 − cu2/(2·u2)), limitado a 0,2..0,95 (ec. 3.7.1: 1 − cu2/(2·u2) para entrada sin prerrotación). La constante 0,75 era el valor de nq < 40 en la p. 111. La rotación del fluido en la cámara lateral baja la presión hasta el anillo en k²·u2²/2g·(1 − dsp²/d2²)."
+assumptions = "Hp = RG·H. El motor pasa RG = (1 − cu2/(2·u2)), limitado a 0,2..0,95 (forma cinemática de la tabla 9.2, ec. T9.2.2, p. 656; la ec. 3.7.1 da Hp = RG·H). La constante 0,75 era el valor de nq < 40 en la p. 111. La rotación del fluido en la cámara lateral baja la presión hasta el anillo en k²·u2²/2g·(1 − dsp²/d2²)."
 
 [[formula]]
 id = "design.seal_friction_coefficient"

@@ -1029,7 +1029,7 @@ const BETA2_SEARCH_DEG: (f64, f64) = (1.0, 89.0);
 /// recomendados. No es el de una bomba concreta.
 const BLADE_COUNT_START: u32 = 7;
 
-/// Z recomendado por Gülich 2020, p. 408: de 5 a 7 álabes con 10 < nq < 120.
+/// Z recomendado por Gülich 2020, p. 409: de 5 a 7 álabes con 10 < nq < 120.
 const BLADE_COUNT_RECOMMENDED: (u32, u32) = (5, 7);
 
 /// Z que solo se prueba si con 5..7 β2 no cabe en 15..45°: «8 o más no se
@@ -1194,8 +1194,9 @@ pub fn inlet_throat_ratio(q_la: f64, a1q_total: f64, c1m: f64, u1m: f64) -> f64 
 }
 
 /// Área total de garganta de la entrada, `zLa·A1q`, con el espesor de los
-/// álabes: `A1·sen β1B/τ1` (Gülich 2020, ec. 6.18). Con τ1 = 1 (sin espesor)
-/// es `A1·sen β1B` y QW coincide con QSF.
+/// álabes: `A1·sen β1B/τ1`. La ec. 6.18 de Gülich 2020 usa A1q; esta forma de
+/// estimarla es del motor. Con τ1 = 1 (sin espesor) es `A1·sen β1B` y QW
+/// coincide con QSF.
 pub fn inlet_throat_area(a1: f64, beta1b_rad: f64, tau1: f64) -> f64 {
     a1 * beta1b_rad.sin() / tau1
 }
@@ -2863,7 +2864,8 @@ pub const NPSH_LAMBDA_W: f64 = 0.2;
 /// (Gülich 2020, ec. (6.21), p. 343). Sin prerrotación, tan β1 ∝ Q.
 pub const NPSH_LAMBDA_W_EXPONENT: f64 = 0.57;
 
-/// Exponente de `NPSH3 ∝ Q^x` por encima del caudal de entrada sin choque.
+/// Exponente de `NPSH3 ∝ Q^x` por encima de Qsa, el caudal desde el que el NPSH3
+/// sube con fuerza (Gülich 2020, p. 343).
 /// Gülich 2020, ec. (6.22), p. 343, da x = 2..3; se toma 3, el extremo
 /// conservador.
 pub const NPSH_OVERLOAD_EXPONENT: f64 = 3.0;

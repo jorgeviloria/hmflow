@@ -9,7 +9,7 @@ version = 1
 validation = "pilot"
 module = "bench"
 title = "Velocidad media en una toma"
-source = "Continuidad; Gülich 2020, Tabla 2.2"
+source = "Continuidad: c = Q/A, con el diámetro interior de la toma"
 units = "m/s"
 range = "0 .. 100"
 test = "crates/hm-formula/tests/bench.rs::pipe_velocity"

@@ -10,7 +10,7 @@ use hm_core::Diagnostic;
 use hm_project::Project;
 
 use crate::model::{
-    Basis, CasingBoxes, Inputs, build_project, export_report, open_file, open_loaded,
+    Basis, CasingBoxes, Inputs, IntakeMode, build_project, export_report, open_file, open_loaded,
     reselect_project,
 };
 
@@ -187,7 +187,17 @@ impl Session {
         let reopened = open_loaded(reselected.project.clone()).inspect_err(|message| {
             self.notice = Some(message.clone());
         })?;
-        self.inputs = reopened.inputs;
+        // El archivo solo guarda el modo elegido: lo escrito en el otro se conserva.
+        let typed = std::mem::replace(&mut self.inputs, reopened.inputs);
+        match self.inputs.intake {
+            IntakeMode::Written => {
+                self.inputs.suction_pressure = typed.suction_pressure;
+                self.inputs.suction_height = typed.suction_height;
+                self.inputs.suction_losses = typed.suction_losses;
+                self.inputs.suction_vapor = typed.suction_vapor;
+            }
+            IntakeMode::Installation => self.inputs.npsha = typed.npsha,
+        }
         self.basis = reopened.basis;
         self.project = Some(reselected.project);
         self.opened_diagnostics = None;
@@ -964,6 +974,29 @@ mod tests {
         session.add_casing();
         assert!(session.take_open_selections());
         assert!(!session.take_open_selections());
+    }
+
+    #[test]
+    fn reselecting_keeps_what_is_written_in_the_hidden_boxes() {
+        let dir = scratch("reelegir-ocultas");
+        let path = dir.join("rodete.hmf");
+        let mut session = Session::default();
+        session.save_to(&path).unwrap();
+        let mut project = Project::load(&path).unwrap();
+        project.params.insert(
+            "beta2".to_string(),
+            Param::Manual {
+                value: "25 deg".to_string(),
+            },
+        );
+        project.save(&path).unwrap();
+        assert!(session.open_path(&path), "{:?}", session.notice);
+        session.inputs.suction_pressure = "2 bar".to_string();
+        session.inputs.suction_height = "3 m".to_string();
+        session.reselect().unwrap();
+        assert_eq!(session.inputs.suction_pressure, "2 bar");
+        assert_eq!(session.inputs.suction_height, "3 m");
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]

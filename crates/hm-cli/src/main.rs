@@ -29,6 +29,13 @@ struct Cli {
     command: Command,
 }
 
+/// Vista que exporta `geometry`.
+#[derive(Clone, Copy, clap::ValueEnum)]
+enum View {
+    Plan,
+    Meridian,
+}
+
 // Se construye una vez por ejecución: el tamaño de la variante `Design` no
 // importa y una caja solo complicaría el `match`.
 #[allow(clippy::large_enum_variant)]
@@ -87,6 +94,9 @@ enum Command {
     Geometry {
         /// Ruta del archivo .hmf.
         file: PathBuf,
+        /// Vista: `plan` (planta, x e y) o `meridian` (corte meridional, z y r).
+        #[arg(long, value_enum, default_value_t = View::Plan)]
+        view: View,
         /// Archivo CSV de salida; sin él, la salida estándar.
         #[arg(long)]
         out: Option<PathBuf>,
@@ -290,18 +300,30 @@ fn run(cli: Cli) -> Result<ExitCode, Box<dyn std::error::Error>> {
             Ok(ExitCode::SUCCESS)
         }
 
-        Command::Geometry { file, out, force } => {
+        Command::Geometry {
+            file,
+            view,
+            out,
+            force,
+        } => {
             let project = Project::load(&file)?;
-            let plan = match hm_engine::plan(&project) {
-                Ok(plan) => plan,
+            let drawn = match view {
+                View::Plan => {
+                    hm_engine::plan(&project).map(|plan| (plan.to_csv(), plan.fingerprint_text()))
+                }
+                View::Meridian => hm_engine::meridian(&project)
+                    .map(|section| (section.to_csv(), section.fingerprint_text())),
+            };
+            let (csv, fingerprint) = match drawn {
+                Ok(drawn) => drawn,
                 Err(EngineError::Invalid { diagnostics }) => {
                     print_diagnostics(diagnostics.iter());
                     return Err("el proyecto tiene errores; no hay geometría".into());
                 }
                 Err(error) => return Err(engine_text(error)),
             };
-            write_output(out.as_deref(), force, &plan.to_csv(), "geometría escrita")?;
-            eprintln!("huella {}", plan.fingerprint_text());
+            write_output(out.as_deref(), force, &csv, "geometría escrita")?;
+            eprintln!("huella {fingerprint}");
             Ok(ExitCode::SUCCESS)
         }
 

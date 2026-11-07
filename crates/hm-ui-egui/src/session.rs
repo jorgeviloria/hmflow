@@ -10,8 +10,8 @@ use hm_core::Diagnostic;
 use hm_project::Project;
 
 use crate::model::{
-    Basis, CasingBoxes, Inputs, IntakeMode, build_project, export_geometry, export_report,
-    open_file, open_loaded, reselect_project,
+    Basis, CasingBoxes, Inputs, IntakeMode, build_project, export_geometry, export_meridian,
+    export_report, open_file, open_loaded, reselect_project,
 };
 
 /// Orden del menú Archivo que puede tirar el trabajo en curso.
@@ -393,6 +393,17 @@ impl Session {
         self.disarm();
         let name = self.project_name();
         let exported = export_geometry(&self.inputs, &self.basis, self.project.as_ref(), &name);
+        if let Err(message) = &exported {
+            self.notice = Some(message.clone());
+        }
+        exported
+    }
+
+    /// El CSV del corte meridional, como `export_csv`.
+    pub fn export_meridian_csv(&mut self) -> Result<String, String> {
+        self.disarm();
+        let name = self.project_name();
+        let exported = export_meridian(&self.inputs, &self.basis, self.project.as_ref(), &name);
         if let Err(message) = &exported {
             self.notice = Some(message.clone());
         }
@@ -2133,5 +2144,23 @@ mod tests {
         assert_eq!(session.notice.take(), Some(error));
         assert_eq!(session.request(Command::New), Gate::Armed);
         assert_eq!(session.inputs.q, "mucho");
+    }
+
+    #[test]
+    fn a_failed_meridian_export_says_why_and_disarms() {
+        let mut session = armed_session();
+        session.inputs.q = "mucho".into();
+
+        let error = session.export_meridian_csv().unwrap_err();
+
+        assert_eq!(session.notice.take(), Some(error));
+        assert_eq!(session.request(Command::New), Gate::Armed);
+    }
+
+    #[test]
+    fn the_meridian_is_exported_as_csv() {
+        let mut session = Session::default();
+        let csv = session.export_meridian_csv().unwrap();
+        assert!(csv.starts_with("\u{feff}# hmflow meridiano"));
     }
 }

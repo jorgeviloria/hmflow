@@ -95,3 +95,17 @@ fn an_old_method_is_refused_and_writes_nothing() {
     assert!(!dir.join("curvas.csv").exists());
     std::fs::remove_dir_all(&dir).ok();
 }
+
+#[test]
+fn the_meridian_view_exports_the_section() {
+    let dir = temp_dir("meridiano");
+    let output = run(&dir, &["geometry", "rodete.hmf", "--view", "meridian"]);
+    assert!(output.status.success(), "{output:?}");
+    let model = hm_engine::meridian(&Project::load(&dir.join("rodete.hmf")).unwrap()).unwrap();
+    assert_eq!(String::from_utf8(output.stdout).unwrap(), model.to_csv());
+    assert!(String::from_utf8_lossy(&output.stderr).contains(&model.fingerprint_text()));
+
+    let output = run(&dir, &["geometry", "rodete.hmf", "--view", "alzado"]);
+    assert!(!output.status.success());
+    std::fs::remove_dir_all(&dir).ok();
+}

@@ -400,3 +400,18 @@ fn the_plan_refuses_what_the_report_refuses() {
         "{error:?}"
     );
 }
+
+/// El meridiano del proyecto es el del análisis, como la planta.
+#[test]
+fn the_meridian_is_the_meridian_of_the_analysis() {
+    let project = fixture("end_suction_v0.9.hmf");
+    let analysis = analyze(&case_from_project(&project).unwrap(), points()).unwrap();
+    let expected = hm_design::meridian::meridional_model(&analysis.result).unwrap();
+    assert_eq!(hm_engine::meridian(&project).unwrap(), expected);
+
+    let error = hm_engine::meridian(&fixture("end_suction_v0.8.hmf")).unwrap_err();
+    assert!(
+        matches!(error, EngineError::LegacyMethod { .. }),
+        "{error:?}"
+    );
+}

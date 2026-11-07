@@ -1047,6 +1047,19 @@ pub fn export_geometry(
     Ok(plan.to_csv())
 }
 
+/// CSV del corte meridional, con el mismo proyecto en memoria que al
+/// guardar: lo que daría `hmflow-cli geometry --view meridian`.
+pub fn export_meridian(
+    inputs: &Inputs,
+    basis: &Basis,
+    previous: Option<&Project>,
+    name: &str,
+) -> Result<String, String> {
+    let built = build_project(inputs, basis, previous, name)?;
+    let section = hm_engine::meridian(&built.project).map_err(|error| engine_failure(&error))?;
+    Ok(section.to_csv())
+}
+
 fn field_failure(errors: &FieldErrors) -> String {
     if errors.is_empty() {
         return "hay errores en las cajas".to_string();
@@ -2442,5 +2455,24 @@ mod tests {
         };
         let error = export_geometry(&inputs, &Basis::default(), None, "sin título").unwrap_err();
         assert!(!error.is_empty());
+    }
+
+    /// El CSV del meridiano es lo que dibuja la pestaña y lo que daría
+    /// `hmflow-cli geometry --view meridian` con el `.hmf` guardado.
+    #[test]
+    fn exported_meridian_is_what_the_tab_draws() {
+        let inputs = Inputs {
+            q: "90 m3/h".into(),
+            ..Inputs::default()
+        };
+        let basis = Basis::default();
+        let csv = export_meridian(&inputs, &basis, None, "sin título").unwrap();
+
+        let outcome = crate::model::compute(&inputs, &basis).unwrap();
+        let tab = hm_design::meridian::meridional_model(&outcome.result).unwrap();
+        assert_eq!(csv, tab.to_csv());
+
+        let built = build_project(&inputs, &basis, None, "sin título").unwrap();
+        assert_eq!(csv, hm_engine::meridian(&built.project).unwrap().to_csv());
     }
 }

@@ -27,6 +27,7 @@ pub(super) fn top_bar(ui: &mut egui::Ui, app: &mut App) {
     let mut save_as = false;
     let mut export_file = export_requested(ui.ctx());
     let mut export_geometry = false;
+    let mut export_meridian = false;
     egui::Panel::top("top").show(ui, |ui| {
         let menu = file_menu(ui);
         new_design |= menu.new_design;
@@ -35,6 +36,7 @@ pub(super) fn top_bar(ui: &mut egui::Ui, app: &mut App) {
         save_as |= menu.save_as;
         export_file |= menu.export_report;
         export_geometry |= menu.export_geometry;
+        export_meridian |= menu.export_meridian;
         ui.horizontal(|ui| {
             ui.heading("HidroMac Flow");
             if let Some(name) = app.session.bar_label() {
@@ -68,6 +70,9 @@ pub(super) fn top_bar(ui: &mut egui::Ui, app: &mut App) {
     }
     if export_geometry {
         choose_and_export_geometry(app);
+    }
+    if export_meridian {
+        choose_and_export_meridian(app);
     }
 }
 
@@ -126,6 +131,7 @@ struct MenuChoice {
     save_as: bool,
     export_report: bool,
     export_geometry: bool,
+    export_meridian: bool,
 }
 
 /// Archivo → Nuevo, Abrir…, Guardar, Guardar como…, Exportar informe… y
@@ -138,6 +144,7 @@ fn file_menu(ui: &mut egui::Ui) -> MenuChoice {
         save_as: false,
         export_report: false,
         export_geometry: false,
+        export_meridian: false,
     };
     egui::MenuBar::new().ui(ui, |ui| {
         ui.menu_button("Archivo", |ui| {
@@ -174,6 +181,10 @@ fn file_menu(ui: &mut egui::Ui) -> MenuChoice {
             if ui.button("Exportar geometría…").clicked() {
                 ui.close();
                 choice.export_geometry = true;
+            }
+            if ui.button("Exportar meridiano…").clicked() {
+                ui.close();
+                choice.export_meridian = true;
             }
         });
     });
@@ -274,6 +285,23 @@ fn choose_and_export(app: &mut App) {
     };
     // Si falla, el error ya está en `notice`.
     let _ = app.session.export_to(&path, &json, "json");
+}
+
+/// El corte meridional en CSV, el mismo que dibuja la pestaña.
+fn choose_and_export_meridian(app: &mut App) {
+    let Ok(csv) = app.session.export_meridian_csv() else {
+        return;
+    };
+    let Some(path) = rfd::FileDialog::new()
+        .set_title("Exportar meridiano")
+        .add_filter("CSV", &["csv"])
+        .set_file_name(format!("{}-meridiano", app.session.project_name()))
+        .save_file()
+    else {
+        return;
+    };
+    // Si falla, el error ya está en `notice`.
+    let _ = app.session.export_to(&path, &csv, "csv");
 }
 
 /// La vista en planta en CSV, la misma que dibuja el visor. Con errores de

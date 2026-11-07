@@ -1,6 +1,7 @@
 //! Crear un proyecto y pedir su informe, sin imprimir ni guardar.
 
 use hm_core::PumpType;
+use hm_design::meridian::{MeridionalModel, meridional_model};
 use hm_design::plan::{PlanModel, plan_model};
 use hm_design::{DesignInput, DesignReport, LEGACY_METHODS, METHOD, design_with_options};
 use hm_formula::Registry;
@@ -280,13 +281,7 @@ pub fn report(project: &Project, curve_points: CurvePoints) -> Result<DesignRepo
 /// Rechaza lo mismo que el informe, pero de las etapas solo exige la
 /// geometría: es lo único que la planta necesita.
 pub fn plan(project: &Project) -> Result<PlanModel, EngineError> {
-    let diagnostics = project.validate(&Registry::all());
-    if diagnostics.has_errors() {
-        return Err(EngineError::Invalid { diagnostics });
-    }
-    ensure_reportable(project)?;
-    let case = case_from_project(project)?;
-    let analysis = analyze(&case, CurvePoints::MINIMUM)?;
+    let analysis = drawable(project)?;
     let geometry_failed = |source| EngineError::Stage {
         stage: Stage::Geometry,
         source,
@@ -300,6 +295,27 @@ pub fn plan(project: &Project) -> Result<PlanModel, EngineError> {
             "vista en planta: {error}"
         )))
     })
+}
+
+/// Corte meridional de un proyecto, el mismo que dibuja la pestaña. Rechaza
+/// lo mismo que el informe; solo necesita el diseño 1D.
+pub fn meridian(project: &Project) -> Result<MeridionalModel, EngineError> {
+    let analysis = drawable(project)?;
+    meridional_model(&analysis.result).map_err(|source| EngineError::Stage {
+        stage: Stage::Geometry,
+        source,
+    })
+}
+
+/// Las comprobaciones del informe y el análisis, para dibujar.
+fn drawable(project: &Project) -> Result<Analysis, EngineError> {
+    let diagnostics = project.validate(&Registry::all());
+    if diagnostics.has_errors() {
+        return Err(EngineError::Invalid { diagnostics });
+    }
+    ensure_reportable(project)?;
+    let case = case_from_project(project)?;
+    analyze(&case, CurvePoints::MINIMUM)
 }
 
 /// Tipo, método anterior y método desconocido. Un método vacío se admite.

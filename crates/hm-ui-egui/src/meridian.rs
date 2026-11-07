@@ -38,19 +38,21 @@ struct Dimensioning {
     references: Vec<Vec<[f64; 2]>>,
     /// Líneas de extensión y de cota con sus flechas.
     lines: Vec<Vec<[f64; 2]>>,
+    /// Puntas de flecha: triángulos cerrados, para rellenarlos.
+    arrows: Vec<[[f64; 2]; 3]>,
     texts: Vec<([f64; 2], String, egui::Align2)>,
 }
 
-/// Dos trazos que forman una flecha con la punta en `tip`, hacia `direction`
+/// El triángulo de una flecha cerrada con la punta en `tip`, hacia `direction`
 /// (vector unitario), de largo `length`.
-fn arrow_head(tip: [f64; 2], direction: [f64; 2], length: f64) -> Vec<[f64; 2]> {
+fn arrow_head(tip: [f64; 2], direction: [f64; 2], length: f64) -> [[f64; 2]; 3] {
     let normal = [-direction[1], direction[0]];
     let base = [
         tip[0] - direction[0] * length,
         tip[1] - direction[1] * length,
     ];
     let half = length * 0.35;
-    vec![
+    [
         [base[0] + normal[0] * half, base[1] + normal[1] * half],
         tip,
         [base[0] - normal[0] * half, base[1] - normal[1] * half],
@@ -89,8 +91,8 @@ fn dimensioning(model: &MeridionalModel, at: [f64; 2]) -> Dimensioning {
     out.lines.push(vec![[0.0, 0.0], [0.0, y - 0.3 * gap]]);
     out.lines.push(vec![[at[0], at[1]], [at[0], y - 0.3 * gap]]);
     out.lines.push(vec![[0.0, y], [at[0], y]]);
-    out.lines
-        .push(arrow_head([at[0], y], [toward(at[0]), 0.0], 0.4 * gap));
+    out.arrows
+        .push(arrow_head([at[0], y], [toward(at[0]), 0.0], 0.6 * gap));
     out.texts.push((
         [at[0] / 2.0, y],
         format!("{:.3}", at[0]),
@@ -100,8 +102,8 @@ fn dimensioning(model: &MeridionalModel, at: [f64; 2]) -> Dimensioning {
     let x = z_max + 2.0 * gap;
     out.lines.push(vec![[at[0], at[1]], [x + 0.3 * gap, at[1]]]);
     out.lines.push(vec![[x, 0.0], [x, at[1]]]);
-    out.lines
-        .push(arrow_head([x, at[1]], [0.0, toward(at[1])], 0.4 * gap));
+    out.arrows
+        .push(arrow_head([x, at[1]], [0.0, toward(at[1])], 0.6 * gap));
     out.texts.push((
         [x + 0.4 * gap, at[1] / 2.0],
         format!("{:.3}", at[1]),
@@ -340,6 +342,13 @@ fn meridian_edit(ui: &mut egui::Ui, outcome: &Outcome, boxes: &mut Meridian) -> 
             let grey = Color32::from_gray(90);
             for reference in dimensioning.references {
                 plot_ui.line(line("Referencias", reference, Color32::from_gray(190)).width(2.0));
+            }
+            for arrow in dimensioning.arrows {
+                plot_ui.polygon(
+                    egui_plot::Polygon::new("Cotas", arrow.to_vec())
+                        .fill_color(grey)
+                        .stroke(egui::Stroke::new(0.8, grey)),
+                );
             }
             for dimension_line in dimensioning.lines {
                 plot_ui.line(line("Cotas", dimension_line, grey).width(0.8));
@@ -1105,12 +1114,8 @@ mod tests {
             .unwrap();
         assert!(r_line[0][0] > p.hub.points[4][0]);
         // Las flechas tienen la punta en el extremo de la cota.
-        let tips: Vec<[f64; 2]> = d
-            .lines
-            .iter()
-            .filter(|l| l.len() == 3)
-            .map(|l| l[1])
-            .collect();
+        let tips: Vec<[f64; 2]> = d.arrows.iter().map(|triangle| triangle[1]).collect();
+        assert_eq!(tips.len(), 2);
         assert!(tips.contains(&[at[0], z_line[0][1]]));
         assert!(tips.contains(&[r_line[0][0], at[1]]));
     }

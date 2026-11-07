@@ -16,17 +16,34 @@ use hm_project::{Meridian, MeridianWall};
 
 use crate::model::Outcome;
 
-/// Color de cada curva del corte. Una curva sin color asignado se dibuja
-/// igual, en gris: no desaparece.
+/// Color de cada curva del corte, los de CFturbo: tapa delantera en verde,
+/// cubo en azul y los bordes en negro y gris oscuro. Una curva sin color
+/// asignado se dibuja igual, en gris: no desaparece.
 fn meridian_color(name: &str) -> Color32 {
     match name {
-        "Tapa delantera" => Color32::from_rgb(0, 128, 0),
-        "Tapa trasera" => Color32::from_rgb(30, 30, 255),
+        "Tapa delantera" => Color32::from_rgb(40, 130, 30),
+        "Tapa trasera" => Color32::from_rgb(25, 25, 235),
         "Borde de ataque" => Color32::from_rgb(20, 20, 20),
         "Borde de salida" => Color32::from_rgb(70, 70, 70),
         _ => Color32::GRAY,
     }
 }
+
+/// Grosor de cada curva del corte: las tapas más gruesas que los bordes.
+fn meridian_width(name: &str) -> f32 {
+    match name {
+        "Tapa delantera" | "Tapa trasera" => 2.6,
+        _ => 2.0,
+    }
+}
+
+/// El papel del dibujo y su rejilla, muy tenue como en CFturbo.
+const PAPER: Color32 = Color32::WHITE;
+const GRID: Color32 = Color32::from_gray(232);
+/// El rojo de CFturbo para círculos extremos, línea de centros y marcas.
+const RED: Color32 = Color32::from_rgb(225, 55, 55);
+/// El verde azulado de los extremos del borde de ataque.
+const TEAL: Color32 = Color32::from_rgb(0, 125, 135);
 
 /// Distancia en píxeles a la que un clic agarra un punto de control.
 const GRAB_PIXELS: f32 = 12.0;
@@ -259,155 +276,233 @@ fn meridian_edit(ui: &mut egui::Ui, outcome: &Outcome, boxes: &mut Meridian) -> 
             return changed;
         }
     };
-    ui.label(RichText::new(header(&model, &edits)).small().weak());
+    ui.label(RichText::new(summary(&model, &edits)).small());
+    egui::CollapsingHeader::new(RichText::new("Datos del corte").small())
+        .default_open(false)
+        .show(ui, |ui| {
+            ui.label(RichText::new(header(&model, &edits)).small().weak());
+        });
     let engine = (edits != MeridianEdits::default())
         .then_some(auto.ok())
         .flatten();
-    let graphs_height = (ui.available_height() * 0.35).max(140.0);
-    Plot::new("meridian")
-        .data_aspect(1.0)
-        .legend(Legend::default())
-        .allow_drag(false)
-        .height(ui.available_height() - graphs_height)
-        .show(ui, |plot_ui| {
-            if let Some(engine) = &engine {
-                for wall in Wall::ALL {
-                    if let Some(curve) = engine.curve(wall.name()) {
-                        plot_ui.line(
-                            line("Propuesta del motor", curve.points.clone(), Color32::GRAY)
-                                .width(1.0)
-                                .style(egui_plot::LineStyle::dashed_loose()),
-                        );
-                    }
-                }
-            }
-            for curve in &model.curves {
-                let color = meridian_color(&curve.name);
-                plot_ui.line(line(&curve.name, curve.points.clone(), color));
-            }
-            // El tope de P2: el rectángulo que forman P0 y P4.
-            for wall in Wall::ALL {
-                let (low, high) = model.params.wall(wall).p2_range;
-                plot_ui.line(
-                    line(
-                        "Tope de P2",
-                        vec![
-                            [low[0], low[1]],
-                            [high[0], low[1]],
-                            [high[0], high[1]],
-                            [low[0], high[1]],
-                            [low[0], low[1]],
-                        ],
-                        Color32::from_gray(90),
-                    )
-                    .width(1.0)
-                    .style(egui_plot::LineStyle::dotted_dense()),
-                );
-            }
-            // El polígono de control de cada tapa, P0 a P4.
-            for wall in Wall::ALL {
-                plot_ui.line(
-                    line(
-                        "Puntos de control",
-                        model.params.wall(wall).points.to_vec(),
-                        meridian_color(wall.name()).gamma_multiply(0.6),
-                    )
-                    .width(1.0)
-                    .style(egui_plot::LineStyle::dashed_dense()),
-                );
-            }
-            for wall in Wall::ALL {
-                let colour = meridian_color(wall.name());
-                plot_ui.points(
-                    Points::new(
-                        "Puntos de control",
-                        model
-                            .handles()
-                            .iter()
-                            .filter(|handle| handle.control.wall == wall)
-                            .map(|handle| handle.at)
-                            .collect::<Vec<_>>(),
-                    )
-                    .radius(5.0)
-                    .color(colour),
-                );
-            }
-            // La curvatura máxima de cada tapa: donde está su radio mínimo.
-            for wall in Wall::ALL {
-                let shape = model.params.wall(wall);
-                plot_ui.points(
-                    Points::new("Curvatura máxima", vec![shape.max_curvature_at])
-                        .radius(7.0)
-                        .shape(egui_plot::MarkerShape::Diamond)
-                        .color(Color32::from_rgb(220, 60, 60))
-                        .filled(false),
-                );
-            }
-            // Las cotas del punto seleccionado, con las líneas de referencia.
-            let selected = selected_control(plot_ui.ctx());
-            let at = model
-                .handles()
-                .iter()
-                .find(|handle| handle.control == selected)
-                .map_or([0.0, 0.0], |handle| handle.at);
-            let dimensioning = dimensioning(&model, at);
-            let grey = Color32::from_gray(90);
-            for reference in dimensioning.references {
-                plot_ui.line(line("Referencias", reference, Color32::from_gray(190)).width(2.0));
-            }
-            for arrow in dimensioning.arrows {
-                plot_ui.polygon(
-                    egui_plot::Polygon::new("Cotas", arrow.to_vec())
-                        .fill_color(grey)
-                        .stroke(egui::Stroke::new(0.8, grey)),
-                );
-            }
-            for dimension_line in dimensioning.lines {
-                plot_ui.line(line("Cotas", dimension_line, grey).width(0.8));
-            }
-            for (position, text, anchor) in dimensioning.texts {
-                plot_ui.text(
-                    egui_plot::Text::new(
-                        "Cotas",
-                        PlotPoint::new(position[0], position[1]),
-                        RichText::new(text).small(),
-                    )
-                    .anchor(anchor)
-                    .color(grey),
-                );
-            }
-            // Los círculos de área, como en CFturbo: la familia en gris, el de la
-            // entrada y el de la salida en rojo y la línea de sus centros.
-            let circles = area_circles(&model, AREA_CIRCLES);
-            let red = Color32::from_rgb(220, 60, 60);
-            for (index, (centre, radius)) in circles.iter().enumerate() {
-                let end = index == 0 || index + 1 == circles.len();
-                plot_ui.line(
-                    line(
-                        if end {
-                            "Círculos de entrada y salida"
-                        } else {
-                            "Círculos de área"
-                        },
-                        circle_points(*centre, *radius),
-                        if end { red } else { Color32::from_gray(150) },
-                    )
-                    .width(if end { 1.5 } else { 0.7 }),
-                );
-            }
-            plot_ui.line(
-                line(
-                    "Línea de centros",
-                    circles.iter().map(|(centre, _)| *centre).collect(),
-                    red,
-                )
-                .width(1.0)
-                .style(egui_plot::LineStyle::dashed_dense()),
-            );
-            changed |= drag_handles(plot_ui, &model, boxes);
-        });
-    channel_graphs(ui, &model, outcome.result.qth.si);
+    // Las gráficas del canal se pliegan para darle todo el alto al perfil.
+    let graphs_id = ui.make_persistent_id("meridian_channel_graphs");
+    let graphs = egui::collapsing_header::CollapsingState::load_with_default_open(
+        ui.ctx(),
+        graphs_id,
+        false,
+    );
+    let graphs_height = if graphs.is_open() {
+        (ui.available_height() * 0.35).max(140.0)
+    } else {
+        32.0
+    };
+    ui.scope(|ui| {
+        ui.visuals_mut().extreme_bg_color = PAPER;
+        Plot::new("meridian")
+            .data_aspect(1.0)
+            .grid_color(GRID)
+            .allow_drag(false)
+            .height(ui.available_height() - graphs_height)
+            .show(ui, |plot_ui| {
+                changed |= draw_section(plot_ui, &model, engine.as_ref(), boxes);
+            });
+    });
+    graphs
+        .show_header(ui, |ui| {
+            ui.label(RichText::new("Gráficas del canal: A frente a M/Mmax y cm").small());
+        })
+        .body(|ui| channel_graphs(ui, &model, outcome.result.qth.si));
     changed
+}
+
+/// Una línea de una sola frase con lo esencial del corte.
+fn summary(model: &MeridionalModel, edits: &MeridianEdits) -> String {
+    let p = &model.params;
+    format!(
+        "zE {:.1} · dH {:.1} · radio mínimo tapa {:.1}, cubo {:.1} · borde {:.1}° · área de entrada {:.0} mm².{}",
+        p.z_e,
+        p.d1i,
+        p.shroud.min_radius,
+        p.hub.min_radius,
+        p.edge_angle,
+        p.edge_area,
+        edited_note(edits)
+    )
+}
+
+/// Dibuja el corte con el aspecto de CFturbo y deja agarrar y arrastrar los
+/// puntos. Devuelve si cambió algo.
+fn draw_section(
+    plot_ui: &mut egui_plot::PlotUi<'_>,
+    model: &MeridionalModel,
+    engine: Option<&MeridionalModel>,
+    boxes: &mut Meridian,
+) -> bool {
+    // La propuesta del motor, debajo de todo.
+    if let Some(engine) = engine {
+        for wall in Wall::ALL {
+            if let Some(curve) = engine.curve(wall.name()) {
+                plot_ui.line(
+                    line("Propuesta del motor", curve.points.clone(), RED)
+                        .width(1.0)
+                        .style(egui_plot::LineStyle::dashed_loose()),
+                );
+            }
+        }
+    }
+    // Las referencias dS, dH, d2 y el eje, gruesas y claras, y las cotas.
+    let selected = selected_control(plot_ui.ctx());
+    let at = model.control_position(selected).unwrap_or([0.0, 0.0]);
+    let dimensioning = dimensioning(model, at);
+    let grey = Color32::from_gray(110);
+    for reference in dimensioning.references {
+        plot_ui.line(line("Referencias", reference, Color32::from_gray(205)).width(3.5));
+    }
+    // Los círculos de área: la familia en gris claro, el de la entrada y el de
+    // la salida en rojo, y la línea de sus centros.
+    let circles = area_circles(model, AREA_CIRCLES);
+    for (index, (centre, radius)) in circles.iter().enumerate() {
+        let end = index == 0 || index + 1 == circles.len();
+        plot_ui.line(
+            line(
+                "Círculos de área",
+                circle_points(*centre, *radius),
+                if end { RED } else { Color32::from_gray(185) },
+            )
+            .width(if end { 1.4 } else { 0.6 }),
+        );
+    }
+    plot_ui.line(
+        line(
+            "Línea de centros",
+            circles.iter().map(|(centre, _)| *centre).collect(),
+            RED,
+        )
+        .width(1.0)
+        .style(egui_plot::LineStyle::dashed_dense()),
+    );
+    // El polígono de control de cada tapa, P0 a P4, con el color de su tapa.
+    for wall in Wall::ALL {
+        plot_ui.line(
+            line(
+                "Polígono de control",
+                model.params.wall(wall).points.to_vec(),
+                meridian_color(wall.name()).gamma_multiply(0.55),
+            )
+            .width(1.0)
+            .style(egui_plot::LineStyle::dashed_dense()),
+        );
+    }
+    // El tope de P2: el rectángulo que forman P0 y P4.
+    for wall in Wall::ALL {
+        let (low, high) = model.params.wall(wall).p2_range;
+        plot_ui.line(
+            line(
+                "Tope de P2",
+                vec![
+                    [low[0], low[1]],
+                    [high[0], low[1]],
+                    [high[0], high[1]],
+                    [low[0], high[1]],
+                    [low[0], low[1]],
+                ],
+                Color32::from_gray(150),
+            )
+            .width(0.8)
+            .style(egui_plot::LineStyle::dotted_dense()),
+        );
+    }
+    // Las curvas del corte, por encima.
+    for curve in &model.curves {
+        plot_ui.line(
+            line(
+                &curve.name,
+                curve.points.clone(),
+                meridian_color(&curve.name),
+            )
+            .width(meridian_width(&curve.name)),
+        );
+    }
+    // Las cotas del punto seleccionado.
+    for arrow in dimensioning.arrows {
+        plot_ui.polygon(
+            egui_plot::Polygon::new("Cotas", arrow.to_vec())
+                .fill_color(grey)
+                .stroke(egui::Stroke::new(0.8, grey)),
+        );
+    }
+    for dimension_line in dimensioning.lines {
+        plot_ui.line(line("Cotas", dimension_line, grey).width(0.8));
+    }
+    for (position, text, anchor) in dimensioning.texts {
+        plot_ui.text(
+            egui_plot::Text::new(
+                "Cotas",
+                PlotPoint::new(position[0], position[1]),
+                RichText::new(text).small(),
+            )
+            .anchor(anchor)
+            .color(grey),
+        );
+    }
+    // Los puntos de control: extremos P0 y P4 en cuadrados grises con borde,
+    // los interiores y los del borde de ataque en círculos con borde.
+    for wall in Wall::ALL {
+        let colour = meridian_color(wall.name());
+        let ends = model.params.wall(wall).points;
+        let squares = vec![ends[0], ends[4]];
+        plot_ui.points(
+            Points::new("Extremos", squares.clone())
+                .shape(egui_plot::MarkerShape::Square)
+                .radius(5.5)
+                .color(Color32::from_gray(40)),
+        );
+        plot_ui.points(
+            Points::new("Extremos", squares)
+                .shape(egui_plot::MarkerShape::Square)
+                .radius(3.8)
+                .color(Color32::from_gray(150)),
+        );
+        let inner: Vec<[f64; 2]> = model
+            .handles()
+            .iter()
+            .filter(|handle| handle.control.wall == wall)
+            .map(|handle| handle.at)
+            .collect();
+        plot_ui.points(
+            Points::new("Puntos de control", inner.clone())
+                .radius(5.5)
+                .color(colour.gamma_multiply(0.4))
+                .filled(false),
+        );
+        plot_ui.points(
+            Points::new("Puntos de control", inner)
+                .radius(4.2)
+                .color(colour.gamma_multiply(0.55)),
+        );
+    }
+    let edge: Vec<[f64; 2]> = model.edge_handles().iter().map(|h| h.at).collect();
+    plot_ui.points(Points::new("Borde de ataque", edge).radius(4.5).color(TEAL));
+    // El punto seleccionado, con un aro.
+    plot_ui.points(
+        Points::new("Seleccionado", vec![at])
+            .radius(8.0)
+            .color(Color32::from_gray(30))
+            .filled(false),
+    );
+    // La curvatura máxima de cada tapa: donde está su radio mínimo.
+    for wall in Wall::ALL {
+        let shape = model.params.wall(wall);
+        plot_ui.points(
+            Points::new("Curvatura máxima", vec![shape.max_curvature_at])
+                .radius(7.0)
+                .shape(egui_plot::MarkerShape::Diamond)
+                .color(RED)
+                .filled(false),
+        );
+    }
+    drag_handles(plot_ui, model, boxes)
 }
 
 /// La cabecera: cotas, radios mínimos frente a RDs y lo editado.
@@ -574,6 +669,7 @@ fn drag_handles(
         let handles: Vec<(ControlPoint, [f32; 2])> = model
             .handles()
             .iter()
+            .chain(model.edge_handles().iter())
             .map(|handle| {
                 let at = plot_ui.screen_from_plot(PlotPoint::new(handle.at[0], handle.at[1]));
                 (handle.control, [at.x, at.y])
@@ -617,8 +713,19 @@ fn selected_control(ctx: &egui::Context) -> ControlPoint {
 
 /// Escribe en las cajas lo que dio el arrastre. Devuelve si cambió algo.
 fn write_moved(boxes: &mut Meridian, control: ControlPoint, moved: Moved) -> bool {
+    if let Moved::Fraction(fraction) = moved {
+        let target = match control.wall {
+            Wall::Shroud => &mut boxes.edge_shroud,
+            Wall::Hub => &mut boxes.edge_hub,
+        };
+        let text = format!("{fraction:.3}");
+        let changed = *target != text;
+        *target = text;
+        return changed;
+    }
     let texts = wall_mut(boxes, control.wall);
     let updates: Vec<(&mut String, String)> = match (moved, control.index) {
+        (Moved::Fraction(_), _) => return false,
         (Moved::Point([z, r]), _) => vec![
             (&mut texts.p2_z, length_text(z)),
             (&mut texts.p2_r, length_text(r)),
@@ -1183,5 +1290,29 @@ mod tests {
         assert!(texts.contains(&"eje, dH = 0.0"), "{texts:?}");
         assert!(!texts.iter().any(|t| t.starts_with("dH")), "{texts:?}");
         assert_eq!(d.references.len(), 3);
+    }
+
+    #[test]
+    fn dragging_a_leading_edge_end_writes_its_fraction_in_its_box() {
+        let mut boxes = Meridian::default();
+        let shroud = ControlPoint {
+            wall: Wall::Shroud,
+            index: 0,
+        };
+        let hub = ControlPoint {
+            wall: Wall::Hub,
+            index: 0,
+        };
+        assert!(write_moved(&mut boxes, shroud, Moved::Fraction(0.25)));
+        assert!(write_moved(&mut boxes, hub, Moved::Fraction(0.5)));
+        assert_eq!(
+            (boxes.edge_shroud.as_str(), boxes.edge_hub.as_str()),
+            ("0.250", "0.500")
+        );
+        // El mismo valor otra vez no cuenta como cambio.
+        assert!(!write_moved(&mut boxes, shroud, Moved::Fraction(0.25)));
+        // Lo escrito lo entiende el motor.
+        let edits = hm_engine::meridian_edits_of(&boxes);
+        assert_eq!((edits.edge_shroud, edits.edge_hub), (Some(0.25), Some(0.5)));
     }
 }

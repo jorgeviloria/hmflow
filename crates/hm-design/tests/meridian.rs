@@ -546,3 +546,46 @@ fn the_maximum_curvature_mark_is_on_the_wall_at_the_minimum_radius() {
         assert!((there.x - z).hypot(there.y - r) < 0.05, "{wall:?}");
     }
 }
+
+/// Los extremos del borde se agarran y arrastran sobre sus curvas: lo que se
+/// escribe es la fracción de longitud del punto de la curva más cercano.
+#[test]
+fn the_leading_edge_ends_are_draggable_along_their_curves() {
+    let edits = MeridianEdits {
+        edge_shroud: Some(0.25),
+        edge_hub: Some(0.5),
+        ..MeridianEdits::default()
+    };
+    let model = edited(&edits);
+    let handles = model.edge_handles();
+    assert_eq!(handles.len(), 2);
+    for (handle, wall) in handles.iter().zip(Wall::ALL) {
+        assert_eq!(handle.control, ControlPoint { wall, index: 0 });
+        assert_eq!(handle.at, model.params.edge_points[wall as usize]);
+        assert_eq!(model.control_position(handle.control), Some(handle.at));
+    }
+    // Llevar el puntero al propio extremo da su fracción, aunque se desvíe un poco.
+    for (handle, expected) in handles.iter().zip([0.25, 0.5]) {
+        let near = [handle.at[0] + 0.001, handle.at[1] - 0.001];
+        let Moved::Fraction(fraction) = model.moved(handle.control, near) else {
+            panic!("se esperaba una fracción");
+        };
+        assert!((fraction - expected).abs() < 0.01, "{fraction}");
+    }
+    // Más allá del final de la curva se recorta al tope.
+    let far = [1.0e4, 1.0e4];
+    assert_eq!(model.moved(handles[0].control, far), Moved::Fraction(0.9));
+    assert_eq!(
+        model.moved(handles[1].control, [-1.0e4, -1.0e4]),
+        Moved::Fraction(0.0)
+    );
+    // Un punto de Bézier sigue sin ser del borde.
+    assert!(
+        model
+            .control_position(ControlPoint {
+                wall: Wall::Hub,
+                index: 2
+            })
+            .is_some()
+    );
+}

@@ -211,11 +211,12 @@ pub struct MeridionalModel {
     pub params: MeridianParams,
 }
 
-/// Un punto de control movible: P1, P2 o P3 de una tapa.
+/// Un punto de control movible: P1, P2 o P3 de una tapa, o el extremo del
+/// borde de ataque sobre ella.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct ControlPoint {
     pub wall: Wall,
-    /// 1, 2 o 3.
+    /// 1, 2 o 3 para P1, P2 y P3; 0 para el extremo del borde de ataque.
     pub index: usize,
 }
 
@@ -226,6 +227,9 @@ pub enum Moved {
     Point([f64; 2]),
     /// P1 o P3: ángulo en grados y longitud en mm del brazo.
     Arm { angle: f64, length: f64 },
+    /// El extremo del borde de ataque: fracción de la longitud de la curva
+    /// desde el plano de entrada, dentro de [`EDGE_FRACTION_RANGE`].
+    Fraction(f64),
 }
 
 /// Un punto de control y, si es de un brazo, el brazo que lo une a su extremo.
@@ -326,6 +330,33 @@ impl MeridionalModel {
         handles
     }
 
+    /// Los dos extremos del borde de ataque, sobre la tapa y sobre el cubo.
+    #[must_use]
+    pub fn edge_handles(&self) -> Vec<Handle> {
+        Wall::ALL
+            .iter()
+            .zip(self.params.edge_points)
+            .map(|(wall, at)| Handle {
+                control: ControlPoint {
+                    wall: *wall,
+                    index: 0,
+                },
+                at,
+                line: None,
+            })
+            .collect()
+    }
+
+    /// Dónde está un punto de control, sea de una Bézier o del borde.
+    #[must_use]
+    pub fn control_position(&self, control: ControlPoint) -> Option<[f64; 2]> {
+        self.handles()
+            .into_iter()
+            .chain(self.edge_handles())
+            .find(|handle| handle.control == control)
+            .map(|handle| handle.at)
+    }
+
     /// Lo que se escribe si el punto de control se lleva a `pointer`: P2 va
     /// donde esté el puntero, recortado a su rectángulo; P1 y P3, al ángulo y
     /// la distancia del puntero a su extremo, recortados a [`ANGLE_RANGE`] y
@@ -333,6 +364,14 @@ impl MeridionalModel {
     #[must_use]
     pub fn moved(&self, control: ControlPoint, pointer: [f64; 2]) -> Moved {
         let shape = self.params.wall(control.wall);
+        if control.index == 0 {
+            let line = self
+                .curve(control.wall.name())
+                .map_or(&[][..], |curve| &curve.points[..]);
+            return Moved::Fraction(
+                arc_fraction(line, pointer).clamp(EDGE_FRACTION_RANGE.0, EDGE_FRACTION_RANGE.1),
+            );
+        }
         let (from, sign) = match control.index {
             1 => (shape.points[0], 1.0),
             3 => (shape.points[4], -1.0),
@@ -742,6 +781,32 @@ fn cumulative(line: &[[f64; 2]]) -> Vec<f64> {
         lengths.push(last + (pair[1][0] - pair[0][0]).hypot(pair[1][1] - pair[0][1]));
     }
     lengths
+}
+
+/// La fracción de la longitud de la polilínea a la que cae el punto de ella
+/// más cercano a `target`.
+fn arc_fraction(line: &[[f64; 2]], target: [f64; 2]) -> f64 {
+    if line.len() < 2 {
+        return 0.0;
+    }
+    let lengths = cumulative(line);
+    let total = lengths[lengths.len() - 1];
+    let mut best = (f64::INFINITY, 0.0);
+    for (index, pair) in line.windows(2).enumerate() {
+        let (a, b) = (pair[0], pair[1]);
+        let (dx, dy) = (b[0] - a[0], b[1] - a[1]);
+        let span = dx * dx + dy * dy;
+        let t = if span > 0.0 {
+            (((target[0] - a[0]) * dx + (target[1] - a[1]) * dy) / span).clamp(0.0, 1.0)
+        } else {
+            0.0
+        };
+        let distance = (a[0] + t * dx - target[0]).hypot(a[1] + t * dy - target[1]);
+        if distance < best.0 {
+            best = (distance, lengths[index] + t * span.sqrt());
+        }
+    }
+    if total > 0.0 { best.1 / total } else { 0.0 }
 }
 
 /// La polilínea desde la fracción `fraction` de su longitud: el punto exacto

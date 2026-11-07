@@ -377,10 +377,23 @@ impl MeridionalModel {
             3 => (shape.points[4], -1.0),
             _ => {
                 let (low, high) = shape.p2_range;
-                return Moved::Point([
-                    pointer[0].clamp(low[0], high[0]),
-                    pointer[1].clamp(low[1], high[1]),
-                ]);
+                // La interfaz escribe el punto con 0,01 mm: se ajusta a esa
+                // rejilla hacia dentro del rectángulo, para que el redondeo
+                // del texto no lo saque (41,646 → «41,65» sería inválido).
+                let inward = |axis: usize| {
+                    let (lo, hi) = (
+                        (low[axis] * 100.0).ceil() / 100.0,
+                        (high[axis] * 100.0).floor() / 100.0,
+                    );
+                    let value =
+                        (pointer[axis].clamp(low[axis], high[axis]) * 100.0).round() / 100.0;
+                    if lo <= hi {
+                        value.clamp(lo, hi)
+                    } else {
+                        pointer[axis].clamp(low[axis], high[axis])
+                    }
+                };
+                return Moved::Point([inward(0), inward(1)]);
             }
         };
         // P1 está a +brazo desde P0; P3, a −brazo desde P4 (se avanza hacia P4).

@@ -291,7 +291,11 @@ fn a_dragged_handle_gives_a_point_or_an_arm() {
     );
     assert_eq!(
         model.moved(control(Wall::Shroud, 2), [z_e + 50.0, p0[1] - 50.0]),
-        Moved::Point([z_e, p0[1]])
+        // Recortado al rectángulo y ajustado a 0,01 mm hacia dentro.
+        Moved::Point([
+            (z_e * 100.0).floor() / 100.0,
+            (p0[1] * 100.0).ceil() / 100.0
+        ])
     );
     // P1 a 45° y 10 mm de P0.
     let s = 10.0 / 2f64.sqrt();
@@ -608,5 +612,46 @@ fn the_curvature_profile_spans_the_wall_and_peaks_at_the_minimum_radius() {
             1.0 / peak,
             shape.min_radius
         );
+    }
+}
+
+/// Arrastrar P2 a cualquier sitio y escribirlo con 0,01 mm (como hace la
+/// interfaz) no debe sacarlo del rectángulo: antes 41,646 se escribía «41,65».
+#[test]
+fn a_dragged_p2_survives_rounding_to_hundredths_of_a_millimetre() {
+    let (_, model) = model();
+    for wall in [Wall::Hub, Wall::Shroud] {
+        let control = ControlPoint { wall, index: 2 };
+        for pointer in [
+            [1e4, -1e4],
+            [1e4, 1e4],
+            [-1e4, 1e4],
+            [-1e4, -1e4],
+            [30.123, 25.987],
+        ] {
+            let Moved::Point([z, r]) = model.moved(control, pointer) else {
+                panic!("P2 debe dar un punto");
+            };
+            let text = |v: f64| format!("{v:.2}").parse::<f64>().unwrap();
+            let mut edits = MeridianEdits::default();
+            let edit = WallEdit {
+                p2: Some([text(z), text(r)]),
+                ..WallEdit::default()
+            };
+            match wall {
+                Wall::Hub => edits.hub = edit,
+                Wall::Shroud => edits.shroud = edit,
+            }
+            let design = design(&input()).unwrap();
+            // Otras validaciones (p. ej. que las tapas se crucen) pueden
+            // saltar con un P2 extremo; aquí solo importa que el redondeo no
+            // lo saque del rectángulo.
+            if let Err(error) = meridional_model_with(&design, &edits) {
+                assert!(
+                    !error.to_string().contains("fuera del rectángulo"),
+                    "{wall:?} {pointer:?} → ({z}, {r}): {error}"
+                );
+            }
+        }
     }
 }

@@ -57,6 +57,9 @@ pub struct Session {
     shown_title: Option<String>,
     /// Las cajas de una carcasa quitada, por si se vuelve a marcar.
     removed_casing: Option<CasingBoxes>,
+    /// Hay que desplegar «Selecciones»: marcar la carcasa deja φ y β2 obsoletos, y
+    /// ahí está «Reelegir».
+    open_selections: bool,
 }
 
 impl Session {
@@ -209,6 +212,12 @@ impl Session {
             .take()
             .unwrap_or_else(CasingBoxes::blank);
         self.inputs.casing = Some(boxes);
+        self.open_selections = true;
+    }
+
+    /// Una sola vez: si no, el bloque no se podría plegar.
+    pub fn take_open_selections(&mut self) -> bool {
+        std::mem::take(&mut self.open_selections)
     }
 
     /// Desmarca la carcasa, si la confirmación lo deja. Devuelve si se quitó.
@@ -946,6 +955,15 @@ mod tests {
         assert!(notice.contains("phi: 0.0900 → "), "{notice}");
         assert!(session.dirty);
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn marking_the_casing_opens_the_selections_once() {
+        let mut session = Session::default();
+        assert!(!session.take_open_selections());
+        session.add_casing();
+        assert!(session.take_open_selections());
+        assert!(!session.take_open_selections());
     }
 
     #[test]

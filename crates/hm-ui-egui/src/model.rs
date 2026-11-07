@@ -524,6 +524,13 @@ pub fn compute(inputs: &Inputs, basis: &Basis) -> Result<Outcome, FieldErrors> {
     Ok(outcome)
 }
 
+/// Un error de una caja de selecciones: si el bloque está plegado, no se vería.
+pub fn selection_has_error(errors: &[(Field, String)]) -> bool {
+    errors
+        .iter()
+        .any(|(field, _)| matches!(field, Field::Selection(_)))
+}
+
 /// Lo que se dice si el fallo viene de selecciones guardadas.
 pub const RESELECT_HINT: &str = "Pulsa «Reelegir con el motor»: viene de selecciones guardadas.";
 
@@ -1538,6 +1545,18 @@ mod tests {
         let errors = super::compute(&Inputs::default(), &basis).unwrap_err();
         assert_eq!(errors[0].0, Field::EtaM, "{errors:?}");
         assert!(errors[0].1.contains("locked"), "{errors:?}");
+    }
+
+    #[test]
+    fn an_error_of_a_selection_box_asks_to_show_the_block() {
+        assert!(super::selection_has_error(&[(
+            Field::Selection("phi"),
+            "mal".to_string()
+        )]));
+        assert!(!super::selection_has_error(&[(
+            Field::Q,
+            "mal".to_string()
+        )]));
     }
 
     #[test]

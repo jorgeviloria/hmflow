@@ -639,6 +639,7 @@ fn casing_section(ui: &mut egui::Ui, app: &mut App, errors: &FieldErrors) -> boo
 /// Bloque de selecciones y medidas. Plegado si no hay nada que mostrar.
 fn selections_section(ui: &mut egui::Ui, app: &mut App, errors: &FieldErrors) -> bool {
     let key = app.session.view_key().map(std::path::Path::to_path_buf);
+    let force = app.session.take_open_selections() || model::selection_has_error(errors);
     let inputs = &mut app.session.inputs;
     let filled = SELECTION_BOXES.iter().any(|(name, _, _)| {
         inputs
@@ -653,6 +654,7 @@ fn selections_section(ui: &mut egui::Ui, app: &mut App, errors: &FieldErrors) ->
     egui::CollapsingHeader::new("Selecciones y medidas")
         .id_salt(("selections", key))
         .default_open(open)
+        .open(force.then_some(true))
         .show(ui, |ui| {
             for (name, label, hint) in SELECTION_BOXES {
                 if let Some(value) = inputs.selection_mut(name) {

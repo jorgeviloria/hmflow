@@ -329,7 +329,17 @@ impl MeridionalModel {
     pub fn channel(&self) -> Vec<ChannelStation> {
         // Solo el canal a partir del borde de ataque: las curvas siguen aguas
         // arriba de él.
-        self.channel_from(self.params.edge_shroud, self.params.edge_hub)
+        let mut stations = self.channel_from(self.params.edge_shroud, self.params.edge_hub);
+        // Con el borde curvo, la primera estación es el borde mismo: su área es
+        // la de la superficie, 2π·∫r ds sobre la curva, no la de la cuerda. Con
+        // el borde recto son la misma y no se toca.
+        let curved = self
+            .curve("Borde de ataque")
+            .is_some_and(|edge| edge.points.len() > 2);
+        if let (true, Some(first)) = (curved, stations.first_mut()) {
+            first.area = self.params.edge_area;
+        }
+        stations
     }
 
     /// Lo mismo que [`Self::channel`] pero a partir de esas fracciones de la
@@ -1031,7 +1041,9 @@ pub struct ChannelStation {
     pub r: f64,
     /// Anchura del canal, de tapa a tapa.
     pub width: f64,
-    /// Área de paso, 2π·r·b.
+    /// Área de paso, 2π·r·b. En la primera estación de un borde de ataque
+    /// curvo es el área de entrada sobre la curva, y la anchura sigue siendo la
+    /// de la cuerda.
     pub area: f64,
 }
 

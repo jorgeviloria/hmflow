@@ -916,3 +916,35 @@ fn the_whole_channel_starts_at_the_inlet_plane_and_the_edge_channel_is_its_tail(
     assert_eq!(last_whole.shroud_point, last_tail.shroud_point);
     assert_eq!(last_whole.hub_point, last_tail.hub_point);
 }
+
+/// Con el borde curvo, el canal arranca con el área de entrada de la curva, la
+/// de la cabecera, y no con la de la cuerda; el resto de estaciones no cambia.
+#[test]
+fn a_curved_edge_starts_the_channel_with_its_own_inlet_area() {
+    let base = MeridianEdits {
+        edge_shroud: Some(0.3),
+        edge_hub: Some(0.5),
+        ..MeridianEdits::default()
+    };
+    let straight = edited(&base);
+    let curved = edited(&MeridianEdits {
+        edge: EdgeEdit {
+            p2_offset: Some(-15.0),
+            ..EdgeEdit::default()
+        },
+        ..base
+    });
+    let (before, after) = (straight.channel(), curved.channel());
+    // El área de entrada es la de la cabecera en los dos casos.
+    assert!((before[0].area - straight.params.edge_area).abs() < 1e-9 * before[0].area);
+    assert_eq!(after[0].area, curved.params.edge_area);
+    // Curvar el borde cambia el área (más o menos, según hacia dónde se
+    // desplace) y la cuerda no la da ya.
+    assert!(
+        (curved.params.edge_area - straight.params.edge_area).abs()
+            > 1e-3 * straight.params.edge_area
+    );
+    // Misma cuerda: la anchura de la primera estación y todas las demás igual.
+    assert_eq!(after[0].width, before[0].width);
+    assert_eq!(after[1..], before[1..]);
+}

@@ -177,6 +177,10 @@ impl Session {
         let reselected = reselect_project(&self.inputs, &self.basis).inspect_err(|message| {
             self.notice = Some(message.clone());
         })?;
+        if reselected.changes.is_empty() {
+            self.notice = Some("Reelegido: no cambió nada.".to_string());
+            return Ok(());
+        }
         let reopened = open_loaded(reselected.project.clone()).inspect_err(|message| {
             self.notice = Some(message.clone());
         })?;
@@ -185,11 +189,10 @@ impl Session {
         self.project = Some(reselected.project);
         self.opened_diagnostics = None;
         self.dirty = true;
-        self.notice = Some(if reselected.changes.is_empty() {
-            "Reelegido: no cambió nada.".to_string()
-        } else {
-            format!("Reelegido, sin guardar: {}.", reselected.changes.join("; "))
-        });
+        self.notice = Some(format!(
+            "Reelegido, sin guardar: {}.",
+            reselected.changes.join("; ")
+        ));
         Ok(())
     }
 
@@ -909,6 +912,39 @@ mod tests {
             &Project::load(&path).unwrap().params["eta_m"],
             Param::Manual { value } if value == "0.91"
         ));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn reselecting_what_already_is_the_engine_choice_changes_nothing() {
+        let dir = scratch("reelegir-nada");
+        let path = copy_fixture(&dir, "end_suction_v0.9.hmf");
+        let mut session = Session::default();
+        assert!(session.open_path(&path), "{:?}", session.notice);
+        let opened = session.project.as_ref().unwrap().to_toml().unwrap();
+        session.reselect().unwrap();
+        assert_eq!(
+            session.notice.as_deref(),
+            Some("Reelegido: no cambió nada.")
+        );
+        assert!(!session.dirty);
+        assert_eq!(session.project.as_ref().unwrap().to_toml().unwrap(), opened);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_released_value_is_listed_with_what_it_had() {
+        let (dir, mut session) = saved_session("reelegir-soltar");
+        session.inputs.phi = "0.09".to_string();
+        session.edited();
+        let path = session.file.clone().unwrap();
+        session.save_to(&path).unwrap();
+        session.inputs.phi.clear();
+        session.edited();
+        session.reselect().unwrap();
+        let notice = session.notice.clone().unwrap();
+        assert!(notice.contains("phi: 0.0900 → "), "{notice}");
+        assert!(session.dirty);
         let _ = std::fs::remove_dir_all(&dir);
     }
 

@@ -19,7 +19,7 @@ use hm_engine::{
     new_casing_project, new_project, open_project, report, reselect_design, reselected_options,
     update_design, update_point, water_density_at,
 };
-use hm_project::{Casing, Project};
+use hm_project::{Casing, Param, Project};
 use hm_units::Quantity;
 
 /// Puntos de la curva que se dibujan.
@@ -954,8 +954,26 @@ pub fn reselect_project(inputs: &Inputs, basis: &Basis) -> Result<Reselected, St
     let updated =
         update_point(project.clone(), &case, &analysis).map_err(|error| engine_failure(&error))?;
     let recalculated = reselect_design(updated, &edits).map_err(|error| engine_failure(&error))?;
-    let changes = change_lines(&recalculated.changes, |change| {
-        change.before.as_deref() != Some(change.after.as_str())
+    let stored = |name: &str| match project.params.get(name) {
+        Some(Param::Manual { value } | Param::Locked { value }) => Some(value.clone()),
+        Some(Param::Auto {
+            value: Some(value), ..
+        }) => Some(value.clone()),
+        _ => None,
+    };
+    // Compara lo que se ve: lo rellenado no trae `before`, y una cifra lejana no
+    // es un cambio.
+    let known: Vec<ParamChange> = recalculated
+        .changes
+        .iter()
+        .cloned()
+        .map(|change| ParamChange {
+            before: change.before.clone().or_else(|| stored(&change.name)),
+            ..change
+        })
+        .collect();
+    let changes = change_lines(&known, |change| {
+        change.before.as_deref().map(short_value) != Some(short_value(&change.after))
     });
     Ok(Reselected {
         project: recalculated.project,

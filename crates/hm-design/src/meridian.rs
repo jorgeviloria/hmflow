@@ -275,6 +275,7 @@ impl MeridionalModel {
             previous = Some(middle);
             stations.push(ChannelStation {
                 m,
+                z: middle[0],
                 r: middle[1],
                 width,
                 area: 2.0 * std::f64::consts::PI * middle[1] * width,
@@ -657,6 +658,8 @@ fn crosses(first: &[[f64; 2]], second: &[[f64; 2]]) -> bool {
 pub struct ChannelStation {
     /// Longitud desarrollada de la línea media desde el borde de ataque.
     pub m: f64,
+    /// Posición axial de la línea media.
+    pub z: f64,
     /// Radio de la línea media.
     pub r: f64,
     /// Anchura del canal, de tapa a tapa.

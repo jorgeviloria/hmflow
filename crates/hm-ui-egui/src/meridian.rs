@@ -31,6 +31,9 @@ fn meridian_color(name: &str) -> Color32 {
 /// Distancia en píxeles a la que un clic agarra un punto de control.
 const GRAB_PIXELS: f32 = 12.0;
 
+/// Cuántos círculos de área se dibujan, repartidos por la línea media.
+const AREA_CIRCLES: usize = 8;
+
 /// Rango de RDs de Gülich, en veces b1 (ec. 7.2, p. 416).
 const RDS_RANGE: (f64, f64) = (0.6, 0.8);
 
@@ -120,6 +123,13 @@ pub(super) fn meridian_view(ui: &mut egui::Ui, outcome: &Outcome, boxes: &mut Me
                 .radius(5.0)
                 .color(Color32::DARK_GRAY),
             );
+            // Los círculos de área: uno por estación del canal, de diámetro la anchura.
+            for circle in area_circles(&model.channel(), AREA_CIRCLES) {
+                plot_ui.line(
+                    line("Círculos de área", circle, Color32::from_rgb(150, 110, 200))
+                        .width(1.0),
+                );
+            }
             changed |= drag_handles(plot_ui, &model, boxes);
         });
     channel_graphs(ui, &model, outcome.result.qth.si);
@@ -417,6 +427,43 @@ fn profiles(channel: &[ChannelStation], qth: f64) -> (Vec<[f64; 2]>, Vec<[f64; 2
     (area, velocity)
 }
 
+/// `count` círculos de área, de la entrada a la salida, repartidos por las
+/// estaciones del canal: centro en la línea media y diámetro la anchura del
+/// canal en esa estación (Gülich, p. 417). Cada uno es una polilínea cerrada.
+fn area_circles(channel: &[ChannelStation], count: usize) -> Vec<Vec<[f64; 2]>> {
+    const SEGMENTS: usize = 48;
+    if channel.is_empty() || count == 0 {
+        return Vec::new();
+    }
+    let last = channel.len() - 1;
+    let mut picked: Vec<usize> = (0..count)
+        .map(|k| {
+            if count == 1 {
+                0
+            } else {
+                (k * last + (count - 1) / 2) / (count - 1)
+            }
+        })
+        .collect();
+    picked.dedup();
+    picked
+        .into_iter()
+        .map(|index| {
+            let station = &channel[index];
+            let radius = station.width / 2.0;
+            (0..=SEGMENTS)
+                .map(|step| {
+                    let angle = std::f64::consts::TAU * step as f64 / SEGMENTS as f64;
+                    [
+                        station.z + radius * angle.cos(),
+                        station.r + radius * angle.sin(),
+                    ]
+                })
+                .collect()
+        })
+        .collect()
+}
+
 /// A(M/Mmax) en cm² y la recta de referencia de la entrada a la salida. Sin
 /// estaciones, o con una línea media de longitud nula, no hay gráfica.
 fn area_against_length(channel: &[ChannelStation]) -> (Vec<[f64; 2]>, Vec<[f64; 2]>) {
@@ -463,6 +510,7 @@ mod tests {
     fn the_graphs_are_the_channel_in_cm2_and_m_per_s() {
         let station = ChannelStation {
             m: 12.0,
+            z: 3.0,
             r: 50.0,
             width: 20.0,
             area: 2.0 * std::f64::consts::PI * 50.0 * 20.0,
@@ -568,6 +616,7 @@ mod tests {
     fn the_area_graph_runs_from_0_to_1_with_a_straight_reference() {
         let station = |m: f64, area: f64| ChannelStation {
             m,
+            z: 0.0,
             r: 50.0,
             width: 20.0,
             area: area * 100.0,
@@ -581,5 +630,32 @@ mod tests {
             area_against_length(&[station(3.0, 1.0)]),
             (Vec::new(), Vec::new())
         );
+    }
+
+    #[test]
+    fn the_area_circles_are_centred_on_the_mid_line_with_the_channel_width_as_diameter() {
+        let station = |m: f64| ChannelStation {
+            m,
+            z: m,
+            r: 50.0,
+            width: 20.0,
+            area: 1.0,
+        };
+        let channel: Vec<ChannelStation> = (0..11).map(|k| station(f64::from(k))).collect();
+        let circles = area_circles(&channel, 3);
+        assert_eq!(circles.len(), 3);
+        let centres: Vec<f64> = circles
+            .iter()
+            .map(|circle| (circle[0][0] + circle[24][0]) / 2.0)
+            .collect();
+        assert_eq!(centres, [0.0, 5.0, 10.0]);
+        for circle in &circles {
+            assert_eq!(circle.first(), circle.last());
+            let top = circle.iter().map(|p| p[1]).fold(f64::MIN, f64::max);
+            let bottom = circle.iter().map(|p| p[1]).fold(f64::MAX, f64::min);
+            assert!((top - bottom - 20.0).abs() < 1e-9);
+        }
+        assert!(area_circles(&[], 5).is_empty());
+        assert_eq!(area_circles(&channel[..2], 8).len(), 2);
     }
 }

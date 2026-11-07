@@ -84,6 +84,10 @@ cargo run -p hmflow-cli -- bench case.toml
 # geometría del álabe y de la salida, y diagnósticos (docs/report-format.md)
 cargo run -p hmflow-cli -- report bomba.hmf --out bomba.json
 
+# Vista en planta en CSV (mm), la misma que dibuja la ventana; la huella va en
+# la primera línea y se compara con la que muestra el visor
+cargo run -p hmflow-cli -- geometry bomba.hmf --out bomba.csv
+
 # Ver las fórmulas disponibles
 cargo run -p hmflow-cli -- formulas
 

@@ -277,70 +277,88 @@ impl Curve for Arc {
     }
 }
 
-/// Bézier cúbica con los cuatro puntos de control.
-#[derive(Clone, Copy, Debug, PartialEq)]
-pub struct CubicBezier {
-    p0: Point,
-    p1: Point,
-    p2: Point,
-    p3: Point,
+/// Bézier de grado n con n + 1 puntos de control. Se evalúa por De Casteljau,
+/// que solo hace interpolaciones lineales y es estable con cualquier grado.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Bezier {
+    points: Vec<Point>,
 }
 
-impl CubicBezier {
-    /// Rechaza coordenadas no finitas y la curva de longitud nula.
-    pub fn new(p0: Point, p1: Point, p2: Point, p3: Point) -> Result<Self, GeometryError> {
-        if ![p0, p1, p2, p3].into_iter().all(Point::is_finite) {
+impl Bezier {
+    /// Rechaza menos de dos puntos, coordenadas no finitas y la curva de
+    /// longitud nula.
+    pub fn new(points: Vec<Point>) -> Result<Self, GeometryError> {
+        if points.len() < 2 {
+            return Err(GeometryError::TooFewSamples);
+        }
+        if !points.iter().copied().all(Point::is_finite) {
             return Err(GeometryError::Degenerate);
         }
-        let curve = Self { p0, p1, p2, p3 };
+        let curve = Self { points };
         if curve.length() == 0.0 {
             return Err(GeometryError::Degenerate);
         }
         Ok(curve)
     }
 
-    #[must_use]
-    pub fn p0(self) -> Point {
-        self.p0
+    /// La cúbica, con sus cuatro puntos de control.
+    pub fn cubic(p0: Point, p1: Point, p2: Point, p3: Point) -> Result<Self, GeometryError> {
+        Self::new(vec![p0, p1, p2, p3])
     }
 
+    /// Los puntos de control, del primero al último.
     #[must_use]
-    pub fn p3(self) -> Point {
-        self.p3
+    pub fn points(&self) -> &[Point] {
+        &self.points
     }
 
+    /// Grado: uno menos que el número de puntos.
+    #[must_use]
+    pub fn degree(&self) -> usize {
+        self.points.len() - 1
+    }
+
+    fn first(&self) -> Point {
+        self.points[0]
+    }
+
+    fn last(&self) -> Point {
+        self.points[self.points.len() - 1]
+    }
+
+    fn casteljau(points: &[Point], t: f64) -> Point {
+        let mut work = points.to_vec();
+        for level in (1..work.len()).rev() {
+            for index in 0..level {
+                work[index] = work[index] + (work[index + 1] - work[index]) * t;
+            }
+        }
+        work[0]
+    }
+
+    /// B′(t) = n·Σ (P_(i+1) − P_i)·B_(i,n−1)(t): la hodógrafa, otra Bézier.
     fn derivative(&self, t: f64) -> Vector {
-        let u = 1.0 - t;
-        (self.p1 - self.p0) * (3.0 * u * u)
-            + (self.p2 - self.p1) * (6.0 * u * t)
-            + (self.p3 - self.p2) * (3.0 * t * t)
-    }
-
-    fn at(&self, t: f64) -> Point {
-        let u = 1.0 - t;
-        let uu = u * u;
-        let tt = t * t;
-        let weight0 = uu * u;
-        let weight1 = 3.0 * uu * t;
-        let weight2 = 3.0 * u * tt;
-        let weight3 = tt * t;
-        Point::new(
-            weight0 * self.p0.x + weight1 * self.p1.x + weight2 * self.p2.x + weight3 * self.p3.x,
-            weight0 * self.p0.y + weight1 * self.p1.y + weight2 * self.p2.y + weight3 * self.p3.y,
-        )
+        let n = self.degree() as f64;
+        let legs: Vec<Point> = self
+            .points
+            .windows(2)
+            .map(|pair| Point::new(pair[1].x - pair[0].x, pair[1].y - pair[0].y))
+            .collect();
+        let at = Self::casteljau(&legs, t);
+        Vector::new(n * at.x, n * at.y)
     }
 }
 
-impl Curve for CubicBezier {
+impl Curve for Bezier {
     fn point_at(&self, t: f64) -> Result<Point, GeometryError> {
         let t = parameter(t)?;
         if t <= 0.0 {
-            return Ok(self.p0);
+            return Ok(self.first());
         }
         if t >= 1.0 {
-            return Ok(self.p3);
+            return Ok(self.last());
         }
-        Ok(self.at(t))
+        Ok(Self::casteljau(&self.points, t))
     }
 
     fn tangent_at(&self, t: f64) -> Result<Vector, GeometryError> {
@@ -349,8 +367,8 @@ impl Curve for CubicBezier {
     }
 
     fn length(&self) -> f64 {
-        // Simpson sobre |B′|. En una recta la velocidad es constante y la
-        // cuadratura es exacta.
+        // Simpson sobre |B′|. En una recta con puntos equiespaciados la
+        // velocidad es constante y la cuadratura es exacta.
         const INTERVALS: usize = 64;
         let step = 1.0 / INTERVALS as f64;
         let mut sum = self.derivative(0.0).norm() + self.derivative(1.0).norm();

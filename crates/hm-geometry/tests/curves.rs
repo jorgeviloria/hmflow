@@ -1,6 +1,6 @@
 use std::f64::consts::{PI, TAU};
 
-use hm_geometry::{Arc, CubicBezier, Curve, GeometryError, Line, Point, Vector};
+use hm_geometry::{Arc, Bezier, Curve, GeometryError, Line, Point, Vector};
 
 fn close(left: Point, right: Point) {
     let distance = left.distance(right);
@@ -59,7 +59,7 @@ fn a_bezier_that_degenerates_to_a_line_matches_that_line() {
     let start = Point::new(0.0, 0.0);
     let end = Point::new(3.0, 4.0);
     let line = Line::new(start, end).expect("recta");
-    let bezier = CubicBezier::new(
+    let bezier = Bezier::cubic(
         start,
         start + (end - start) * (1.0 / 3.0),
         start + (end - start) * (2.0 / 3.0),
@@ -116,7 +116,7 @@ fn a_point_sized_curve_is_rejected() {
         GeometryError::Degenerate
     );
     assert_eq!(
-        CubicBezier::new(point, point, point, point).unwrap_err(),
+        Bezier::cubic(point, point, point, point).unwrap_err(),
         GeometryError::Degenerate
     );
 }

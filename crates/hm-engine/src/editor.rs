@@ -185,7 +185,7 @@ pub fn design_edits(project: &Project) -> DesignEdits {
             // Un `locked` es una decisión aunque valga el defecto: se muestra.
             .filter(|text| {
                 is_locked(project, name)
-                    || !parse_quantity(text).is_ok_and(|value| value.value() == default)
+                    || !parse_quantity(text).is_ok_and(|value| (value.si - default).abs() < 1.0e-12)
             })
             .unwrap_or_default()
             .to_string()
@@ -195,7 +195,7 @@ pub fn design_edits(project: &Project) -> DesignEdits {
         phi: locked("phi"),
         blade_count: locked("blade_count"),
         roughness: measure("impeller_roughness", 0.0),
-        incidence: measure("incidence_deg", DEFAULT_INCIDENCE_DEG),
+        incidence: measure("incidence_deg", DEFAULT_INCIDENCE_DEG.to_radians()),
     }
 }
 

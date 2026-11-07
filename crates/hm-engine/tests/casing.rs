@@ -1221,3 +1221,24 @@ fn emptying_a_locked_measure_releases_it() {
         Some(Param::Manual { .. })
     ));
 }
+
+#[test]
+fn a_measure_in_another_unit_is_not_taken_for_the_default() {
+    let mut project = saved();
+    project.params.insert(
+        "incidence_deg".to_string(),
+        Param::Manual {
+            value: "0.05 rad".to_string(),
+        },
+    );
+    assert_eq!(design_edits(&project).incidence, "0.05 rad");
+
+    let mut two = saved();
+    two.params.insert(
+        "incidence_deg".to_string(),
+        Param::Manual {
+            value: "2 rad".to_string(),
+        },
+    );
+    assert_eq!(design_edits(&two).incidence, "2 rad");
+}

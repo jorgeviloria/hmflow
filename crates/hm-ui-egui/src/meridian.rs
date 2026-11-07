@@ -404,11 +404,12 @@ fn draw_section(
     for reference in dimensioning.references {
         plot_ui.line(line("Referencias", reference, Color32::from_gray(205)).width(3.5));
     }
-    // Los círculos de área: la familia en gris claro, el de la entrada y el de
-    // la salida en rojo, y la línea de sus centros.
+    // Los círculos de área: la familia entera, de la entrada a la salida, en gris
+    // claro; en rojo el de la salida y el del borde de ataque (el perfil del
+    // álabe), que es el que mira el diseño; y la línea de sus centros.
     let circles = area_circles(model, AREA_CIRCLES);
     for (index, (centre, radius)) in circles.iter().enumerate() {
-        let end = index == 0 || index + 1 == circles.len();
+        let end = index + 1 == circles.len();
         plot_ui.line(
             line(
                 "Círculos de área",
@@ -417,6 +418,9 @@ fn draw_section(
             )
             .width(if end { 1.4 } else { 0.6 }),
         );
+    }
+    if let Some((centre, radius)) = edge_circle(model) {
+        plot_ui.line(line("Círculo del borde", circle_points(centre, radius), RED).width(1.4));
     }
     plot_ui.line(
         line(
@@ -458,6 +462,17 @@ fn draw_section(
             .style(egui_plot::LineStyle::dotted_dense()),
         );
     }
+    // La entrada: la recta del arranque del cubo al de la tapa delantera, en el
+    // plano de entrada. Va aparte del borde de ataque, que se apoya sobre las
+    // dos tapas más adelante.
+    plot_ui.line(
+        line(
+            "Entrada",
+            vec![model.params.hub.points[0], model.params.shroud.points[0]],
+            meridian_color("Borde de ataque"),
+        )
+        .width(1.2),
+    );
     // Las curvas del corte, por encima.
     for curve in &model.curves {
         plot_ui.line(
@@ -1104,22 +1119,15 @@ fn nearest_on(polyline: &[[f64; 2]], c: [f64; 2]) -> ([f64; 2], f64) {
     best
 }
 
-/// `count` círculos de área, centro y radio, de la entrada a la salida, con
-/// los dos extremos incluidos (Gülich, p. 417; igual que el editor de CFturbo):
-/// el centro está en la cuerda de tapa a tapa de la estación, a igual distancia
-/// de las dos, y el radio es esa distancia, así que cada círculo es tangente a
-/// la tapa delantera y a la trasera. Los bordes no lo limitan: el de la entrada
-/// puede sobresalir del borde de ataque. Van del plano de entrada, donde
-/// arrancan las dos tapas, a la salida: el borde de ataque no los recorta.
+/// `count` círculos de área, centro y radio, del plano de entrada a la salida,
+/// con los dos extremos incluidos (Gülich, p. 417; igual que el editor de
+/// CFturbo): el centro está en la cuerda de tapa a tapa de la estación, a igual
+/// distancia de las dos, y el radio es esa distancia, así que cada círculo es
+/// tangente a la tapa delantera y a la trasera. Van desde donde arrancan las
+/// dos tapas: el borde de ataque no los recorta (su círculo es
+/// [`edge_circle`]). Los bordes no los limitan.
 fn area_circles(model: &MeridionalModel, count: usize) -> Vec<([f64; 2], f64)> {
-    const ITERATIONS: usize = 50;
     let channel = model.channel_from(0.0, 0.0);
-    let (Some(shroud), Some(hub)) = (
-        model.curve(Wall::Shroud.name()),
-        model.curve(Wall::Hub.name()),
-    ) else {
-        return Vec::new();
-    };
     if channel.len() < 2 || count < 2 {
         return Vec::new();
     }
@@ -1130,36 +1138,52 @@ fn area_circles(model: &MeridionalModel, count: usize) -> Vec<([f64; 2], f64)> {
     picked.dedup();
     picked
         .into_iter()
-        .map(|index| {
-            let station = &channel[index];
-            let (from, to) = (station.shroud_point, station.hub_point);
-            let at = |u: f64| {
-                [
-                    from[0] + (to[0] - from[0]) * u,
-                    from[1] + (to[1] - from[1]) * u,
-                ]
-            };
-            // Sobre la cuerda de tapa a tapa, el punto equidistante de las dos.
-            let balance = |u: f64| {
-                let centre = at(u);
-                nearest_on(&shroud.points, centre).1 - nearest_on(&hub.points, centre).1
-            };
-            let (mut low, mut high) = (0.0, 1.0);
-            for _ in 0..ITERATIONS {
-                let middle = (low + high) / 2.0;
-                if balance(middle) < 0.0 {
-                    low = middle;
-                } else {
-                    high = middle;
-                }
-            }
-            let centre = at((low + high) / 2.0);
-            let radius = nearest_on(&shroud.points, centre)
-                .1
-                .min(nearest_on(&hub.points, centre).1);
-            (centre, radius)
-        })
+        .filter_map(|index| inscribed(model, &channel[index]))
         .collect()
+}
+
+/// El círculo del borde de ataque: el inscrito en la estación que une sus dos
+/// extremos, tangente a las dos tapas. Es el que CFturbo marca en rojo.
+fn edge_circle(model: &MeridionalModel) -> Option<([f64; 2], f64)> {
+    inscribed(model, model.channel().first()?)
+}
+
+/// El círculo tangente a las dos tapas con el centro en la cuerda de `station`.
+fn inscribed(
+    model: &MeridionalModel,
+    station: &hm_design::meridian::ChannelStation,
+) -> Option<([f64; 2], f64)> {
+    const ITERATIONS: usize = 50;
+    let (shroud, hub) = (
+        model.curve(Wall::Shroud.name())?,
+        model.curve(Wall::Hub.name())?,
+    );
+    let (from, to) = (station.shroud_point, station.hub_point);
+    let at = |u: f64| {
+        [
+            from[0] + (to[0] - from[0]) * u,
+            from[1] + (to[1] - from[1]) * u,
+        ]
+    };
+    // Sobre la cuerda de tapa a tapa, el punto equidistante de las dos.
+    let balance = |u: f64| {
+        let centre = at(u);
+        nearest_on(&shroud.points, centre).1 - nearest_on(&hub.points, centre).1
+    };
+    let (mut low, mut high) = (0.0, 1.0);
+    for _ in 0..ITERATIONS {
+        let middle = (low + high) / 2.0;
+        if balance(middle) < 0.0 {
+            low = middle;
+        } else {
+            high = middle;
+        }
+    }
+    let centre = at((low + high) / 2.0);
+    let radius = nearest_on(&shroud.points, centre)
+        .1
+        .min(nearest_on(&hub.points, centre).1);
+    Some((centre, radius))
 }
 
 /// La circunferencia como polilínea cerrada.
@@ -1649,5 +1673,49 @@ mod tests {
         // Y el último es el mismo en los dos, el de la salida.
         let last = |model| *area_circles(model, AREA_CIRCLES).last().unwrap();
         assert_eq!(last(&auto), last(&moved));
+    }
+
+    /// El círculo del borde de ataque es el inscrito entre sus dos extremos:
+    /// tangente a las dos tapas, con el centro en la cuerda del borde.
+    #[test]
+    fn the_edge_circle_is_inscribed_at_the_leading_edge() {
+        use hm_design::meridian::{MeridianEdits, meridional_model_with};
+        let result = hm_design::design(&hm_design::DesignInput {
+            q: hm_units::parse_quantity("120 m3/h").unwrap(),
+            h: hm_units::parse_quantity("45 m").unwrap(),
+            n: hm_units::parse_quantity("2900 rpm").unwrap(),
+            rho: hm_units::parse_quantity("998.2 kg/m3").unwrap(),
+            eta_m: 0.95,
+            npsha: None,
+            nu: None,
+        })
+        .unwrap();
+        let model = meridional_model_with(
+            &result,
+            &MeridianEdits {
+                edge_shroud: Some(0.3),
+                edge_hub: Some(0.5),
+                ..MeridianEdits::default()
+            },
+        )
+        .unwrap();
+        let (centre, radius) = edge_circle(&model).unwrap();
+        let [shroud_end, hub_end] = model.params.edge_points;
+        // El centro está en la cuerda del borde, entre sus extremos.
+        let chord = (hub_end[0] - shroud_end[0]).hypot(hub_end[1] - shroud_end[1]);
+        let to_centre = (centre[0] - shroud_end[0]).hypot(centre[1] - shroud_end[1]);
+        let cross = (hub_end[0] - shroud_end[0]) * (centre[1] - shroud_end[1])
+            - (hub_end[1] - shroud_end[1]) * (centre[0] - shroud_end[0]);
+        assert!(cross.abs() < 1e-6 * chord * chord, "{cross}");
+        assert!(to_centre > 0.0 && to_centre < chord);
+        // Tangente a las dos tapas: ninguna pasa a menos de `radius`, y las dos
+        // la tocan.
+        for name in ["Tapa delantera", "Tapa trasera"] {
+            let distance = nearest_on(&model.curve(name).unwrap().points, centre).1;
+            assert!((distance - radius).abs() < 1e-3 * radius, "{name} {distance} {radius}");
+        }
+        // No es el del plano de entrada: el borde está más adentro.
+        let family = area_circles(&model, AREA_CIRCLES);
+        assert_ne!((centre, radius), family[0]);
     }
 }

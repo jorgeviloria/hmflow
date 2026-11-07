@@ -32,7 +32,7 @@ fn meridian_color(name: &str) -> Color32 {
 const GRAB_PIXELS: f32 = 12.0;
 
 /// Cuántos círculos de área se dibujan, repartidos por la línea media.
-const AREA_CIRCLES: usize = 8;
+const AREA_CIRCLES: usize = 24;
 
 /// Rango de RDs de Gülich, en veces b1 (ec. 7.2, p. 416).
 const RDS_RANGE: (f64, f64) = (0.6, 0.8);
@@ -134,12 +134,34 @@ pub(super) fn meridian_view(ui: &mut egui::Ui, outcome: &Outcome, boxes: &mut Me
                         .filled(false),
                 );
             }
-            // Los círculos de área: uno por estación del canal, de diámetro la anchura.
-            for circle in area_circles(&model, AREA_CIRCLES) {
+            // Los círculos de área, como en CFturbo: la familia en gris, el de la
+            // entrada y el de la salida en rojo y la línea de sus centros.
+            let circles = area_circles(&model, AREA_CIRCLES);
+            let red = Color32::from_rgb(220, 60, 60);
+            for (index, (centre, radius)) in circles.iter().enumerate() {
+                let end = index == 0 || index + 1 == circles.len();
                 plot_ui.line(
-                    line("Círculos de área", circle, Color32::from_rgb(150, 110, 200)).width(1.0),
+                    line(
+                        if end {
+                            "Círculos de entrada y salida"
+                        } else {
+                            "Círculos de área"
+                        },
+                        circle_points(*centre, *radius),
+                        if end { red } else { Color32::from_gray(150) },
+                    )
+                    .width(if end { 1.5 } else { 0.7 }),
                 );
             }
+            plot_ui.line(
+                line(
+                    "Línea de centros",
+                    circles.iter().map(|(centre, _)| *centre).collect(),
+                    red,
+                )
+                .width(1.0)
+                .style(egui_plot::LineStyle::dashed_dense()),
+            );
             changed |= drag_handles(plot_ui, &model, boxes);
         });
     channel_graphs(ui, &model, outcome.result.qth.si);
@@ -458,14 +480,13 @@ fn nearest_on(polyline: &[[f64; 2]], c: [f64; 2]) -> ([f64; 2], f64) {
     best
 }
 
-/// `count` círculos de área inscritos en el corte, de la entrada a la
-/// salida (Gülich, p. 417): el centro está en la cuerda de tapa a tapa de la
-/// estación, a igual distancia de las dos y el radio es la distancia mínima a cualquiera
-/// de las curvas del contorno, así que ninguno sobresale. Parten de las
-/// estaciones del canal, sin los extremos, donde el radio sería cero. Cada
-/// círculo es una polilínea cerrada.
-fn area_circles(model: &MeridionalModel, count: usize) -> Vec<Vec<[f64; 2]>> {
-    const SEGMENTS: usize = 48;
+/// `count` círculos de área, centro y radio, de la entrada a la salida, con
+/// los dos extremos incluidos (Gülich, p. 417; igual que el editor de CFturbo):
+/// el centro está en la cuerda de tapa a tapa de la estación, a igual distancia
+/// de las dos, y el radio es esa distancia, así que cada círculo es tangente a
+/// la tapa delantera y a la trasera. Los bordes no lo limitan: el de la entrada
+/// puede sobresalir del borde de ataque.
+fn area_circles(model: &MeridionalModel, count: usize) -> Vec<([f64; 2], f64)> {
     const ITERATIONS: usize = 50;
     let channel = model.channel();
     let (Some(shroud), Some(hub)) = (
@@ -474,13 +495,12 @@ fn area_circles(model: &MeridionalModel, count: usize) -> Vec<Vec<[f64; 2]>> {
     ) else {
         return Vec::new();
     };
-    if channel.len() < 3 || count == 0 {
+    if channel.len() < 2 || count < 2 {
         return Vec::new();
     }
     let last = channel.len() - 1;
-    let mut picked: Vec<usize> = (1..=count)
-        .map(|k| (k * last + count.div_ceil(2)) / (count + 1))
-        .filter(|index| (1..last).contains(index))
+    let mut picked: Vec<usize> = (0..count)
+        .map(|k| (k * last + (count - 1) / 2) / (count - 1))
         .collect();
     picked.dedup();
     picked
@@ -509,22 +529,28 @@ fn area_circles(model: &MeridionalModel, count: usize) -> Vec<Vec<[f64; 2]>> {
                 }
             }
             let centre = at((low + high) / 2.0);
-            let radius = model
-                .curves
-                .iter()
-                .map(|curve| nearest_on(&curve.points, centre).1)
-                .fold(f64::INFINITY, f64::min);
-            (0..=SEGMENTS)
-                .map(|step| {
-                    let angle = std::f64::consts::TAU * step as f64 / SEGMENTS as f64;
-                    [
-                        centre[0] + radius * angle.cos(),
-                        centre[1] + radius * angle.sin(),
-                    ]
-                })
-                .collect()
+            let radius = nearest_on(&shroud.points, centre)
+                .1
+                .min(nearest_on(&hub.points, centre).1);
+            (centre, radius)
         })
         .collect()
+}
+
+/// La circunferencia como polilínea cerrada.
+fn circle_points(centre: [f64; 2], radius: f64) -> Vec<[f64; 2]> {
+    const SEGMENTS: usize = 64;
+    let mut points: Vec<[f64; 2]> = (0..SEGMENTS)
+        .map(|step| {
+            let angle = std::f64::consts::TAU * step as f64 / SEGMENTS as f64;
+            [
+                centre[0] + radius * angle.cos(),
+                centre[1] + radius * angle.sin(),
+            ]
+        })
+        .collect();
+    points.push(points[0]);
+    points
 }
 
 /// A(M/Mmax) en cm² y la recta de referencia de la entrada a la salida. Sin
@@ -700,7 +726,7 @@ mod tests {
     }
 
     #[test]
-    fn the_area_circles_fit_inside_the_contour_of_the_default_section() {
+    fn the_area_circles_touch_both_walls_and_are_spread_from_inlet_to_outlet() {
         let result = hm_design::design(&hm_design::DesignInput {
             q: hm_units::parse_quantity("120 m3/h").unwrap(),
             h: hm_units::parse_quantity("45 m").unwrap(),
@@ -715,48 +741,28 @@ mod tests {
         let circles = area_circles(&model, AREA_CIRCLES);
         assert_eq!(circles.len(), AREA_CIRCLES);
         // Repartidos por el corte, no amontonados en un punto.
-        let centres: Vec<[f64; 2]> = circles
-            .iter()
-            .map(|circle| {
-                [
-                    (circle[0][0] + circle[24][0]) / 2.0,
-                    (circle[0][1] + circle[24][1]) / 2.0,
-                ]
-            })
-            .collect();
-        for pair in centres.windows(2) {
-            let apart = (pair[0][0] - pair[1][0]).hypot(pair[0][1] - pair[1][1]);
-            assert!(apart > 1.0, "{pair:?}");
+        for pair in circles.windows(2) {
+            let apart = (pair[0].0[0] - pair[1].0[0]).hypot(pair[0].0[1] - pair[1].0[1]);
+            assert!(apart > 0.1, "{pair:?}");
         }
-        for circle in &circles {
-            let centre = [
-                (circle[0][0] + circle[24][0]) / 2.0,
-                (circle[0][1] + circle[24][1]) / 2.0,
-            ];
-            let radius = (circle[0][0] - centre[0]).abs();
-            assert!(radius > 1.0, "{radius}");
-            for curve in &model.curves {
-                let distance = nearest_on(&curve.points, centre).1;
-                assert!(
-                    distance >= radius - 1e-9,
-                    "{} {distance} {radius}",
-                    curve.name
-                );
-            }
-            // Si no lo limita un borde, toca las dos tapas, no solo una.
-            let edges = ["Borde de ataque", "Borde de salida"]
-                .map(|name| nearest_on(&model.curve(name).unwrap().points, centre).1);
-            if edges.iter().all(|distance| *distance > radius * 1.05) {
-                for wall in Wall::ALL {
-                    let curve = model.curve(wall.name()).unwrap();
-                    let distance = nearest_on(&curve.points, centre).1;
-                    assert!(
-                        distance - radius < 0.05 * radius,
-                        "{} {distance} {radius}",
-                        wall.name()
-                    );
-                }
-            }
+        // Ninguno es pequeño por culpa de un borde: el de la entrada abarca todo el ojo.
+        let inlet = &circles[0];
+        let edge = &model.curve("Borde de ataque").unwrap().points;
+        let edge_length = (edge[0][0] - edge[1][0]).hypot(edge[0][1] - edge[1][1]);
+        assert!(inlet.1 > edge_length * 0.4, "{} {edge_length}", inlet.1);
+        for (centre, radius) in &circles {
+            let shroud = nearest_on(&model.curve("Tapa delantera").unwrap().points, *centre).1;
+            let hub = nearest_on(&model.curve("Tapa trasera").unwrap().points, *centre).1;
+            // Dentro de las dos tapas y tangente a las dos.
+            assert!((shroud - hub).abs() < 0.02 * radius, "{shroud} {hub}");
+            assert!((radius - shroud.min(hub)).abs() < 1e-9);
         }
+        let points = circle_points([1.0, 2.0], 3.0);
+        assert_eq!(points.first(), points.last());
+        assert!(
+            points
+                .iter()
+                .all(|p| ((p[0] - 1.0).hypot(p[1] - 2.0) - 3.0).abs() < 1e-9)
+        );
     }
 }

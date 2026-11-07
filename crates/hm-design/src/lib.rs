@@ -13,6 +13,7 @@ use std::collections::BTreeMap;
 pub mod fluid;
 pub mod geometry;
 pub mod mechanics;
+pub mod meridian;
 pub mod plan;
 mod report;
 mod viscous;

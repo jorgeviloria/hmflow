@@ -47,6 +47,9 @@ const TEAL: Color32 = Color32::from_rgb(0, 125, 135);
 
 /// Distancia en píxeles a la que un clic agarra un punto de control.
 const GRAB_PIXELS: f32 = 12.0;
+/// A cuántos píxeles de otro punto la z o la r se pegan a él.
+const SNAP_PIXELS: f32 = 6.0;
+const SNAP_GUIDE: Color32 = Color32::from_rgb(230, 120, 30);
 
 /// Lo que se dibuja de las cotas: segmentos y textos `(posición, texto, ancla)`.
 #[derive(Debug, Default, PartialEq)]
@@ -734,7 +737,53 @@ fn drag_handles(
     let (Some(control), true) = (grabbed, response.dragged()) else {
         return false;
     };
-    write_moved(boxes, control, model.moved(control, [pointer.x, pointer.y]))
+    // Alineación con los demás puntos de control y con el eje: si la z o la r
+    // del puntero está a pocos píxeles de las de otro, se pega y sale una guía.
+    let others: Vec<[f64; 2]> = model
+        .handles()
+        .iter()
+        .chain(model.edge_handles().iter())
+        .filter(|handle| handle.control != control)
+        .map(|handle| handle.at)
+        .collect();
+    let transform = plot_ui.transform();
+    let tolerance = [
+        f64::from(SNAP_PIXELS) / transform.dpos_dvalue_x().abs().max(f64::EPSILON),
+        f64::from(SNAP_PIXELS) / transform.dpos_dvalue_y().abs().max(f64::EPSILON),
+    ];
+    let (target, guides) = snap_to_alignments([pointer.x, pointer.y], &others, tolerance);
+    if let Some(z) = guides[0] {
+        plot_ui.line(line("", vec![[z, -1.0e4], [z, 1.0e4]], SNAP_GUIDE).width(1.0));
+    }
+    if let Some(r) = guides[1] {
+        plot_ui.line(line("", vec![[-1.0e4, r], [1.0e4, r]], SNAP_GUIDE).width(1.0));
+    }
+    write_moved(boxes, control, model.moved(control, target))
+}
+
+/// Pega `pointer` a la z y a la r de `others` (y a r = 0, el eje) cuando
+/// quedan dentro de `tolerance`. Devuelve el punto ajustado y, por eje, el
+/// valor al que se pegó.
+fn snap_to_alignments(
+    pointer: [f64; 2],
+    others: &[[f64; 2]],
+    tolerance: [f64; 2],
+) -> ([f64; 2], [Option<f64>; 2]) {
+    let mut target = pointer;
+    let mut guides = [None, None];
+    for axis in 0..2 {
+        let mut best = tolerance[axis];
+        let axis_value = (axis == 1).then_some(0.0);
+        for value in others.iter().map(|at| at[axis]).chain(axis_value) {
+            let distance = (value - pointer[axis]).abs();
+            if distance <= best {
+                best = distance;
+                target[axis] = value;
+                guides[axis] = Some(value);
+            }
+        }
+    }
+    (target, guides)
 }
 
 fn selected_id() -> egui::Id {
@@ -1101,6 +1150,20 @@ mod tests {
             Some(p(Wall::Shroud, 2))
         );
         assert_eq!(nearest(&handles, [200.0, 200.0], 12.0), None);
+    }
+
+    #[test]
+    fn the_pointer_sticks_to_the_nearest_alignment_within_tolerance() {
+        let others = [[10.0, 20.0], [30.0, 40.0]];
+        // z cerca de 30, r lejos de todo: solo se pega la z.
+        let (target, guides) = snap_to_alignments([30.2, 33.0], &others, [0.5, 0.5]);
+        assert_eq!((target, guides), ([30.0, 33.0], [Some(30.0), None]));
+        // r cerca del eje.
+        let (target, guides) = snap_to_alignments([15.0, 0.3], &others, [0.5, 0.5]);
+        assert_eq!((target, guides), ([15.0, 0.0], [None, Some(0.0)]));
+        // Fuera de tolerancia no cambia nada.
+        let (target, guides) = snap_to_alignments([20.0, 30.0], &others, [0.5, 0.5]);
+        assert_eq!((target, guides), ([20.0, 30.0], [None, None]));
     }
 
     #[test]

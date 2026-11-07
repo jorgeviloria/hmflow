@@ -1231,13 +1231,33 @@ fn curves(ui: &mut egui::Ui, outcome: &Outcome) {
 
 // ---------------------------------------------------------------- geometría
 
-fn circle(radius: f64) -> Vec<[f64; 2]> {
-    (0..=120)
-        .map(|i| {
-            let angle = std::f64::consts::TAU * f64::from(i) / 120.0;
-            [radius * angle.cos(), radius * angle.sin()]
-        })
-        .collect()
+/// Cómo se dibuja una curva del modelo en planta.
+struct CurveStyle<'a> {
+    legend: &'a str,
+    color: Color32,
+    width: f32,
+    dashed: bool,
+}
+
+/// Estilo por el nombre de la curva. Una curva que el modelo traiga sin
+/// estilo asignado se dibuja igual, con su nombre: no desaparece.
+fn curve_style(name: &str) -> CurveStyle<'_> {
+    let style = |legend, color, width, dashed| CurveStyle {
+        legend,
+        color,
+        width,
+        dashed,
+    };
+    let numbered_blade = name
+        .strip_prefix("Álabe ")
+        .is_some_and(|number| number.parse::<u32>().is_ok());
+    match name {
+        "D1" | "D2" => style(name, Color32::GRAY, 1.0, false),
+        "Lengua" => style(name, Color32::from_gray(90), 1.0, true),
+        "Voluta" => style(name, Color32::from_rgb(240, 160, 50), 2.0, false),
+        _ if numbered_blade => style("Álabes", Color32::from_rgb(70, 150, 240), 2.0, false),
+        _ => style(name, Color32::from_rgb(120, 180, 90), 2.0, false),
+    }
 }
 
 fn plan_view(ui: &mut egui::Ui, outcome: &Outcome) {
@@ -1246,46 +1266,25 @@ fn plan_view(ui: &mut egui::Ui, outcome: &Outcome) {
         return;
     };
     let result = &outcome.result;
-    let mm = 1000.0;
-    let blades = result.selection.blade_count;
-    let blue = Color32::from_rgb(70, 150, 240);
-    let grey = Color32::GRAY;
-    let orange = Color32::from_rgb(240, 160, 50);
-
-    // Voluta: del radio base en la lengua (0°) a los radios exteriores de
-    // las secciones cada 45°, interpolados cada 3° para que no salga un
-    // polígono.
-    let mut stations = vec![(0.0, result.volute.base_radius.si)];
-    stations.extend(
-        result
-            .model_volute
-            .iter()
-            .flat_map(|model| model.sections.iter())
-            .map(|section| (section.angle_deg, section.outer_radius.si)),
-    );
-    let mut volute = Vec::new();
-    for pair in stations.windows(2) {
-        let ((a0, r0), (a1, r1)) = (pair[0], pair[1]);
-        let steps = ((a1 - a0) / 3.0).ceil().max(1.0) as usize;
-        for step in 0..steps {
-            let t = step as f64 / steps as f64;
-            let angle = (a0 + (a1 - a0) * t).to_radians();
-            let radius = (r0 + (r1 - r0) * t) * mm;
-            volute.push([radius * angle.cos(), radius * angle.sin()]);
+    // El visor no calcula: dibuja el mismo modelo que se exporta.
+    let model = match hm_design::plan::plan_model(result, shape) {
+        Ok(model) => model,
+        Err(error) => {
+            ui.label(format!("Sin geometría: {error}."));
+            return;
         }
-    }
-    if let Some(&(angle, radius)) = stations.last() {
-        let angle = angle.to_radians();
-        volute.push([radius * mm * angle.cos(), radius * mm * angle.sin()]);
-    }
+    };
 
     ui.label(
         RichText::new(format!(
-            "Vista en planta, mm. Z = {blades}, β1B = {:.1}°, β2 = {:.1}°, envolvimiento = {:.0}°. \
-             Álabe 2D (línea media); voluta por sus radios exteriores cada 45°, interpolados.",
+            "Vista en planta, mm. Z = {}, β1B = {:.1}°, β2 = {:.1}°, envolvimiento = {:.0}°. \
+             Álabe 2D (línea media); voluta por sus radios exteriores cada 45°, interpolados. \
+             Huella {}.",
+            result.selection.blade_count,
             shape.impeller.beta1b.to_degrees(),
             result.selection.beta2_deg,
-            shape.impeller.wrap_angle.to_degrees()
+            shape.impeller.wrap_angle.to_degrees(),
+            model.fingerprint_text()
         ))
         .small()
         .weak(),
@@ -1294,33 +1293,14 @@ fn plan_view(ui: &mut egui::Ui, outcome: &Outcome) {
         .data_aspect(1.0)
         .legend(Legend::default())
         .show(ui, |plot_ui| {
-            plot_ui.line(line("D1", circle(result.d1.si / 2.0 * mm), grey).width(1.0));
-            plot_ui.line(line("D2", circle(result.d2.si / 2.0 * mm), grey).width(1.0));
-            plot_ui.line(
-                line(
-                    "Lengua",
-                    circle(shape.outlet.cutwater_radius * mm),
-                    Color32::from_gray(90),
-                )
-                .width(1.0)
-                .style(egui_plot::LineStyle::dashed_loose()),
-            );
-            for blade in 0..blades {
-                let offset = std::f64::consts::TAU * f64::from(blade) / f64::from(blades);
-                let points: Vec<[f64; 2]> = shape
-                    .impeller
-                    .blade
-                    .iter()
-                    .map(|point| {
-                        let angle = offset - point.theta;
-                        [point.r * mm * angle.cos(), point.r * mm * angle.sin()]
-                    })
-                    .collect();
-                plot_ui.line(line("Álabes", points, blue));
-            }
-            // Con carcasa no hay voluta del modelo que dibujar.
-            if result.model_volute.is_some() {
-                plot_ui.line(line("Voluta", volute, orange));
+            for curve in &model.curves {
+                let style = curve_style(&curve.name);
+                let mut drawn =
+                    line(style.legend, curve.points.clone(), style.color).width(style.width);
+                if style.dashed {
+                    drawn = drawn.style(egui_plot::LineStyle::dashed_loose());
+                }
+                plot_ui.line(drawn);
             }
         });
 }
@@ -1378,6 +1358,43 @@ mod tests {
             output.textures_delta.clear();
         }
         count
+    }
+
+    #[test]
+    fn every_plan_curve_keeps_the_look_it_had() {
+        let grey = curve_style("D1");
+        assert_eq!(
+            (grey.legend, grey.color, grey.width, grey.dashed),
+            ("D1", Color32::GRAY, 1.0, false)
+        );
+        assert_eq!(curve_style("D2").legend, "D2");
+        let tongue = curve_style("Lengua");
+        assert_eq!(
+            (tongue.color, tongue.width, tongue.dashed),
+            (Color32::from_gray(90), 1.0, true)
+        );
+        for name in ["Álabe 1", "Álabe 7", "Álabe 12"] {
+            let blade = curve_style(name);
+            assert_eq!(
+                (blade.legend, blade.color, blade.width),
+                ("Álabes", Color32::from_rgb(70, 150, 240), 2.0),
+                "{name}"
+            );
+        }
+        let volute = curve_style("Voluta");
+        assert_eq!(
+            (volute.legend, volute.color, volute.width),
+            ("Voluta", Color32::from_rgb(240, 160, 50), 2.0)
+        );
+    }
+
+    #[test]
+    fn a_curve_without_a_style_is_still_drawn_under_its_own_name() {
+        let unknown = curve_style("Difusor");
+        assert_eq!(unknown.legend, "Difusor");
+        assert!(unknown.width > 0.0);
+        // Sin número no es uno de los Z álabes: no se agrupa con ellos.
+        assert_eq!(curve_style("Álabe guía").legend, "Álabe guía");
     }
 
     #[test]

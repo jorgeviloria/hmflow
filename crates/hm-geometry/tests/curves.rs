@@ -126,3 +126,41 @@ fn sampling_needs_both_ends() {
     let line = Line::new(Point::new(0.0, 0.0), Point::new(1.0, 0.0)).expect("recta");
     assert_eq!(line.sample(1).unwrap_err(), GeometryError::TooFewSamples);
 }
+
+#[test]
+fn a_clockwise_arc_has_positive_length_and_turns_the_other_way() {
+    let center = Point::new(0.0, 0.0);
+    let arc = Arc::new(center, 2.0, PI / 2.0, -PI / 2.0).expect("arco horario");
+    assert!((arc.length() - PI).abs() < 1e-12, "{}", arc.length());
+
+    // Sale de (0, 2) hacia +x y llega a (2, 0) bajando.
+    close(arc.point_at(0.0).expect("inicio"), Point::new(0.0, 2.0));
+    close(arc.point_at(1.0).expect("fin"), Point::new(2.0, 0.0));
+    let start = arc.tangent_at(0.0).expect("tangente inicial");
+    let end = arc.tangent_at(1.0).expect("tangente final");
+    assert!(
+        (start.x - 1.0).abs() < 1e-12 && start.y.abs() < 1e-12,
+        "{start:?}"
+    );
+    assert!(
+        end.x.abs() < 1e-12 && (end.y + 1.0).abs() < 1e-12,
+        "{end:?}"
+    );
+
+    // La tangente sigue el recorrido: un paso pequeño en t avanza hacia ella.
+    let step = arc.point_at(1e-6).expect("paso") - arc.point_at(0.0).expect("inicio");
+    assert!(step.dot(start) > 0.0);
+}
+
+#[test]
+fn a_curve_with_coordinates_that_are_not_numbers_is_rejected() {
+    let good = Point::new(0.0, 0.0);
+    for bad in [Point::new(f64::NAN, 0.0), Point::new(0.0, f64::INFINITY)] {
+        assert_eq!(Line::new(good, bad).unwrap_err(), GeometryError::Degenerate);
+        assert_eq!(Line::new(bad, good).unwrap_err(), GeometryError::Degenerate);
+        assert_eq!(
+            Arc::new(bad, 1.0, 0.0, 1.0).unwrap_err(),
+            GeometryError::Degenerate
+        );
+    }
+}

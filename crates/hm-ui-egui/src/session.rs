@@ -1225,6 +1225,145 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
     }
 
+    /// xorshift64: la secuencia de una semilla es siempre la misma.
+    struct Rng(u64);
+
+    impl Rng {
+        fn below(&mut self, limit: u64) -> u64 {
+            self.0 ^= self.0 << 13;
+            self.0 ^= self.0 >> 7;
+            self.0 ^= self.0 << 17;
+            self.0 % limit
+        }
+
+        fn pick<'a>(&mut self, options: &[&'a str]) -> &'a str {
+            options[self.below(options.len() as u64) as usize]
+        }
+    }
+
+    fn base_session(dir: &std::path::Path, seed: u64) -> Session {
+        let mut session = Session::default();
+        match seed % 3 {
+            0 => {
+                session.save_to(&dir.join("rodete.hmf")).unwrap();
+            }
+            1 => assert!(session.open_path(&copy_fixture(dir, "casing_v3.hmf"))),
+            _ => assert!(session.open_path(&copy_fixture(dir, "end_suction_v0.8.hmf"))),
+        }
+        session
+    }
+
+    fn manual_beta2(session: &Session) -> Option<String> {
+        match session.project.as_ref()?.params.get("beta2")? {
+            Param::Manual { value } => Some(value.clone()),
+            _ => None,
+        }
+    }
+
+    /// Guardar con el visor de la vista previa delante: es donde han salido los
+    /// fallos, combinando órdenes que por separado funcionaban.
+    fn check_a_save(session: &mut Session, step: &str) {
+        let path = session.file.clone().unwrap();
+        let bytes = std::fs::read(&path).unwrap();
+        let shown = crate::model::compute(&session.inputs, &session.basis);
+        let beta2 = manual_beta2(session);
+        let boxes = session.inputs.clone();
+        if session.save_to(&path).is_err() {
+            assert_eq!(
+                std::fs::read(&path).unwrap(),
+                bytes,
+                "{step}: falló y escribió"
+            );
+            return;
+        }
+        assert!(!session.dirty, "{step}");
+
+        // En disco está lo que dice la sesión.
+        let saved = Project::load(&path).unwrap();
+        assert_eq!(
+            saved.to_toml().unwrap(),
+            session.project.as_ref().unwrap().to_toml().unwrap(),
+            "{step}"
+        );
+        // Guardar no reelige.
+        if beta2.is_some() {
+            assert_eq!(manual_beta2(session), beta2, "{step}: se perdió β2");
+        }
+        // Lo que se mostraba es lo que se guardó.
+        if let Ok(shown) = shown {
+            let after = crate::model::compute(&session.inputs, &session.basis).unwrap();
+            assert!(
+                (shown.result.eta / after.result.eta - 1.0).abs() < 1.0e-6,
+                "{step}: η {} frente a {}",
+                shown.result.eta,
+                after.result.eta
+            );
+            assert_eq!(
+                shown.result.selection.blade_count, after.result.selection.blade_count,
+                "{step}"
+            );
+        }
+        // Reabrir da las mismas decisiones.
+        let mut again = Session::default();
+        assert!(again.open_path(&path), "{step}: {:?}", again.notice);
+        assert_eq!(again.inputs.phi, boxes.phi.trim(), "{step}");
+        assert_eq!(again.inputs.blade_count, boxes.blade_count.trim(), "{step}");
+        let casing = |inputs: &Inputs| inputs.casing.as_ref().map(CasingBoxes::to_casing);
+        assert_eq!(casing(&again.inputs), casing(&boxes), "{step}");
+    }
+
+    #[test]
+    fn random_sequences_keep_what_is_shown_and_what_is_saved() {
+        // Con `HMF_SEMILLAS` se corre una tanda más larga a mano.
+        let seeds = std::env::var("HMF_SEMILLAS")
+            .ok()
+            .and_then(|text| text.parse().ok())
+            .unwrap_or(9);
+        for seed in 1..=seeds {
+            let dir = scratch(&format!("azar-{seed}"));
+            let mut session = base_session(&dir, seed);
+            let mut rng = Rng(seed * 2_654_435_761 + 1);
+            let mut log = format!("semilla {seed}");
+            for _ in 0..10 {
+                let step = rng.below(9);
+                log.push_str(&format!(", {step}"));
+                match step {
+                    0 => session.inputs.phi = rng.pick(&["", "0.08", "0.09", " "]).to_string(),
+                    1 => session.inputs.blade_count = rng.pick(&["", "5", "6", "7"]).to_string(),
+                    2 => session.inputs.roughness = rng.pick(&["", "0.05 mm"]).to_string(),
+                    3 => session.inputs.incidence = rng.pick(&["", "3 deg"]).to_string(),
+                    4 => {
+                        session.inputs.q =
+                            rng.pick(&["100 m3/h", "120 m3/h", "140 m3/h"]).to_string()
+                    }
+                    5 => session.inputs.h = rng.pick(&["40 m", "45 m", "50 m"]).to_string(),
+                    6 => {
+                        if session.inputs.casing.is_some() {
+                            let _ = session.remove_casing() || session.remove_casing();
+                        } else {
+                            session.add_casing();
+                            session.inputs.casing = Some(sample_boxes());
+                        }
+                    }
+                    7 => {
+                        let path = session.file.clone().unwrap();
+                        let bytes = std::fs::read(&path).unwrap();
+                        let _ = session.reselect();
+                        assert_eq!(std::fs::read(&path).unwrap(), bytes, "{log}: escribió");
+                        continue;
+                    }
+                    _ => {
+                        check_a_save(&mut session, &log);
+                        continue;
+                    }
+                }
+                session.edited();
+            }
+            check_a_save(&mut session, &log);
+            let _ = std::fs::remove_dir_all(&dir);
+        }
+    }
+
     #[test]
     fn reselecting_needs_an_open_project() {
         let mut session = Session::default();

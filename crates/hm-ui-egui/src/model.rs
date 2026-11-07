@@ -174,7 +174,7 @@ impl CasingBoxes {
 
     /// La carcasa de las cajas. Solo lee los dos números: las cotas las juzga el
     /// motor.
-    fn to_casing(&self) -> Result<Casing, (Field, String)> {
+    pub fn to_casing(&self) -> Result<Casing, (Field, String)> {
         let number = |name: &'static str, text: &str| {
             let text = text.trim();
             if text.is_empty() {

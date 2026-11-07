@@ -321,7 +321,9 @@ fn meridian_edit(ui: &mut egui::Ui, outcome: &Outcome, boxes: &mut Meridian) -> 
                     && let Some((min, max)) = section_bounds(&model)
                 {
                     plot_ui.set_plot_bounds(egui_plot::PlotBounds::from_min_max(min, max));
-                    plot_ui.ctx().data_mut(|data| data.insert_temp(fit_id, true));
+                    plot_ui
+                        .ctx()
+                        .data_mut(|data| data.insert_temp(fit_id, true));
                 }
                 changed |= draw_section(plot_ui, &model, engine.as_ref(), boxes);
             });
@@ -525,8 +527,35 @@ fn draw_section(
                 .color(colour.gamma_multiply(0.55)),
         );
     }
-    let edge: Vec<[f64; 2]> = model.edge_handles().iter().map(|h| h.at).collect();
-    plot_ui.points(Points::new("Borde de ataque", edge).radius(4.5).color(TEAL));
+    // Del borde de ataque: sus extremos en puntos llenos, y los de abombado
+    // en círculos huecos con el brazo que los une a su extremo.
+    let edge_handles = model.edge_handles();
+    for handle in &edge_handles {
+        if let Some((from, to)) = handle.line {
+            plot_ui.line(
+                line("Brazos del borde", vec![from, to], TEAL.gamma_multiply(0.7))
+                    .width(1.0)
+                    .style(egui_plot::LineStyle::dashed_dense()),
+            );
+        }
+    }
+    let ends: Vec<[f64; 2]> = edge_handles
+        .iter()
+        .filter(|handle| handle.control.index == 0)
+        .map(|handle| handle.at)
+        .collect();
+    let bows: Vec<[f64; 2]> = edge_handles
+        .iter()
+        .filter(|handle| handle.control.index == 4)
+        .map(|handle| handle.at)
+        .collect();
+    plot_ui.points(Points::new("Borde de ataque", ends).radius(4.5).color(TEAL));
+    plot_ui.points(
+        Points::new("Abombado del borde", bows)
+            .radius(4.2)
+            .color(TEAL)
+            .filled(false),
+    );
     // El punto seleccionado, con un aro.
     plot_ui.points(
         Points::new("Seleccionado", vec![at])
@@ -591,7 +620,7 @@ fn wall_boxes(ui: &mut egui::Ui, boxes: &mut Meridian, auto: Option<&MeridionalM
     ui.horizontal_wrapped(|ui| {
         ui.label(RichText::new("Entrada").strong());
         let auto_hub = auto.map(|model| length_text(model.params.auto_d1i));
-        let fields: [(&str, &mut String, bool, String, &str); 3] = [
+        let fields: [(&str, &mut String, bool, String, &str); 5] = [
             (
                 "dH",
                 &mut boxes.hub_diameter,
@@ -615,6 +644,22 @@ fn wall_boxes(ui: &mut egui::Ui, boxes: &mut Meridian, auto: Option<&MeridionalM
                 "0 (auto)".to_string(),
                 "Dónde se apoya el borde de ataque sobre el cubo: fracción de su longitud desde el \
                  plano de entrada, de 0 a 0,9.",
+            ),
+            (
+                "Abombado tapa",
+                &mut boxes.edge_bow_shroud,
+                parsed.edge_bow_shroud.is_none(),
+                "0 mm (auto)".to_string(),
+                "Cuánto se abomba el borde de ataque cerca de la tapa, con unidad y signo: el punto \
+                 de control a un tercio de la cuerda se separa esta distancia en perpendicular. \
+                 Positivo, hacia aguas arriba. Vacío: recto.",
+            ),
+            (
+                "Abombado cubo",
+                &mut boxes.edge_bow_hub,
+                parsed.edge_bow_hub.is_none(),
+                "0 mm (auto)".to_string(),
+                "Igual, con el punto de control a dos tercios de la cuerda (cerca del cubo).",
             ),
         ];
         for (label, text, unread, hint, help) in fields {
@@ -812,9 +857,21 @@ fn write_moved(boxes: &mut Meridian, control: ControlPoint, moved: Moved) -> boo
         *target = text;
         return changed;
     }
+    if let Moved::Bow(bow) = moved {
+        let target = match control.wall {
+            Wall::Shroud => &mut boxes.edge_bow_shroud,
+            Wall::Hub => &mut boxes.edge_bow_hub,
+        };
+        // Sin «-0.00 mm»: lo que se redondea a cero es cero.
+        let bow = if bow.abs() < 0.005 { 0.0 } else { bow };
+        let text = length_text(bow);
+        let changed = *target != text;
+        *target = text;
+        return changed;
+    }
     let texts = wall_mut(boxes, control.wall);
     let updates: Vec<(&mut String, String)> = match (moved, control.index) {
-        (Moved::Fraction(_), _) => return false,
+        (Moved::Fraction(_) | Moved::Bow(_), _) => return false,
         (Moved::Point([z, r]), _) => vec![
             (&mut texts.p2_z, length_text(z)),
             (&mut texts.p2_r, length_text(r)),
@@ -874,7 +931,11 @@ fn edited_note(edits: &MeridianEdits) -> String {
     if edits.hub_diameter.is_some() {
         names.push("dH".to_string());
     }
-    if edits.edge_shroud.is_some() || edits.edge_hub.is_some() {
+    if edits.edge_shroud.is_some()
+        || edits.edge_hub.is_some()
+        || edits.edge_bow_shroud.is_some()
+        || edits.edge_bow_hub.is_some()
+    {
         names.push("borde de ataque".to_string());
     }
     for wall in Wall::ALL {
@@ -1443,5 +1504,35 @@ mod tests {
         // Lo escrito lo entiende el motor.
         let edits = hm_engine::meridian_edits_of(&boxes);
         assert_eq!((edits.edge_shroud, edits.edge_hub), (Some(0.25), Some(0.5)));
+    }
+
+    #[test]
+    fn dragging_a_bow_point_writes_a_signed_length_in_its_box() {
+        let mut boxes = Meridian::default();
+        let shroud = ControlPoint {
+            wall: Wall::Shroud,
+            index: 4,
+        };
+        let hub = ControlPoint {
+            wall: Wall::Hub,
+            index: 4,
+        };
+        assert!(write_moved(&mut boxes, shroud, Moved::Bow(4.256)));
+        assert!(write_moved(&mut boxes, hub, Moved::Bow(-1.5)));
+        assert_eq!(
+            (boxes.edge_bow_shroud.as_str(), boxes.edge_bow_hub.as_str()),
+            ("4.26 mm", "-1.50 mm")
+        );
+        // El mismo valor otra vez no cuenta como cambio.
+        assert!(!write_moved(&mut boxes, shroud, Moved::Bow(4.256)));
+        // Lo que redondea a cero es cero, sin signo.
+        assert!(write_moved(&mut boxes, hub, Moved::Bow(-0.001)));
+        assert_eq!(boxes.edge_bow_hub, "0.00 mm");
+        // Lo escrito lo entiende el motor, con signo.
+        let edits = hm_engine::meridian_edits_of(&boxes);
+        assert_eq!(
+            (edits.edge_bow_shroud, edits.edge_bow_hub),
+            (Some(4.26), Some(0.0))
+        );
     }
 }

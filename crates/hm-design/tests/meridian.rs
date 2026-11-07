@@ -561,8 +561,9 @@ fn the_leading_edge_ends_are_draggable_along_their_curves() {
         ..MeridianEdits::default()
     };
     let model = edited(&edits);
+    // Los dos extremos y, tras ellos, los dos puntos de abombado.
     let handles = model.edge_handles();
-    assert_eq!(handles.len(), 2);
+    assert_eq!(handles.len(), 4);
     for (handle, wall) in handles.iter().zip(Wall::ALL) {
         assert_eq!(handle.control, ControlPoint { wall, index: 0 });
         assert_eq!(handle.at, model.params.edge_points[wall as usize]);
@@ -736,5 +737,55 @@ fn a_bow_that_is_not_a_number_is_an_error() {
             .unwrap_err()
             .to_string();
         assert!(error.contains("abombado"), "{error}");
+    }
+}
+
+/// El abombado se arrastra por la perpendicular a la cuerda: los dos puntos de
+/// control salen con su brazo, y moverlos a donde el modelo los puso devuelve
+/// el mismo abombado, sea cual sea la posición del puntero a lo largo de la
+/// cuerda.
+#[test]
+fn the_bow_points_are_draggable_along_the_chord_normal() {
+    let (_, auto) = model();
+    let bowed = edited(&MeridianEdits {
+        edge_bow_shroud: Some(5.0),
+        edge_bow_hub: Some(-2.0),
+        ..MeridianEdits::default()
+    });
+    let at = |model: &MeridionalModel, wall, index| {
+        let control = ControlPoint { wall, index };
+        (control, model.control_position(control).unwrap())
+    };
+    // Cuatro puntos del borde: 2 extremos y 2 de abombado, estos con brazo.
+    let handles = bowed.edge_handles();
+    assert_eq!(handles.len(), 4);
+    assert_eq!(handles.iter().filter(|h| h.control.index == 4).count(), 2);
+    for handle in handles.iter().filter(|h| h.control.index == 4) {
+        let end = bowed.params.edge_points[usize::from(handle.control.wall == Wall::Hub)];
+        assert_eq!(handle.line, Some((end, handle.at)));
+    }
+    // Recto: los de abombado están sobre la cuerda, a un tercio y dos tercios.
+    let ends = auto.params.edge_points;
+    let (_, p1) = at(&auto, Wall::Shroud, 4);
+    let (_, p2) = at(&auto, Wall::Hub, 4);
+    for (p, t) in [(p1, 1.0 / 3.0), (p2, 2.0 / 3.0)] {
+        assert!((p[0] - (ends[0][0] + t * (ends[1][0] - ends[0][0]))).abs() < 1e-9);
+        assert!((p[1] - (ends[0][1] + t * (ends[1][1] - ends[0][1]))).abs() < 1e-9);
+    }
+    // Arrastrar a donde está el punto abombado da el abombado.
+    for (wall, bow) in [(Wall::Shroud, 5.0), (Wall::Hub, -2.0)] {
+        let (control, position) = at(&bowed, wall, 4);
+        assert_eq!(bowed.moved(control, position), Moved::Bow(bow));
+        // Deslizar el puntero a lo largo de la cuerda no cambia nada.
+        let length = auto.params.edge_length;
+        let tangent = [
+            (ends[1][0] - ends[0][0]) / length,
+            (ends[1][1] - ends[0][1]) / length,
+        ];
+        let along = [
+            position[0] + 7.0 * tangent[0],
+            position[1] + 7.0 * tangent[1],
+        ];
+        assert_eq!(bowed.moved(control, along), Moved::Bow(bow));
     }
 }

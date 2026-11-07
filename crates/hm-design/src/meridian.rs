@@ -222,12 +222,14 @@ pub struct MeridionalModel {
     pub params: MeridianParams,
 }
 
-/// Un punto de control movible: P1, P2 o P3 de una tapa, o el extremo del
-/// borde de ataque sobre ella.
+/// Un punto de control movible: P1, P2 o P3 de una tapa, el extremo del borde
+/// de ataque sobre ella o el punto de abombado del borde cerca de ella.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct ControlPoint {
     pub wall: Wall,
-    /// 1, 2 o 3 para P1, P2 y P3; 0 para el extremo del borde de ataque.
+    /// 1, 2 o 3 para P1, P2 y P3; 0 para el extremo del borde de ataque; 4
+    /// para su punto de abombado (P1 de la Bézier del borde en la tapa
+    /// delantera, P2 en el cubo).
     pub index: usize,
 }
 
@@ -241,6 +243,9 @@ pub enum Moved {
     /// El extremo del borde de ataque: fracción de la longitud de la curva
     /// desde el plano de entrada, dentro de [`EDGE_FRACTION_RANGE`].
     Fraction(f64),
+    /// El abombado del borde de ataque, en mm, con signo: lo que se separa de
+    /// la cuerda el punto de control, en perpendicular.
+    Bow(f64),
 }
 
 /// Un punto de control y, si es de un brazo, el brazo que lo une a su extremo.
@@ -341,12 +346,15 @@ impl MeridionalModel {
         handles
     }
 
-    /// Los dos extremos del borde de ataque, sobre la tapa y sobre el cubo.
+    /// Los puntos movibles del borde de ataque: sus dos extremos, sobre la tapa
+    /// y sobre el cubo, y los dos puntos de abombado, cada uno con el brazo que
+    /// lo une a su extremo. Sin cuerda (extremos juntos) no hay abombado.
     #[must_use]
     pub fn edge_handles(&self) -> Vec<Handle> {
-        Wall::ALL
+        let ends = self.params.edge_points;
+        let mut handles: Vec<Handle> = Wall::ALL
             .iter()
-            .zip(self.params.edge_points)
+            .zip(ends)
             .map(|(wall, at)| Handle {
                 control: ControlPoint {
                     wall: *wall,
@@ -355,7 +363,20 @@ impl MeridionalModel {
                 at,
                 line: None,
             })
-            .collect()
+            .collect();
+        if let Some(bows) = edge_controls(ends[0], ends[1], self.params.edge_bow) {
+            for ((wall, at), end) in Wall::ALL.iter().zip(bows).zip(ends) {
+                handles.push(Handle {
+                    control: ControlPoint {
+                        wall: *wall,
+                        index: 4,
+                    },
+                    at,
+                    line: Some((end, at)),
+                });
+            }
+        }
+        handles
     }
 
     /// Dónde está un punto de control, sea de una Bézier o del borde.
@@ -382,6 +403,14 @@ impl MeridionalModel {
             return Moved::Fraction(
                 arc_fraction(line, pointer).clamp(EDGE_FRACTION_RANGE.0, EDGE_FRACTION_RANGE.1),
             );
+        }
+        if control.index == 4 {
+            let ends = self.params.edge_points;
+            let Some((base, normal)) = edge_frame(ends[0], ends[1], control.wall) else {
+                return Moved::Bow(0.0);
+            };
+            let bow = (pointer[0] - base[0]) * normal[0] + (pointer[1] - base[1]) * normal[1];
+            return Moved::Bow((bow * 100.0).round() / 100.0);
         }
         let (from, sign) = match control.index {
             1 => (shape.points[0], 1.0),
@@ -591,16 +620,9 @@ const EDGE_SEGMENTS: usize = 24;
 /// (positivo hacia aguas arriba: la normal es (Δr, −Δz)/|cuerda|, que en un
 /// borde radial apunta a −z).
 fn edge_bezier(from: [f64; 2], to: [f64; 2], bow: [f64; 2]) -> Vec<[f64; 2]> {
-    let (dz, dr) = (to[0] - from[0], to[1] - from[1]);
-    let chord = dz.hypot(dr);
-    let normal = [dr / chord, -dz / chord];
-    let at = |fraction: f64, offset: f64| {
-        [
-            from[0] + fraction * dz + offset * normal[0],
-            from[1] + fraction * dr + offset * normal[1],
-        ]
+    let Some([p1, p2]) = edge_controls(from, to, bow) else {
+        return vec![from, to];
     };
-    let (p1, p2) = (at(1.0 / 3.0, bow[0]), at(2.0 / 3.0, bow[1]));
     (0..=EDGE_SEGMENTS)
         .map(|step| {
             let t = step as f64 / EDGE_SEGMENTS as f64;
@@ -613,6 +635,39 @@ fn edge_bezier(from: [f64; 2], to: [f64; 2], bow: [f64; 2]) -> Vec<[f64; 2]> {
             ]
         })
         .collect()
+}
+
+/// P1 y P2 de la Bézier del borde; `None` si no hay cuerda de la que
+/// separarlos.
+fn edge_controls(from: [f64; 2], to: [f64; 2], bow: [f64; 2]) -> Option<[[f64; 2]; 2]> {
+    let (dz, dr) = (to[0] - from[0], to[1] - from[1]);
+    let chord = dz.hypot(dr);
+    if chord < RANGE_TOLERANCE {
+        return None;
+    }
+    let normal = [dr / chord, -dz / chord];
+    let at = |fraction: f64, offset: f64| {
+        [
+            from[0] + fraction * dz + offset * normal[0],
+            from[1] + fraction * dr + offset * normal[1],
+        ]
+    };
+    Some([at(1.0 / 3.0, bow[0]), at(2.0 / 3.0, bow[1])])
+}
+
+/// Donde nace el abombado de una tapa (el tercio de la cuerda desde la tapa,
+/// o los dos tercios para el cubo) y la normal por la que se desplaza.
+fn edge_frame(from: [f64; 2], to: [f64; 2], wall: Wall) -> Option<([f64; 2], [f64; 2])> {
+    let controls = edge_controls(from, to, [0.0, 0.0])?;
+    let base = match wall {
+        Wall::Shroud => controls[0],
+        Wall::Hub => controls[1],
+    };
+    let chord = (to[0] - from[0]).hypot(to[1] - from[1]);
+    Some((
+        base,
+        [(to[1] - from[1]) / chord, -(to[0] - from[0]) / chord],
+    ))
 }
 
 /// Los 5 puntos con P1 a `p1` de P0 hacia P2 y P3 a `p3` de P4 hacia P2: solo

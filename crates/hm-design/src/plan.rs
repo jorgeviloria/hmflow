@@ -40,28 +40,10 @@ impl PlanModel {
     }
 
     /// FNV-1a de 64 bits sobre nombres, número de puntos y los bits de cada
-    /// coordenada. Cualquier cambio, incluso en la última cifra, la mueve. El
-    /// número de puntos separa una curva de la siguiente.
+    /// coordenada.
     #[must_use]
     pub fn fingerprint(&self) -> u64 {
-        const OFFSET: u64 = 0xcbf2_9ce4_8422_2325;
-        const PRIME: u64 = 0x0000_0100_0000_01b3;
-        let mut hash = OFFSET;
-        let mut feed = |bytes: &[u8]| {
-            for byte in bytes {
-                hash ^= u64::from(*byte);
-                hash = hash.wrapping_mul(PRIME);
-            }
-        };
-        for curve in &self.curves {
-            feed(curve.name.as_bytes());
-            feed(&(curve.points.len() as u64).to_le_bytes());
-            for point in &curve.points {
-                feed(&point[0].to_bits().to_le_bytes());
-                feed(&point[1].to_bits().to_le_bytes());
-            }
-        }
-        hash
+        fingerprint_of(&self.curves)
     }
 
     /// La huella como se muestra y se escribe: 16 dígitos hexadecimales.
@@ -70,27 +52,58 @@ impl PlanModel {
         format!("{:016x}", self.fingerprint())
     }
 
-    /// CSV para exportar: UTF-8 con BOM, para que Excel lea las tildes; una
-    /// cabecera con la huella; luego `curva,punto,x_mm,y_mm`, una fila por
-    /// punto. Cada número se escribe con la forma más corta que, releída, da
-    /// el mismo `f64`, con exponente si es muy pequeño o muy grande: el
-    /// archivo releído tiene la misma huella.
+    /// CSV para exportar, con columnas `x_mm,y_mm`.
     #[must_use]
     pub fn to_csv(&self) -> String {
-        use std::fmt::Write as _;
-        let mut out = format!(
-            "\u{feff}# hmflow vista en planta, mm, huella {}\ncurva,punto,x_mm,y_mm\n",
-            self.fingerprint_text()
-        );
-        for curve in &self.curves {
-            let name = csv_field(&curve.name);
-            for (index, [x, y]) in curve.points.iter().enumerate() {
-                // Escribir en un String no falla.
-                let _ = writeln!(out, "{name},{index},{x:?},{y:?}");
-            }
-        }
-        out
+        csv_of(&self.curves, "vista en planta", ["x_mm", "y_mm"])
     }
+}
+
+/// FNV-1a de 64 bits sobre nombres, número de puntos y los bits de cada
+/// coordenada. Cualquier cambio, incluso en la última cifra, la mueve. El
+/// número de puntos separa una curva de la siguiente.
+pub(crate) fn fingerprint_of(curves: &[PlanCurve]) -> u64 {
+    const OFFSET: u64 = 0xcbf2_9ce4_8422_2325;
+    const PRIME: u64 = 0x0000_0100_0000_01b3;
+    let mut hash = OFFSET;
+    let mut feed = |bytes: &[u8]| {
+        for byte in bytes {
+            hash ^= u64::from(*byte);
+            hash = hash.wrapping_mul(PRIME);
+        }
+    };
+    for curve in curves {
+        feed(curve.name.as_bytes());
+        feed(&(curve.points.len() as u64).to_le_bytes());
+        for point in &curve.points {
+            feed(&point[0].to_bits().to_le_bytes());
+            feed(&point[1].to_bits().to_le_bytes());
+        }
+    }
+    hash
+}
+
+/// CSV para exportar: UTF-8 con BOM, para que Excel lea las tildes; una
+/// cabecera con la vista y la huella; luego `curva,punto` y las dos columnas,
+/// una fila por punto. Cada número se escribe con la forma más corta que,
+/// releída, da el mismo `f64`, con exponente si es muy pequeño o muy grande:
+/// el archivo releído tiene la misma huella.
+pub(crate) fn csv_of(curves: &[PlanCurve], view: &str, columns: [&str; 2]) -> String {
+    use std::fmt::Write as _;
+    let mut out = format!(
+        "\u{feff}# hmflow {view}, mm, huella {:016x}\ncurva,punto,{},{}\n",
+        fingerprint_of(curves),
+        columns[0],
+        columns[1]
+    );
+    for curve in curves {
+        let name = csv_field(&curve.name);
+        for (index, [x, y]) in curve.points.iter().enumerate() {
+            // Escribir en un String no falla.
+            let _ = writeln!(out, "{name},{index},{x:?},{y:?}");
+        }
+    }
+    out
 }
 
 /// Un campo CSV: entre comillas, con las comillas dobladas, si lleva coma,

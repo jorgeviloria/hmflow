@@ -202,3 +202,52 @@ fn a_rear_arm_moves_only_the_rear_shroud_and_keeps_the_flat_disc() {
     let disc = rear[rear.len() - 1][0];
     assert!(rear.iter().filter(|p| p[1] >= r1).all(|p| p[0] == disc));
 }
+
+/// Cada asidero está en su punto de control, y medir sobre su recta desde su
+/// origen da el brazo: es lo que usa el arrastre.
+#[test]
+fn each_handle_sits_on_its_control_point_and_measures_its_arm() {
+    use hm_design::meridian::Arm;
+    let model = edited(&MeridianEdits {
+        front_axial_arm: Some(10.0),
+        rear_radial_arm: Some(12.0),
+        ..MeridianEdits::default()
+    });
+    let p = &model.params;
+    for handle in model.handles() {
+        let offset = [
+            handle.point[0] - handle.origin[0],
+            handle.point[1] - handle.origin[1],
+        ];
+        let measured = offset[0] * handle.along[0] + offset[1] * handle.along[1];
+        let expected = match handle.arm {
+            Arm::FrontAxial => p.front_axial_arm,
+            Arm::FrontRadial => p.front_radial_arm,
+            Arm::RearAxial => p.rear_axial_arm,
+            Arm::RearRadial => p.rear_radial_arm,
+        };
+        assert!((measured - expected).abs() < 1e-9, "{:?}", handle.arm);
+        assert!((handle.along[0].hypot(handle.along[1]) - 1.0).abs() < 1e-12);
+        assert_eq!(handle.arm.measure(handle.point, &model), Some(expected));
+    }
+    // Los extremos de cada brazo: el origen está en la curva.
+    let front = points(&model, "Tapa delantera");
+    let handles = model.handles();
+    assert_eq!(handles[0].origin, [p.g1, front[0][1]]);
+    assert_eq!(handles[1].origin, front[front.len() - 1]);
+}
+
+#[test]
+fn every_arm_has_its_file_name() {
+    use hm_design::meridian::Arm;
+    let names: Vec<&str> = Arm::ALL.iter().map(|arm| arm.file_name()).collect();
+    assert_eq!(
+        names,
+        [
+            "front_axial_arm",
+            "front_radial_arm",
+            "rear_axial_arm",
+            "rear_radial_arm"
+        ]
+    );
+}

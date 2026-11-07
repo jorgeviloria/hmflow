@@ -152,13 +152,9 @@ impl eframe::App for App {
                 Tab::Curves => curves(ui, outcome),
                 Tab::Geometry => plan_view(ui, outcome),
                 Tab::Meridian => {
-                    let edits = self
-                        .session
-                        .project
-                        .as_ref()
-                        .map(hm_engine::meridian_edits)
-                        .unwrap_or_default();
-                    meridian_view(ui, outcome, &edits);
+                    if meridian_view(ui, outcome, &mut self.session.inputs.meridian) {
+                        self.session.edited();
+                    }
                 }
             }
         });

@@ -312,13 +312,26 @@ pub fn meridian(project: &Project) -> Result<MeridionalModel, EngineError> {
 /// texto que no se entienda ya lo rechazó `validate` (HM-PROJ-031).
 #[must_use]
 pub fn meridian_edits(project: &Project) -> MeridianEdits {
-    let Some(section) = &project.meridian else {
-        return MeridianEdits::default();
-    };
+    project
+        .meridian
+        .as_ref()
+        .map(meridian_edits_of)
+        .unwrap_or_default()
+}
+
+/// Los brazos de una sección `[meridian]` en mm. Un texto vacío o que no es
+/// una longitud positiva queda en automático.
+#[must_use]
+pub fn meridian_edits_of(section: &hm_project::Meridian) -> MeridianEdits {
     let mm = |text: &str| {
         (!text.trim().is_empty())
             .then(|| hm_units::parse_quantity(text).ok())
             .flatten()
+            .filter(|quantity| {
+                quantity.dim() == hm_units::Dimension::LENGTH
+                    && quantity.si.is_finite()
+                    && quantity.si > 0.0
+            })
             .map(|quantity| quantity.si * 1000.0)
     };
     MeridianEdits {

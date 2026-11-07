@@ -19,7 +19,7 @@ use hm_engine::{
     new_casing_project, new_project, open_project, report, reselect_design, reselected_options,
     update_design, update_point, water_density_at,
 };
-use hm_project::{Casing, Param, Project};
+use hm_project::{Casing, Meridian, Param, Project};
 use hm_units::Quantity;
 
 /// Puntos de la curva que se dibujan.
@@ -62,6 +62,8 @@ pub struct Inputs {
     /// Medidas: vacío significa el valor por defecto.
     pub roughness: String,
     pub incidence: String,
+    /// Brazos del meridiano, con unidad; vacío es automático.
+    pub meridian: Meridian,
 }
 
 /// Cajas de selecciones y medidas: parámetro, etiqueta y ejemplo.
@@ -214,6 +216,7 @@ impl Default for Inputs {
             blade_count: String::new(),
             roughness: String::new(),
             incidence: String::new(),
+            meridian: Meridian::default(),
         }
     }
 }
@@ -741,6 +744,7 @@ pub fn case_to_inputs(case: &Case) -> Inputs {
         blade_count: String::new(),
         roughness: String::new(),
         incidence: String::new(),
+        meridian: Meridian::default(),
     }
 }
 
@@ -793,6 +797,7 @@ pub fn open_loaded(project: Project) -> Result<OpenedFile, String> {
     inputs.blade_count.clone_from(&opened.edits.blade_count);
     inputs.roughness.clone_from(&opened.edits.roughness);
     inputs.incidence.clone_from(&opened.edits.incidence);
+    inputs.meridian = project.meridian.clone().unwrap_or_default();
     let basis = Basis::from_opened(&project, &opened, &inputs);
     Ok(OpenedFile {
         project,
@@ -863,6 +868,39 @@ pub struct Built {
 /// la temperatura no es la de esa densidad, `recalc` deja `HM-DES-009`. Una ηm
 /// bloqueada no se deja pisar: la caja vuelve a su texto.
 pub fn build_project(
+    inputs: &Inputs,
+    basis: &Basis,
+    previous: Option<&Project>,
+    name: &str,
+) -> Result<Built, String> {
+    let mut built = build_design(inputs, basis, previous, name)?;
+    built.project.meridian = meridian_section(&inputs.meridian)?;
+    Ok(built)
+}
+
+/// Los brazos escritos, o ninguna sección si están todos vacíos. Uno que no
+/// es una longitud positiva no se guarda: el mismo HM-PROJ-031 del archivo.
+fn meridian_section(boxes: &Meridian) -> Result<Option<Meridian>, String> {
+    if boxes.arms().iter().all(|(_, text)| text.trim().is_empty()) {
+        return Ok(None);
+    }
+    let mut probe = Project::new("brazos", hm_engine::PumpType::EndSuction);
+    probe.meridian = Some(boxes.clone());
+    let problems: Vec<String> = probe
+        .validate(&hm_formula::Registry::all())
+        .iter()
+        .filter(|diagnostic| diagnostic.code == "HM-PROJ-031")
+        .map(|diagnostic| diagnostic.message.clone())
+        .collect();
+    if problems.is_empty() {
+        Ok(Some(boxes.clone()))
+    } else {
+        Err(problems.join("\n"))
+    }
+}
+
+/// El proyecto del diseño, sin la sección del meridiano.
+fn build_design(
     inputs: &Inputs,
     basis: &Basis,
     previous: Option<&Project>,
@@ -2490,6 +2528,11 @@ mod tests {
             ..hm_project::Meridian::default()
         });
 
+        // Al abrir, los brazos pasan a las cajas; guardar los conserva.
+        let inputs = Inputs {
+            meridian: project.meridian.clone().unwrap(),
+            ..inputs
+        };
         let saved = build_project(&inputs, &basis, Some(&project), "sin título").unwrap();
         assert_eq!(saved.project.meridian, project.meridian);
 
@@ -2507,5 +2550,59 @@ mod tests {
                 .unwrap()
                 .to_csv()
         );
+    }
+
+    fn arms(front_radial: &str) -> hm_project::Meridian {
+        hm_project::Meridian {
+            front_radial_arm: front_radial.into(),
+            ..hm_project::Meridian::default()
+        }
+    }
+
+    /// Abrir un archivo con `[meridian]` llena las cajas de los brazos.
+    #[test]
+    fn opening_fills_the_arm_boxes() {
+        let mut project = build_project(&Inputs::default(), &Basis::default(), None, "x")
+            .unwrap()
+            .project;
+        project.meridian = Some(arms("20 mm"));
+        let opened = open_loaded(project).unwrap();
+        assert_eq!(opened.inputs.meridian, arms("20 mm"));
+    }
+
+    /// Lo escrito en las cajas va al proyecto, aunque el anterior tuviera
+    /// otros brazos; sin nada escrito, no hay sección.
+    #[test]
+    fn the_arm_boxes_go_to_the_project() {
+        let basis = Basis::default();
+        let inputs = Inputs {
+            meridian: arms("18 mm"),
+            ..Inputs::default()
+        };
+        let fresh = build_project(&inputs, &basis, None, "x").unwrap().project;
+        assert_eq!(fresh.meridian, Some(arms("18 mm")));
+
+        let mut previous = fresh.clone();
+        previous.meridian = Some(arms("25 mm"));
+        let saved = build_project(&inputs, &basis, Some(&previous), "x")
+            .unwrap()
+            .project;
+        assert_eq!(saved.meridian, Some(arms("18 mm")));
+
+        let cleared = build_project(&Inputs::default(), &basis, Some(&previous), "x")
+            .unwrap()
+            .project;
+        assert_eq!(cleared.meridian, None);
+    }
+
+    /// Un brazo que no se entiende no se guarda: lo rechaza la validación.
+    #[test]
+    fn a_bad_arm_box_is_not_saved() {
+        let inputs = Inputs {
+            meridian: arms("mucho"),
+            ..Inputs::default()
+        };
+        let error = build_project(&inputs, &Basis::default(), None, "x").unwrap_err();
+        assert!(error.contains("front_radial_arm"), "{error}");
     }
 }

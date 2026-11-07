@@ -142,6 +142,34 @@ impl MeridionalModel {
         stations
     }
 
+    /// Los cuatro puntos de control interiores, con la recta por la que se
+    /// deslizan, en coordenadas del corte (z con el flujo). En el orden de
+    /// [`Arm::ALL`].
+    #[must_use]
+    pub fn handles(&self) -> Vec<Handle> {
+        let (Some(front), Some(rear)) = (self.curve("Tapa delantera"), self.curve("Tapa trasera"))
+        else {
+            return Vec::new();
+        };
+        let p = &self.params;
+        let r1 = front.points[0][1];
+        let outlet = front.points[front.points.len() - 1];
+        let disc = rear.points[rear.points.len() - 1][0];
+        let hub = p.d1i / 2.0;
+        let handle = |arm, origin: [f64; 2], along: [f64; 2], length: f64| Handle {
+            arm,
+            origin,
+            along,
+            point: [origin[0] + along[0] * length, origin[1] + along[1] * length],
+        };
+        vec![
+            handle(Arm::FrontAxial, [p.g1, r1], [1.0, 0.0], p.front_axial_arm),
+            handle(Arm::FrontRadial, outlet, [0.0, -1.0], p.front_radial_arm),
+            handle(Arm::RearAxial, [0.0, hub], [1.0, 0.0], p.rear_axial_arm),
+            handle(Arm::RearRadial, [disc, r1], [0.0, -1.0], p.rear_radial_arm),
+        ]
+    }
+
     /// CSV para exportar, con columnas `z_mm,r_mm`.
     #[must_use]
     pub fn to_csv(&self) -> String {
@@ -339,6 +367,70 @@ fn out_of_line(name: &str, value: f64, max: f64) -> DesignError {
     DesignError::Input(format!(
         "meridiano: el {name} vale {value:.2} mm y tiene que estar entre 0 y {max:.2} mm"
     ))
+}
+
+/// Uno de los cuatro brazos editables.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Arm {
+    FrontAxial,
+    FrontRadial,
+    RearAxial,
+    RearRadial,
+}
+
+impl Arm {
+    pub const ALL: [Self; 4] = [
+        Self::FrontAxial,
+        Self::FrontRadial,
+        Self::RearAxial,
+        Self::RearRadial,
+    ];
+
+    /// Su nombre en `[meridian]`.
+    #[must_use]
+    pub fn file_name(self) -> &'static str {
+        match self {
+            Self::FrontAxial => "front_axial_arm",
+            Self::FrontRadial => "front_radial_arm",
+            Self::RearAxial => "rear_axial_arm",
+            Self::RearRadial => "rear_radial_arm",
+        }
+    }
+
+    /// Para la ventana.
+    #[must_use]
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::FrontAxial => "Brazo axial, tapa delantera",
+            Self::FrontRadial => "Brazo radial, tapa delantera",
+            Self::RearAxial => "Brazo axial, tapa trasera",
+            Self::RearRadial => "Brazo radial, tapa trasera",
+        }
+    }
+
+    /// El brazo que daría un punto de control llevado a `point`: su
+    /// proyección sobre la recta del asidero.
+    #[must_use]
+    pub fn measure(self, point: [f64; 2], model: &MeridionalModel) -> Option<f64> {
+        let handle = model
+            .handles()
+            .into_iter()
+            .find(|handle| handle.arm == self)?;
+        Some(
+            (point[0] - handle.origin[0]) * handle.along[0]
+                + (point[1] - handle.origin[1]) * handle.along[1],
+        )
+    }
+}
+
+/// Un punto de control y la recta por la que se desliza: `origin` es donde
+/// el brazo vale 0, y `along`, el sentido en que crece.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Handle {
+    pub arm: Arm,
+    pub point: [f64; 2],
+    pub origin: [f64; 2],
+    pub along: [f64; 2],
 }
 
 /// Una estación del canal sobre la línea media, en mm y mm².

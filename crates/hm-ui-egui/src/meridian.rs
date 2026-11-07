@@ -31,6 +31,53 @@ fn meridian_color(name: &str) -> Color32 {
 /// Distancia en píxeles a la que un clic agarra un punto de control.
 const GRAB_PIXELS: f32 = 12.0;
 
+/// Una cota sobre el dibujo: línea de `from` a `to` con su texto.
+#[derive(Debug, Clone, PartialEq)]
+struct Dimension {
+    from: [f64; 2],
+    to: [f64; 2],
+    text: String,
+    anchor: egui::Align2,
+}
+
+/// Las cotas del corte, en mm: zE y b2 sobre la salida, cada una a su altura
+/// para que los textos no se pisen, y la anchura de entrada b1 paralela al
+/// borde de ataque, por fuera del círculo de la entrada. r2 y r1 están en la
+/// cabecera: una cota hasta el eje encogería el dibujo.
+fn dimensions(model: &MeridionalModel) -> Vec<Dimension> {
+    let p = &model.params;
+    let r2 = p.shroud.points[4][1];
+    let off = 0.04 * r2;
+    let b2 = p.hub.points[4][0] - p.z_e;
+    let mut dimensions = vec![
+        Dimension {
+            from: [0.0, r2 + off],
+            to: [p.z_e, r2 + off],
+            text: format!("zE = {:.1}", p.z_e),
+            anchor: egui::Align2::CENTER_BOTTOM,
+        },
+        Dimension {
+            from: [p.z_e, r2 + 3.0 * off],
+            to: [p.z_e + b2, r2 + 3.0 * off],
+            text: format!("b2 = {b2:.1}"),
+            anchor: egui::Align2::CENTER_BOTTOM,
+        },
+    ];
+    if let Some(edge) = model.curve("Borde de ataque") {
+        let (top, bottom) = (edge.points[0], edge.points[1]);
+        // El círculo de la entrada tiene por diámetro el borde: sobresale hacia
+        // atrás su radio.
+        let back = p.inlet_width / 2.0 + 2.0 * off;
+        dimensions.push(Dimension {
+            from: [top[0] - back, top[1]],
+            to: [bottom[0] - back, bottom[1]],
+            text: format!("b1 = {:.1}", p.inlet_width),
+            anchor: egui::Align2::RIGHT_CENTER,
+        });
+    }
+    dimensions
+}
+
 /// Cuántos círculos de área se dibujan, repartidos por la línea media.
 const AREA_CIRCLES: usize = 24;
 
@@ -248,6 +295,23 @@ fn meridian_edit(ui: &mut egui::Ui, outcome: &Outcome, boxes: &mut Meridian) -> 
                         .shape(egui_plot::MarkerShape::Diamond)
                         .color(Color32::from_rgb(220, 60, 60))
                         .filled(false),
+                );
+            }
+            // Las cotas.
+            for dimension in dimensions(&model) {
+                let grey = Color32::from_gray(90);
+                plot_ui.line(line("Cotas", vec![dimension.from, dimension.to], grey).width(0.8));
+                plot_ui.text(
+                    egui_plot::Text::new(
+                        "Cotas",
+                        PlotPoint::new(
+                            (dimension.from[0] + dimension.to[0]) / 2.0,
+                            (dimension.from[1] + dimension.to[1]) / 2.0,
+                        ),
+                        RichText::new(dimension.text).small(),
+                    )
+                    .anchor(dimension.anchor)
+                    .color(grey),
                 );
             }
             // Los círculos de área, como en CFturbo: la familia en gris, el de la
@@ -936,5 +1000,42 @@ mod tests {
         let opened = edits("-5");
         history.follow(&opened);
         assert!(!history.can_undo() && !history.can_redo());
+    }
+
+    #[test]
+    fn the_dimensions_give_ze_b2_and_the_inlet_width_of_the_model() {
+        let result = hm_design::design(&hm_design::DesignInput {
+            q: hm_units::parse_quantity("120 m3/h").unwrap(),
+            h: hm_units::parse_quantity("45 m").unwrap(),
+            n: hm_units::parse_quantity("2900 rpm").unwrap(),
+            rho: hm_units::parse_quantity("998.2 kg/m3").unwrap(),
+            eta_m: 0.95,
+            npsha: None,
+            nu: None,
+        })
+        .unwrap();
+        let model = meridional_model(&result).unwrap();
+        let dimensions = dimensions(&model);
+        let p = &model.params;
+        let by = |prefix: &str| {
+            dimensions
+                .iter()
+                .find(|dimension| dimension.text.starts_with(prefix))
+                .unwrap()
+        };
+        let ze = by("zE");
+        assert_eq!(ze.text, format!("zE = {:.1}", p.z_e));
+        assert_eq!((ze.from[0], ze.to[0]), (0.0, p.z_e));
+        let b2 = p.hub.points[4][0] - p.z_e;
+        assert_eq!(by("b2").text, format!("b2 = {b2:.1}"));
+        // Cada cota a su altura: los textos no se pisan.
+        assert_ne!(ze.from[1], by("b2").from[1]);
+        let b1 = by("b1");
+        assert_eq!(b1.text, format!("b1 = {:.1}", p.inlet_width));
+        // Por fuera del círculo de la entrada.
+        assert!(b1.from[0] < -p.inlet_width / 2.0);
+        // Ninguna baja al eje: el dibujo conserva su escala.
+        assert!(dimensions.iter().all(|d| d.from[1] > 0.0 && d.to[1] > 0.0));
+        assert_eq!(dimensions.len(), 3);
     }
 }

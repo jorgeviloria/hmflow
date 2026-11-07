@@ -7,9 +7,14 @@ use hm_core::Severity;
 use crate::App;
 use crate::model;
 
+/// El panel de avisos va plegado: solo la fila con los recuentos, para dejar
+/// el alto a los dibujos. Se abre con la flecha; los errores no se ocultan
+/// del todo, porque el recuento se pone en rojo.
 pub(super) fn diagnostics_panel(ui: &mut egui::Ui, app: &App) {
+    let open_id = egui::Id::unique("diagnostics_open");
+    let open: bool = ui.data(|data| data.get_temp(open_id)).unwrap_or(false);
     egui::Panel::bottom("diagnostics")
-        .resizable(true)
+        .resizable(open)
         .default_size(150.0)
         .show(ui, |ui| {
             if let Some(note) = app.session.migration_note() {
@@ -34,15 +39,30 @@ pub(super) fn diagnostics_panel(ui: &mut egui::Ui, app: &App) {
                     .filter(|diagnostic| diagnostic.severity == severity)
                     .count()
             };
+            let errors = count(Severity::Error) + count(Severity::Blocking);
             ui.horizontal(|ui| {
-                ui.strong("Avisos");
-                ui.label(format!(
-                    "{} errores · {} avisos · {} informativos",
-                    count(Severity::Error) + count(Severity::Blocking),
+                let arrow = if open { "▾" } else { "▸" };
+                if ui
+                    .button(RichText::new(format!("{arrow} Avisos")).strong())
+                    .on_hover_text("Mostrar u ocultar los avisos")
+                    .clicked()
+                {
+                    ui.data_mut(|data| data.insert_temp(open_id, !open));
+                }
+                let text = RichText::new(format!(
+                    "{errors} errores · {} avisos · {} informativos",
                     count(Severity::Warning),
                     count(Severity::Info)
                 ));
+                ui.label(if errors > 0 {
+                    text.color(ui.visuals().error_fg_color)
+                } else {
+                    text
+                });
             });
+            if !open {
+                return;
+            }
             egui::ScrollArea::vertical().show(ui, |ui| {
                 if from_file.is_none() {
                     for (name, error) in [

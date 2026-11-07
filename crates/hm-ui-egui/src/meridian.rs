@@ -459,14 +459,14 @@ fn nearest_on(polyline: &[[f64; 2]], c: [f64; 2]) -> ([f64; 2], f64) {
 }
 
 /// `count` círculos de área inscritos en el corte, de la entrada a la
-/// salida (Gülich, p. 417): el centro se ajusta hasta quedar a igual
-/// distancia de las dos tapas y el radio es la distancia mínima a cualquiera
+/// salida (Gülich, p. 417): el centro está en la cuerda de tapa a tapa de la
+/// estación, a igual distancia de las dos y el radio es la distancia mínima a cualquiera
 /// de las curvas del contorno, así que ninguno sobresale. Parten de las
 /// estaciones del canal, sin los extremos, donde el radio sería cero. Cada
 /// círculo es una polilínea cerrada.
 fn area_circles(model: &MeridionalModel, count: usize) -> Vec<Vec<[f64; 2]>> {
     const SEGMENTS: usize = 48;
-    const ITERATIONS: usize = 40;
+    const ITERATIONS: usize = 50;
     let channel = model.channel();
     let (Some(shroud), Some(hub)) = (
         model.curve(Wall::Shroud.name()),
@@ -486,15 +486,29 @@ fn area_circles(model: &MeridionalModel, count: usize) -> Vec<Vec<[f64; 2]>> {
     picked
         .into_iter()
         .map(|index| {
-            let mut centre = [channel[index].z, channel[index].r];
+            let station = &channel[index];
+            let (from, to) = (station.shroud_point, station.hub_point);
+            let at = |u: f64| {
+                [
+                    from[0] + (to[0] - from[0]) * u,
+                    from[1] + (to[1] - from[1]) * u,
+                ]
+            };
+            // Sobre la cuerda de tapa a tapa, el punto equidistante de las dos.
+            let balance = |u: f64| {
+                let centre = at(u);
+                nearest_on(&shroud.points, centre).1 - nearest_on(&hub.points, centre).1
+            };
+            let (mut low, mut high) = (0.0, 1.0);
             for _ in 0..ITERATIONS {
-                let (on_shroud, _) = nearest_on(&shroud.points, centre);
-                let (on_hub, _) = nearest_on(&hub.points, centre);
-                centre = [
-                    (on_shroud[0] + on_hub[0]) / 2.0,
-                    (on_shroud[1] + on_hub[1]) / 2.0,
-                ];
+                let middle = (low + high) / 2.0;
+                if balance(middle) < 0.0 {
+                    low = middle;
+                } else {
+                    high = middle;
+                }
             }
+            let centre = at((low + high) / 2.0);
             let radius = model
                 .curves
                 .iter()
@@ -560,6 +574,8 @@ mod tests {
         let station = ChannelStation {
             m: 12.0,
             z: 3.0,
+            shroud_point: [3.0, 60.0],
+            hub_point: [3.0, 40.0],
             r: 50.0,
             width: 20.0,
             area: 2.0 * std::f64::consts::PI * 50.0 * 20.0,
@@ -666,6 +682,8 @@ mod tests {
         let station = |m: f64, area: f64| ChannelStation {
             m,
             z: 0.0,
+            shroud_point: [0.0, 60.0],
+            hub_point: [0.0, 40.0],
             r: 50.0,
             width: 20.0,
             area: area * 100.0,
@@ -696,6 +714,20 @@ mod tests {
         let model = meridional_model(&result).unwrap();
         let circles = area_circles(&model, AREA_CIRCLES);
         assert_eq!(circles.len(), AREA_CIRCLES);
+        // Repartidos por el corte, no amontonados en un punto.
+        let centres: Vec<[f64; 2]> = circles
+            .iter()
+            .map(|circle| {
+                [
+                    (circle[0][0] + circle[24][0]) / 2.0,
+                    (circle[0][1] + circle[24][1]) / 2.0,
+                ]
+            })
+            .collect();
+        for pair in centres.windows(2) {
+            let apart = (pair[0][0] - pair[1][0]).hypot(pair[0][1] - pair[1][1]);
+            assert!(apart > 1.0, "{pair:?}");
+        }
         for circle in &circles {
             let centre = [
                 (circle[0][0] + circle[24][0]) / 2.0,
@@ -711,15 +743,19 @@ mod tests {
                     curve.name
                 );
             }
-            // Toca las dos tapas, no solo una.
-            for wall in Wall::ALL {
-                let curve = model.curve(wall.name()).unwrap();
-                let distance = nearest_on(&curve.points, centre).1;
-                assert!(
-                    distance - radius < 0.05 * radius,
-                    "{} {distance} {radius}",
-                    wall.name()
-                );
+            // Si no lo limita un borde, toca las dos tapas, no solo una.
+            let edges = ["Borde de ataque", "Borde de salida"]
+                .map(|name| nearest_on(&model.curve(name).unwrap().points, centre).1);
+            if edges.iter().all(|distance| *distance > radius * 1.05) {
+                for wall in Wall::ALL {
+                    let curve = model.curve(wall.name()).unwrap();
+                    let distance = nearest_on(&curve.points, centre).1;
+                    assert!(
+                        distance - radius < 0.05 * radius,
+                        "{} {distance} {radius}",
+                        wall.name()
+                    );
+                }
             }
         }
     }

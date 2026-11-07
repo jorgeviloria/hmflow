@@ -278,6 +278,8 @@ impl MeridionalModel {
             stations.push(ChannelStation {
                 m,
                 z: middle[0],
+                shroud_point: *point,
+                hub_point: partner,
                 r: middle[1],
                 width,
                 area: 2.0 * std::f64::consts::PI * middle[1] * width,
@@ -673,6 +675,10 @@ pub struct ChannelStation {
     pub m: f64,
     /// Posición axial de la línea media.
     pub z: f64,
+    /// Los dos puntos emparejados de la estación, `[z, r]`: el de la tapa
+    /// delantera y el de la trasera. La línea media es su punto medio.
+    pub shroud_point: [f64; 2],
+    pub hub_point: [f64; 2],
     /// Radio de la línea media.
     pub r: f64,
     /// Anchura del canal, de tapa a tapa.

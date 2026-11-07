@@ -279,7 +279,7 @@ fn case_from_inputs(inputs: &Inputs, basis: &Basis) -> Result<Case, FieldErrors>
     let h = entered(Field::H, &inputs.h, &mut errors);
     let n = entered(Field::N, &inputs.n, &mut errors);
     let temperature = read_temperature(inputs, &mut errors);
-    let eta_m = read_eta_m(inputs, &mut errors);
+    let eta_m = read_eta_m(inputs, basis.eta_m_is_locked(), &mut errors);
     let intake = read_intake(inputs, &mut errors);
     let design = read_design(inputs, basis, &mut errors);
 
@@ -387,14 +387,22 @@ fn read_temperature(inputs: &Inputs, errors: &mut FieldErrors) -> Option<(Temper
 
 /// Vacío: la estimación del motor. Un número tiene que estar entre 0 y 1,
 /// sin incluir los extremos.
-fn read_eta_m(inputs: &Inputs, errors: &mut FieldErrors) -> Option<Option<f64>> {
+fn read_eta_m(inputs: &Inputs, locked: bool, errors: &mut FieldErrors) -> Option<Option<f64>> {
     if inputs.eta_m.trim().is_empty() {
         return Some(None);
     }
     match inputs.eta_m.trim().replace(',', ".").parse::<f64>() {
         Ok(value) if value > 0.0 && value < 1.0 => Some(Some(value)),
         _ => {
-            errors.push((Field::EtaM, "número entre 0 y 1, o vacío".into()));
+            // Con `locked` la caja no se edita: la salida es corregir el archivo.
+            errors.push((
+                Field::EtaM,
+                if locked {
+                    "ηm está en locked con un valor que no vale: corrígelo en el archivo".into()
+                } else {
+                    "número entre 0 y 1, o vacío".into()
+                },
+            ));
             None
         }
     }
@@ -621,6 +629,11 @@ impl Basis {
                 None
             },
         }
+    }
+
+    /// ηm está en `locked`: su caja no cuenta.
+    pub fn eta_m_is_locked(&self) -> bool {
+        self.locked_eta_m.is_some()
     }
 
     fn density_for(&self, inputs: &Inputs) -> Option<Density> {
@@ -1475,6 +1488,17 @@ mod tests {
         let errors = errors_of(&inputs);
         assert_eq!(errors.len(), 1, "{errors:?}");
         assert_eq!(errors[0].0, Field::General, "{errors:?}");
+    }
+
+    #[test]
+    fn a_locked_eta_m_that_is_not_valid_says_it_is_locked() {
+        let basis = Basis {
+            locked_eta_m: Some("1".to_string()),
+            ..Basis::default()
+        };
+        let errors = super::compute(&Inputs::default(), &basis).unwrap_err();
+        assert_eq!(errors[0].0, Field::EtaM, "{errors:?}");
+        assert!(errors[0].1.contains("locked"), "{errors:?}");
     }
 
     #[test]

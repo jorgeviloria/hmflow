@@ -454,6 +454,7 @@ fn inputs_content(ui: &mut egui::Ui, app: &mut App) {
     ui.add_space(4.0);
     let mut changed = false;
     let errors = app.errors.clone();
+    let eta_m_locked = app.session.basis.eta_m_is_locked();
     for (field, label, hint) in [
         (Field::Q, "Caudal Q", "120 m3/h"),
         (Field::H, "Altura H", "45 m"),
@@ -473,7 +474,11 @@ fn inputs_content(ui: &mut egui::Ui, app: &mut App) {
             | Field::Selection(_)
             | Field::General => continue,
         };
-        changed |= text_box(ui, label, value, hint, error_of(&errors, field), label);
+        // ηm en `locked` manda el archivo: escribir aquí no haría nada.
+        let enabled = field != Field::EtaM || !eta_m_locked;
+        ui.add_enabled_ui(enabled, |ui| {
+            changed |= text_box(ui, label, value, hint, error_of(&errors, field), label);
+        });
     }
 
     ui.label("NPSH disponible");

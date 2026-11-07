@@ -324,6 +324,12 @@ pub fn meridian_edits(project: &Project) -> MeridianEdits {
 #[must_use]
 pub fn meridian_edits_of(section: &hm_project::Meridian) -> MeridianEdits {
     MeridianEdits {
+        edge_angle: section
+            .edge_angle_deg
+            .trim()
+            .parse::<f64>()
+            .ok()
+            .filter(|value| (0.0..=60.0).contains(value)),
         shroud: wall_edit_of(&section.shroud),
         hub: wall_edit_of(&section.hub),
     }

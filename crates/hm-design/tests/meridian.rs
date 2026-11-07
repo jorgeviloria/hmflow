@@ -407,3 +407,48 @@ fn an_inlet_wider_than_the_eye_is_refused() {
     let error = meridional_model(&impossible).unwrap_err();
     assert!(error.to_string().contains("b1"), "{error}");
 }
+
+/// El borde de ataque inclinado es una recta de la tapa al cubo; el cubo
+/// empieza aguas abajo y el área sobre la recta sigue siendo la del 1D.
+#[test]
+fn a_tilted_leading_edge_keeps_the_inlet_area_on_the_real_surface() {
+    let (result, auto) = model();
+    assert_eq!(auto.params.edge_angle, 0.0);
+    let one_d = PI * mm(&result.d1) * mm(&result.b1);
+    assert!((auto.params.edge_area - one_d).abs() < 1e-6 * one_d);
+
+    let edits = MeridianEdits {
+        edge_angle: Some(30.0),
+        ..MeridianEdits::default()
+    };
+    let tilted = edited(&edits);
+    let p = &tilted.params;
+    assert!(
+        (p.edge_area - one_d).abs() < 1e-6 * one_d,
+        "{}",
+        p.edge_area
+    );
+    let edge = points(&tilted, "Borde de ataque");
+    assert_eq!(edge[0][0], 0.0);
+    let (dz, dr) = (edge[1][0] - edge[0][0], edge[0][1] - edge[1][1]);
+    assert!((dz.atan2(dr).to_degrees() - 30.0).abs() < 1e-9);
+    assert!((dz.hypot(dr) - p.edge_length).abs() < 1e-9);
+    // El cubo arranca en el extremo inclinado y el canal parte de la recta.
+    assert_eq!(points(&tilted, "Tapa trasera")[0], edge[1]);
+    let first = tilted.channel().remove(0);
+    assert!((first.area - one_d).abs() < 1e-6 * one_d);
+    // La recta es más larga que la radial: para el mismo área, el cubo sube.
+    assert!(p.d1i > auto.params.d1i);
+}
+
+#[test]
+fn a_leading_edge_angle_out_of_range_is_an_error() {
+    for angle in [-1.0, 61.0, f64::NAN] {
+        let edits = MeridianEdits {
+            edge_angle: Some(angle),
+            ..MeridianEdits::default()
+        };
+        let error = meridional_model_with(&design(&input()).unwrap(), &edits).unwrap_err();
+        assert!(error.to_string().contains("borde de ataque"), "{error}");
+    }
+}

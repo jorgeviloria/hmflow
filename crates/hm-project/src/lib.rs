@@ -67,6 +67,11 @@ pub struct Project {
 #[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Meridian {
+    /// Inclinación del borde de ataque, εEK, en grados sin unidad, de 0 a 60:
+    /// el ángulo de la recta cubo–tapa con la radial; el cubo empieza aguas
+    /// abajo de la tapa. Vacío: 0 (borde radial).
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub edge_angle_deg: String,
     /// Tapa delantera.
     #[serde(default, skip_serializing_if = "MeridianWall::is_empty")]
     pub shroud: MeridianWall,
@@ -120,7 +125,7 @@ impl MeridianWall {
 impl Meridian {
     #[must_use]
     pub fn is_empty(&self) -> bool {
-        self.shroud.is_empty() && self.hub.is_empty()
+        self.edge_angle_deg.trim().is_empty() && self.shroud.is_empty() && self.hub.is_empty()
     }
 }
 
@@ -683,6 +688,16 @@ fn check_meridian(diagnostics: &mut Diagnostics, meridian: &Meridian) {
                 .with_hint("P2 lleva z y r con unidad, como \"24 mm\"; los ángulos van en grados, de -90 a 90, y las longitudes de los brazos con unidad. Vacío: el motor."),
         );
     };
+    let edge = meridian.edge_angle_deg.trim();
+    if !edge.is_empty() {
+        match edge.parse::<f64>() {
+            Ok(value) if (0.0..=60.0).contains(&value) => {}
+            _ => problem(
+                "edge_angle_deg".to_string(),
+                format!("debe estar entre 0 y 60 grados: {edge}"),
+            ),
+        }
+    }
     for (table, wall) in [("shroud", &meridian.shroud), ("hub", &meridian.hub)] {
         let (z, r) = (wall.p2_z.trim(), wall.p2_r.trim());
         if z.is_empty() != r.is_empty() {

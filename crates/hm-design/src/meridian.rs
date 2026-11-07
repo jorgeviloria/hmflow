@@ -39,6 +39,9 @@ pub const ANGLE_RANGE: (f64, f64) = (-90.0, 90.0);
 pub const AUTO_START_ANGLE: f64 = 0.0;
 pub const AUTO_END_ANGLE: f64 = 90.0;
 
+/// Inclinación del borde de ataque εEK, en grados: ángulo con la radial.
+pub const EDGE_ANGLE_RANGE: (f64, f64) = (0.0, 60.0);
+
 /// Longitud mínima de un brazo al arrastrarlo, en mm.
 pub const MIN_ARM: f64 = 0.1;
 
@@ -105,6 +108,9 @@ pub struct WallEdit {
 /// Lo editado del corte.
 #[derive(Debug, Clone, Copy, Default, PartialEq)]
 pub struct MeridianEdits {
+    /// Inclinación del borde de ataque, εEK, en grados dentro de
+    /// [`EDGE_ANGLE_RANGE`]; `None` es 0 (radial).
+    pub edge_angle: Option<f64>,
     pub shroud: WallEdit,
     pub hub: WallEdit,
 }
@@ -154,6 +160,13 @@ pub struct MeridianParams {
     pub d1i: f64,
     /// Anchura del canal en el borde de ataque, (d1 − d1i)/2: el b1 de Gülich.
     pub inlet_width: f64,
+    /// Inclinación usada del borde de ataque, en grados con la radial.
+    pub edge_angle: f64,
+    /// Longitud de la recta del borde de ataque, de la tapa al cubo.
+    pub edge_length: f64,
+    /// Área de entrada sobre la superficie real del borde, π·(r_tapa +
+    /// r_cubo)·longitud: la del 1D, π·d1·b1.
+    pub edge_area: f64,
     /// Del borde de ataque al plano de salida de la tapa delantera.
     pub z_e: f64,
     /// Radio de la tapa delantera que recomienda Gülich, 0,7·b1 (ec. 7.2), de
@@ -355,7 +368,18 @@ pub fn meridional_model_with(
     let r2 = result.d2.si * MM / 2.0;
     let b2 = result.b2.si * MM;
 
-    let hub_squared = d1 * d1 - 4.0 * d1 * b1;
+    let edge_angle = edits.edge_angle.unwrap_or(0.0);
+    if !(edge_angle.is_finite() && (EDGE_ANGLE_RANGE.0..=EDGE_ANGLE_RANGE.1).contains(&edge_angle))
+    {
+        return Err(DesignError::Input(format!(
+            "meridiano: la inclinación del borde de ataque vale {edge_angle} y tiene que estar entre {} y {} grados",
+            EDGE_ANGLE_RANGE.0, EDGE_ANGLE_RANGE.1
+        )));
+    }
+    let edge_cos = edge_angle.to_radians().cos();
+
+    // El área sobre la recta inclinada es π·(r1² − ri²)/cos ε = π·d1·b1.
+    let hub_squared = d1 * d1 - 4.0 * d1 * b1 * edge_cos;
     if !hub_squared.is_finite() || hub_squared <= 0.0 {
         return Err(DesignError::Input(format!(
             "el área de entrada π·d1·b1 no cabe en el ojo: b1 = {b1:.2} mm es al menos d1/4 = {:.2} mm",
@@ -364,11 +388,15 @@ pub fn meridional_model_with(
     }
     let d1i = hub_squared.sqrt();
     let inlet_width = (d1 - d1i) / 2.0;
+    // El cubo empieza aguas abajo de la tapa.
+    let edge_dz = inlet_width * edge_angle.to_radians().tan();
+    let edge_length = inlet_width / edge_cos;
+    let edge_area = std::f64::consts::PI * (r1 + d1i / 2.0) * edge_length;
     let z_e = ZE_A * inlet_width * result.nq.powf(ZE_X);
     let r_ds = RDS_RATIO * inlet_width;
 
     let shroud_ends = ([0.0, r1], [z_e, r2]);
-    let hub_ends = ([0.0, d1i / 2.0], [z_e + b2, r2]);
+    let hub_ends = ([edge_dz, d1i / 2.0], [z_e + b2, r2]);
     let shroud_corner = [z_e, r1];
     let hub_corner = [z_e + b2, d1i / 2.0];
 
@@ -399,7 +427,7 @@ pub fn meridional_model_with(
         },
         PlanCurve {
             name: "Borde de ataque".to_string(),
-            points: vec![[0.0, r1], [0.0, d1i / 2.0]],
+            points: vec![[0.0, r1], [edge_dz, d1i / 2.0]],
         },
         PlanCurve {
             name: "Borde de salida".to_string(),
@@ -411,6 +439,9 @@ pub fn meridional_model_with(
         params: MeridianParams {
             d1i,
             inlet_width,
+            edge_angle,
+            edge_length,
+            edge_area,
             z_e,
             r_ds,
             shroud,

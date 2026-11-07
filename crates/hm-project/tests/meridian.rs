@@ -50,6 +50,7 @@ fn schema_3_migrates_without_touching_anything_else() {
 #[test]
 fn edits_round_trip_and_empty_fields_stay_out() {
     let project = with(Meridian {
+        edge_angle_deg: "20".into(),
         shroud: MeridianWall {
             p2_z: "24 mm".into(),
             p2_r: "60 mm".into(),
@@ -62,6 +63,7 @@ fn edits_round_trip_and_empty_fields_stay_out() {
         },
     });
     let text = project.to_toml().unwrap();
+    assert!(text.contains("edge_angle_deg = \"20\""), "{text}");
     assert!(text.contains("[meridian.shroud]"), "{text}");
     assert!(text.contains("p2_z = \"24 mm\""), "{text}");
     assert!(text.contains("[meridian.hub]"), "{text}");
@@ -167,4 +169,24 @@ fn an_unknown_meridian_field_is_rejected() {
         .unwrap()
         + "\n[meridian.shroud]\nfront_arm = \"3 mm\"\n";
     assert!(Project::from_toml(&text).is_err());
+}
+
+#[test]
+fn the_leading_edge_angle_is_checked_between_0_and_60() {
+    for (text, ok) in [
+        ("0", true),
+        ("60", true),
+        ("-1", false),
+        ("61", false),
+        ("recto", false),
+    ] {
+        let project = with(Meridian {
+            edge_angle_deg: text.into(),
+            ..Meridian::default()
+        });
+        let found = problems(project.meridian.clone().unwrap())
+            .iter()
+            .any(|message| message.contains("edge_angle_deg"));
+        assert_eq!(found, !ok, "{text}");
+    }
 }

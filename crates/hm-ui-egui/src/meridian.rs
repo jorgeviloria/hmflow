@@ -141,12 +141,16 @@ fn header(model: &MeridionalModel, edits: &MeridianEdits) -> String {
     };
     format!(
         "Corte meridional, mm: z con el flujo (0 en el borde de ataque), r radial. zE = {:.1}, \
-         d1i = {:.1}, anchura de entrada = {:.1}. Radio mínimo: tapa delantera {shroud:.1}{verdict}; \
+         d1i = {:.1}, anchura de entrada = {:.1}. Borde de ataque: {:.1}° con la radial, longitud {:.1}, \
+         área {:.0} mm². Radio mínimo: tapa delantera {shroud:.1}{verdict}; \
          trasera {:.1}. Cada tapa es una Bézier de 5 puntos: P2 se mueve dentro del rectángulo de los \
          extremos y P1 y P3 salen de ellos con su ángulo (° desde +z hacia +r) y su longitud. Gülich §7.2.2.1.{} El álabe sigue siendo 2D hasta F4. Huella {}.",
         p.z_e,
         p.d1i,
         p.inlet_width,
+        p.edge_angle,
+        p.edge_length,
+        p.edge_area,
         p.hub.min_radius,
         edited_note(edits),
         model.fingerprint_text()
@@ -158,6 +162,26 @@ fn header(model: &MeridionalModel, edits: &MeridianEdits) -> String {
 fn wall_boxes(ui: &mut egui::Ui, boxes: &mut Meridian, auto: Option<&MeridionalModel>) -> bool {
     let mut changed = false;
     let parsed = hm_engine::meridian_edits_of(boxes);
+    ui.horizontal_wrapped(|ui| {
+        ui.label(RichText::new("Borde de ataque").strong());
+        ui.label(RichText::new("εEK °").small());
+        let bad = parsed.edge_angle.is_none() && !boxes.edge_angle_deg.trim().is_empty();
+        let mut field = egui::TextEdit::singleline(&mut boxes.edge_angle_deg)
+            .id_salt("edge_angle")
+            .hint_text(format!("{} (auto)", angle_text(0.0)))
+            .desired_width(100.0);
+        if bad {
+            field = field.text_color(ui.visuals().error_fg_color);
+        }
+        changed |= ui
+            .add(field)
+            .on_hover_text(
+                "Inclinación de la recta cubo–tapa con la radial, de 0 a 60 grados: el cubo \
+                 empieza aguas abajo de la tapa. El área de entrada sobre esa recta sigue \
+                 siendo la del 1D. Vacía: 0.",
+            )
+            .changed();
+    });
     for wall in Wall::ALL {
         let shape = auto.map(|model| model.params.wall(wall).clone());
         let edit = *parsed.wall(wall);
@@ -320,6 +344,9 @@ fn wall_mut(boxes: &mut Meridian, wall: Wall) -> &mut MeridianWall {
 /// Qué viene editado, para la cabecera.
 fn edited_note(edits: &MeridianEdits) -> String {
     let mut names = Vec::new();
+    if edits.edge_angle.is_some() {
+        names.push("borde de ataque".to_string());
+    }
     for wall in Wall::ALL {
         let edit = edits.wall(wall);
         for (present, point) in [

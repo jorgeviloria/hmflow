@@ -31,51 +31,83 @@ fn meridian_color(name: &str) -> Color32 {
 /// Distancia en píxeles a la que un clic agarra un punto de control.
 const GRAB_PIXELS: f32 = 12.0;
 
-/// Una cota sobre el dibujo: línea de `from` a `to` con su texto.
-#[derive(Debug, Clone, PartialEq)]
-struct Dimension {
-    from: [f64; 2],
-    to: [f64; 2],
-    text: String,
-    anchor: egui::Align2,
+/// Lo que se dibuja de las cotas: segmentos y textos `(posición, texto, ancla)`.
+#[derive(Debug, Default, PartialEq)]
+struct Dimensioning {
+    /// Líneas de referencia nombradas (dS, dH, d2), más tenues.
+    references: Vec<Vec<[f64; 2]>>,
+    /// Líneas de extensión y de cota con sus flechas.
+    lines: Vec<Vec<[f64; 2]>>,
+    texts: Vec<([f64; 2], String, egui::Align2)>,
 }
 
-/// Las cotas del corte, en mm: zE y b2 sobre la salida, cada una a su altura
-/// para que los textos no se pisen, y la anchura de entrada b1 paralela al
-/// borde de ataque, por fuera del círculo de la entrada. r2 y r1 están en la
-/// cabecera: una cota hasta el eje encogería el dibujo.
-fn dimensions(model: &MeridionalModel) -> Vec<Dimension> {
-    let p = &model.params;
-    let r2 = p.shroud.points[4][1];
-    let off = 0.04 * r2;
-    let b2 = p.hub.points[4][0] - p.z_e;
-    let mut dimensions = vec![
-        Dimension {
-            from: [0.0, r2 + off],
-            to: [p.z_e, r2 + off],
-            text: format!("zE = {:.1}", p.z_e),
-            anchor: egui::Align2::CENTER_BOTTOM,
-        },
-        Dimension {
-            from: [p.z_e, r2 + 3.0 * off],
-            to: [p.z_e + b2, r2 + 3.0 * off],
-            text: format!("b2 = {b2:.1}"),
-            anchor: egui::Align2::CENTER_BOTTOM,
-        },
+/// Dos trazos que forman una flecha con la punta en `tip`, hacia `direction`
+/// (vector unitario), de largo `length`.
+fn arrow_head(tip: [f64; 2], direction: [f64; 2], length: f64) -> Vec<[f64; 2]> {
+    let normal = [-direction[1], direction[0]];
+    let base = [
+        tip[0] - direction[0] * length,
+        tip[1] - direction[1] * length,
     ];
-    if let Some(edge) = model.curve("Borde de ataque") {
-        let (top, bottom) = (edge.points[0], edge.points[1]);
-        // El círculo de la entrada tiene por diámetro el borde: sobresale hacia
-        // atrás su radio.
-        let back = p.inlet_width / 2.0 + 2.0 * off;
-        dimensions.push(Dimension {
-            from: [top[0] - back, top[1]],
-            to: [bottom[0] - back, bottom[1]],
-            text: format!("b1 = {:.1}", p.inlet_width),
-            anchor: egui::Align2::RIGHT_CENTER,
-        });
+    let half = length * 0.35;
+    vec![
+        [base[0] + normal[0] * half, base[1] + normal[1] * half],
+        tip,
+        [base[0] - normal[0] * half, base[1] - normal[1] * half],
+    ]
+}
+
+/// Cotas al estilo de CFturbo (todas en mm). Las líneas de referencia llevan el
+/// nombre del diámetro: dS la de la tapa delantera a la entrada, dH la del cubo
+/// y d2 la de la salida, más el eje. Del punto seleccionado `at`, su z desde
+/// el borde de ataque, con la línea de cota bajo el eje, y su r desde el eje,
+/// con la línea de cota a la derecha de todo el dibujo; cada una con líneas de
+/// extensión, una flecha en el punto y el valor.
+fn dimensioning(model: &MeridionalModel, at: [f64; 2]) -> Dimensioning {
+    let p = &model.params;
+    let (r1, r2) = (p.shroud.points[0][1], p.shroud.points[4][1]);
+    let ri = p.d1i / 2.0;
+    let z_max = p.hub.points[4][0];
+    let gap = 0.08 * r2;
+    // El círculo de la entrada sobresale hacia atrás su radio: los rótulos, fuera.
+    let pad = p.inlet_width / 2.0 + 0.05 * r2;
+    let mut out = Dimensioning::default();
+    let span = |r: f64| vec![[-pad, r], [z_max + 3.0 * gap, r]];
+    for (r, name) in [
+        (0.0, "eje".to_string()),
+        (r1, format!("dS = {:.1}", 2.0 * r1)),
+        (ri, format!("dH = {:.1}", 2.0 * ri)),
+        (r2, format!("d2 = {:.1}", 2.0 * r2)),
+    ] {
+        out.references.push(span(r));
+        out.texts
+            .push(([-pad, r], name, egui::Align2::RIGHT_BOTTOM));
     }
-    dimensions
+    // z: línea de cota bajo el eje.
+    let y = -gap;
+    let toward = |value: f64| if value >= 0.0 { 1.0 } else { -1.0 };
+    out.lines.push(vec![[0.0, 0.0], [0.0, y - 0.3 * gap]]);
+    out.lines.push(vec![[at[0], at[1]], [at[0], y - 0.3 * gap]]);
+    out.lines.push(vec![[0.0, y], [at[0], y]]);
+    out.lines
+        .push(arrow_head([at[0], y], [toward(at[0]), 0.0], 0.4 * gap));
+    out.texts.push((
+        [at[0] / 2.0, y],
+        format!("{:.3}", at[0]),
+        egui::Align2::CENTER_BOTTOM,
+    ));
+    // r: línea de cota a la derecha de todo el dibujo.
+    let x = z_max + 2.0 * gap;
+    out.lines.push(vec![[at[0], at[1]], [x + 0.3 * gap, at[1]]]);
+    out.lines.push(vec![[x, 0.0], [x, at[1]]]);
+    out.lines
+        .push(arrow_head([x, at[1]], [0.0, toward(at[1])], 0.4 * gap));
+    out.texts.push((
+        [x + 0.4 * gap, at[1] / 2.0],
+        format!("{:.3}", at[1]),
+        egui::Align2::LEFT_CENTER,
+    ));
+    out
 }
 
 /// Cuántos círculos de área se dibujan, repartidos por la línea media.
@@ -297,20 +329,29 @@ fn meridian_edit(ui: &mut egui::Ui, outcome: &Outcome, boxes: &mut Meridian) -> 
                         .filled(false),
                 );
             }
-            // Las cotas.
-            for dimension in dimensions(&model) {
-                let grey = Color32::from_gray(90);
-                plot_ui.line(line("Cotas", vec![dimension.from, dimension.to], grey).width(0.8));
+            // Las cotas del punto seleccionado, con las líneas de referencia.
+            let selected = selected_control(plot_ui.ctx());
+            let at = model
+                .handles()
+                .iter()
+                .find(|handle| handle.control == selected)
+                .map_or([0.0, 0.0], |handle| handle.at);
+            let dimensioning = dimensioning(&model, at);
+            let grey = Color32::from_gray(90);
+            for reference in dimensioning.references {
+                plot_ui.line(line("Referencias", reference, Color32::from_gray(190)).width(2.0));
+            }
+            for dimension_line in dimensioning.lines {
+                plot_ui.line(line("Cotas", dimension_line, grey).width(0.8));
+            }
+            for (position, text, anchor) in dimensioning.texts {
                 plot_ui.text(
                     egui_plot::Text::new(
                         "Cotas",
-                        PlotPoint::new(
-                            (dimension.from[0] + dimension.to[0]) / 2.0,
-                            (dimension.from[1] + dimension.to[1]) / 2.0,
-                        ),
-                        RichText::new(dimension.text).small(),
+                        PlotPoint::new(position[0], position[1]),
+                        RichText::new(text).small(),
                     )
-                    .anchor(dimension.anchor)
+                    .anchor(anchor)
                     .color(grey),
                 );
             }
@@ -481,7 +522,7 @@ fn drag_handles(
     let Some(pointer) = plot_ui.pointer_coordinate() else {
         return false;
     };
-    if response.drag_started() {
+    if response.drag_started() || response.clicked() {
         let screen = plot_ui.screen_from_plot(pointer);
         let handles: Vec<(ControlPoint, [f32; 2])> = model
             .handles()
@@ -492,7 +533,14 @@ fn drag_handles(
             })
             .collect();
         let grabbed = nearest(&handles, [screen.x, screen.y], GRAB_PIXELS);
-        plot_ui.ctx().data_mut(|data| data.insert_temp(id, grabbed));
+        if let Some(control) = grabbed {
+            plot_ui
+                .ctx()
+                .data_mut(|data| data.insert_temp(selected_id(), control));
+        }
+        if response.drag_started() {
+            plot_ui.ctx().data_mut(|data| data.insert_temp(id, grabbed));
+        }
     }
     let grabbed: Option<ControlPoint> = plot_ui.ctx().data(|data| data.get_temp(id)).flatten();
     if response.drag_stopped() {
@@ -504,6 +552,20 @@ fn drag_handles(
         return false;
     };
     write_moved(boxes, control, model.moved(control, [pointer.x, pointer.y]))
+}
+
+fn selected_id() -> egui::Id {
+    egui::Id::unique("meridian_selected_point")
+}
+
+/// El punto de control seleccionado: el último que se tocó; al principio, P2
+/// de la tapa delantera.
+fn selected_control(ctx: &egui::Context) -> ControlPoint {
+    ctx.data(|data| data.get_temp(selected_id()))
+        .unwrap_or(ControlPoint {
+            wall: Wall::Shroud,
+            index: 2,
+        })
 }
 
 /// Escribe en las cajas lo que dio el arrastre. Devuelve si cambió algo.
@@ -1003,7 +1065,7 @@ mod tests {
     }
 
     #[test]
-    fn the_dimensions_give_ze_b2_and_the_inlet_width_of_the_model() {
+    fn the_dimensioning_measures_the_selected_point_from_the_axes() {
         let result = hm_design::design(&hm_design::DesignInput {
             q: hm_units::parse_quantity("120 m3/h").unwrap(),
             h: hm_units::parse_quantity("45 m").unwrap(),
@@ -1015,27 +1077,41 @@ mod tests {
         })
         .unwrap();
         let model = meridional_model(&result).unwrap();
-        let dimensions = dimensions(&model);
         let p = &model.params;
-        let by = |prefix: &str| {
-            dimensions
-                .iter()
-                .find(|dimension| dimension.text.starts_with(prefix))
-                .unwrap()
-        };
-        let ze = by("zE");
-        assert_eq!(ze.text, format!("zE = {:.1}", p.z_e));
-        assert_eq!((ze.from[0], ze.to[0]), (0.0, p.z_e));
-        let b2 = p.hub.points[4][0] - p.z_e;
-        assert_eq!(by("b2").text, format!("b2 = {b2:.1}"));
-        // Cada cota a su altura: los textos no se pisan.
-        assert_ne!(ze.from[1], by("b2").from[1]);
-        let b1 = by("b1");
-        assert_eq!(b1.text, format!("b1 = {:.1}", p.inlet_width));
-        // Por fuera del círculo de la entrada.
-        assert!(b1.from[0] < -p.inlet_width / 2.0);
-        // Ninguna baja al eje: el dibujo conserva su escala.
-        assert!(dimensions.iter().all(|d| d.from[1] > 0.0 && d.to[1] > 0.0));
-        assert_eq!(dimensions.len(), 3);
+        let at = [p.z_e * 0.8, p.shroud.points[4][1] * 0.5];
+        let d = dimensioning(&model, at);
+        let texts: Vec<String> = d.texts.iter().map(|t| t.1.clone()).collect();
+        let has = |text: String| texts.contains(&text);
+        // Las tres referencias con su diámetro y el eje.
+        assert!(has(format!("d2 = {:.1}", 2.0 * p.shroud.points[4][1])));
+        assert!(has(format!("dS = {:.1}", 2.0 * p.shroud.points[0][1])));
+        assert!(has(format!("dH = {:.1}", p.d1i)));
+        assert!(has("eje".to_string()));
+        assert_eq!(d.references.len(), 4);
+        // Los dos valores del punto, con tres decimales.
+        assert!(has(format!("{:.3}", at[0])));
+        assert!(has(format!("{:.3}", at[1])));
+        // La cota de z va bajo el eje y la de r a la derecha de todo.
+        let z_line = d
+            .lines
+            .iter()
+            .find(|l| l.len() == 2 && l[0][0] == 0.0 && l[1][0] == at[0] && l[0][1] == l[1][1])
+            .unwrap();
+        assert!(z_line[0][1] < 0.0);
+        let r_line = d
+            .lines
+            .iter()
+            .find(|l| l.len() == 2 && l[0][1] == 0.0 && l[1][1] == at[1] && l[0][0] == l[1][0])
+            .unwrap();
+        assert!(r_line[0][0] > p.hub.points[4][0]);
+        // Las flechas tienen la punta en el extremo de la cota.
+        let tips: Vec<[f64; 2]> = d
+            .lines
+            .iter()
+            .filter(|l| l.len() == 3)
+            .map(|l| l[1])
+            .collect();
+        assert!(tips.contains(&[at[0], z_line[0][1]]));
+        assert!(tips.contains(&[r_line[0][0], at[1]]));
     }
 }

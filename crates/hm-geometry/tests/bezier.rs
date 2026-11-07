@@ -183,3 +183,60 @@ fn a_parameter_outside_zero_to_one_is_rejected() {
         GeometryError::OutOfRange
     );
 }
+
+#[test]
+fn a_straight_bezier_has_no_curvature() {
+    let points = (0..=4)
+        .map(|i| Point::new(f64::from(i), 2.0 * f64::from(i)))
+        .collect();
+    let line = Bezier::new(points).expect("recta");
+    for t in [0.0, 0.3, 1.0] {
+        assert!(line.curvature_at(t).unwrap().abs() < 1e-12);
+    }
+}
+
+#[test]
+fn curvature_matches_finite_differences() {
+    let curve = quartic();
+    let h = 1e-4;
+    for t in [0.2, 0.5, 0.8] {
+        let p = |s: f64| curve.point_at(s).unwrap();
+        let (a, b, c) = (p(t - h), p(t), p(t + h));
+        let (dx, dy) = ((c.x - a.x) / (2.0 * h), (c.y - a.y) / (2.0 * h));
+        let (ddx, ddy) = (
+            (c.x - 2.0 * b.x + a.x) / (h * h),
+            (c.y - 2.0 * b.y + a.y) / (h * h),
+        );
+        let expected = (dx * ddy - dy * ddx) / (dx * dx + dy * dy).powf(1.5);
+        let found = curve.curvature_at(t).unwrap();
+        assert!(
+            (found - expected).abs() < 1e-5 * expected.abs().max(1.0),
+            "{t}: {found} {expected}"
+        );
+    }
+}
+
+#[test]
+fn coupled_end_points_give_zero_curvature_at_the_ends() {
+    // P1 sobre P0–P2 y P3 sobre P2–P4: la curva arranca y llega sin curvatura.
+    let (p0, p2, p4) = (
+        Point::new(0.0, 0.0),
+        Point::new(10.0, 0.0),
+        Point::new(10.0, 10.0),
+    );
+    let curve = Bezier::new(vec![p0, p0 + (p2 - p0) * 0.6, p2, p4 + (p2 - p4) * 0.6, p4]).unwrap();
+    assert!(curve.curvature_at(0.0).unwrap().abs() < 1e-12);
+    assert!(curve.curvature_at(1.0).unwrap().abs() < 1e-12);
+    assert!(
+        curve.curvature_at(0.5).unwrap() > 0.0,
+        "gira a la izquierda"
+    );
+}
+
+#[test]
+fn curvature_needs_a_parameter_in_range() {
+    assert_eq!(
+        quartic().curvature_at(1.2).unwrap_err(),
+        GeometryError::OutOfRange
+    );
+}

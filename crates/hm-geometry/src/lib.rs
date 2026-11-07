@@ -336,6 +336,41 @@ impl Bezier {
         work[0]
     }
 
+    /// Curvatura con signo en `t`: positiva si la curva gira a la izquierda
+    /// (antihorario). κ = (x′y″ − y′x″)/|B′|³. Con derivada nula no hay
+    /// tangente y es `NoTangent`.
+    pub fn curvature_at(&self, t: f64) -> Result<f64, GeometryError> {
+        let t = parameter(t)?;
+        let first = self.derivative(t);
+        let speed = first.norm();
+        if speed == 0.0 || !speed.is_finite() {
+            return Err(GeometryError::NoTangent);
+        }
+        let second = self.second_derivative(t);
+        Ok((first.x * second.y - first.y * second.x) / (speed * speed * speed))
+    }
+
+    /// B″(t) = n(n−1)·Σ (P_(i+2) − 2P_(i+1) + P_i)·B_(i,n−2)(t). Nula si n < 2.
+    fn second_derivative(&self, t: f64) -> Vector {
+        let n = self.degree();
+        if n < 2 {
+            return Vector::new(0.0, 0.0);
+        }
+        let steps: Vec<Point> = self
+            .points
+            .windows(3)
+            .map(|three| {
+                Point::new(
+                    three[2].x - 2.0 * three[1].x + three[0].x,
+                    three[2].y - 2.0 * three[1].y + three[0].y,
+                )
+            })
+            .collect();
+        let at = Self::casteljau(&steps, t);
+        let factor = (n * (n - 1)) as f64;
+        Vector::new(factor * at.x, factor * at.y)
+    }
+
     /// B′(t) = n·Σ (P_(i+1) − P_i)·B_(i,n−1)(t): la hodógrafa, otra Bézier.
     fn derivative(&self, t: f64) -> Vector {
         let n = self.degree() as f64;

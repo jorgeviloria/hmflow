@@ -59,6 +59,7 @@ const LAYERS: &[(&str, u8)] = &[
     ("hm-core", 0),
     ("hm-units", 0),
     ("hm-math", 0),
+    ("hm-cad-occt", 0),
     ("hm-formula", 1),
     ("hm-design", 2),
     ("hm-project", 2),
@@ -749,6 +750,7 @@ mod tests {
             ("hm-core", &["serde"]),
             ("hm-units", &[]),
             ("hm-math", &[]),
+            ("hm-cad-occt", &[]),
             ("hm-formula", &["hm-units"]),
             (
                 "hm-design",

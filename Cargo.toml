@@ -13,6 +13,7 @@ members = [
     "crates/hm-project",
     "crates/hm-engine",
     "crates/hm-cli",
+    "crates/hm-cad-occt",
     "xtask",
 ]
 
@@ -29,6 +30,8 @@ toml = "0.8"
 serde_json = { version = "1", features = ["float_roundtrip"] }
 clap = { version = "4", features = ["derive"] }
 thiserror = "2"
+cxx = "1"
+cxx-build = "1"
 
 [profile.release]
 lto = "thin"

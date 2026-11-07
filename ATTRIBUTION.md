@@ -23,7 +23,7 @@ Este archivo declara el origen de todo lo que no es código propio.
 | toml | MIT OR Apache-2.0 | Formato de proyecto |
 | clap | MIT OR Apache-2.0 | CLI |
 | thiserror | MIT OR Apache-2.0 | Errores |
-| OpenCASCADE (OCCT) | LGPL-2.1 con excepción | Kernel CAD (a partir de la Parte 2) |
+| OpenCASCADE 7.9 | LGPL-2.1 con excepción | Kernel CAD, biblioteca del sistema, no vendida en el repo. Hoy: cilindro a STL |
 | netgen | LGPL-2.1 | Mallado (a partir de CFD-0) |
 | CoolProp | MIT | Propiedades de fluidos (a partir de la Parte 1) |
 | iced / iced_aw | MIT | Interfaz (a partir de la Parte 1) |

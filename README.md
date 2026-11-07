@@ -7,7 +7,8 @@ Suite open source de diseño de bombas centrífugas, escrita en Rust.
 > (58 piloto, 31 con referencia de ejemplo resuelto, 0 de banco) y `design`
 > genera geometría, voluta, pérdidas y curvas preliminares. El cálculo lo
 > comparte `hm-engine`. La ventana egui abre un `.hmf`, edita el punto y la
-> aspiración, guarda y exporta el informe. Todavía no hay CAD.
+> aspiración, guarda y exporta el informe. OpenCASCADE está enlazado: hoy
+> exporta un cilindro de prueba a STL. El rodete y la voluta todavía no son sólidos.
 
 ## Qué es
 
@@ -25,19 +26,24 @@ doble aspiración y barrel. Solo bombas centrífugas.
 - La ventana egui abre, edita el punto y la aspiración, guarda el `.hmf` y
   exporta el informe. No edita los parámetros del método, ni un fluido que
   no sea agua, ni una viscosidad escrita.
-- No hay geometría CAD (llega en la Parte 2).
+- El kernel CAD enlaza OpenCASCADE y exporta un cilindro a STL. Todavía no
+  hay sólido de rodete ni de voluta.
 - No hay CFD.
 - No sustituye la revisión de un ingeniero.
 
 ## Compilar
 
 ```sh
+# macOS. En Linux, OCCT_PREFIX apunta a la instalación del sistema.
+brew install opencascade
+
 cargo build
 cargo test
 cargo run -p hmflow-cli -- formulas
 ```
 
-Requiere Rust 1.95 o superior.
+Requiere Rust 1.95 o superior. Sin OpenCASCADE el resto del proyecto compila;
+`hm-cad-occt` responde que el kernel no está enlazado.
 
 ## Uso rápido
 

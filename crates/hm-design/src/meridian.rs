@@ -1,9 +1,13 @@
 //! Corte meridional del rodete: tapas delantera y trasera y los dos bordes.
 //!
 //! Construcción de Gülich 2020, §7.2.2.1, pp. 416-418, fig. 7.4, con el borde
-//! de ataque en el ojo. Ejes en mm: `z` axial, 0 en el plano de salida de la
-//! tapa trasera y positivo hacia la aspiración; `r` radial. Cada punto es
+//! de ataque en el ojo. Ejes en mm: `z` axial en el sentido del flujo, 0 en el
+//! borde de ataque, como mide Gülich zE; `r` radial. La entrada queda a la
+//! izquierda y la salida a la derecha, como la fig. 7.4. Cada punto es
 //! `[z, r]`. Como la planta, es lo único que leen el visor y la exportación.
+//!
+//! La construcción se hace con z hacia la aspiración y 0 en la tapa trasera;
+//! al entregar los puntos se da la vuelta al eje.
 
 use hm_geometry::{Bezier, Curve, Line, Point};
 
@@ -154,7 +158,9 @@ pub fn meridional_model(result: &DesignResult) -> Result<MeridionalModel, Design
     front.extend(&bend.sample(BEZIER_POINTS).map_err(geometry_failed)?[1..]);
     let mut rear = hub_bend.sample(BEZIER_POINTS).map_err(geometry_failed)?;
     rear.extend(&disc.sample(DISC_POINTS).map_err(geometry_failed)?[1..]);
-    let points = |curve: &[Point]| curve.iter().map(|point| [point.x, point.y]).collect();
+    // z en el sentido del flujo, 0 en el borde de ataque.
+    let flow = |z: f64| leading.x - z;
+    let points = |curve: &[Point]| curve.iter().map(|point| [flow(point.x), point.y]).collect();
 
     let curves = vec![
         PlanCurve {
@@ -167,11 +173,11 @@ pub fn meridional_model(result: &DesignResult) -> Result<MeridionalModel, Design
         },
         PlanCurve {
             name: "Borde de ataque".to_string(),
-            points: vec![[leading.x, r1], [leading.x, d1i / 2.0]],
+            points: vec![[0.0, r1], [0.0, d1i / 2.0]],
         },
         PlanCurve {
             name: "Borde de salida".to_string(),
-            points: vec![[0.0, r2], [b2, r2]],
+            points: vec![[flow(0.0), r2], [flow(b2), r2]],
         },
     ];
     Ok(MeridionalModel {

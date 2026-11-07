@@ -70,14 +70,15 @@ fn the_values_come_from_equation_7_2() {
 #[test]
 fn the_front_shroud_runs_from_the_leading_edge_at_d1_to_d2() {
     let (result, model) = model();
-    let (r1, r2, b2) = (mm(&result.d1) / 2.0, mm(&result.d2) / 2.0, mm(&result.b2));
+    let (r1, r2) = (mm(&result.d1) / 2.0, mm(&result.d2) / 2.0);
     let front = &model.curve("Tapa delantera").unwrap().points;
-    close(front[0], [b2 + model.params.z_e, r1]);
-    close(*front.last().unwrap(), [b2, r2]);
+    // z en el sentido del flujo, 0 en el borde de ataque.
+    close(front[0], [0.0, r1]);
+    close(*front.last().unwrap(), [model.params.z_e, r2]);
     // El tramo g1 es axial, en r = d1/2.
     let end_of_g1 = front
         .iter()
-        .position(|p| (p[0] - (b2 + model.params.z_e - model.params.g1)).abs() < 1e-9)
+        .position(|p| (p[0] - model.params.g1).abs() < 1e-9)
         .expect("fin de g1");
     assert!(
         front[..=end_of_g1]
@@ -91,10 +92,10 @@ fn the_outlet_is_b2_wide_at_d2() {
     let (result, model) = model();
     let (r2, b2) = (mm(&result.d2) / 2.0, mm(&result.b2));
     let rear = &model.curve("Tapa trasera").unwrap().points;
-    close(*rear.last().unwrap(), [0.0, r2]);
+    close(*rear.last().unwrap(), [b2 + model.params.z_e, r2]);
     let trailing = &model.curve("Borde de salida").unwrap().points;
-    close(trailing[0], [0.0, r2]);
-    close(trailing[1], [b2, r2]);
+    close(trailing[0], [b2 + model.params.z_e, r2]);
+    close(trailing[1], [model.params.z_e, r2]);
 }
 
 #[test]
@@ -129,15 +130,15 @@ fn the_rear_shroud_is_flat_from_d1_and_never_behind_the_outlet() {
     let (result, model) = model();
     let (r1, r2, b2) = (mm(&result.d1) / 2.0, mm(&result.d2) / 2.0, mm(&result.b2));
     let rear = &model.curve("Tapa trasera").unwrap().points;
-    close(rear[0], [b2 + model.params.z_e, model.params.d1i / 2.0]);
-    close(*rear.last().unwrap(), [0.0, r2]);
+    close(rear[0], [0.0, model.params.d1i / 2.0]);
+    close(*rear.last().unwrap(), [b2 + model.params.z_e, r2]);
     for point in rear {
         assert!(
             point[0] >= 0.0 && point[0] <= b2 + model.params.z_e,
             "{point:?}"
         );
         if point[1] >= r1 {
-            assert_eq!(point[0], 0.0, "{point:?}");
+            assert_eq!(point[0], b2 + model.params.z_e, "{point:?}");
         }
     }
 }

@@ -31,7 +31,7 @@ pub(super) fn meridian_view(ui: &mut egui::Ui, outcome: &Outcome) {
     let p = &model.params;
     ui.label(
         RichText::new(format!(
-            "Corte meridional, mm: z axial (0 en la salida de la tapa trasera), r radial. \
+            "Corte meridional, mm: z axial en el sentido del flujo (0 en el borde de ataque), r radial. \
              zE = {:.1}, RDs = {:.1}, g1 = {:.1}, d1i = {:.1}, anchura de entrada = {:.1}. \
              Gülich §7.2.2.1. El álabe sigue siendo 2D hasta F4. Huella {}.",
             p.z_e,

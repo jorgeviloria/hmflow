@@ -42,10 +42,33 @@ pub struct MeridianParams {
     pub inlet_width: f64,
     /// Del borde de ataque al plano de salida de la tapa delantera.
     pub z_e: f64,
-    /// Radio de curvatura de la tapa delantera al salir de g1.
+    /// Radio de curvatura de la tapa delantera al salir de g1: el de la regla
+    /// de Gülich sin ediciones, o el que resulta de los brazos editados.
     pub r_ds: f64,
     /// Tramo axial de la tapa delantera tras el borde de ataque.
     pub g1: f64,
+    /// Brazos usados en las dos Bézier, editados o automáticos.
+    pub front_axial_arm: f64,
+    pub front_radial_arm: f64,
+    pub rear_axial_arm: f64,
+    pub rear_radial_arm: f64,
+}
+
+/// Ediciones del corte con enlace tangente, en mm. Cada punto de control
+/// interior se desliza por su recta, así que ninguna tangencia se rompe:
+///
+/// - tapa delantera: el brazo axial va del final de g1 hacia la esquina, sobre
+///   r = d1/2; el radial baja desde d2, sobre el plano de salida;
+/// - tapa trasera: el brazo axial va del cubo hacia el disco, sobre r = d1i/2;
+///   el radial baja desde la unión con el disco en d1/2, sobre el disco.
+///
+/// `None` es el valor automático. Los extremos los fija el 1D.
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct MeridianEdits {
+    pub front_axial_arm: Option<f64>,
+    pub front_radial_arm: Option<f64>,
+    pub rear_axial_arm: Option<f64>,
+    pub rear_radial_arm: Option<f64>,
 }
 
 /// El corte meridional completo.
@@ -143,6 +166,17 @@ impl MeridionalModel {
 /// εDs = εTs = 0: la p. 417 los pone en cero con nq < 20 y < 30, y no da ley
 /// para nq mayores.
 pub fn meridional_model(result: &DesignResult) -> Result<MeridionalModel, DesignError> {
+    meridional_model_with(result, &MeridianEdits::default())
+}
+
+/// El corte con los brazos editados. Sin ediciones es [`meridional_model`].
+/// Un brazo fuera de su recta es un error. Las tapas no pueden cruzarse: con
+/// el enlace tangente la trasera queda en r ≤ d1/2 hasta el disco, y la
+/// delantera en r ≥ d1/2 y antes del disco.
+pub fn meridional_model_with(
+    result: &DesignResult,
+    edits: &MeridianEdits,
+) -> Result<MeridionalModel, DesignError> {
     let d1 = result.d1.si * MM;
     let b1 = result.b1.si * MM;
     let r1 = d1 / 2.0;
@@ -163,9 +197,18 @@ pub fn meridional_model(result: &DesignResult) -> Result<MeridionalModel, Design
     let g1 = G1_RATIO * inlet_width;
 
     // Brazos de la Bézier: axial hasta la esquina y radial desde d2.
-    let axial_arm = z_e - g1;
-    let radial_arm = radial_arm(r2 - r1, axial_arm, r_ds);
-    if !(axial_arm > 0.0 && radial_arm > 0.0 && radial_arm < r2 - r1) {
+    let corner = z_e - g1;
+    let axial_arm = arm(
+        edits.front_axial_arm,
+        corner,
+        corner,
+        "brazo axial de la tapa delantera",
+    )?;
+    let rule_arm = radial_arm(r2 - r1, axial_arm, r_ds);
+    if edits.front_radial_arm.is_none()
+        && !(axial_arm > 0.0 && rule_arm > 0.0 && rule_arm < r2 - r1)
+    {
+        let radial_arm = rule_arm;
         return Err(DesignError::Input(format!(
             "la tapa delantera no se puede trazar con nq = {:.1}: entre d1 y d2 no cabe el \
              radio RDs (brazo radial {radial_arm:.2} mm, entre 0 y (d2 − d1)/2 = {:.2} mm). \
@@ -174,6 +217,25 @@ pub fn meridional_model(result: &DesignResult) -> Result<MeridionalModel, Design
             r2 - r1
         )));
     }
+    let radial_arm = arm(
+        edits.front_radial_arm,
+        rule_arm,
+        r2 - r1,
+        "brazo radial de la tapa delantera",
+    )?;
+    if radial_arm >= r2 - r1 {
+        return Err(out_of_line(
+            "brazo radial de la tapa delantera",
+            radial_arm,
+            r2 - r1,
+        ));
+    }
+    // El radio al salir de g1: el de la regla, o el que dan los brazos.
+    let r_ds = if edits.front_radial_arm.is_none() && edits.front_axial_arm.is_none() {
+        r_ds
+    } else {
+        1.5 * axial_arm * axial_arm / (r2 - r1 - radial_arm)
+    };
 
     let leading = Point::new(b2 + z_e, r1);
     let end_of_g1 = Point::new(b2 + z_e - g1, r1);
@@ -181,7 +243,11 @@ pub fn meridional_model(result: &DesignResult) -> Result<MeridionalModel, Design
     let straight = Line::new(leading, end_of_g1).map_err(geometry_failed)?;
     let bend = Bezier::cubic(
         end_of_g1,
-        Point::new(b2, r1),
+        // Sin edición, la esquina exacta.
+        Point::new(
+            edits.front_axial_arm.map_or(b2, |arm| end_of_g1.x - arm),
+            r1,
+        ),
         Point::new(b2, r2 - radial_arm),
         outlet,
     )
@@ -190,10 +256,27 @@ pub fn meridional_model(result: &DesignResult) -> Result<MeridionalModel, Design
     // Tapa trasera: del cubo en el borde de ataque, axial, a (0, d1/2), radial
     // y sin curvatura; luego el disco plano hasta d2 (εTs = 0).
     let hub = Point::new(leading.x, d1i / 2.0);
+    let rear_axial_arm = arm(
+        edits.rear_axial_arm,
+        leading.x,
+        leading.x,
+        "brazo axial de la tapa trasera",
+    )?;
+    let rear_radial_arm = arm(
+        edits.rear_radial_arm,
+        (r1 - d1i / 2.0) / 2.0,
+        r1 - d1i / 2.0,
+        "brazo radial de la tapa trasera",
+    )?;
     let hub_bend = Bezier::cubic(
         hub,
-        Point::new(0.0, d1i / 2.0),
-        Point::new(0.0, (d1i / 2.0 + r1) / 2.0),
+        Point::new(hub.x - rear_axial_arm, d1i / 2.0),
+        Point::new(
+            0.0,
+            edits
+                .rear_radial_arm
+                .map_or((d1i / 2.0 + r1) / 2.0, |arm| r1 - arm),
+        ),
         Point::new(0.0, r1),
     )
     .map_err(geometry_failed)?;
@@ -233,8 +316,29 @@ pub fn meridional_model(result: &DesignResult) -> Result<MeridionalModel, Design
             z_e,
             r_ds,
             g1,
+            front_axial_arm: axial_arm,
+            front_radial_arm: radial_arm,
+            rear_axial_arm,
+            rear_radial_arm,
         },
     })
+}
+
+/// El brazo editado o el automático, comprobado: mayor que 0 y no más que
+/// `max`, para que el punto de control no salga de su recta.
+fn arm(edited: Option<f64>, auto: f64, max: f64, name: &str) -> Result<f64, DesignError> {
+    let value = edited.unwrap_or(auto);
+    if value.is_finite() && value > 0.0 && value <= max {
+        Ok(value)
+    } else {
+        Err(out_of_line(name, value, max))
+    }
+}
+
+fn out_of_line(name: &str, value: f64, max: f64) -> DesignError {
+    DesignError::Input(format!(
+        "meridiano: el {name} vale {value:.2} mm y tiene que estar entre 0 y {max:.2} mm"
+    ))
 }
 
 /// Una estación del canal sobre la línea media, en mm y mm².

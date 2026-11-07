@@ -150,6 +150,8 @@ pub struct WallShape {
     pub p2_range: ([f64; 2], [f64; 2]),
     /// Radio de curvatura mínimo a lo largo de la tapa.
     pub min_radius: f64,
+    /// Dónde está ese radio mínimo, o sea la curvatura máxima: `[z, r]`.
+    pub max_curvature_at: [f64; 2],
 }
 
 /// Las cotas con que se construyó el corte, en mm.
@@ -508,23 +510,32 @@ fn sample(points: &[[f64; 2]; 5]) -> Result<Vec<[f64; 2]>, DesignError> {
     Ok(sampled)
 }
 
-/// Radio de curvatura mínimo a lo largo de toda la curva.
-fn min_radius(points: &[[f64; 2]; 5]) -> Result<f64, DesignError> {
-    min_radius_sampled(points, RADIUS_SAMPLES)
+/// Radio de curvatura mínimo a lo largo de toda la curva y el punto donde
+/// está. Una curva sin curvatura (recta) da infinito en P0.
+fn min_radius(points: &[[f64; 2]; 5]) -> Result<(f64, [f64; 2]), DesignError> {
+    let (radius, t) = min_radius_with_t(points, RADIUS_SAMPLES)?;
+    let at = bezier(points)?.point_at(t).map_err(geometry_failed)?;
+    Ok((radius, [at.x, at.y]))
 }
 
 fn min_radius_sampled(points: &[[f64; 2]; 5], samples: usize) -> Result<f64, DesignError> {
+    Ok(min_radius_with_t(points, samples)?.0)
+}
+
+fn min_radius_with_t(points: &[[f64; 2]; 5], samples: usize) -> Result<(f64, f64), DesignError> {
     let curve = bezier(points)?;
     let mut radius = f64::INFINITY;
+    let mut at = 0.0;
     // Con los brazos inclinados la curvatura de los extremos no es nula: cuenta.
     for index in 0..=samples {
         let t = index as f64 / samples as f64;
         let curvature = curve.curvature_at(t).map_err(geometry_failed)?.abs();
-        if curvature > 0.0 {
-            radius = radius.min(1.0 / curvature);
+        if curvature > 0.0 && 1.0 / curvature < radius {
+            radius = 1.0 / curvature;
+            at = t;
         }
     }
-    Ok(radius)
+    Ok((radius, at))
 }
 
 /// Las fracciones de P1 y P3 que hacen la curva más suave: las que dan el
@@ -626,6 +637,7 @@ fn wall_shape(
         (start_angle, start_length),
         (end_angle, end_length),
     );
+    let (min_radius, max_curvature_at) = min_radius(&points)?;
     Ok(WallShape {
         points,
         start_angle,
@@ -635,7 +647,8 @@ fn wall_shape(
         auto_start_length,
         auto_end_length,
         p2_range: (low, high),
-        min_radius: min_radius(&points)?,
+        min_radius,
+        max_curvature_at,
     })
 }
 

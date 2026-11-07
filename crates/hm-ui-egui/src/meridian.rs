@@ -123,6 +123,17 @@ pub(super) fn meridian_view(ui: &mut egui::Ui, outcome: &Outcome, boxes: &mut Me
                 .radius(5.0)
                 .color(Color32::DARK_GRAY),
             );
+            // La curvatura máxima de cada tapa: donde está su radio mínimo.
+            for wall in Wall::ALL {
+                let shape = model.params.wall(wall);
+                plot_ui.points(
+                    Points::new("Curvatura máxima", vec![shape.max_curvature_at])
+                        .radius(7.0)
+                        .shape(egui_plot::MarkerShape::Diamond)
+                        .color(Color32::from_rgb(220, 60, 60))
+                        .filled(false),
+                );
+            }
             // Los círculos de área: uno por estación del canal, de diámetro la anchura.
             for circle in area_circles(&model.channel(), AREA_CIRCLES) {
                 plot_ui.line(

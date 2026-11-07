@@ -9,7 +9,7 @@ use hm_design::meridian::{
     meridional_model_with,
 };
 use hm_design::{DesignInput, DesignResult, design};
-use hm_geometry::{Bezier, Point};
+use hm_geometry::{Bezier, Curve, Point};
 use hm_units::parse_quantity;
 
 fn input() -> DesignInput {
@@ -450,5 +450,31 @@ fn a_leading_edge_angle_out_of_range_is_an_error() {
         };
         let error = meridional_model_with(&design(&input()).unwrap(), &edits).unwrap_err();
         assert!(error.to_string().contains("borde de ataque"), "{error}");
+    }
+}
+
+/// La marca de curvatura máxima está en la curva y donde la curvatura da el
+/// radio mínimo de la cabecera.
+#[test]
+fn the_maximum_curvature_mark_is_on_the_wall_at_the_minimum_radius() {
+    let (_, model) = model();
+    for wall in Wall::ALL {
+        let shape = model.params.wall(wall);
+        let curve = curve_of(shape);
+        let [z, r] = shape.max_curvature_at;
+        let nearest = (0..=2000)
+            .map(|k| curve.point_at(f64::from(k) / 2000.0).unwrap())
+            .map(|p| (p.x - z).hypot(p.y - r))
+            .fold(f64::MAX, f64::min);
+        assert!(nearest < 1e-6, "{wall:?}: {nearest}");
+        let t = (0..=2000)
+            .map(|k| f64::from(k) / 2000.0)
+            .min_by(|a, b| {
+                let radius = |t: f64| 1.0 / curve.curvature_at(t).unwrap().abs();
+                radius(*a).total_cmp(&radius(*b))
+            })
+            .unwrap();
+        let there = curve.point_at(t).unwrap();
+        assert!((there.x - z).hypot(there.y - r) < 0.05, "{wall:?}");
     }
 }

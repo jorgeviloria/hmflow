@@ -56,10 +56,7 @@ pub fn recalc(mut project: Project, reselect: bool) -> Result<Recalculated, Engi
 
     // Hasta end_suction_v0.3, ηm incluía el rozamiento de discos; desde la
     // v0.4 va aparte, así que el ηm guardado ya no significa lo mismo.
-    let lumped_eta_m = matches!(
-        migrated_from.as_deref(),
-        Some("end_suction_v0.1" | "end_suction_v0.2" | "end_suction_v0.3")
-    );
+    let lumped_eta_m = migrated_from.as_deref().is_some_and(redefines_eta_m);
     let old_eta_m = if lumped_eta_m {
         let removed = project.params.remove("eta_m");
         removed.as_ref().and_then(param_value).map(str::to_string)
@@ -125,6 +122,14 @@ pub fn recalc(mut project: Project, reselect: bool) -> Result<Recalculated, Engi
         changes,
         diagnostics,
     })
+}
+
+/// Al migrar desde este método, ηm cambia de significado y el diseño, de números.
+pub fn redefines_eta_m(method: &str) -> bool {
+    matches!(
+        method,
+        "end_suction_v0.1" | "end_suction_v0.2" | "end_suction_v0.3"
+    )
 }
 
 /// Un fallo posterior al diseño, con los avisos que el diseño ya dio.

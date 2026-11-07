@@ -129,8 +129,13 @@ impl Session {
                 self.basis = opened.basis;
                 self.file = Some(path.to_path_buf());
                 self.project = Some(opened.project);
-                self.dirty = false;
-                self.notice = None;
+                self.dirty = !opened.migrated.is_empty();
+                self.notice = (!opened.migrated.is_empty()).then(|| {
+                    format!(
+                        "Migrado al abrir, sin guardar: {}.",
+                        opened.migrated.join("; ")
+                    )
+                });
                 self.armed = None;
                 self.opened_diagnostics = Some(opened.diagnostics);
                 self.removed_casing = None;
@@ -867,6 +872,47 @@ mod tests {
     }
 
     #[test]
+    fn a_very_old_method_is_migrated_on_opening_and_says_so() {
+        let dir = scratch("migrar-al-abrir");
+        let path = copy_fixture(&dir, "end_suction_v0.2.hmf");
+        let bytes = std::fs::read(&path).unwrap();
+        let mut session = Session::default();
+        assert!(session.open_path(&path), "{:?}", session.notice);
+
+        // Se avisa antes de escribir, y el archivo sigue igual.
+        let notice = session.notice.clone().unwrap();
+        assert!(notice.contains("Migrado al abrir"), "{notice}");
+        assert!(notice.contains("eta_m: 0.9600 → "), "{notice}");
+        assert!(notice.contains("method: end_suction_v0.2 → "), "{notice}");
+        assert!(session.dirty);
+        assert_eq!(std::fs::read(&path).unwrap(), bytes);
+        let shown = crate::model::compute(&session.inputs, &session.basis).unwrap();
+
+        // Lo que se ve es lo que se guarda.
+        session.save_to(&path).unwrap();
+        assert_eq!(session.notice, None);
+        let saved = crate::model::compute(&session.inputs, &session.basis).unwrap();
+        assert!((shown.result.eta / saved.result.eta - 1.0).abs() < 1e-9);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn an_eta_m_typed_after_opening_a_very_old_method_is_kept() {
+        let dir = scratch("migrar-eta");
+        let path = copy_fixture(&dir, "end_suction_v0.2.hmf");
+        let mut session = Session::default();
+        assert!(session.open_path(&path), "{:?}", session.notice);
+        session.inputs.eta_m = "0.91".to_string();
+        session.edited();
+        session.save_to(&path).unwrap();
+        assert!(matches!(
+            &Project::load(&path).unwrap().params["eta_m"],
+            Param::Manual { value } if value == "0.91"
+        ));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
     fn reselecting_needs_an_open_project() {
         let mut session = Session::default();
         assert!(session.reselect().is_err());
@@ -1283,38 +1329,11 @@ mod tests {
     }
 
     #[test]
-    fn saving_an_old_method_says_what_the_migration_changed() {
-        let dir = scratch("migracion-avisada");
-        let path = copy_fixture(&dir, "end_suction_v0.2.hmf");
-        let mut session = Session::default();
-        assert!(session.open_path(&path), "{:?}", session.notice);
-        session.save_to(&path).unwrap();
-        let notice = session.notice.clone().unwrap();
-        assert!(notice.contains("Migrado al guardar"), "{notice}");
-        assert!(notice.contains("eta_m: 0.9600 → "), "{notice}");
-        assert!(notice.contains("method: end_suction_v0.2 → "), "{notice}");
-        let _ = std::fs::remove_dir_all(&dir);
-    }
-
-    #[test]
     fn saving_a_current_method_has_nothing_to_report() {
         let dir = scratch("sin-migracion");
         let path = copy_fixture(&dir, "end_suction_v0.9.hmf");
         let mut session = Session::default();
         assert!(session.open_path(&path), "{:?}", session.notice);
-        session.save_to(&path).unwrap();
-        assert_eq!(session.notice, None);
-        let _ = std::fs::remove_dir_all(&dir);
-    }
-
-    #[test]
-    fn the_second_save_has_nothing_left_to_report() {
-        let dir = scratch("migracion-limpia");
-        let path = copy_fixture(&dir, "end_suction_v0.2.hmf");
-        let mut session = Session::default();
-        assert!(session.open_path(&path), "{:?}", session.notice);
-        session.save_to(&path).unwrap();
-        assert!(session.notice.is_some());
         session.save_to(&path).unwrap();
         assert_eq!(session.notice, None);
         let _ = std::fs::remove_dir_all(&dir);

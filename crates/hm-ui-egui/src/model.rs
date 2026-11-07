@@ -11,6 +11,7 @@ use hm_core::{Diagnostic, Diagnostics};
 use hm_design::geometry::Geometry;
 use hm_design::mechanics::{BALANCE_HOLE_AREA_RATIO, Mechanics};
 use hm_design::{CurvePoint, DesignError, DesignInput, DesignResult, ViscousCorrection};
+use hm_engine::redefines_eta_m;
 use hm_engine::{
     Analysis, Case, CaseField, ChangeKind, CurvePoints, Density, DensitySource, DesignEdits,
     DesignOptions, Duty, EditorError, EngineError, Entered, Fluid, FluidKind, Intake, Opened,
@@ -653,6 +654,8 @@ pub struct OpenedFile {
     pub inputs: Inputs,
     pub basis: Basis,
     pub diagnostics: Vec<Diagnostic>,
+    /// Lo que cambió al migrar en memoria. Vacío si no hizo falta.
+    pub migrated: Vec<String>,
 }
 
 /// Cajas a partir de un caso.
@@ -732,7 +735,19 @@ pub fn open_file(path: &Path) -> Result<OpenedFile, String> {
 
 /// Lo mismo con un proyecto en memoria: las cajas de lo recién guardado salen
 /// por aquí, igual que al abrirlo.
+///
+/// Un método hasta v0.3 se migra aquí, en memoria: ηm cambió de significado, y
+/// calcular con el viejo mostraría algo que luego no se guarda. `migrated` lo dice
+/// antes de escribir nada.
 pub fn open_loaded(project: Project) -> Result<OpenedFile, String> {
+    let (project, migrated) = if redefines_eta_m(&project.design.method) {
+        let recalculated =
+            hm_engine::recalc(project, false).map_err(|error| engine_failure(&error))?;
+        let migrated = migration_lines(&recalculated.changes);
+        (recalculated.project, migrated)
+    } else {
+        (project, Vec::new())
+    };
     let opened = match open_project(&project) {
         Ok(opened) => opened,
         Err(EditorError::Unsupported { reason }) => return Err(reason),
@@ -753,6 +768,7 @@ pub fn open_loaded(project: Project) -> Result<OpenedFile, String> {
         inputs,
         basis,
         diagnostics: opened.diagnostics.into_vec(),
+        migrated,
     })
 }
 
@@ -854,12 +870,7 @@ pub fn build_project(
                 .map_err(|error| engine_failure(&error))?;
             let recalculated =
                 update_design(project, &edits).map_err(|error| engine_failure(&error))?;
-            let migrated = change_lines(&recalculated.changes, |change| {
-                matches!(
-                    change.kind,
-                    ChangeKind::MethodMigrated | ChangeKind::MechanicalEfficiency
-                )
-            });
+            let migrated = migration_lines(&recalculated.changes);
             Ok(Built {
                 migrated,
                 project: recalculated.project,
@@ -912,6 +923,16 @@ fn change_lines(changes: &[ParamChange], keep: impl Fn(&ParamChange) -> bool) ->
             )
         })
         .collect()
+}
+
+/// Lo que cambió por migrar un método anterior.
+fn migration_lines(changes: &[ParamChange]) -> Vec<String> {
+    change_lines(changes, |change| {
+        matches!(
+            change.kind,
+            ChangeKind::MethodMigrated | ChangeKind::MechanicalEfficiency
+        )
+    })
 }
 
 /// Rehace lo que esté en `manual` con estas cajas. Es una orden: guardar nunca

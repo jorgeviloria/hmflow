@@ -1,7 +1,9 @@
 //! Crear un proyecto y pedir su informe, sin imprimir ni guardar.
 
 use hm_core::PumpType;
-use hm_design::meridian::{MeridianEdits, MeridionalModel, WallEdit, meridional_model_with};
+use hm_design::meridian::{
+    EdgeEdit, MeridianEdits, MeridionalModel, WallEdit, meridional_model_with,
+};
 use hm_design::plan::{PlanModel, plan_model};
 use hm_design::{DesignInput, DesignReport, LEGACY_METHODS, METHOD, design_with_options};
 use hm_formula::Registry;
@@ -327,8 +329,7 @@ pub fn meridian_edits_of(section: &hm_project::Meridian) -> MeridianEdits {
         hub_diameter: length_mm(&section.hub_diameter).filter(|value| *value >= 0.0),
         edge_shroud: fraction(&section.edge_shroud),
         edge_hub: fraction(&section.edge_hub),
-        edge_bow_shroud: length_mm(&section.edge_bow_shroud),
-        edge_bow_hub: length_mm(&section.edge_bow_hub),
+        edge: edge_edit_of(&section.edge),
         shroud: wall_edit_of(&section.shroud),
         hub: wall_edit_of(&section.hub),
     }
@@ -349,6 +350,29 @@ fn fraction(text: &str) -> Option<f64> {
         .parse::<f64>()
         .ok()
         .filter(|value| (0.0..=0.9).contains(value))
+}
+
+fn edge_edit_of(edge: &hm_project::MeridianEdge) -> EdgeEdit {
+    let angle = |text: &str| {
+        text.trim()
+            .parse::<f64>()
+            .ok()
+            .filter(|value| (-90.0..=90.0).contains(value))
+    };
+    let arm = |text: &str| length_mm(text).filter(|value| *value > 0.0);
+    EdgeEdit {
+        p2_along: edge
+            .p2_along
+            .trim()
+            .parse::<f64>()
+            .ok()
+            .filter(|value| (0.0..=1.0).contains(value)),
+        p2_offset: length_mm(&edge.p2_offset),
+        start_angle: angle(&edge.start_angle_deg),
+        start_length: arm(&edge.start_length),
+        end_angle: angle(&edge.end_angle_deg),
+        end_length: arm(&edge.end_length),
+    }
 }
 
 fn wall_edit_of(wall: &hm_project::MeridianWall) -> WallEdit {

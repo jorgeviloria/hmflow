@@ -78,19 +78,59 @@ pub struct Meridian {
     pub edge_shroud: String,
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub edge_hub: String,
-    /// Abombado del borde de ataque: la Bézier cúbica del borde lleva P1 y P2
-    /// en el tercio y los dos tercios de la cuerda, desplazados esta longitud
-    /// (con unidad, con signo; positivo hacia aguas arriba). Vacío: 0, recto.
-    #[serde(default, skip_serializing_if = "String::is_empty")]
-    pub edge_bow_shroud: String,
-    #[serde(default, skip_serializing_if = "String::is_empty")]
-    pub edge_bow_hub: String,
+    /// El borde de ataque como Bézier de 5 puntos, de la tapa al cubo.
+    #[serde(default, skip_serializing_if = "MeridianEdge::is_empty")]
+    pub edge: MeridianEdge,
     /// Tapa delantera.
     #[serde(default, skip_serializing_if = "MeridianWall::is_empty")]
     pub shroud: MeridianWall,
     /// Tapa trasera (cubo).
     #[serde(default, skip_serializing_if = "MeridianWall::is_empty")]
     pub hub: MeridianWall,
+}
+
+/// Lo editado del borde de ataque, como texto: una Bézier de 5 puntos de la
+/// tapa (P0) al cubo (P4), medida en el marco de la cuerda. Vacío es la recta.
+#[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct MeridianEdge {
+    /// P2 a lo largo de la cuerda: fracción sin unidad de 0 (en P0) a 1 (en
+    /// P4). Vacío: 0,5.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub p2_along: String,
+    /// P2 separado de la cuerda, con unidad y signo; positivo hacia aguas
+    /// arriba. Vacío: 0.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub p2_offset: String,
+    /// Ángulo del brazo de inicio (P0→P1) con la cuerda, en grados, sin
+    /// unidad, de −90 a 90; positivo hacia aguas arriba. Vacío: 0.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub start_angle_deg: String,
+    /// Longitud del brazo de inicio, con unidad, mayor que 0. Vacío: la cuarta
+    /// parte de la cuerda.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub start_length: String,
+    /// Ángulo del brazo final (P4→P3) con la cuerda, visto desde P4, igual.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub end_angle_deg: String,
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub end_length: String,
+}
+
+impl MeridianEdge {
+    #[must_use]
+    pub fn is_empty(&self) -> bool {
+        [
+            &self.p2_along,
+            &self.p2_offset,
+            &self.start_angle_deg,
+            &self.start_length,
+            &self.end_angle_deg,
+            &self.end_length,
+        ]
+        .iter()
+        .all(|text| text.trim().is_empty())
+    }
 }
 
 /// Lo editado de una tapa, como texto.
@@ -138,15 +178,10 @@ impl MeridianWall {
 impl Meridian {
     #[must_use]
     pub fn is_empty(&self) -> bool {
-        [
-            &self.hub_diameter,
-            &self.edge_shroud,
-            &self.edge_hub,
-            &self.edge_bow_shroud,
-            &self.edge_bow_hub,
-        ]
-        .iter()
-        .all(|text| text.trim().is_empty())
+        [&self.hub_diameter, &self.edge_shroud, &self.edge_hub]
+            .iter()
+            .all(|text| text.trim().is_empty())
+            && self.edge.is_empty()
             && self.shroud.is_empty()
             && self.hub.is_empty()
     }
@@ -732,14 +767,46 @@ fn check_meridian(diagnostics: &mut Diagnostics, meridian: &Meridian) {
             ),
         }
     }
+    let edge = &meridian.edge;
+    let along = edge.p2_along.trim();
+    if !along.is_empty() {
+        match along.parse::<f64>() {
+            Ok(value) if (0.0..=1.0).contains(&value) => {}
+            _ => problem(
+                "edge.p2_along".to_string(),
+                format!("debe estar entre 0 y 1: {along}"),
+            ),
+        }
+    }
+    let offset = edge.p2_offset.trim();
+    if !offset.is_empty()
+        && let Err(text) = length_value(offset)
+    {
+        problem("edge.p2_offset".to_string(), text);
+    }
     for (name, text) in [
-        ("edge_bow_shroud", meridian.edge_bow_shroud.trim()),
-        ("edge_bow_hub", meridian.edge_bow_hub.trim()),
+        ("start_angle_deg", edge.start_angle_deg.trim()),
+        ("end_angle_deg", edge.end_angle_deg.trim()),
+    ] {
+        if text.is_empty() {
+            continue;
+        }
+        match text.parse::<f64>() {
+            Ok(value) if (-90.0..=90.0).contains(&value) => {}
+            _ => problem(
+                format!("edge.{name}"),
+                format!("debe estar entre -90 y 90 grados: {text}"),
+            ),
+        }
+    }
+    for (name, text) in [
+        ("start_length", edge.start_length.trim()),
+        ("end_length", edge.end_length.trim()),
     ] {
         if !text.is_empty()
-            && let Err(text) = length_value(text)
+            && let Err(error) = positive_value(text, "m")
         {
-            problem(name.to_string(), text);
+            problem(format!("edge.{name}"), error);
         }
     }
     for (table, wall) in [("shroud", &meridian.shroud), ("hub", &meridian.hub)] {

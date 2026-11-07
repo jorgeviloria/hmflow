@@ -105,10 +105,18 @@ impl App {
                     Some(("hub_diameter", value)) => boxes.hub_diameter = value.trim().into(),
                     Some(("edge_shroud", value)) => boxes.edge_shroud = value.trim().into(),
                     Some(("edge_hub", value)) => boxes.edge_hub = value.trim().into(),
-                    Some(("edge_bow_shroud", value)) => {
-                        boxes.edge_bow_shroud = value.trim().into();
+                    Some(("edge_p2_along", value)) => boxes.edge.p2_along = value.trim().into(),
+                    Some(("edge_p2_offset", value)) => boxes.edge.p2_offset = value.trim().into(),
+                    Some(("edge_start_angle", value)) => {
+                        boxes.edge.start_angle_deg = value.trim().into();
                     }
-                    Some(("edge_bow_hub", value)) => boxes.edge_bow_hub = value.trim().into(),
+                    Some(("edge_start_length", value)) => {
+                        boxes.edge.start_length = value.trim().into();
+                    }
+                    Some(("edge_end_angle", value)) => {
+                        boxes.edge.end_angle_deg = value.trim().into()
+                    }
+                    Some(("edge_end_length", value)) => boxes.edge.end_length = value.trim().into(),
                     _ => eprintln!("HMF_MERIDIAN: no entiendo `{pair}`"),
                 }
             }

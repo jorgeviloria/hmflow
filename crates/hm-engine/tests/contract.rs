@@ -416,20 +416,27 @@ fn the_meridian_is_the_meridian_of_the_analysis() {
     );
 }
 
-/// El abombado del borde de ataque de `[meridian]` llega al corte, con signo.
+/// La Bézier del borde de ataque de `[meridian]` llega al corte.
 #[test]
-fn the_edge_bow_of_the_project_reaches_the_section() {
+fn the_edge_bezier_of_the_project_reaches_the_section() {
     let mut project = fixture("end_suction_v0.9.hmf");
     let straight = hm_engine::meridian(&project).unwrap();
     project.meridian = Some(hm_project::Meridian {
-        edge_bow_shroud: "3 mm".into(),
-        edge_bow_hub: "-1.5 mm".into(),
+        edge: hm_project::MeridianEdge {
+            p2_along: "0.4".into(),
+            p2_offset: "-1.5 mm".into(),
+            start_angle_deg: "25".into(),
+            start_length: "6 mm".into(),
+            ..hm_project::MeridianEdge::default()
+        },
         ..hm_project::Meridian::default()
     });
-    let bowed = hm_engine::meridian(&project).unwrap();
-    assert_eq!(bowed.params.edge_bow, [3.0, -1.5]);
-    assert!(bowed.curve("Borde de ataque").unwrap().points.len() > 2);
-    assert_eq!(bowed.params.edge_points, straight.params.edge_points);
+    let bent = hm_engine::meridian(&project).unwrap();
+    let edge = &bent.params.edge;
+    assert_eq!((edge.p2_along, edge.p2_offset), (0.4, -1.5));
+    assert_eq!((edge.start_angle, edge.start_length), (25.0, 6.0));
+    assert!(bent.curve("Borde de ataque").unwrap().points.len() > 2);
+    assert_eq!(bent.params.edge_points, straight.params.edge_points);
 }
 
 /// Lo editado en `[meridian]` llega al corte, en mm, y unas tapas que se

@@ -106,6 +106,37 @@ pub struct WallEdit {
     pub end_length: Option<f64>,
 }
 
+/// Lo editado del borde de ataque, una Bézier de 5 puntos de la tapa (P0) al
+/// cubo (P4). Se mide en el marco de la cuerda, no en coordenadas del corte: el
+/// eje es la cuerda de P0 a P4 y la normal, perpendicular a ella, positiva hacia
+/// aguas arriba (en un borde radial, hacia −z). Así la curva sigue a los
+/// extremos cuando se arrastran. Todo `None` es la recta: brazos de la cuarta
+/// parte de la cuerda, P2 en su punto medio.
+#[derive(Debug, Clone, Copy, Default, PartialEq)]
+pub struct EdgeEdit {
+    /// P2 a lo largo de la cuerda, de 0 (en P0) a 1 (en P4). `None` es 0,5.
+    pub p2_along: Option<f64>,
+    /// P2 separado de la cuerda, en mm, con signo. `None` es 0.
+    pub p2_offset: Option<f64>,
+    /// Ángulo del brazo de inicio (P0→P1) con la cuerda, en grados dentro de
+    /// [`ANGLE_RANGE`]; positivo gira hacia aguas arriba. `None` es 0.
+    pub start_angle: Option<f64>,
+    /// Longitud del brazo de inicio, en mm, mayor que 0. `None` es la cuarta
+    /// parte de la cuerda.
+    pub start_length: Option<f64>,
+    /// Ángulo del brazo final (P4→P3) con la cuerda vista desde P4, igual.
+    pub end_angle: Option<f64>,
+    pub end_length: Option<f64>,
+}
+
+impl EdgeEdit {
+    /// Sin nada editado: el borde es la recta.
+    #[must_use]
+    pub fn is_default(&self) -> bool {
+        *self == Self::default()
+    }
+}
+
 /// Lo editado del corte.
 #[derive(Debug, Clone, Copy, Default, PartialEq)]
 pub struct MeridianEdits {
@@ -117,13 +148,8 @@ pub struct MeridianEdits {
     /// dentro de [`EDGE_FRACTION_RANGE`]. `None` es 0.
     pub edge_shroud: Option<f64>,
     pub edge_hub: Option<f64>,
-    /// Cuánto se abomba el borde de ataque, en mm: la Bézier cúbica del borde
-    /// lleva P1 en el tercio de la cuerda, cerca de la tapa, y P2 en los dos
-    /// tercios, cerca del cubo, cada uno desplazado esta distancia en
-    /// perpendicular a la cuerda. Positivo abomba hacia aguas arriba. `None`
-    /// es 0: el borde recto.
-    pub edge_bow_shroud: Option<f64>,
-    pub edge_bow_hub: Option<f64>,
+    /// El borde de ataque como Bézier de 5 puntos, de la tapa al cubo.
+    pub edge: EdgeEdit,
     pub shroud: WallEdit,
     pub hub: WallEdit,
 }
@@ -167,6 +193,24 @@ pub struct WallShape {
     pub max_curvature_at: [f64; 2],
 }
 
+/// El borde de ataque como Bézier de 5 puntos, con lo aplicado (en mm y grados).
+#[derive(Debug, Clone, PartialEq)]
+pub struct EdgeShape {
+    /// Los 5 puntos de la Bézier, de P0 (en la tapa) a P4 (en el cubo).
+    pub points: [[f64; 2]; 5],
+    /// Longitud de la cuerda de P0 a P4. Con 0 no hay marco: no se edita.
+    pub chord: f64,
+    /// P2 en el marco de la cuerda: a lo largo (0 a 1) y separado (mm).
+    pub p2_along: f64,
+    pub p2_offset: f64,
+    pub start_angle: f64,
+    pub start_length: f64,
+    pub end_angle: f64,
+    pub end_length: f64,
+    /// Longitud de los brazos de la recta: la cuarta parte de la cuerda.
+    pub auto_arm_length: f64,
+}
+
 /// Las cotas con que se construyó el corte, en mm.
 #[derive(Debug, Clone, PartialEq)]
 pub struct MeridianParams {
@@ -184,9 +228,8 @@ pub struct MeridianParams {
     /// Los dos extremos del borde de ataque, `[z, r]`: el de la tapa y el del
     /// cubo.
     pub edge_points: [[f64; 2]; 2],
-    /// El abombado aplicado a P1 (cerca de la tapa) y a P2 (cerca del cubo),
-    /// en mm.
-    pub edge_bow: [f64; 2],
+    /// La Bézier del borde de ataque con lo aplicado.
+    pub edge: EdgeShape,
     /// Inclinación resultante del borde con la radial, en grados: positiva si
     /// el cubo queda aguas abajo de la tapa.
     pub edge_angle: f64,
@@ -223,13 +266,13 @@ pub struct MeridionalModel {
 }
 
 /// Un punto de control movible: P1, P2 o P3 de una tapa, el extremo del borde
-/// de ataque sobre ella o el punto de abombado del borde cerca de ella.
+/// de ataque sobre ella o P1, P2 o P3 del propio borde.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct ControlPoint {
     pub wall: Wall,
-    /// 1, 2 o 3 para P1, P2 y P3; 0 para el extremo del borde de ataque; 4
-    /// para su punto de abombado (P1 de la Bézier del borde en la tapa
-    /// delantera, P2 en el cubo).
+    /// 1, 2 o 3 para P1, P2 y P3; 0 para el extremo del borde de ataque; 5, 6
+    /// y 7 para P1, P2 y P3 de la Bézier del borde (con la tapa delantera, que
+    /// no cuenta).
     pub index: usize,
 }
 
@@ -243,9 +286,9 @@ pub enum Moved {
     /// El extremo del borde de ataque: fracción de la longitud de la curva
     /// desde el plano de entrada, dentro de [`EDGE_FRACTION_RANGE`].
     Fraction(f64),
-    /// El abombado del borde de ataque, en mm, con signo: lo que se separa de
-    /// la cuerda el punto de control, en perpendicular.
-    Bow(f64),
+    /// P2 del borde de ataque en el marco de la cuerda: a lo largo (0 a 1) y
+    /// separado de ella (mm, con signo).
+    EdgePoint { along: f64, offset: f64 },
 }
 
 /// Un punto de control y, si es de un brazo, el brazo que lo une a su extremo.
@@ -347,8 +390,9 @@ impl MeridionalModel {
     }
 
     /// Los puntos movibles del borde de ataque: sus dos extremos, sobre la tapa
-    /// y sobre el cubo, y los dos puntos de abombado, cada uno con el brazo que
-    /// lo une a su extremo. Sin cuerda (extremos juntos) no hay abombado.
+    /// y sobre el cubo, y P1, P2 y P3 de su Bézier (P1 y P3 con el brazo que los
+    /// une a su extremo). Sin cuerda (extremos juntos) no hay marco y no hay
+    /// puntos interiores.
     #[must_use]
     pub fn edge_handles(&self) -> Vec<Handle> {
         let ends = self.params.edge_points;
@@ -364,15 +408,21 @@ impl MeridionalModel {
                 line: None,
             })
             .collect();
-        if let Some(bows) = edge_controls(ends[0], ends[1], self.params.edge_bow) {
-            for ((wall, at), end) in Wall::ALL.iter().zip(bows).zip(ends) {
+        let edge = &self.params.edge;
+        if edge.chord >= RANGE_TOLERANCE {
+            for (index, point) in [(5, 1), (6, 2), (7, 3)] {
+                let arm = match index {
+                    5 => Some((edge.points[0], edge.points[1])),
+                    7 => Some((edge.points[4], edge.points[3])),
+                    _ => None,
+                };
                 handles.push(Handle {
                     control: ControlPoint {
-                        wall: *wall,
-                        index: 4,
+                        wall: Wall::Shroud,
+                        index,
                     },
-                    at,
-                    line: Some((end, at)),
+                    at: edge.points[point],
+                    line: arm,
                 });
             }
         }
@@ -404,13 +454,48 @@ impl MeridionalModel {
                 arc_fraction(line, pointer).clamp(EDGE_FRACTION_RANGE.0, EDGE_FRACTION_RANGE.1),
             );
         }
-        if control.index == 4 {
-            let ends = self.params.edge_points;
-            let Some((base, normal)) = edge_frame(ends[0], ends[1], control.wall) else {
-                return Moved::Bow(0.0);
+        if control.index >= 5 {
+            let edge = &self.params.edge;
+            let Some((u, n)) = edge_frame(edge.points[0], edge.points[4]) else {
+                return Moved::EdgePoint {
+                    along: 0.5,
+                    offset: 0.0,
+                };
             };
-            let bow = (pointer[0] - base[0]) * normal[0] + (pointer[1] - base[1]) * normal[1];
-            return Moved::Bow((bow * 100.0).round() / 100.0);
+            let rounded = |value: f64, scale: f64| (value * scale).round() / scale;
+            let relative = |origin: [f64; 2]| {
+                let v = [pointer[0] - origin[0], pointer[1] - origin[1]];
+                (v[0] * u[0] + v[1] * u[1], v[0] * n[0] + v[1] * n[1])
+            };
+            return match control.index {
+                5 | 7 => {
+                    // P1 se mide desde P0 a lo largo de la cuerda; P3, desde P4
+                    // hacia P0.
+                    let (origin, sign) = if control.index == 5 {
+                        (edge.points[0], 1.0)
+                    } else {
+                        (edge.points[4], -1.0)
+                    };
+                    let (along, across) = relative(origin);
+                    Moved::Arm {
+                        angle: rounded(
+                            across
+                                .atan2(sign * along)
+                                .to_degrees()
+                                .clamp(ANGLE_RANGE.0, ANGLE_RANGE.1),
+                            10.0,
+                        ),
+                        length: rounded(along.hypot(across).max(MIN_ARM), 100.0),
+                    }
+                }
+                _ => {
+                    let (along, across) = relative(edge.points[0]);
+                    Moved::EdgePoint {
+                        along: rounded((along / edge.chord).clamp(0.0, 1.0), 1000.0),
+                        offset: rounded(across, 100.0),
+                    }
+                }
+            };
         }
         let (from, sign) = match control.index {
             1 => (shape.points[0], 1.0),
@@ -541,27 +626,16 @@ pub fn meridional_model_with(
     };
     let edge_points = [on_curve(&front, edge_shroud), on_curve(&rear, edge_hub)];
     let (shroud_edge, hub_edge) = (edge_points[0], edge_points[1]);
-    let bow = |value: Option<f64>, what: &str| match value {
-        Some(value) if !value.is_finite() => Err(DesignError::Input(format!(
-            "meridiano: el abombado del borde de ataque {what} no es un número"
-        ))),
-        Some(value) => Ok(value),
-        None => Ok(0.0),
-    };
-    let edge_bow = [
-        bow(edits.edge_bow_shroud, "cerca de la tapa")?,
-        bow(edits.edge_bow_hub, "cerca del cubo")?,
-    ];
-    let chord = (hub_edge[0] - shroud_edge[0]).hypot(hub_edge[1] - shroud_edge[1]);
+    let edge = edge_shape(shroud_edge, hub_edge, &edits.edge)?;
     let edge_angle = (hub_edge[0] - shroud_edge[0])
         .atan2(shroud_edge[1] - hub_edge[1])
         .to_degrees();
-    // Recto (y con la cuerda nula no hay perpendicular): dos puntos, como
-    // siempre. Curvo: la Bézier cúbica muestreada.
-    let edge_line = if (edge_bow == [0.0, 0.0]) || chord < RANGE_TOLERANCE {
+    // Sin editar (o sin cuerda): la recta de dos puntos, como siempre. Editado:
+    // la Bézier de 5 puntos muestreada.
+    let edge_line = if edits.edge.is_default() || edge.chord < RANGE_TOLERANCE {
         edge_points.to_vec()
     } else {
-        edge_bezier(shroud_edge, hub_edge, edge_bow)
+        sample(&edge.points)?
     };
     let edge_length = cumulative(&edge_line)[edge_line.len() - 1];
     let edge_area = edge_line
@@ -600,7 +674,7 @@ pub fn meridional_model_with(
             edge_shroud,
             edge_hub,
             edge_points,
-            edge_bow,
+            edge,
             edge_angle,
             edge_length,
             edge_area,
@@ -612,62 +686,84 @@ pub fn meridional_model_with(
     })
 }
 
-/// Tramos con que se muestrea la Bézier del borde de ataque.
-const EDGE_SEGMENTS: usize = 24;
-
-/// El borde de ataque como Bézier cúbica de la tapa al cubo: P1 y P2 en el
-/// tercio y los dos tercios de la cuerda, desplazados `bow` mm en perpendicular
-/// (positivo hacia aguas arriba: la normal es (Δr, −Δz)/|cuerda|, que en un
-/// borde radial apunta a −z).
-fn edge_bezier(from: [f64; 2], to: [f64; 2], bow: [f64; 2]) -> Vec<[f64; 2]> {
-    let Some([p1, p2]) = edge_controls(from, to, bow) else {
-        return vec![from, to];
-    };
-    (0..=EDGE_SEGMENTS)
-        .map(|step| {
-            let t = step as f64 / EDGE_SEGMENTS as f64;
-            let u = 1.0 - t;
-            let weights = [u * u * u, 3.0 * u * u * t, 3.0 * u * t * t, t * t * t];
-            let points = [from, p1, p2, to];
-            [
-                (0..4).map(|k| weights[k] * points[k][0]).sum(),
-                (0..4).map(|k| weights[k] * points[k][1]).sum(),
-            ]
-        })
-        .collect()
-}
-
-/// P1 y P2 de la Bézier del borde; `None` si no hay cuerda de la que
-/// separarlos.
-fn edge_controls(from: [f64; 2], to: [f64; 2], bow: [f64; 2]) -> Option<[[f64; 2]; 2]> {
+/// Los ejes del marco de la cuerda de `from` a `to`: el unitario de la cuerda
+/// y la normal, (Δr, −Δz)/|cuerda|, que en un borde radial apunta a −z (aguas
+/// arriba). `None` si los extremos coinciden.
+fn edge_frame(from: [f64; 2], to: [f64; 2]) -> Option<([f64; 2], [f64; 2])> {
     let (dz, dr) = (to[0] - from[0], to[1] - from[1]);
     let chord = dz.hypot(dr);
-    if chord < RANGE_TOLERANCE {
-        return None;
-    }
-    let normal = [dr / chord, -dz / chord];
-    let at = |fraction: f64, offset: f64| {
-        [
-            from[0] + fraction * dz + offset * normal[0],
-            from[1] + fraction * dr + offset * normal[1],
-        ]
-    };
-    Some([at(1.0 / 3.0, bow[0]), at(2.0 / 3.0, bow[1])])
+    (chord >= RANGE_TOLERANCE).then(|| ([dz / chord, dr / chord], [dr / chord, -dz / chord]))
 }
 
-/// Donde nace el abombado de una tapa (el tercio de la cuerda desde la tapa,
-/// o los dos tercios para el cubo) y la normal por la que se desplaza.
-fn edge_frame(from: [f64; 2], to: [f64; 2], wall: Wall) -> Option<([f64; 2], [f64; 2])> {
-    let controls = edge_controls(from, to, [0.0, 0.0])?;
-    let base = match wall {
-        Wall::Shroud => controls[0],
-        Wall::Hub => controls[1],
-    };
+/// Los 5 puntos del borde de ataque con lo editado, validado como las tapas.
+fn edge_shape(from: [f64; 2], to: [f64; 2], edit: &EdgeEdit) -> Result<EdgeShape, DesignError> {
     let chord = (to[0] - from[0]).hypot(to[1] - from[1]);
-    Some((
-        base,
-        [(to[1] - from[1]) / chord, -(to[0] - from[0]) / chord],
-    ))
+    let auto_arm_length = chord / 4.0;
+    let number = |value: Option<f64>, auto: f64, what: &str, range: (f64, f64)| {
+        let value = value.unwrap_or(auto);
+        if value.is_finite() && (range.0..=range.1).contains(&value) {
+            Ok(value)
+        } else {
+            Err(DesignError::Input(format!(
+                "meridiano: {what} del borde de ataque vale {value} y tiene que estar entre {} y {}",
+                range.0, range.1
+            )))
+        }
+    };
+    let p2_along = number(edit.p2_along, 0.5, "la posición de P2", (0.0, 1.0))?;
+    let p2_offset = number(edit.p2_offset, 0.0, "el desvío de P2 (mm)", (-1.0e6, 1.0e6))?;
+    let start_angle = number(
+        edit.start_angle,
+        0.0,
+        "el ángulo de inicio (grados)",
+        ANGLE_RANGE,
+    )?;
+    let end_angle = number(edit.end_angle, 0.0, "el ángulo final (grados)", ANGLE_RANGE)?;
+    let positive = |value: Option<f64>, what: &str| {
+        let value = value.unwrap_or(auto_arm_length);
+        if value.is_finite() && value > 0.0 || (chord < RANGE_TOLERANCE && value == 0.0) {
+            Ok(value)
+        } else {
+            Err(DesignError::Input(format!(
+                "meridiano: {what} del borde de ataque vale {value} y tiene que ser mayor que 0 mm"
+            )))
+        }
+    };
+    let start_length = positive(edit.start_length, "la longitud de inicio")?;
+    let end_length = positive(edit.end_length, "la longitud final")?;
+    let points = match edge_frame(from, to) {
+        None => [from; 5],
+        Some((u, n)) => {
+            let arm = |origin: [f64; 2], angle: f64, length: f64, direction: f64| {
+                let (sin, cos) = angle.to_radians().sin_cos();
+                [
+                    origin[0] + length * (direction * cos * u[0] + sin * n[0]),
+                    origin[1] + length * (direction * cos * u[1] + sin * n[1]),
+                ]
+            };
+            [
+                from,
+                arm(from, start_angle, start_length, 1.0),
+                [
+                    from[0] + p2_along * (to[0] - from[0]) + p2_offset * n[0],
+                    from[1] + p2_along * (to[1] - from[1]) + p2_offset * n[1],
+                ],
+                arm(to, end_angle, end_length, -1.0),
+                to,
+            ]
+        }
+    };
+    Ok(EdgeShape {
+        points,
+        chord,
+        p2_along,
+        p2_offset,
+        start_angle,
+        start_length,
+        end_angle,
+        end_length,
+        auto_arm_length,
+    })
 }
 
 /// Los 5 puntos con P1 a `p1` de P0 hacia P2 y P3 a `p3` de P4 hacia P2: solo

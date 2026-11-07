@@ -2,7 +2,7 @@
 //! Bézier de 5 puntos: P2 y el ángulo y la longitud de los dos brazos.
 
 use hm_formula::Registry;
-use hm_project::{Meridian, MeridianWall, Project, PumpType, SCHEMA_VERSION};
+use hm_project::{Meridian, MeridianEdge, MeridianWall, Project, PumpType, SCHEMA_VERSION};
 
 const CASING_V3: &str = include_str!("fixtures/casing_v3.hmf");
 
@@ -53,8 +53,12 @@ fn edits_round_trip_and_empty_fields_stay_out() {
         hub_diameter: "0 mm".into(),
         edge_shroud: "0.2".into(),
         edge_hub: "0.35".into(),
-        edge_bow_shroud: "6 mm".into(),
-        edge_bow_hub: "-2.5 mm".into(),
+        edge: MeridianEdge {
+            p2_along: "0.4".into(),
+            p2_offset: "-2.5 mm".into(),
+            start_angle_deg: "20".into(),
+            ..MeridianEdge::default()
+        },
         shroud: MeridianWall {
             p2_z: "24 mm".into(),
             p2_r: "60 mm".into(),
@@ -70,8 +74,10 @@ fn edits_round_trip_and_empty_fields_stay_out() {
     assert!(text.contains("hub_diameter = \"0 mm\""), "{text}");
     assert!(text.contains("edge_shroud = \"0.2\""), "{text}");
     assert!(text.contains("edge_hub = \"0.35\""), "{text}");
-    assert!(text.contains("edge_bow_shroud = \"6 mm\""), "{text}");
-    assert!(text.contains("edge_bow_hub = \"-2.5 mm\""), "{text}");
+    assert!(text.contains("[meridian.edge]"), "{text}");
+    assert!(text.contains("p2_along = \"0.4\""), "{text}");
+    assert!(text.contains("p2_offset = \"-2.5 mm\""), "{text}");
+    assert!(text.contains("start_angle_deg = \"20\""), "{text}");
     assert!(text.contains("[meridian.shroud]"), "{text}");
     assert!(text.contains("p2_z = \"24 mm\""), "{text}");
     assert!(text.contains("[meridian.hub]"), "{text}");
@@ -219,12 +225,44 @@ fn the_hub_diameter_and_the_edge_positions_are_checked() {
 }
 
 #[test]
-fn the_edge_bow_is_a_signed_length() {
-    let bad = |meridian: Meridian, name: &str| {
-        problems(meridian)
-            .iter()
-            .any(|message| message.contains(name))
+fn the_edge_fields_are_checked_like_the_walls() {
+    let bad = |edge: MeridianEdge, name: &str| {
+        problems(Meridian {
+            edge,
+            ..Meridian::default()
+        })
+        .iter()
+        .any(|message| message.contains(name))
     };
+    let along = |text: &str| MeridianEdge {
+        p2_along: text.into(),
+        ..MeridianEdge::default()
+    };
+    let offset = |text: &str| MeridianEdge {
+        p2_offset: text.into(),
+        ..MeridianEdge::default()
+    };
+    let angle = |text: &str| MeridianEdge {
+        start_angle_deg: text.into(),
+        end_angle_deg: text.into(),
+        ..MeridianEdge::default()
+    };
+    let length = |text: &str| MeridianEdge {
+        start_length: text.into(),
+        end_length: text.into(),
+        ..MeridianEdge::default()
+    };
+    for (text, ok) in [
+        ("0", true),
+        ("1", true),
+        ("0.4", true),
+        ("1.1", false),
+        ("-0.1", false),
+        ("x", false),
+    ] {
+        assert_eq!(bad(along(text), "edge.p2_along"), !ok, "{text}");
+    }
+    // El desvío lleva unidad y signo.
     for (text, ok) in [
         ("0 mm", true),
         ("5 mm", true),
@@ -232,15 +270,19 @@ fn the_edge_bow_is_a_signed_length() {
         ("5", false),
         ("x", false),
     ] {
-        let shroud = Meridian {
-            edge_bow_shroud: text.into(),
-            ..Meridian::default()
-        };
-        let hub = Meridian {
-            edge_bow_hub: text.into(),
-            ..Meridian::default()
-        };
-        assert_eq!(bad(shroud, "edge_bow_shroud"), !ok, "{text}");
-        assert_eq!(bad(hub, "edge_bow_hub"), !ok, "{text}");
+        assert_eq!(bad(offset(text), "edge.p2_offset"), !ok, "{text}");
+    }
+    for (text, ok) in [("-90", true), ("45.5", true), ("91", false), ("x", false)] {
+        assert_eq!(bad(angle(text), "edge.start_angle_deg"), !ok, "{text}");
+        assert_eq!(bad(angle(text), "edge.end_angle_deg"), !ok, "{text}");
+    }
+    for (text, ok) in [
+        ("4 mm", true),
+        ("0 mm", false),
+        ("-1 mm", false),
+        ("4", false),
+    ] {
+        assert_eq!(bad(length(text), "edge.start_length"), !ok, "{text}");
+        assert_eq!(bad(length(text), "edge.end_length"), !ok, "{text}");
     }
 }

@@ -5,8 +5,8 @@
 use std::f64::consts::PI;
 
 use hm_design::meridian::{
-    ControlPoint, MIN_ARM, MeridianEdits, MeridionalModel, Moved, Wall, WallEdit, meridional_model,
-    meridional_model_with,
+    ControlPoint, EdgeEdit, MIN_ARM, MeridianEdits, MeridionalModel, Moved, Wall, WallEdit,
+    meridional_model, meridional_model_with,
 };
 use hm_design::{DesignInput, DesignResult, design};
 use hm_geometry::{Bezier, Curve, Point};
@@ -561,9 +561,9 @@ fn the_leading_edge_ends_are_draggable_along_their_curves() {
         ..MeridianEdits::default()
     };
     let model = edited(&edits);
-    // Los dos extremos y, tras ellos, los dos puntos de abombado.
+    // Los dos extremos y, tras ellos, P1, P2 y P3 del borde.
     let handles = model.edge_handles();
-    assert_eq!(handles.len(), 4);
+    assert_eq!(handles.len(), 5);
     for (handle, wall) in handles.iter().zip(Wall::ALL) {
         assert_eq!(handle.control, ControlPoint { wall, index: 0 });
         assert_eq!(handle.at, model.params.edge_points[wall as usize]);
@@ -657,55 +657,76 @@ fn a_dragged_p2_survives_rounding_to_hundredths_of_a_millimetre() {
     }
 }
 
-/// Sin abombado el borde es la recta de siempre, de dos puntos.
+/// Sin editar, el borde es la recta de dos puntos y su Bézier de 5 puntos
+/// reparte los puntos a la cuarta parte de la cuerda.
 #[test]
-fn a_zero_bow_leaves_the_edge_straight() {
+fn an_unedited_edge_is_the_straight_line_with_uniform_points() {
     let (_, auto) = model();
-    let zero = edited(&MeridianEdits {
-        edge_bow_shroud: Some(0.0),
-        edge_bow_hub: Some(0.0),
-        ..MeridianEdits::default()
-    });
-    assert_eq!(points(&zero, "Borde de ataque").len(), 2);
-    assert_eq!(zero.params.edge_bow, [0.0, 0.0]);
-    assert_eq!(zero.params.edge_area, auto.params.edge_area);
-    assert_eq!(zero.params.edge_length, auto.params.edge_length);
+    assert_eq!(points(&auto, "Borde de ataque").len(), 2);
+    let edge = &auto.params.edge;
+    let [from, to] = auto.params.edge_points;
+    assert_eq!((edge.points[0], edge.points[4]), (from, to));
+    for (k, point) in edge.points.iter().enumerate() {
+        let t = k as f64 / 4.0;
+        assert!(
+            (point[0] - (from[0] + t * (to[0] - from[0]))).abs() < 1e-9,
+            "P{k}"
+        );
+        assert!(
+            (point[1] - (from[1] + t * (to[1] - from[1]))).abs() < 1e-9,
+            "P{k}"
+        );
+    }
+    assert!((edge.chord - auto.params.edge_length).abs() < 1e-12);
+    assert!((edge.auto_arm_length - edge.chord / 4.0).abs() < 1e-12);
+    assert_eq!((edge.p2_along, edge.p2_offset), (0.5, 0.0));
+    assert_eq!((edge.start_angle, edge.end_angle), (0.0, 0.0));
 }
 
-/// Con el mismo abombado en P1 y P2 el punto medio de la Bézier se desplaza
-/// 0,75·b; positivo es aguas arriba (−z en un borde radial), los extremos no se
-/// mueven y la curva es más larga que la cuerda.
+/// Los brazos y P2 se miden en el marco de la cuerda. En un borde radial en
+/// z = 0 (de la tapa, arriba, al cubo, abajo) la cuerda baja por −r y la
+/// normal, positiva aguas arriba, es −z.
 #[test]
-fn a_bowed_edge_is_a_cubic_that_keeps_its_ends_and_bulges_upstream() {
-    let (_, auto) = model();
-    let bow = 4.0;
-    let bowed = edited(&MeridianEdits {
-        edge_bow_shroud: Some(bow),
-        edge_bow_hub: Some(bow),
+fn an_edited_edge_places_p1_p2_and_p3_in_the_chord_frame() {
+    let edge = edited(&MeridianEdits {
+        edge: EdgeEdit {
+            p2_along: Some(0.25),
+            p2_offset: Some(3.0),
+            start_angle: Some(30.0),
+            start_length: Some(5.0),
+            end_angle: Some(20.0),
+            end_length: Some(6.0),
+        },
         ..MeridianEdits::default()
     });
-    let line = points(&bowed, "Borde de ataque");
+    let shape = &edge.params.edge;
+    let [from, to] = edge.params.edge_points;
+    assert_eq!(from[0], 0.0);
+    assert_eq!(to[0], 0.0);
+    let chord = from[1] - to[1];
+    let close = |a: [f64; 2], b: [f64; 2], what: &str| {
+        assert!(
+            (a[0] - b[0]).abs() < 1e-9 && (a[1] - b[1]).abs() < 1e-9,
+            "{what}: {a:?} {b:?}"
+        );
+    };
+    let (sin30, cos30) = 30f64.to_radians().sin_cos();
+    let (sin20, cos20) = 20f64.to_radians().sin_cos();
+    close(shape.points[1], [-5.0 * sin30, from[1] - 5.0 * cos30], "P1");
+    close(shape.points[2], [-3.0, from[1] - 0.25 * chord], "P2");
+    close(shape.points[3], [-6.0 * sin20, to[1] + 6.0 * cos20], "P3");
+    assert_eq!((shape.start_angle, shape.start_length), (30.0, 5.0));
+    assert_eq!((shape.end_angle, shape.end_length), (20.0, 6.0));
+    // La curva muestreada une los extremos y es más larga que la cuerda.
+    let line = points(&edge, "Borde de ataque");
     assert!(line.len() > 2);
-    assert_eq!(line[0], bowed.params.edge_points[0]);
-    assert_eq!(line[line.len() - 1], bowed.params.edge_points[1]);
-    assert_eq!(bowed.params.edge_points, auto.params.edge_points);
-    assert_eq!(bowed.params.edge_bow, [bow, bow]);
-    // Borde radial en z = 0: el punto medio queda 0,75·bow aguas arriba, a
-    // media altura entre los extremos.
-    let ends = bowed.params.edge_points;
-    let middle = line[line.len() / 2];
-    assert!(
-        (middle[0] - ends[0][0] + 0.75 * bow).abs() < 1e-9,
-        "{middle:?}"
-    );
-    assert!((middle[1] - (ends[0][1] + ends[1][1]) / 2.0).abs() < 1e-9);
-    // Más larga que la cuerda; el área sale de la curva, no de la cuerda.
+    assert_eq!((line[0], line[line.len() - 1]), (from, to));
     let polyline: f64 = line
         .windows(2)
         .map(|pair| (pair[1][0] - pair[0][0]).hypot(pair[1][1] - pair[0][1]))
         .sum();
-    assert!((bowed.params.edge_length - polyline).abs() < 1e-12);
-    assert!(bowed.params.edge_length > auto.params.edge_length);
+    assert!((edge.params.edge_length - polyline).abs() < 1e-12);
+    assert!(polyline > chord);
     let area: f64 = line
         .windows(2)
         .map(|pair| {
@@ -713,79 +734,160 @@ fn a_bowed_edge_is_a_cubic_that_keeps_its_ends_and_bulges_upstream() {
                 * (pair[1][0] - pair[0][0]).hypot(pair[1][1] - pair[0][1])
         })
         .sum();
-    assert!((bowed.params.edge_area - area).abs() < 1e-9 * area);
-    assert!(bowed.params.edge_area > auto.params.edge_area);
-    // Un abombado negativo va hacia aguas abajo.
-    let other = edited(&MeridianEdits {
-        edge_bow_shroud: Some(-bow),
-        edge_bow_hub: Some(-bow),
-        ..MeridianEdits::default()
-    });
-    let line = points(&other, "Borde de ataque");
-    assert!((line[line.len() / 2][0] - 0.75 * bow).abs() < 1e-9);
-}
-
-#[test]
-fn a_bow_that_is_not_a_number_is_an_error() {
-    for (shroud, hub) in [(Some(f64::NAN), None), (None, Some(f64::INFINITY))] {
-        let edits = MeridianEdits {
-            edge_bow_shroud: shroud,
-            edge_bow_hub: hub,
-            ..MeridianEdits::default()
-        };
-        let error = meridional_model_with(&design(&input()).unwrap(), &edits)
-            .unwrap_err()
-            .to_string();
-        assert!(error.contains("abombado"), "{error}");
-    }
-}
-
-/// El abombado se arrastra por la perpendicular a la cuerda: los dos puntos de
-/// control salen con su brazo, y moverlos a donde el modelo los puso devuelve
-/// el mismo abombado, sea cual sea la posición del puntero a lo largo de la
-/// cuerda.
-#[test]
-fn the_bow_points_are_draggable_along_the_chord_normal() {
+    assert!((edge.params.edge_area - area).abs() < 1e-9 * area);
+    // Los extremos y las tapas no cambian.
     let (_, auto) = model();
-    let bowed = edited(&MeridianEdits {
-        edge_bow_shroud: Some(5.0),
-        edge_bow_hub: Some(-2.0),
+    assert_eq!(edge.params.edge_points, auto.params.edge_points);
+    for name in ["Tapa delantera", "Tapa trasera"] {
+        assert_eq!(points(&edge, name), points(&auto, name), "{name}");
+    }
+}
+
+#[test]
+fn edge_values_out_of_range_are_errors_that_name_them() {
+    let bad = |edge: EdgeEdit| {
+        meridional_model_with(
+            &design(&input()).unwrap(),
+            &MeridianEdits {
+                edge,
+                ..MeridianEdits::default()
+            },
+        )
+        .unwrap_err()
+        .to_string()
+    };
+    for (edge, what) in [
+        (
+            EdgeEdit {
+                start_angle: Some(100.0),
+                ..EdgeEdit::default()
+            },
+            "ángulo de inicio",
+        ),
+        (
+            EdgeEdit {
+                end_angle: Some(f64::NAN),
+                ..EdgeEdit::default()
+            },
+            "ángulo final",
+        ),
+        (
+            EdgeEdit {
+                start_length: Some(0.0),
+                ..EdgeEdit::default()
+            },
+            "longitud de inicio",
+        ),
+        (
+            EdgeEdit {
+                end_length: Some(-1.0),
+                ..EdgeEdit::default()
+            },
+            "longitud final",
+        ),
+        (
+            EdgeEdit {
+                p2_along: Some(1.5),
+                ..EdgeEdit::default()
+            },
+            "posición de P2",
+        ),
+        (
+            EdgeEdit {
+                p2_offset: Some(f64::INFINITY),
+                ..EdgeEdit::default()
+            },
+            "desvío de P2",
+        ),
+    ] {
+        let error = bad(edge);
+        assert!(
+            error.contains(what) && error.contains("borde de ataque"),
+            "{error}"
+        );
+    }
+}
+
+/// P1, P2 y P3 del borde son movibles: los brazos dan ángulo y longitud con la
+/// cuerda y P2, su sitio en el marco; arrastrarlos a donde están devuelve lo
+/// editado, y deslizar el puntero de P2 a lo largo de la cuerda no cambia el
+/// desvío.
+#[test]
+fn the_edge_points_are_draggable_in_the_chord_frame() {
+    let (_, auto) = model();
+    // Recto: cinco puntos movibles, con P1 y P3 unidos a su extremo.
+    let handles = auto.edge_handles();
+    assert_eq!(handles.len(), 5);
+    let edge = &auto.params.edge;
+    for handle in handles.iter().filter(|h| h.control.index >= 5) {
+        let k = handle.control.index - 4;
+        assert_eq!(handle.at, edge.points[k]);
+        let expected = match handle.control.index {
+            5 => Some((edge.points[0], edge.points[1])),
+            7 => Some((edge.points[4], edge.points[3])),
+            _ => None,
+        };
+        assert_eq!(handle.line, expected);
+    }
+    let control = |index| ControlPoint {
+        wall: Wall::Shroud,
+        index,
+    };
+    let edits = EdgeEdit {
+        p2_along: Some(0.4),
+        p2_offset: Some(2.5),
+        start_angle: Some(25.0),
+        start_length: Some(7.0),
+        end_angle: Some(-15.0),
+        end_length: Some(5.5),
+    };
+    let bent = edited(&MeridianEdits {
+        edge: edits,
         ..MeridianEdits::default()
     });
-    let at = |model: &MeridionalModel, wall, index| {
-        let control = ControlPoint { wall, index };
-        (control, model.control_position(control).unwrap())
+    for (index, expected) in [
+        (
+            5,
+            Moved::Arm {
+                angle: 25.0,
+                length: 7.0,
+            },
+        ),
+        (
+            7,
+            Moved::Arm {
+                angle: -15.0,
+                length: 5.5,
+            },
+        ),
+        (
+            6,
+            Moved::EdgePoint {
+                along: 0.4,
+                offset: 2.5,
+            },
+        ),
+    ] {
+        let at = bent.control_position(control(index)).unwrap();
+        assert_eq!(bent.moved(control(index), at), expected, "P{}", index - 4);
+    }
+    // Deslizar P2 a lo largo de la cuerda cambia «along», no el desvío.
+    let p2 = bent.control_position(control(6)).unwrap();
+    let [from, to] = bent.params.edge_points;
+    let chord = bent.params.edge.chord;
+    let u = [(to[0] - from[0]) / chord, (to[1] - from[1]) / chord];
+    let Moved::EdgePoint { along, offset } =
+        bent.moved(control(6), [p2[0] + 3.0 * u[0], p2[1] + 3.0 * u[1]])
+    else {
+        panic!("P2 del borde da EdgePoint");
     };
-    // Cuatro puntos del borde: 2 extremos y 2 de abombado, estos con brazo.
-    let handles = bowed.edge_handles();
-    assert_eq!(handles.len(), 4);
-    assert_eq!(handles.iter().filter(|h| h.control.index == 4).count(), 2);
-    for handle in handles.iter().filter(|h| h.control.index == 4) {
-        let end = bowed.params.edge_points[usize::from(handle.control.wall == Wall::Hub)];
-        assert_eq!(handle.line, Some((end, handle.at)));
-    }
-    // Recto: los de abombado están sobre la cuerda, a un tercio y dos tercios.
-    let ends = auto.params.edge_points;
-    let (_, p1) = at(&auto, Wall::Shroud, 4);
-    let (_, p2) = at(&auto, Wall::Hub, 4);
-    for (p, t) in [(p1, 1.0 / 3.0), (p2, 2.0 / 3.0)] {
-        assert!((p[0] - (ends[0][0] + t * (ends[1][0] - ends[0][0]))).abs() < 1e-9);
-        assert!((p[1] - (ends[0][1] + t * (ends[1][1] - ends[0][1]))).abs() < 1e-9);
-    }
-    // Arrastrar a donde está el punto abombado da el abombado.
-    for (wall, bow) in [(Wall::Shroud, 5.0), (Wall::Hub, -2.0)] {
-        let (control, position) = at(&bowed, wall, 4);
-        assert_eq!(bowed.moved(control, position), Moved::Bow(bow));
-        // Deslizar el puntero a lo largo de la cuerda no cambia nada.
-        let length = auto.params.edge_length;
-        let tangent = [
-            (ends[1][0] - ends[0][0]) / length,
-            (ends[1][1] - ends[0][1]) / length,
-        ];
-        let along = [
-            position[0] + 7.0 * tangent[0],
-            position[1] + 7.0 * tangent[1],
-        ];
-        assert_eq!(bowed.moved(control, along), Moved::Bow(bow));
-    }
+    assert_eq!(offset, 2.5);
+    assert!((along - (0.4 + 3.0 / chord)).abs() < 1e-3);
+    // Fuera de la cuerda se recorta a [0, 1].
+    let Moved::EdgePoint { along, .. } =
+        bent.moved(control(6), [from[0] - 100.0 * u[0], from[1] - 100.0 * u[1]])
+    else {
+        panic!("P2 del borde da EdgePoint");
+    };
+    assert_eq!(along, 0.0);
 }

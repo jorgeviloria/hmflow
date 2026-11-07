@@ -82,6 +82,18 @@ enum Command {
         #[arg(long, default_value_t = 11)]
         curve_points: usize,
     },
+    /// Exporta la vista en planta en CSV (mm), la misma que dibuja la
+    /// ventana. La primera línea lleva la huella, que también sale por stderr.
+    Geometry {
+        /// Ruta del archivo .hmf.
+        file: PathBuf,
+        /// Archivo CSV de salida; sin él, la salida estándar.
+        #[arg(long)]
+        out: Option<PathBuf>,
+        /// Sobrescribe el archivo de salida si ya existe.
+        #[arg(long)]
+        force: bool,
+    },
     /// Lista las fórmulas disponibles.
     Formulas,
     /// Evalúa una expresión con unidades.
@@ -274,20 +286,22 @@ fn run(cli: Cli) -> Result<ExitCode, Box<dyn std::error::Error>> {
         } => {
             let report = design_report(&file, curve_points)?;
             let json = serde_json::to_string_pretty(&report)?;
-            match out {
-                Some(path) => {
-                    if path.exists() && !force {
-                        return Err(format!(
-                            "ya existe {}; usa --force para sobrescribir",
-                            path.display()
-                        )
-                        .into());
-                    }
-                    std::fs::write(&path, json + "\n")?;
-                    eprintln!("informe escrito en {}", path.display());
+            write_output(out.as_deref(), force, &(json + "\n"), "informe escrito")?;
+            Ok(ExitCode::SUCCESS)
+        }
+
+        Command::Geometry { file, out, force } => {
+            let project = Project::load(&file)?;
+            let plan = match hm_engine::plan(&project) {
+                Ok(plan) => plan,
+                Err(EngineError::Invalid { diagnostics }) => {
+                    print_diagnostics(diagnostics.iter());
+                    return Err("el proyecto tiene errores; no hay geometría".into());
                 }
-                None => println!("{json}"),
-            }
+                Err(error) => return Err(engine_text(error)),
+            };
+            write_output(out.as_deref(), force, &plan.to_csv(), "geometría escrita")?;
+            eprintln!("huella {}", plan.fingerprint_text());
             Ok(ExitCode::SUCCESS)
         }
 
@@ -1033,6 +1047,31 @@ fn optional_entered(text: &str) -> Result<Option<Entered>, hm_units::UnitError> 
 }
 
 /// La CLI sigue mostrando la frase de antes. El código queda en el motor.
+/// Escribe en `out` o, sin él, en la salida estándar. No pisa un archivo
+/// existente sin `--force`.
+fn write_output(
+    out: Option<&std::path::Path>,
+    force: bool,
+    text: &str,
+    written: &str,
+) -> Result<(), Box<dyn std::error::Error>> {
+    match out {
+        Some(path) => {
+            if path.exists() && !force {
+                return Err(format!(
+                    "ya existe {}; usa --force para sobrescribir",
+                    path.display()
+                )
+                .into());
+            }
+            std::fs::write(path, text)?;
+            eprintln!("{written} en {}", path.display());
+        }
+        None => print!("{text}"),
+    }
+    Ok(())
+}
+
 fn engine_text(error: hm_engine::EngineError) -> Box<dyn std::error::Error> {
     cli_message(&error).into()
 }

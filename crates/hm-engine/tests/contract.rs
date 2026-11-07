@@ -361,3 +361,42 @@ fn new_project_rejects_a_case_that_is_not_the_one_analyzed() {
 
     assert!(new_project("b1", &case, &analysis).is_ok());
 }
+
+/// La planta del proyecto es la del análisis: el mismo modelo que dibuja el
+/// visor y que se exporta.
+#[test]
+fn the_plan_is_the_plan_of_the_analysis() {
+    let project = fixture("end_suction_v0.9.hmf");
+    let analysis = analyze(&case_from_project(&project).unwrap(), points()).unwrap();
+    let expected = hm_design::plan::plan_model(
+        &analysis.result,
+        analysis.geometry.as_ref().expect("geometría"),
+    )
+    .unwrap();
+    let plan = hm_engine::plan(&project).unwrap();
+    assert_eq!(plan, expected);
+    assert_eq!(plan.fingerprint(), expected.fingerprint());
+}
+
+#[test]
+fn the_plan_refuses_what_the_report_refuses() {
+    let mut project = new_project("b1", &b1(), &analyze(&b1(), points()).unwrap()).unwrap();
+    project.params.insert(
+        "psi".to_string(),
+        Param::Override {
+            expr: "0.5".to_string(),
+            author: "test".to_string(),
+            date: "2026-11-07".to_string(),
+            reason: "prueba".to_string(),
+        },
+    );
+    let error = hm_engine::plan(&project).unwrap_err();
+    assert_eq!(error.code(), report(&project, points()).unwrap_err().code());
+    assert_eq!(error.code(), Some("HM-PROJ-019"));
+
+    let error = hm_engine::plan(&fixture("end_suction_v0.8.hmf")).unwrap_err();
+    assert!(
+        matches!(error, EngineError::LegacyMethod { .. }),
+        "{error:?}"
+    );
+}

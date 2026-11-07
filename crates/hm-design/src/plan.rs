@@ -69,6 +69,38 @@ impl PlanModel {
     pub fn fingerprint_text(&self) -> String {
         format!("{:016x}", self.fingerprint())
     }
+
+    /// CSV para exportar: UTF-8 con BOM, para que Excel lea las tildes; una
+    /// cabecera con la huella; luego `curva,punto,x_mm,y_mm`, una fila por
+    /// punto. Cada número se escribe con la forma más corta que, releída, da
+    /// el mismo `f64`, con exponente si es muy pequeño o muy grande: el
+    /// archivo releído tiene la misma huella.
+    #[must_use]
+    pub fn to_csv(&self) -> String {
+        use std::fmt::Write as _;
+        let mut out = format!(
+            "\u{feff}# hmflow vista en planta, mm, huella {}\ncurva,punto,x_mm,y_mm\n",
+            self.fingerprint_text()
+        );
+        for curve in &self.curves {
+            let name = csv_field(&curve.name);
+            for (index, [x, y]) in curve.points.iter().enumerate() {
+                // Escribir en un String no falla.
+                let _ = writeln!(out, "{name},{index},{x:?},{y:?}");
+            }
+        }
+        out
+    }
+}
+
+/// Un campo CSV: entre comillas, con las comillas dobladas, si lleva coma,
+/// comillas o salto de línea (RFC 4180).
+fn csv_field(text: &str) -> String {
+    if text.contains([',', '"', '\n', '\r']) {
+        format!("\"{}\"", text.replace('"', "\"\""))
+    } else {
+        text.to_string()
+    }
 }
 
 /// Planta de un diseño: círculos de D1, D2 y lengua, un álabe por canal y la

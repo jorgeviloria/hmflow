@@ -1,6 +1,7 @@
 //! Crear un proyecto y pedir su informe, sin imprimir ni guardar.
 
 use hm_core::PumpType;
+use hm_design::plan::{PlanModel, plan_model};
 use hm_design::{DesignInput, DesignReport, LEGACY_METHODS, METHOD, design_with_options};
 use hm_formula::Registry;
 use hm_project::{Casing, Param, Project, Suction};
@@ -10,7 +11,7 @@ use crate::audit::{audit_with_analysis, schema_diagnostics};
 use crate::case::{Case, DensitySource, Entered, FluidKind, Intake, Temperature, Viscosity};
 use crate::convert::{ManualDefaults, case_from_project, casing_fit, design_params};
 use crate::dispatch::analyze;
-use crate::error::{CaseField, EngineError, input_error};
+use crate::error::{CaseField, EngineError, Stage, input_error};
 use crate::fluid::parse_temperature;
 use crate::validate::{design_input, field_code};
 
@@ -272,6 +273,33 @@ pub fn report(project: &Project, curve_points: CurvePoints) -> Result<DesignRepo
         report = report.with_viscous(correction);
     }
     Ok(report)
+}
+
+/// Vista en planta de un proyecto, la misma que dibuja el visor.
+///
+/// Rechaza lo mismo que el informe, pero de las etapas solo exige la
+/// geometría: es lo único que la planta necesita.
+pub fn plan(project: &Project) -> Result<PlanModel, EngineError> {
+    let diagnostics = project.validate(&Registry::all());
+    if diagnostics.has_errors() {
+        return Err(EngineError::Invalid { diagnostics });
+    }
+    ensure_reportable(project)?;
+    let case = case_from_project(project)?;
+    let analysis = analyze(&case, CurvePoints::MINIMUM)?;
+    let geometry_failed = |source| EngineError::Stage {
+        stage: Stage::Geometry,
+        source,
+    };
+    let geometry = analysis
+        .geometry
+        .as_ref()
+        .map_err(|error| geometry_failed(error.clone()))?;
+    plan_model(&analysis.result, geometry).map_err(|error| {
+        geometry_failed(hm_design::DesignError::Input(format!(
+            "vista en planta: {error}"
+        )))
+    })
 }
 
 /// Tipo, método anterior y método desconocido. Un método vacío se admite.

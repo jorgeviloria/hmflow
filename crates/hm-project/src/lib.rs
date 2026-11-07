@@ -18,7 +18,8 @@ use thiserror::Error;
 /// - 1: proyecto, diseño, punto de operación y parámetros.
 /// - 2: añade `viscosity` en `[operating]` y la sección opcional `[suction]`.
 /// - 3: añade la sección opcional `[casing]`.
-/// - 4: añade la sección opcional `[meridian]`.
+/// - 4: añade la sección opcional `[meridian]`, con P2 y las fracciones de P1
+///   y P3 de cada tapa.
 pub const SCHEMA_VERSION: u32 = 4;
 
 /// Esquemas anteriores que se migran al cargar.
@@ -60,37 +61,51 @@ pub struct Project {
     pub params: BTreeMap<String, Param>,
 }
 
-/// Brazos editados de las dos Bézier del corte meridional, con su unidad.
-/// Vacío es automático: el motor lo calcula. Cada punto de control solo se
-/// desliza por su recta, así que ninguna tangencia se rompe; si un brazo no
-/// cabe en el corte, lo dice el motor al trazarlo.
+/// Lo editado del corte meridional: cada tapa es una Bézier de 5 puntos. Lo
+/// que falta es lo del motor. Si algo no cabe en el corte, lo dice el motor
+/// al trazarlo.
 #[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Meridian {
-    /// Tapa delantera: del final de g1 hacia la esquina, sobre r = d1/2.
+    /// Tapa delantera.
+    #[serde(default, skip_serializing_if = "MeridianWall::is_empty")]
+    pub shroud: MeridianWall,
+    /// Tapa trasera (cubo).
+    #[serde(default, skip_serializing_if = "MeridianWall::is_empty")]
+    pub hub: MeridianWall,
+}
+
+/// Lo editado de una tapa, como texto.
+#[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct MeridianWall {
+    /// P2: z (con el flujo, 0 en el borde de ataque) y r, con unidad. Van
+    /// los dos o ninguno.
     #[serde(default, skip_serializing_if = "String::is_empty")]
-    pub front_axial_arm: String,
-    /// Tapa delantera: desde d2 hacia el eje, sobre el plano de salida.
+    pub p2_z: String,
     #[serde(default, skip_serializing_if = "String::is_empty")]
-    pub front_radial_arm: String,
-    /// Tapa trasera: del cubo hacia el disco, sobre r = d1i/2.
+    pub p2_r: String,
+    /// Fracción de P1 sobre P0–P2, entre 0 y 1.
     #[serde(default, skip_serializing_if = "String::is_empty")]
-    pub rear_axial_arm: String,
-    /// Tapa trasera: desde la unión con el disco en d1/2 hacia el eje.
+    pub p1: String,
+    /// Fracción de P3 sobre P4–P2, entre 0 y 1.
     #[serde(default, skip_serializing_if = "String::is_empty")]
-    pub rear_radial_arm: String,
+    pub p3: String,
+}
+
+impl MeridianWall {
+    #[must_use]
+    pub fn is_empty(&self) -> bool {
+        [&self.p2_z, &self.p2_r, &self.p1, &self.p3]
+            .iter()
+            .all(|text| text.trim().is_empty())
+    }
 }
 
 impl Meridian {
-    /// Los cuatro brazos con su nombre en el archivo.
     #[must_use]
-    pub fn arms(&self) -> [(&'static str, &str); 4] {
-        [
-            ("front_axial_arm", self.front_axial_arm.as_str()),
-            ("front_radial_arm", self.front_radial_arm.as_str()),
-            ("rear_axial_arm", self.rear_axial_arm.as_str()),
-            ("rear_radial_arm", self.rear_radial_arm.as_str()),
-        ]
+    pub fn is_empty(&self) -> bool {
+        self.shroud.is_empty() && self.hub.is_empty()
     }
 }
 
@@ -487,17 +502,7 @@ impl Project {
         }
 
         if let Some(meridian) = &self.meridian {
-            for (name, text) in meridian.arms() {
-                if text.trim().is_empty() {
-                    continue;
-                }
-                if let Err(problem) = positive_value(text, "m") {
-                    diagnostics.push(
-                        Diagnostic::error("HM-PROJ-031", format!("[meridian] `{name}` {problem}"))
-                            .with_hint("Escribe una longitud positiva, como \"14 mm\", o déjalo vacío para el valor automático."),
-                    );
-                }
-            }
+            check_meridian(&mut diagnostics, meridian);
         }
 
         if let Some(suction) = &self.suction {
@@ -648,6 +653,64 @@ fn casing_value(diagnostics: &mut Diagnostics, name: &str, text: &str, unit: &st
         Err(problem) => {
             casing_problem(diagnostics, name, &problem);
             None
+        }
+    }
+}
+
+/// Cada campo de `[meridian]`: P2 como longitudes (z cualquiera, r
+/// positiva), los dos o ninguno, y las fracciones entre 0 y 1.
+fn check_meridian(diagnostics: &mut Diagnostics, meridian: &Meridian) {
+    let mut problem = |name: String, text: String| {
+        diagnostics.push(
+            Diagnostic::error("HM-PROJ-031", format!("[meridian] `{name}` {text}"))
+                .with_hint("P2 lleva z y r con unidad, como \"24 mm\"; P1 y P3, una fracción entre 0 y 1. Vacío: el motor."),
+        );
+    };
+    for (table, wall) in [("shroud", &meridian.shroud), ("hub", &meridian.hub)] {
+        let (z, r) = (wall.p2_z.trim(), wall.p2_r.trim());
+        if z.is_empty() != r.is_empty() {
+            problem(
+                format!("{table}.p2"),
+                "necesita z y r, o ninguno".to_string(),
+            );
+        }
+        if !z.is_empty()
+            && let Err(text) = length_value(z)
+        {
+            problem(format!("{table}.p2_z"), text);
+        }
+        if !r.is_empty()
+            && let Err(text) = positive_value(r, "m")
+        {
+            problem(format!("{table}.p2_r"), text);
+        }
+        for (name, text) in [("p1", wall.p1.trim()), ("p3", wall.p3.trim())] {
+            if text.is_empty() {
+                continue;
+            }
+            match text.parse::<f64>() {
+                Ok(value) if value > 0.0 && value < 1.0 => {}
+                _ => problem(
+                    format!("{table}.{name}"),
+                    format!("debe estar entre 0 y 1: {text}"),
+                ),
+            }
+        }
+    }
+}
+
+/// Una longitud finita, de cualquier signo.
+fn length_value(text: &str) -> Result<f64, String> {
+    match (parse_quantity(text), parse_unit("m")) {
+        (Ok(quantity), Ok(expected)) if quantity.dim() != expected.dim => {
+            Err(format!("debe ser una longitud: {text}"))
+        }
+        (Ok(quantity), Ok(_)) if !quantity.si.is_finite() => {
+            Err(format!("debe ser finito: {text}"))
+        }
+        (Ok(quantity), Ok(_)) => Ok(quantity.si),
+        (Err(error), _) | (_, Err(error)) => {
+            Err(format!("no se puede interpretar ({error}): {text}"))
         }
     }
 }

@@ -1,7 +1,7 @@
 //! Crear un proyecto y pedir su informe, sin imprimir ni guardar.
 
 use hm_core::PumpType;
-use hm_design::meridian::{MeridianEdits, MeridionalModel, meridional_model_with};
+use hm_design::meridian::{MeridianEdits, MeridionalModel, WallEdit, meridional_model_with};
 use hm_design::plan::{PlanModel, plan_model};
 use hm_design::{DesignInput, DesignReport, LEGACY_METHODS, METHOD, design_with_options};
 use hm_formula::Registry;
@@ -319,26 +319,40 @@ pub fn meridian_edits(project: &Project) -> MeridianEdits {
         .unwrap_or_default()
 }
 
-/// Los brazos de una sección `[meridian]` en mm. Un texto vacío o que no es
-/// una longitud positiva queda en automático.
+/// Lo editado de una sección `[meridian]`, en mm. Un texto vacío o que no
+/// se entiende queda en automático (ya lo marcó `validate`, HM-PROJ-031).
 #[must_use]
 pub fn meridian_edits_of(section: &hm_project::Meridian) -> MeridianEdits {
+    MeridianEdits {
+        shroud: wall_edit_of(&section.shroud),
+        hub: wall_edit_of(&section.hub),
+    }
+}
+
+fn wall_edit_of(wall: &hm_project::MeridianWall) -> WallEdit {
     let mm = |text: &str| {
         (!text.trim().is_empty())
             .then(|| hm_units::parse_quantity(text).ok())
             .flatten()
             .filter(|quantity| {
-                quantity.dim() == hm_units::Dimension::LENGTH
-                    && quantity.si.is_finite()
-                    && quantity.si > 0.0
+                quantity.dim() == hm_units::Dimension::LENGTH && quantity.si.is_finite()
             })
             .map(|quantity| quantity.si * 1000.0)
     };
-    MeridianEdits {
-        front_axial_arm: mm(&section.front_axial_arm),
-        front_radial_arm: mm(&section.front_radial_arm),
-        rear_axial_arm: mm(&section.rear_axial_arm),
-        rear_radial_arm: mm(&section.rear_radial_arm),
+    let fraction = |text: &str| {
+        text.trim()
+            .parse::<f64>()
+            .ok()
+            .filter(|value| *value > 0.0 && *value < 1.0)
+    };
+    let p2 = match (mm(&wall.p2_z), mm(&wall.p2_r)) {
+        (Some(z), Some(r)) if r > 0.0 => Some([z, r]),
+        _ => None,
+    };
+    WallEdit {
+        p2,
+        p1: fraction(&wall.p1),
+        p3: fraction(&wall.p3),
     }
 }
 

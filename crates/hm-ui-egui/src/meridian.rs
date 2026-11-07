@@ -1,4 +1,6 @@
-//! Pestaña Meridiano: el corte meridional, dibujado desde `MeridionalModel`.
+//! Pestaña Meridiano: el corte meridional, dibujado desde `MeridionalModel`,
+//! con cada tapa como Bézier de 5 puntos que se edita con cajas o arrastrando
+//! P1, P2 y P3.
 
 use eframe::egui;
 use egui::{Color32, RichText};
@@ -6,10 +8,10 @@ use egui_plot::{Legend, Plot, PlotPoint, Points};
 
 use crate::curves::line;
 use hm_design::meridian::{
-    Arm, ChannelStation, MeridianEdits, MeridianParams, MeridionalModel, meridional_model,
+    ChannelStation, ControlPoint, MeridianEdits, MeridionalModel, Moved, Wall, meridional_model,
     meridional_model_with,
 };
-use hm_project::Meridian;
+use hm_project::{Meridian, MeridianWall};
 
 use crate::model::Outcome;
 
@@ -25,14 +27,17 @@ fn meridian_color(name: &str) -> Color32 {
     }
 }
 
-/// Distancia en píxeles a la que un clic agarra un asidero.
+/// Distancia en píxeles a la que un clic agarra un punto de control.
 const GRAB_PIXELS: f32 = 12.0;
 
-/// Edita los brazos en `boxes` (las cajas de `[meridian]`) con texto o
-/// arrastrando los puntos de control. Devuelve si cambió alguno.
+/// Rango de RDs de Gülich, en veces b1 (ec. 7.2, p. 416).
+const RDS_RANGE: (f64, f64) = (0.6, 0.8);
+
+/// Edita `[meridian]` en `boxes` con texto o arrastrando los puntos de
+/// control. Devuelve si cambió algo.
 pub(super) fn meridian_view(ui: &mut egui::Ui, outcome: &Outcome, boxes: &mut Meridian) -> bool {
     let auto = meridional_model(&outcome.result);
-    let mut changed = arm_boxes(ui, boxes, auto.as_ref().ok());
+    let mut changed = wall_boxes(ui, boxes, auto.as_ref().ok());
     let edits = hm_engine::meridian_edits_of(boxes);
     // El visor no calcula: dibuja el mismo modelo que se exporta.
     let model = match meridional_model_with(&outcome.result, &edits) {
@@ -45,24 +50,7 @@ pub(super) fn meridian_view(ui: &mut egui::Ui, outcome: &Outcome, boxes: &mut Me
             return changed;
         }
     };
-    let p = &model.params;
-    ui.label(
-        RichText::new(format!(
-            "Corte meridional, mm: z axial en el sentido del flujo (0 en el borde de ataque), r radial. \
-             zE = {:.1}, RDs = {:.1}, g1 = {:.1}, d1i = {:.1}, anchura de entrada = {:.1}. \
-             Gülich §7.2.2.1.{} Arrastra los puntos de control; cada uno se desliza por su recta. \
-             El álabe sigue siendo 2D hasta F4. Huella {}.",
-            p.z_e,
-            p.r_ds,
-            p.g1,
-            p.d1i,
-            p.inlet_width,
-            edited_note(&edits),
-            model.fingerprint_text()
-        ))
-        .small()
-        .weak(),
-    );
+    ui.label(RichText::new(header(&model, &edits)).small().weak());
     let engine = (edits != MeridianEdits::default())
         .then_some(auto.ok())
         .flatten();
@@ -74,8 +62,8 @@ pub(super) fn meridian_view(ui: &mut egui::Ui, outcome: &Outcome, boxes: &mut Me
         .height(ui.available_height() - graphs_height)
         .show(ui, |plot_ui| {
             if let Some(engine) = &engine {
-                for name in ["Tapa delantera", "Tapa trasera"] {
-                    if let Some(curve) = engine.curve(name) {
+                for wall in Wall::ALL {
+                    if let Some(curve) = engine.curve(wall.name()) {
                         plot_ui.line(
                             line("Propuesta del motor", curve.points.clone(), Color32::GRAY)
                                 .width(1.0)
@@ -88,23 +76,25 @@ pub(super) fn meridian_view(ui: &mut egui::Ui, outcome: &Outcome, boxes: &mut Me
                 let color = meridian_color(&curve.name);
                 plot_ui.line(line(&curve.name, curve.points.clone(), color));
             }
-            let handles = model.handles();
-            for handle in &handles {
+            // El polígono de control de cada tapa, P0 a P4.
+            for wall in Wall::ALL {
                 plot_ui.line(
                     line(
                         "Puntos de control",
-                        vec![handle.origin, handle.point],
+                        model.params.wall(wall).points.to_vec(),
                         Color32::DARK_GRAY,
                     )
-                    .width(1.0),
+                    .width(1.0)
+                    .style(egui_plot::LineStyle::dashed_dense()),
                 );
             }
             plot_ui.points(
                 Points::new(
                     "Puntos de control",
-                    handles
+                    model
+                        .handles()
                         .iter()
-                        .map(|handle| handle.point)
+                        .map(|handle| handle.at)
                         .collect::<Vec<_>>(),
                 )
                 .radius(5.0)
@@ -116,145 +106,195 @@ pub(super) fn meridian_view(ui: &mut egui::Ui, outcome: &Outcome, boxes: &mut Me
     changed
 }
 
-/// Las cuatro cajas, con el valor automático como pista. Vacía es automático.
-fn arm_boxes(ui: &mut egui::Ui, boxes: &mut Meridian, auto: Option<&MeridionalModel>) -> bool {
+/// La cabecera: cotas, radios mínimos frente a RDs y lo editado.
+fn header(model: &MeridionalModel, edits: &MeridianEdits) -> String {
+    let p = &model.params;
+    let (low, high) = (RDS_RANGE.0 * p.inlet_width, RDS_RANGE.1 * p.inlet_width);
+    let shroud = p.shroud.min_radius;
+    let verdict = if shroud < low {
+        format!(
+            " por debajo de {low:.1}–{high:.1} (0,6–0,8·b1, ec. 7.2): con zE = {:.1} no cabe más",
+            p.z_e
+        )
+    } else {
+        format!(" (Gülich: {low:.1}–{high:.1})")
+    };
+    format!(
+        "Corte meridional, mm: z con el flujo (0 en el borde de ataque), r radial. zE = {:.1}, \
+         d1i = {:.1}, anchura de entrada = {:.1}. Radio mínimo: tapa delantera {shroud:.1}{verdict}; \
+         trasera {:.1}. Cada tapa es una Bézier de 5 puntos; P2 se mueve libre y P1 y P3 por su \
+         recta. Gülich §7.2.2.1.{} El álabe sigue siendo 2D hasta F4. Huella {}.",
+        p.z_e,
+        p.d1i,
+        p.inlet_width,
+        p.hub.min_radius,
+        edited_note(edits),
+        model.fingerprint_text()
+    )
+}
+
+/// Las cajas de las dos tapas, con lo del motor como pista. Vacía es el
+/// motor.
+fn wall_boxes(ui: &mut egui::Ui, boxes: &mut Meridian, auto: Option<&MeridionalModel>) -> bool {
     let mut changed = false;
     let parsed = hm_engine::meridian_edits_of(boxes);
-    ui.horizontal_wrapped(|ui| {
-        for arm in Arm::ALL {
-            let hint = auto
-                .map(|model| format!("{} (auto)", arm_text(arm_of(&model.params, arm))))
+    for wall in Wall::ALL {
+        let shape = auto.map(|model| model.params.wall(wall).clone());
+        let edit = *parsed.wall(wall);
+        let texts = wall_mut(boxes, wall);
+        ui.horizontal_wrapped(|ui| {
+            ui.label(RichText::new(wall.name()).strong());
+            let hints = shape
+                .as_ref()
+                .map(|shape| {
+                    [
+                        format!("{} (auto)", length_text(shape.points[2][0])),
+                        format!("{} (auto)", length_text(shape.points[2][1])),
+                        format!("{} (auto)", fraction_text(shape.p1)),
+                        format!("{} (auto)", fraction_text(shape.p3)),
+                    ]
+                })
                 .unwrap_or_default();
-            let text = box_mut(boxes, arm);
-            let bad = !text.trim().is_empty() && edit_of(&parsed, arm).is_none();
-            ui.label(RichText::new(arm.label()).small());
-            let mut edit = egui::TextEdit::singleline(text)
-                .id_salt(arm.file_name())
-                .hint_text(hint)
-                .desired_width(150.0);
-            if bad {
-                edit = edit.text_color(ui.visuals().error_fg_color);
+            let fields: [(&str, &mut String, bool); 4] = [
+                ("P2 z", &mut texts.p2_z, edit.p2.is_none()),
+                ("P2 r", &mut texts.p2_r, edit.p2.is_none()),
+                ("P1", &mut texts.p1, edit.p1.is_none()),
+                ("P3", &mut texts.p3, edit.p3.is_none()),
+            ];
+            for (index, (label, text, unread)) in fields.into_iter().enumerate() {
+                let bad = unread && !text.trim().is_empty();
+                ui.label(RichText::new(label).small());
+                let mut field = egui::TextEdit::singleline(text)
+                    .id_salt((wall.file_name(), label))
+                    .hint_text(hints[index].as_str())
+                    .desired_width(120.0);
+                if bad {
+                    field = field.text_color(ui.visuals().error_fg_color);
+                }
+                changed |= ui
+                    .add(field)
+                    .on_hover_text("P2: longitud con unidad, como 24 mm. P1 y P3: fracción entre 0 y 1. Vacía: el motor.")
+                    .changed();
             }
-            changed |= ui
-                .add(edit)
-                .on_hover_text("Longitud con unidad, como 14 mm. Vacía: el motor.")
-                .changed();
-        }
-        let any = boxes.arms().iter().any(|(_, text)| !text.trim().is_empty());
-        if ui
-            .add_enabled(any, egui::Button::new("Todo automático"))
-            .clicked()
-        {
-            *boxes = Meridian::default();
-            changed = true;
-        }
-    });
+        });
+    }
+    let any = !boxes.is_empty();
+    if ui
+        .add_enabled(any, egui::Button::new("Todo del motor"))
+        .clicked()
+    {
+        *boxes = Meridian::default();
+        changed = true;
+    }
     changed
 }
 
-/// Agarra el asidero más cercano al empezar a arrastrar y, mientras dura,
-/// escribe en su caja el brazo que da el puntero sobre su recta.
+/// Agarra el punto de control más cercano al empezar a arrastrar y, mientras
+/// dura, escribe en sus cajas lo que da el puntero.
 fn drag_handles(
     plot_ui: &mut egui_plot::PlotUi<'_>,
     model: &MeridionalModel,
     boxes: &mut Meridian,
 ) -> bool {
-    let id = egui::Id::unique("meridian_dragged_arm");
+    let id = egui::Id::unique("meridian_dragged_point");
     let response = plot_ui.response().clone();
     let Some(pointer) = plot_ui.pointer_coordinate() else {
         return false;
     };
     if response.drag_started() {
         let screen = plot_ui.screen_from_plot(pointer);
-        let handles: Vec<(Arm, [f32; 2])> = model
+        let handles: Vec<(ControlPoint, [f32; 2])> = model
             .handles()
             .iter()
             .map(|handle| {
-                let at = plot_ui.screen_from_plot(PlotPoint::new(handle.point[0], handle.point[1]));
-                (handle.arm, [at.x, at.y])
+                let at = plot_ui.screen_from_plot(PlotPoint::new(handle.at[0], handle.at[1]));
+                (handle.control, [at.x, at.y])
             })
             .collect();
         let grabbed = nearest(&handles, [screen.x, screen.y], GRAB_PIXELS);
         plot_ui.ctx().data_mut(|data| data.insert_temp(id, grabbed));
     }
-    let grabbed: Option<Arm> = plot_ui.ctx().data(|data| data.get_temp(id)).flatten();
+    let grabbed: Option<ControlPoint> = plot_ui.ctx().data(|data| data.get_temp(id)).flatten();
     if response.drag_stopped() {
         plot_ui
             .ctx()
-            .data_mut(|data| data.remove::<Option<Arm>>(id));
+            .data_mut(|data| data.remove::<Option<ControlPoint>>(id));
     }
-    let (Some(arm), true) = (grabbed, response.dragged()) else {
+    let (Some(control), true) = (grabbed, response.dragged()) else {
         return false;
     };
-    let Some(value) = arm.measure([pointer.x, pointer.y], model) else {
-        return false;
-    };
-    let text = arm_text(value.max(0.01));
-    let target = box_mut(boxes, arm);
-    if *target == text {
-        return false;
-    }
-    *target = text;
-    true
+    write_moved(boxes, control, model.moved(control, [pointer.x, pointer.y]))
 }
 
-/// El asidero más cercano a `pointer`, si está a menos de `tolerance`.
-fn nearest(handles: &[(Arm, [f32; 2])], pointer: [f32; 2], tolerance: f32) -> Option<Arm> {
+/// Escribe en las cajas lo que dio el arrastre. Devuelve si cambió algo.
+fn write_moved(boxes: &mut Meridian, control: ControlPoint, moved: Moved) -> bool {
+    let texts = wall_mut(boxes, control.wall);
+    let updates: Vec<(&mut String, String)> = match (moved, control.index) {
+        (Moved::Point([z, r]), _) => vec![
+            (&mut texts.p2_z, length_text(z)),
+            (&mut texts.p2_r, length_text(r)),
+        ],
+        (Moved::Fraction(value), 1) => vec![(&mut texts.p1, fraction_text(value))],
+        (Moved::Fraction(value), _) => vec![(&mut texts.p3, fraction_text(value))],
+    };
+    let mut changed = false;
+    for (target, text) in updates {
+        if *target != text {
+            *target = text;
+            changed = true;
+        }
+    }
+    changed
+}
+
+/// El punto más cercano a `pointer`, si está a menos de `tolerance`.
+fn nearest(
+    handles: &[(ControlPoint, [f32; 2])],
+    pointer: [f32; 2],
+    tolerance: f32,
+) -> Option<ControlPoint> {
     handles
         .iter()
-        .map(|(arm, at)| (*arm, (at[0] - pointer[0]).hypot(at[1] - pointer[1])))
+        .map(|(control, at)| (*control, (at[0] - pointer[0]).hypot(at[1] - pointer[1])))
         .filter(|(_, distance)| *distance <= tolerance)
         .min_by(|a, b| a.1.total_cmp(&b.1))
-        .map(|(arm, _)| arm)
+        .map(|(control, _)| control)
 }
 
-/// Un brazo como se escribe en su caja.
-fn arm_text(value: f64) -> String {
+fn length_text(value: f64) -> String {
     format!("{value:.2} mm")
 }
 
-fn box_mut(boxes: &mut Meridian, arm: Arm) -> &mut String {
-    match arm {
-        Arm::FrontAxial => &mut boxes.front_axial_arm,
-        Arm::FrontRadial => &mut boxes.front_radial_arm,
-        Arm::RearAxial => &mut boxes.rear_axial_arm,
-        Arm::RearRadial => &mut boxes.rear_radial_arm,
+fn fraction_text(value: f64) -> String {
+    format!("{value:.3}")
+}
+
+fn wall_mut(boxes: &mut Meridian, wall: Wall) -> &mut MeridianWall {
+    match wall {
+        Wall::Shroud => &mut boxes.shroud,
+        Wall::Hub => &mut boxes.hub,
     }
 }
 
-fn edit_of(edits: &MeridianEdits, arm: Arm) -> Option<f64> {
-    match arm {
-        Arm::FrontAxial => edits.front_axial_arm,
-        Arm::FrontRadial => edits.front_radial_arm,
-        Arm::RearAxial => edits.rear_axial_arm,
-        Arm::RearRadial => edits.rear_radial_arm,
-    }
-}
-
-fn arm_of(params: &MeridianParams, arm: Arm) -> f64 {
-    match arm {
-        Arm::FrontAxial => params.front_axial_arm,
-        Arm::FrontRadial => params.front_radial_arm,
-        Arm::RearAxial => params.rear_axial_arm,
-        Arm::RearRadial => params.rear_radial_arm,
-    }
-}
-
-/// Qué brazos vienen del archivo, para la cabecera.
+/// Qué viene editado, para la cabecera.
 fn edited_note(edits: &MeridianEdits) -> String {
-    let names: Vec<&str> = [
-        (edits.front_axial_arm, "axial delantero"),
-        (edits.front_radial_arm, "radial delantero"),
-        (edits.rear_axial_arm, "axial trasero"),
-        (edits.rear_radial_arm, "radial trasero"),
-    ]
-    .into_iter()
-    .filter_map(|(arm, name)| arm.map(|_| name))
-    .collect();
+    let mut names = Vec::new();
+    for wall in Wall::ALL {
+        let edit = edits.wall(wall);
+        for (present, point) in [
+            (edit.p2.is_some(), "P2"),
+            (edit.p1.is_some(), "P1"),
+            (edit.p3.is_some(), "P3"),
+        ] {
+            if present {
+                names.push(format!("{point} {}", wall.name().to_lowercase()));
+            }
+        }
+    }
     if names.is_empty() {
         String::new()
     } else {
-        format!(" Brazos editados: {}.", names.join(", "))
+        format!(" Editado: {}.", names.join(", "))
     }
 }
 
@@ -322,19 +362,6 @@ mod tests {
         assert_eq!(meridian_color("Nariz del cubo"), Color32::GRAY);
     }
 
-    /// Lo que dibuja la pestaña es el modelo del motor: mismas curvas, misma
-    /// huella que exportará la CLI.
-    #[test]
-    fn the_tab_draws_the_model_of_the_shown_design() {
-        let outcome = crate::model::compute(
-            &crate::model::Inputs::default(),
-            &crate::model::Basis::default(),
-        )
-        .unwrap();
-        let model = hm_design::meridian::meridional_model(&outcome.result).unwrap();
-        assert_eq!(model.curves.len(), 4);
-    }
-
     #[test]
     fn the_graphs_are_the_channel_in_cm2_and_m_per_s() {
         let station = ChannelStation {
@@ -349,43 +376,76 @@ mod tests {
     }
 
     #[test]
-    fn the_header_names_the_edited_arms() {
+    fn the_header_names_what_is_edited() {
         assert_eq!(edited_note(&MeridianEdits::default()), "");
-        let edits = MeridianEdits {
-            front_radial_arm: Some(20.0),
-            rear_axial_arm: Some(30.0),
-            ..MeridianEdits::default()
-        };
+        let mut edits = MeridianEdits::default();
+        edits.shroud.p2 = Some([20.0, 60.0]);
+        edits.hub.p3 = Some(0.4);
         assert_eq!(
             edited_note(&edits),
-            " Brazos editados: radial delantero, axial trasero."
+            " Editado: P2 tapa delantera, P3 tapa trasera."
         );
     }
 
     #[test]
-    fn a_click_grabs_the_nearest_handle_within_reach() {
+    fn a_click_grabs_the_nearest_point_within_reach() {
+        let p = |wall, index| ControlPoint { wall, index };
         let handles = [
-            (Arm::FrontAxial, [100.0, 100.0]),
-            (Arm::FrontRadial, [110.0, 100.0]),
-            (Arm::RearAxial, [300.0, 300.0]),
+            (p(Wall::Shroud, 1), [100.0, 100.0]),
+            (p(Wall::Shroud, 2), [110.0, 100.0]),
+            (p(Wall::Hub, 2), [300.0, 300.0]),
         ];
         assert_eq!(
             nearest(&handles, [108.0, 101.0], 12.0),
-            Some(Arm::FrontRadial)
+            Some(p(Wall::Shroud, 2))
         );
         assert_eq!(nearest(&handles, [200.0, 200.0], 12.0), None);
-        assert_eq!(nearest(&[], [0.0, 0.0], 12.0), None);
     }
 
     #[test]
-    fn an_arm_is_written_in_mm_with_two_decimals() {
-        assert_eq!(arm_text(14.286), "14.29 mm");
+    fn a_drag_writes_the_point_or_the_fraction_in_its_boxes() {
         let mut boxes = Meridian::default();
-        *box_mut(&mut boxes, Arm::RearRadial) = arm_text(3.0);
-        assert_eq!(boxes.rear_radial_arm, "3.00 mm");
+        let p2 = ControlPoint {
+            wall: Wall::Hub,
+            index: 2,
+        };
+        assert!(write_moved(&mut boxes, p2, Moved::Point([30.0, 25.5])));
         assert_eq!(
-            hm_engine::meridian_edits_of(&boxes).rear_radial_arm,
-            Some(3.0)
+            (boxes.hub.p2_z.as_str(), boxes.hub.p2_r.as_str()),
+            ("30.00 mm", "25.50 mm")
         );
+        // Lo mismo otra vez no cambia nada.
+        assert!(!write_moved(&mut boxes, p2, Moved::Point([30.0, 25.5])));
+
+        let p3 = ControlPoint {
+            wall: Wall::Shroud,
+            index: 3,
+        };
+        assert!(write_moved(&mut boxes, p3, Moved::Fraction(0.4567)));
+        assert_eq!(boxes.shroud.p3, "0.457");
+        assert_eq!(boxes.shroud.p1, "");
+        let edits = hm_engine::meridian_edits_of(&boxes);
+        let [z, r] = edits.hub.p2.unwrap();
+        assert!((z - 30.0).abs() < 1e-9 && (r - 25.5).abs() < 1e-9);
+        assert_eq!(edits.shroud.p3, Some(0.457));
+    }
+
+    #[test]
+    fn the_header_compares_the_radius_with_guelich() {
+        let outcome = crate::model::compute(
+            &crate::model::Inputs::default(),
+            &crate::model::Basis::default(),
+        )
+        .unwrap();
+        let model = meridional_model(&outcome.result).unwrap();
+        let text = header(&model, &MeridianEdits::default());
+        let p = &model.params;
+        let low = 0.6 * p.inlet_width;
+        if p.shroud.min_radius < low {
+            assert!(text.contains("por debajo"), "{text}");
+        } else {
+            assert!(text.contains("Gülich:"), "{text}");
+        }
+        assert!(text.contains(&model.fingerprint_text()));
     }
 }

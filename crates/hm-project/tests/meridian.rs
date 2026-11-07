@@ -1,7 +1,8 @@
-//! Sección `[meridian]` (esquema 4): los brazos editados del corte meridional.
+//! Sección `[meridian]` (esquema 4): lo editado de cada tapa del corte, una
+//! Bézier de 5 puntos: P2 y las fracciones de P1 y P3.
 
 use hm_formula::Registry;
-use hm_project::{Meridian, Project, PumpType, SCHEMA_VERSION};
+use hm_project::{Meridian, MeridianWall, Project, PumpType, SCHEMA_VERSION};
 
 const CASING_V3: &str = include_str!("fixtures/casing_v3.hmf");
 
@@ -11,12 +12,20 @@ fn with(meridian: Meridian) -> Project {
     project
 }
 
-fn diagnostics(meridian: Meridian) -> Vec<(String, String)> {
+fn problems(meridian: Meridian) -> Vec<String> {
     with(meridian)
         .validate(&Registry::all())
         .iter()
-        .map(|diagnostic| (diagnostic.code.clone(), diagnostic.message.clone()))
+        .filter(|diagnostic| diagnostic.code == "HM-PROJ-031")
+        .map(|diagnostic| diagnostic.message.clone())
         .collect()
+}
+
+fn shroud(wall: MeridianWall) -> Meridian {
+    Meridian {
+        shroud: wall,
+        ..Meridian::default()
+    }
 }
 
 #[test]
@@ -31,83 +40,104 @@ fn schema_3_migrates_without_touching_anything_else() {
     assert_eq!(project.schema, SCHEMA_VERSION);
     assert_eq!(project.meridian, None);
     let written = project.to_toml().unwrap();
+    assert!(!written.contains("[meridian"));
     assert_eq!(
-        written.replace("schema = 4", "schema = 3"),
-        Project::from_toml(CASING_V3)
-            .unwrap()
-            .to_toml()
-            .unwrap()
-            .replace("schema = 4", "schema = 3")
+        Project::from_toml(&written).unwrap().to_toml().unwrap(),
+        written
     );
-    assert!(!written.contains("[meridian]"));
 }
 
 #[test]
-fn edited_arms_round_trip_and_empty_ones_stay_out() {
+fn edits_round_trip_and_empty_fields_stay_out() {
     let project = with(Meridian {
-        front_radial_arm: "20.5 mm".into(),
-        rear_axial_arm: "30 mm".into(),
-        ..Meridian::default()
+        shroud: MeridianWall {
+            p2_z: "24 mm".into(),
+            p2_r: "60 mm".into(),
+            p1: "0.3".into(),
+            ..MeridianWall::default()
+        },
+        hub: MeridianWall {
+            p3: "0.4".into(),
+            ..MeridianWall::default()
+        },
     });
     let text = project.to_toml().unwrap();
-    assert!(text.contains("[meridian]"), "{text}");
-    assert!(text.contains("front_radial_arm = \"20.5 mm\""), "{text}");
-    assert!(!text.contains("front_axial_arm"), "{text}");
-    let again = Project::from_toml(&text).unwrap();
-    assert_eq!(again.meridian, project.meridian);
+    assert!(text.contains("[meridian.shroud]"), "{text}");
+    assert!(text.contains("p2_z = \"24 mm\""), "{text}");
+    assert!(text.contains("[meridian.hub]"), "{text}");
+    assert!(!text.contains("p3 = \"\""), "{text}");
+    assert_eq!(
+        Project::from_toml(&text).unwrap().meridian,
+        project.meridian
+    );
+
+    let only_hub = with(Meridian {
+        hub: MeridianWall {
+            p1: "0.5".into(),
+            ..MeridianWall::default()
+        },
+        ..Meridian::default()
+    });
+    assert!(!only_hub.to_toml().unwrap().contains("[meridian.shroud]"));
 }
 
 #[test]
-fn valid_arms_have_no_diagnostics() {
-    let found = diagnostics(Meridian {
-        front_axial_arm: "12 mm".into(),
-        front_radial_arm: "2 cm".into(),
-        rear_axial_arm: "0.03 m".into(),
-        rear_radial_arm: "15 mm".into(),
-    });
-    assert!(
-        found.iter().all(|(code, _)| code != "HM-PROJ-031"),
-        "{found:?}"
+fn valid_edits_have_no_problems() {
+    assert_eq!(
+        problems(shroud(MeridianWall {
+            p2_z: "-2 mm".into(),
+            p2_r: "6 cm".into(),
+            p1: "0.02".into(),
+            p3: "0.98".into(),
+        })),
+        Vec::<String>::new()
     );
 }
 
 #[test]
-fn each_bad_arm_is_reported_by_name() {
-    for (meridian, name) in [
+fn each_bad_field_is_reported_by_name() {
+    for (wall, name) in [
         (
-            Meridian {
-                front_axial_arm: "mucho".into(),
-                ..Meridian::default()
+            MeridianWall {
+                p2_z: "24 mm".into(),
+                ..MeridianWall::default()
             },
-            "front_axial_arm",
+            "shroud.p2",
         ),
         (
-            Meridian {
-                front_radial_arm: "-3 mm".into(),
-                ..Meridian::default()
+            MeridianWall {
+                p2_z: "mucho".into(),
+                p2_r: "60 mm".into(),
+                ..MeridianWall::default()
             },
-            "front_radial_arm",
+            "shroud.p2_z",
         ),
         (
-            Meridian {
-                rear_axial_arm: "3 kg".into(),
-                ..Meridian::default()
+            MeridianWall {
+                p2_z: "20 mm".into(),
+                p2_r: "-3 mm".into(),
+                ..MeridianWall::default()
             },
-            "rear_axial_arm",
+            "shroud.p2_r",
         ),
         (
-            Meridian {
-                rear_radial_arm: "0 mm".into(),
-                ..Meridian::default()
+            MeridianWall {
+                p1: "1".into(),
+                ..MeridianWall::default()
             },
-            "rear_radial_arm",
+            "shroud.p1",
+        ),
+        (
+            MeridianWall {
+                p3: "medio".into(),
+                ..MeridianWall::default()
+            },
+            "shroud.p3",
         ),
     ] {
-        let found = diagnostics(meridian);
+        let found = problems(shroud(wall));
         assert!(
-            found
-                .iter()
-                .any(|(code, message)| code == "HM-PROJ-031" && message.contains(name)),
+            found.iter().any(|message| message.contains(name)),
             "{name}: {found:?}"
         );
     }
@@ -118,6 +148,6 @@ fn an_unknown_meridian_field_is_rejected() {
     let text = Project::new("demo", PumpType::EndSuction)
         .to_toml()
         .unwrap()
-        + "\n[meridian]\nfront_arm = \"3 mm\"\n";
+        + "\n[meridian.shroud]\nfront_arm = \"3 mm\"\n";
     assert!(Project::from_toml(&text).is_err());
 }

@@ -172,7 +172,7 @@ pub const CODES: &[CodeInfo] = &[
     active(
         "HM-PROJ-031",
         Error,
-        "Un brazo de [meridian] no se entiende o no es una longitud positiva.",
+        "Un punto o una fracción de [meridian] no se entiende o está fuera de rango.",
     ),
     // Diseño
     active(

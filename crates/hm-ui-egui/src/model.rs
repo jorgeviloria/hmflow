@@ -62,7 +62,7 @@ pub struct Inputs {
     /// Medidas: vacío significa el valor por defecto.
     pub roughness: String,
     pub incidence: String,
-    /// Brazos del meridiano, con unidad; vacío es automático.
+    /// Lo editado del meridiano (`[meridian]`); vacío es lo del motor.
     pub meridian: Meridian,
 }
 
@@ -878,13 +878,13 @@ pub fn build_project(
     Ok(built)
 }
 
-/// Los brazos escritos, o ninguna sección si están todos vacíos. Uno que no
-/// es una longitud positiva no se guarda: el mismo HM-PROJ-031 del archivo.
+/// Lo escrito en `[meridian]`, o ninguna sección si está todo vacío. Lo que no
+/// se entienda no se guarda: el mismo HM-PROJ-031 del archivo.
 fn meridian_section(boxes: &Meridian) -> Result<Option<Meridian>, String> {
-    if boxes.arms().iter().all(|(_, text)| text.trim().is_empty()) {
+    if boxes.is_empty() {
         return Ok(None);
     }
-    let mut probe = Project::new("brazos", hm_engine::PumpType::EndSuction);
+    let mut probe = Project::new("meridiano", hm_engine::PumpType::EndSuction);
     probe.meridian = Some(boxes.clone());
     let problems: Vec<String> = probe
         .validate(&hm_formula::Registry::all())
@@ -2523,10 +2523,7 @@ mod tests {
         let mut project = build_project(&inputs, &basis, None, "sin título")
             .unwrap()
             .project;
-        project.meridian = Some(hm_project::Meridian {
-            front_radial_arm: "20 mm".into(),
-            ..hm_project::Meridian::default()
-        });
+        project.meridian = Some(arms("0.3"));
 
         // Al abrir, los brazos pasan a las cajas; guardar los conserva.
         let inputs = Inputs {
@@ -2552,9 +2549,13 @@ mod tests {
         );
     }
 
-    fn arms(front_radial: &str) -> hm_project::Meridian {
+    /// Un `[meridian]` con solo la fracción de P1 de la tapa delantera.
+    fn arms(shroud_p1: &str) -> hm_project::Meridian {
         hm_project::Meridian {
-            front_radial_arm: front_radial.into(),
+            shroud: hm_project::MeridianWall {
+                p1: shroud_p1.into(),
+                ..hm_project::MeridianWall::default()
+            },
             ..hm_project::Meridian::default()
         }
     }
@@ -2565,9 +2566,9 @@ mod tests {
         let mut project = build_project(&Inputs::default(), &Basis::default(), None, "x")
             .unwrap()
             .project;
-        project.meridian = Some(arms("20 mm"));
+        project.meridian = Some(arms("0.3"));
         let opened = open_loaded(project).unwrap();
-        assert_eq!(opened.inputs.meridian, arms("20 mm"));
+        assert_eq!(opened.inputs.meridian, arms("0.3"));
     }
 
     /// Lo escrito en las cajas va al proyecto, aunque el anterior tuviera
@@ -2576,18 +2577,18 @@ mod tests {
     fn the_arm_boxes_go_to_the_project() {
         let basis = Basis::default();
         let inputs = Inputs {
-            meridian: arms("18 mm"),
+            meridian: arms("0.35"),
             ..Inputs::default()
         };
         let fresh = build_project(&inputs, &basis, None, "x").unwrap().project;
-        assert_eq!(fresh.meridian, Some(arms("18 mm")));
+        assert_eq!(fresh.meridian, Some(arms("0.35")));
 
         let mut previous = fresh.clone();
-        previous.meridian = Some(arms("25 mm"));
+        previous.meridian = Some(arms("0.4"));
         let saved = build_project(&inputs, &basis, Some(&previous), "x")
             .unwrap()
             .project;
-        assert_eq!(saved.meridian, Some(arms("18 mm")));
+        assert_eq!(saved.meridian, Some(arms("0.35")));
 
         let cleared = build_project(&Inputs::default(), &basis, Some(&previous), "x")
             .unwrap()
@@ -2603,6 +2604,6 @@ mod tests {
             ..Inputs::default()
         };
         let error = build_project(&inputs, &Basis::default(), None, "x").unwrap_err();
-        assert!(error.contains("front_radial_arm"), "{error}");
+        assert!(error.contains("shroud.p1"), "{error}");
     }
 }

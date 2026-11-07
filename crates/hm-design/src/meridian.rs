@@ -1,15 +1,18 @@
 //! Corte meridional del rodete: tapas delantera y trasera y los dos bordes.
 //!
-//! Construcción de Gülich 2020, §7.2.2.1, pp. 416-418, fig. 7.4, con el borde
-//! de ataque en el ojo. Ejes en mm: `z` axial en el sentido del flujo, 0 en el
-//! borde de ataque, como mide Gülich zE; `r` radial. La entrada queda a la
-//! izquierda y la salida a la derecha, como la fig. 7.4. Cada punto es
-//! `[z, r]`. Como la planta, es lo único que leen el visor y la exportación.
+//! Cada tapa es una Bézier de grado 4 con 5 puntos (Gülich 2020, §7.2.2.1,
+//! pp. 416-418, fig. 7.4, con el borde de ataque en el ojo). Ejes en mm: `z`
+//! axial en el sentido del flujo, 0 en el borde de ataque, como mide Gülich
+//! zE; `r` radial. Cada punto es `[z, r]`. Como la planta, es lo único que
+//! leen el visor y la exportación.
 //!
-//! La construcción se hace con z hacia la aspiración y 0 en la tapa trasera;
-//! al entregar los puntos se da la vuelta al eje.
+//! - P0 y P4, los extremos, los fija el 1D.
+//! - P2 se mueve libre.
+//! - P1 solo se desliza por la recta P0–P2 y P3 por la P4–P2, así que la
+//!   curvatura es nula en los dos extremos. Se guarda su fracción sobre la
+//!   recta: se mueven con P2.
 
-use hm_geometry::{Bezier, Curve, Line, Point};
+use hm_geometry::{Bezier, Curve, Point};
 
 use crate::plan::{PlanCurve, csv_of, fingerprint_of};
 use crate::{DesignError, DesignResult};
@@ -17,20 +20,99 @@ use crate::{DesignError, DesignResult};
 /// RDs = (0,6 a 0,8)·b1: el centro del intervalo. Gülich, ec. (7.2), p. 416.
 pub const RDS_RATIO: f64 = 0.7;
 
-/// g1 = (0,2 a 0,3)·b1: el centro del intervalo. Gülich, p. 416.
-pub const G1_RATIO: f64 = 0.25;
-
 /// zE = a·b1·nq^x para rodetes en voladizo (OHH). Gülich, ec. (7.2), p. 416,
 /// y T7.8.9, p. 526.
 pub const ZE_A: f64 = 0.75;
 pub const ZE_X: f64 = -0.05;
 
-/// Puntos del tramo g1, de cada Bézier y del disco plano de la tapa trasera.
-const G1_POINTS: usize = 5;
-const BEZIER_POINTS: usize = 101;
-const DISC_POINTS: usize = 21;
+/// Límites de la fracción de P1 y P3 sobre su recta.
+pub const FRACTION_RANGE: (f64, f64) = (0.02, 0.98);
+
+/// Muestras de cada tapa.
+const CURVE_POINTS: usize = 121;
+/// Muestras para medir el radio mínimo, y para buscarlo, más rápido.
+const RADIUS_SAMPLES: usize = 400;
+const SEARCH_SAMPLES: usize = 120;
 
 const MM: f64 = 1000.0;
+
+/// Una de las dos tapas.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Wall {
+    Shroud,
+    Hub,
+}
+
+impl Wall {
+    pub const ALL: [Self; 2] = [Self::Shroud, Self::Hub];
+
+    /// Su nombre en el corte y en el CSV.
+    #[must_use]
+    pub fn name(self) -> &'static str {
+        match self {
+            Self::Shroud => "Tapa delantera",
+            Self::Hub => "Tapa trasera",
+        }
+    }
+
+    /// Su tabla en `[meridian]`.
+    #[must_use]
+    pub fn file_name(self) -> &'static str {
+        match self {
+            Self::Shroud => "shroud",
+            Self::Hub => "hub",
+        }
+    }
+}
+
+/// Lo editado de una tapa, en mm; `None` es lo del motor.
+#[derive(Debug, Clone, Copy, Default, PartialEq)]
+pub struct WallEdit {
+    /// P2, `[z, r]`.
+    pub p2: Option<[f64; 2]>,
+    /// Fracción de P1 sobre P0–P2, en (0, 1).
+    pub p1: Option<f64>,
+    /// Fracción de P3 sobre P4–P2, en (0, 1).
+    pub p3: Option<f64>,
+}
+
+/// Lo editado del corte.
+#[derive(Debug, Clone, Copy, Default, PartialEq)]
+pub struct MeridianEdits {
+    pub shroud: WallEdit,
+    pub hub: WallEdit,
+}
+
+impl MeridianEdits {
+    #[must_use]
+    pub fn wall(&self, wall: Wall) -> &WallEdit {
+        match wall {
+            Wall::Shroud => &self.shroud,
+            Wall::Hub => &self.hub,
+        }
+    }
+
+    pub fn wall_mut(&mut self, wall: Wall) -> &mut WallEdit {
+        match wall {
+            Wall::Shroud => &mut self.shroud,
+            Wall::Hub => &mut self.hub,
+        }
+    }
+}
+
+/// La forma usada de una tapa.
+#[derive(Debug, Clone, PartialEq)]
+pub struct WallShape {
+    /// Los 5 puntos de la Bézier, de P0 a P4.
+    pub points: [[f64; 2]; 5],
+    pub p1: f64,
+    pub p3: f64,
+    /// Las fracciones del diseño del motor: las de la curva más suave.
+    pub auto_p1: f64,
+    pub auto_p3: f64,
+    /// Radio de curvatura mínimo a lo largo de la tapa.
+    pub min_radius: f64,
+}
 
 /// Las cotas con que se construyó el corte, en mm.
 #[derive(Debug, Clone, PartialEq)]
@@ -42,33 +124,21 @@ pub struct MeridianParams {
     pub inlet_width: f64,
     /// Del borde de ataque al plano de salida de la tapa delantera.
     pub z_e: f64,
-    /// Radio de curvatura de la tapa delantera al salir de g1: el de la regla
-    /// de Gülich sin ediciones, o el que resulta de los brazos editados.
+    /// Radio de la tapa delantera que recomienda Gülich, 0,7·b1 (ec. 7.2), de
+    /// referencia: con zE de la misma ecuación puede no caber.
     pub r_ds: f64,
-    /// Tramo axial de la tapa delantera tras el borde de ataque.
-    pub g1: f64,
-    /// Brazos usados en las dos Bézier, editados o automáticos.
-    pub front_axial_arm: f64,
-    pub front_radial_arm: f64,
-    pub rear_axial_arm: f64,
-    pub rear_radial_arm: f64,
+    pub shroud: WallShape,
+    pub hub: WallShape,
 }
 
-/// Ediciones del corte con enlace tangente, en mm. Cada punto de control
-/// interior se desliza por su recta, así que ninguna tangencia se rompe:
-///
-/// - tapa delantera: el brazo axial va del final de g1 hacia la esquina, sobre
-///   r = d1/2; el radial baja desde d2, sobre el plano de salida;
-/// - tapa trasera: el brazo axial va del cubo hacia el disco, sobre r = d1i/2;
-///   el radial baja desde la unión con el disco en d1/2, sobre el disco.
-///
-/// `None` es el valor automático. Los extremos los fija el 1D.
-#[derive(Debug, Clone, Default, PartialEq)]
-pub struct MeridianEdits {
-    pub front_axial_arm: Option<f64>,
-    pub front_radial_arm: Option<f64>,
-    pub rear_axial_arm: Option<f64>,
-    pub rear_radial_arm: Option<f64>,
+impl MeridianParams {
+    #[must_use]
+    pub fn wall(&self, wall: Wall) -> &WallShape {
+        match wall {
+            Wall::Shroud => &self.shroud,
+            Wall::Hub => &self.hub,
+        }
+    }
 }
 
 /// El corte meridional completo.
@@ -76,6 +146,32 @@ pub struct MeridianEdits {
 pub struct MeridionalModel {
     pub curves: Vec<PlanCurve>,
     pub params: MeridianParams,
+}
+
+/// Un punto de control movible: P1, P2 o P3 de una tapa.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ControlPoint {
+    pub wall: Wall,
+    /// 1, 2 o 3.
+    pub index: usize,
+}
+
+/// Lo que se escribe al mover un punto de control.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum Moved {
+    /// P2 en `[z, r]`.
+    Point([f64; 2]),
+    /// P1 o P3, como fracción de su recta.
+    Fraction(f64),
+}
+
+/// Un punto de control y, si está acoplado, la recta por la que se desliza.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Handle {
+    pub control: ControlPoint,
+    pub at: [f64; 2],
+    /// De dónde a dónde va su recta: de P0 a P2 para P1, de P4 a P2 para P3.
+    pub line: Option<([f64; 2], [f64; 2])>,
 }
 
 impl MeridionalModel {
@@ -142,32 +238,47 @@ impl MeridionalModel {
         stations
     }
 
-    /// Los cuatro puntos de control interiores, con la recta por la que se
-    /// deslizan, en coordenadas del corte (z con el flujo). En el orden de
-    /// [`Arm::ALL`].
+    /// Los seis puntos de control movibles: P1, P2 y P3 de cada tapa.
     #[must_use]
     pub fn handles(&self) -> Vec<Handle> {
-        let (Some(front), Some(rear)) = (self.curve("Tapa delantera"), self.curve("Tapa trasera"))
-        else {
-            return Vec::new();
+        let mut handles = Vec::with_capacity(6);
+        for wall in Wall::ALL {
+            let points = self.params.wall(wall).points;
+            for index in 1..=3 {
+                let line = match index {
+                    1 => Some((points[0], points[2])),
+                    3 => Some((points[4], points[2])),
+                    _ => None,
+                };
+                handles.push(Handle {
+                    control: ControlPoint { wall, index },
+                    at: points[index],
+                    line,
+                });
+            }
+        }
+        handles
+    }
+
+    /// Lo que se escribe si el punto de control se lleva a `pointer`: P2 va
+    /// donde esté el puntero; P1 y P3, a la proyección sobre su recta, como
+    /// fracción dentro de [`FRACTION_RANGE`].
+    #[must_use]
+    pub fn moved(&self, control: ControlPoint, pointer: [f64; 2]) -> Moved {
+        let points = self.params.wall(control.wall).points;
+        let (from, to) = match control.index {
+            1 => (points[0], points[2]),
+            3 => (points[4], points[2]),
+            _ => return Moved::Point(pointer),
         };
-        let p = &self.params;
-        let r1 = front.points[0][1];
-        let outlet = front.points[front.points.len() - 1];
-        let disc = rear.points[rear.points.len() - 1][0];
-        let hub = p.d1i / 2.0;
-        let handle = |arm, origin: [f64; 2], along: [f64; 2], length: f64| Handle {
-            arm,
-            origin,
-            along,
-            point: [origin[0] + along[0] * length, origin[1] + along[1] * length],
+        let (dx, dy) = (to[0] - from[0], to[1] - from[1]);
+        let length = dx * dx + dy * dy;
+        let fraction = if length > 0.0 {
+            ((pointer[0] - from[0]) * dx + (pointer[1] - from[1]) * dy) / length
+        } else {
+            0.5
         };
-        vec![
-            handle(Arm::FrontAxial, [p.g1, r1], [1.0, 0.0], p.front_axial_arm),
-            handle(Arm::FrontRadial, outlet, [0.0, -1.0], p.front_radial_arm),
-            handle(Arm::RearAxial, [0.0, hub], [1.0, 0.0], p.rear_axial_arm),
-            handle(Arm::RearRadial, [disc, r1], [0.0, -1.0], p.rear_radial_arm),
-        ]
+        Moved::Fraction(fraction.clamp(FRACTION_RANGE.0, FRACTION_RANGE.1))
     }
 
     /// CSV para exportar, con columnas `z_mm,r_mm`.
@@ -177,30 +288,23 @@ impl MeridionalModel {
     }
 }
 
-/// Corte meridional de un diseño.
-///
-/// 1. Tapa delantera: recta axial g1 en r = d1/2 desde el borde de ataque, y
-///    una Bézier cúbica hasta (b2, d2/2). El primer punto de control va en la
-///    esquina (z = b2, r = d1/2), así que llega a d2 en radial y sin
-///    curvatura; el segundo da el radio RDs al salir de g1. Gülich no da regla
-///    para esta curva (p. 417): la Bézier es elección de hmflow.
-/// 2. Tapa trasera: del cubo en el borde de ataque (d1i), una Bézier con el
-///    punto de control en la esquina hasta (0, d1/2), donde llega radial y sin
-///    curvatura; luego plana hasta d2. Es la fig. 7.4 con εTs = 0; Gülich no
-///    da RTS, y unirla en d1/2 es elección de hmflow. La anchura del canal es
-///    un resultado: baja de la de entrada a b2 sin subir.
-/// 3. Bordes: el de ataque, radial en z = b2 + zE; el de salida, en d2.
-///
-/// εDs = εTs = 0: la p. 417 los pone en cero con nq < 20 y < 30, y no da ley
-/// para nq mayores.
+/// Corte meridional del diseño del motor.
 pub fn meridional_model(result: &DesignResult) -> Result<MeridionalModel, DesignError> {
     meridional_model_with(result, &MeridianEdits::default())
 }
 
-/// El corte con los brazos editados. Sin ediciones es [`meridional_model`].
-/// Un brazo fuera de su recta es un error. Las tapas no pueden cruzarse: con
-/// el enlace tangente la trasera queda en r ≤ d1/2 hasta el disco, y la
-/// delantera en r ≥ d1/2 y antes del disco.
+/// Corte meridional con lo editado.
+///
+/// Diseño del motor: P2 en la esquina de las tangentes extremas, axial a la
+/// entrada y radial a la salida (εDs = εTs = 0, p. 417), y las fracciones de
+/// P1 y P3 que hacen cada tapa lo más suave posible (mayor radio mínimo).
+/// Gülich pide RDs = 0,6 a 0,8·b1 (p. 416), pero con zE de la ec. (7.2) un
+/// giro de 90° de ese radio a menudo no cabe; la p. 417 admite radios
+/// menores en bombas pequeñas. Es elección de hmflow.
+///
+/// Errores: el área de entrada no cabe en el ojo, una fracción fuera de
+/// (0, 1), un P2 que no es finito, tapas que se cruzan o un cubo que toca el
+/// eje.
 pub fn meridional_model_with(
     result: &DesignResult,
     edits: &MeridianEdits,
@@ -222,110 +326,36 @@ pub fn meridional_model_with(
     let inlet_width = (d1 - d1i) / 2.0;
     let z_e = ZE_A * inlet_width * result.nq.powf(ZE_X);
     let r_ds = RDS_RATIO * inlet_width;
-    let g1 = G1_RATIO * inlet_width;
 
-    // Brazos de la Bézier: axial hasta la esquina y radial desde d2.
-    let corner = z_e - g1;
-    let axial_arm = arm(
-        edits.front_axial_arm,
-        corner,
-        corner,
-        "brazo axial de la tapa delantera",
-    )?;
-    let rule_arm = radial_arm(r2 - r1, axial_arm, r_ds);
-    if edits.front_radial_arm.is_none()
-        && !(axial_arm > 0.0 && rule_arm > 0.0 && rule_arm < r2 - r1)
-    {
-        let radial_arm = rule_arm;
-        return Err(DesignError::Input(format!(
-            "la tapa delantera no se puede trazar con nq = {:.1}: entre d1 y d2 no cabe el \
-             radio RDs (brazo radial {radial_arm:.2} mm, entre 0 y (d2 − d1)/2 = {:.2} mm). \
-             Con nq alto el rodete es semiaxial, y esta construcción es la radial de la fig. 7.4",
-            result.nq,
-            r2 - r1
-        )));
-    }
-    let radial_arm = arm(
-        edits.front_radial_arm,
-        rule_arm,
-        r2 - r1,
-        "brazo radial de la tapa delantera",
-    )?;
-    if radial_arm >= r2 - r1 {
-        return Err(out_of_line(
-            "brazo radial de la tapa delantera",
-            radial_arm,
-            r2 - r1,
+    let shroud_ends = ([0.0, r1], [z_e, r2]);
+    let hub_ends = ([0.0, d1i / 2.0], [z_e + b2, r2]);
+    let shroud_corner = [z_e, r1];
+    let hub_corner = [z_e + b2, d1i / 2.0];
+
+    let shroud = wall_shape(Wall::Shroud, shroud_ends, shroud_corner, &edits.shroud)?;
+    let hub = wall_shape(Wall::Hub, hub_ends, hub_corner, &edits.hub)?;
+
+    let front = sample(&shroud.points)?;
+    let rear = sample(&hub.points)?;
+    if rear.iter().any(|point| point[1] <= 0.0) {
+        return Err(DesignError::Input(
+            "meridiano: la tapa trasera toca o cruza el eje".to_string(),
         ));
     }
-    // El radio al salir de g1: el de la regla, o el que dan los brazos.
-    let r_ds = if edits.front_radial_arm.is_none() && edits.front_axial_arm.is_none() {
-        r_ds
-    } else {
-        1.5 * axial_arm * axial_arm / (r2 - r1 - radial_arm)
-    };
-
-    let leading = Point::new(b2 + z_e, r1);
-    let end_of_g1 = Point::new(b2 + z_e - g1, r1);
-    let outlet = Point::new(b2, r2);
-    let straight = Line::new(leading, end_of_g1).map_err(geometry_failed)?;
-    let bend = Bezier::cubic(
-        end_of_g1,
-        // Sin edición, la esquina exacta.
-        Point::new(
-            edits.front_axial_arm.map_or(b2, |arm| end_of_g1.x - arm),
-            r1,
-        ),
-        Point::new(b2, r2 - radial_arm),
-        outlet,
-    )
-    .map_err(geometry_failed)?;
-
-    // Tapa trasera: del cubo en el borde de ataque, axial, a (0, d1/2), radial
-    // y sin curvatura; luego el disco plano hasta d2 (εTs = 0).
-    let hub = Point::new(leading.x, d1i / 2.0);
-    let rear_axial_arm = arm(
-        edits.rear_axial_arm,
-        leading.x,
-        leading.x,
-        "brazo axial de la tapa trasera",
-    )?;
-    let rear_radial_arm = arm(
-        edits.rear_radial_arm,
-        (r1 - d1i / 2.0) / 2.0,
-        r1 - d1i / 2.0,
-        "brazo radial de la tapa trasera",
-    )?;
-    let hub_bend = Bezier::cubic(
-        hub,
-        Point::new(hub.x - rear_axial_arm, d1i / 2.0),
-        Point::new(
-            0.0,
-            edits
-                .rear_radial_arm
-                .map_or((d1i / 2.0 + r1) / 2.0, |arm| r1 - arm),
-        ),
-        Point::new(0.0, r1),
-    )
-    .map_err(geometry_failed)?;
-    let disc = Line::new(Point::new(0.0, r1), Point::new(0.0, r2)).map_err(geometry_failed)?;
-
-    let mut front = straight.sample(G1_POINTS).map_err(geometry_failed)?;
-    front.extend(&bend.sample(BEZIER_POINTS).map_err(geometry_failed)?[1..]);
-    let mut rear = hub_bend.sample(BEZIER_POINTS).map_err(geometry_failed)?;
-    rear.extend(&disc.sample(DISC_POINTS).map_err(geometry_failed)?[1..]);
-    // z en el sentido del flujo, 0 en el borde de ataque.
-    let flow = |z: f64| leading.x - z;
-    let points = |curve: &[Point]| curve.iter().map(|point| [flow(point.x), point.y]).collect();
+    if crosses(&front, &rear) {
+        return Err(DesignError::Input(
+            "meridiano: las tapas delantera y trasera se cruzan".to_string(),
+        ));
+    }
 
     let curves = vec![
         PlanCurve {
-            name: "Tapa delantera".to_string(),
-            points: points(&front),
+            name: Wall::Shroud.name().to_string(),
+            points: front,
         },
         PlanCurve {
-            name: "Tapa trasera".to_string(),
-            points: points(&rear),
+            name: Wall::Hub.name().to_string(),
+            points: rear,
         },
         PlanCurve {
             name: "Borde de ataque".to_string(),
@@ -333,7 +363,7 @@ pub fn meridional_model_with(
         },
         PlanCurve {
             name: "Borde de salida".to_string(),
-            points: vec![[flow(0.0), r2], [flow(b2), r2]],
+            points: vec![[z_e + b2, r2], [z_e, r2]],
         },
     ];
     Ok(MeridionalModel {
@@ -343,94 +373,146 @@ pub fn meridional_model_with(
             inlet_width,
             z_e,
             r_ds,
-            g1,
-            front_axial_arm: axial_arm,
-            front_radial_arm: radial_arm,
-            rear_axial_arm,
-            rear_radial_arm,
+            shroud,
+            hub,
         },
     })
 }
 
-/// El brazo editado o el automático, comprobado: mayor que 0 y no más que
-/// `max`, para que el punto de control no salga de su recta.
-fn arm(edited: Option<f64>, auto: f64, max: f64, name: &str) -> Result<f64, DesignError> {
-    let value = edited.unwrap_or(auto);
-    if value.is_finite() && value > 0.0 && value <= max {
-        Ok(value)
-    } else {
-        Err(out_of_line(name, value, max))
-    }
+/// Los 5 puntos: P1 a `p1` de P0 hacia P2 y P3 a `p3` de P4 hacia P2.
+fn five_points(ends: ([f64; 2], [f64; 2]), p2: [f64; 2], p1: f64, p3: f64) -> [[f64; 2]; 5] {
+    let (p0, p4) = ends;
+    let toward = |from: [f64; 2], fraction: f64| {
+        [
+            from[0] + (p2[0] - from[0]) * fraction,
+            from[1] + (p2[1] - from[1]) * fraction,
+        ]
+    };
+    [p0, toward(p0, p1), p2, toward(p4, p3), p4]
 }
 
-fn out_of_line(name: &str, value: f64, max: f64) -> DesignError {
-    DesignError::Input(format!(
-        "meridiano: el {name} vale {value:.2} mm y tiene que estar entre 0 y {max:.2} mm"
-    ))
+fn bezier(points: &[[f64; 2]; 5]) -> Result<Bezier, DesignError> {
+    Bezier::new(points.iter().map(|p| Point::new(p[0], p[1])).collect()).map_err(geometry_failed)
 }
 
-/// Uno de los cuatro brazos editables.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum Arm {
-    FrontAxial,
-    FrontRadial,
-    RearAxial,
-    RearRadial,
+fn sample(points: &[[f64; 2]; 5]) -> Result<Vec<[f64; 2]>, DesignError> {
+    let curve = bezier(points)?;
+    let mut sampled: Vec<[f64; 2]> = curve
+        .sample(CURVE_POINTS)
+        .map_err(geometry_failed)?
+        .into_iter()
+        .map(|point| [point.x, point.y])
+        .collect();
+    // Los extremos, los del 1D sin redondeo.
+    sampled[0] = points[0];
+    sampled[CURVE_POINTS - 1] = points[4];
+    Ok(sampled)
 }
 
-impl Arm {
-    pub const ALL: [Self; 4] = [
-        Self::FrontAxial,
-        Self::FrontRadial,
-        Self::RearAxial,
-        Self::RearRadial,
-    ];
+/// Radio de curvatura mínimo, sin los extremos, donde la curvatura es nula.
+fn min_radius(points: &[[f64; 2]; 5]) -> Result<f64, DesignError> {
+    min_radius_sampled(points, RADIUS_SAMPLES)
+}
 
-    /// Su nombre en `[meridian]`.
-    #[must_use]
-    pub fn file_name(self) -> &'static str {
-        match self {
-            Self::FrontAxial => "front_axial_arm",
-            Self::FrontRadial => "front_radial_arm",
-            Self::RearAxial => "rear_axial_arm",
-            Self::RearRadial => "rear_radial_arm",
+fn min_radius_sampled(points: &[[f64; 2]; 5], samples: usize) -> Result<f64, DesignError> {
+    let curve = bezier(points)?;
+    let mut radius = f64::INFINITY;
+    for index in 1..samples {
+        let t = index as f64 / samples as f64;
+        let curvature = curve.curvature_at(t).map_err(geometry_failed)?.abs();
+        if curvature > 0.0 {
+            radius = radius.min(1.0 / curvature);
         }
     }
-
-    /// Para la ventana.
-    #[must_use]
-    pub fn label(self) -> &'static str {
-        match self {
-            Self::FrontAxial => "Brazo axial, tapa delantera",
-            Self::FrontRadial => "Brazo radial, tapa delantera",
-            Self::RearAxial => "Brazo axial, tapa trasera",
-            Self::RearRadial => "Brazo radial, tapa trasera",
-        }
-    }
-
-    /// El brazo que daría un punto de control llevado a `point`: su
-    /// proyección sobre la recta del asidero.
-    #[must_use]
-    pub fn measure(self, point: [f64; 2], model: &MeridionalModel) -> Option<f64> {
-        let handle = model
-            .handles()
-            .into_iter()
-            .find(|handle| handle.arm == self)?;
-        Some(
-            (point[0] - handle.origin[0]) * handle.along[0]
-                + (point[1] - handle.origin[1]) * handle.along[1],
-        )
-    }
+    Ok(radius)
 }
 
-/// Un punto de control y la recta por la que se desliza: `origin` es donde
-/// el brazo vale 0, y `along`, el sentido en que crece.
-#[derive(Debug, Clone, PartialEq)]
-pub struct Handle {
-    pub arm: Arm,
-    pub point: [f64; 2],
-    pub origin: [f64; 2],
-    pub along: [f64; 2],
+/// Las fracciones de P1 y P3 que hacen la curva más suave: las que dan el
+/// mayor radio de curvatura mínimo. Con P1 y P3 pegados a la esquina la curva
+/// se dobla en punta; pegados a los extremos, la velocidad se anula allí y la
+/// curvatura se dispara. Búsqueda por coordenadas con pasos que se achican.
+fn smoothest_fractions(
+    ends: ([f64; 2], [f64; 2]),
+    corner: [f64; 2],
+) -> Result<(f64, f64), DesignError> {
+    let radius =
+        |p1: f64, p3: f64| min_radius_sampled(&five_points(ends, corner, p1, p3), SEARCH_SAMPLES);
+    let (low, high) = FRACTION_RANGE;
+    let mut best = (0.5, 0.5);
+    let mut best_radius = radius(best.0, best.1)?;
+    for step in [0.2, 0.1, 0.05, 0.02, 0.01, 0.005] {
+        loop {
+            let mut improved = false;
+            for (d1, d3) in [(step, 0.0), (-step, 0.0), (0.0, step), (0.0, -step)] {
+                let candidate = (
+                    (best.0 + d1).clamp(low, high),
+                    (best.1 + d3).clamp(low, high),
+                );
+                let value = radius(candidate.0, candidate.1)?;
+                if value > best_radius + 1e-9 {
+                    best = candidate;
+                    best_radius = value;
+                    improved = true;
+                }
+            }
+            if !improved {
+                break;
+            }
+        }
+    }
+    Ok(best)
+}
+
+fn wall_shape(
+    wall: Wall,
+    ends: ([f64; 2], [f64; 2]),
+    corner: [f64; 2],
+    edit: &WallEdit,
+) -> Result<WallShape, DesignError> {
+    let (auto_p1, auto_p3) = smoothest_fractions(ends, corner)?;
+    let p2 = edit.p2.unwrap_or(corner);
+    if !(p2[0].is_finite() && p2[1].is_finite()) {
+        return Err(DesignError::Input(format!(
+            "meridiano: P2 de la {} no es un punto",
+            wall.name().to_lowercase()
+        )));
+    }
+    let fraction = |value: Option<f64>, auto: f64, name: &str| {
+        let value = value.unwrap_or(auto);
+        if value.is_finite() && value > 0.0 && value < 1.0 {
+            Ok(value)
+        } else {
+            Err(DesignError::Input(format!(
+                "meridiano: {name} de la {} vale {value} y tiene que estar entre 0 y 1",
+                wall.name().to_lowercase()
+            )))
+        }
+    };
+    let p1 = fraction(edit.p1, auto_p1, "P1")?;
+    let p3 = fraction(edit.p3, auto_p3, "P3")?;
+    let points = five_points(ends, p2, p1, p3);
+    Ok(WallShape {
+        points,
+        p1,
+        p3,
+        auto_p1,
+        auto_p3,
+        min_radius: min_radius(&points)?,
+    })
+}
+
+/// Dos polilíneas se cortan en algún par de segmentos.
+fn crosses(first: &[[f64; 2]], second: &[[f64; 2]]) -> bool {
+    let side = |a: [f64; 2], b: [f64; 2], c: [f64; 2]| {
+        (b[0] - a[0]) * (c[1] - a[1]) - (b[1] - a[1]) * (c[0] - a[0])
+    };
+    first.windows(2).any(|p| {
+        second.windows(2).any(|q| {
+            let (d1, d2) = (side(p[0], p[1], q[0]), side(p[0], p[1], q[1]));
+            let (d3, d4) = (side(q[0], q[1], p[0]), side(q[0], q[1], p[1]));
+            d1 * d2 < 0.0 && d3 * d4 < 0.0
+        })
+    })
 }
 
 /// Una estación del canal sobre la línea media, en mm y mm².
@@ -486,49 +568,6 @@ fn at_length(line: &[[f64; 2]], lengths: &[f64], target: f64) -> [f64; 2] {
     line[line.len() - 1]
 }
 
-/// Brazo radial de la Bézier para que su radio de curvatura al salir de g1
-/// sea `r_ds`. En una cúbica, κ(0) = (2/3)·|P1P0 × P2P1|/|P1P0|³; con P1 en
-/// la esquina, |P1P0| es el brazo axial y el producto vale brazo axial ×
-/// (subida − brazo radial).
-fn radial_arm(rise: f64, axial_arm: f64, r_ds: f64) -> f64 {
-    rise - 1.5 * axial_arm * axial_arm / r_ds
-}
-
 fn geometry_failed(error: hm_geometry::GeometryError) -> DesignError {
     DesignError::Input(format!("meridiano: {error}"))
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    /// La fórmula del brazo radial da el radio RDs en el arranque de la curva,
-    /// medido sobre la Bézier con diferencias finitas.
-    #[test]
-    fn the_radial_arm_gives_the_requested_radius() {
-        let (r1, r2, b2, z_start, r_ds) = (52.0, 100.0, 18.0, 32.0, 26.0);
-        let axial_arm = z_start - b2;
-        let radial_arm = radial_arm(r2 - r1, axial_arm, r_ds);
-        let bend = Bezier::cubic(
-            Point::new(z_start, r1),
-            Point::new(b2, r1),
-            Point::new(b2, r2 - radial_arm),
-            Point::new(b2, r2),
-        )
-        .unwrap();
-        let h = 1e-4;
-        let p0 = bend.point_at(0.0).unwrap();
-        let p1 = bend.point_at(h).unwrap();
-        let p2 = bend.point_at(2.0 * h).unwrap();
-        let (dx, dy) = (
-            (-3.0 * p0.x + 4.0 * p1.x - p2.x) / (2.0 * h),
-            (-3.0 * p0.y + 4.0 * p1.y - p2.y) / (2.0 * h),
-        );
-        let (ddx, ddy) = (
-            (p0.x - 2.0 * p1.x + p2.x) / (h * h),
-            (p0.y - 2.0 * p1.y + p2.y) / (h * h),
-        );
-        let radius = (dx * dx + dy * dy).powf(1.5) / (dx * ddy - dy * ddx).abs();
-        assert!((radius - r_ds).abs() / r_ds < 1e-3, "{radius}");
-    }
 }

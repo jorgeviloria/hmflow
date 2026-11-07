@@ -255,6 +255,8 @@ pub struct Outcome {
     pub mechanics: Result<Mechanics, DesignError>,
     pub viscous: Result<Option<ViscousCorrection>, DesignError>,
     pub diagnostics: Vec<Diagnostic>,
+    /// Hay errores, y reelegir los quitaría.
+    pub reselect_hint: bool,
 }
 
 impl Outcome {
@@ -500,9 +502,25 @@ fn optional_suction(name: &str, text: &str, errors: &mut FieldErrors) -> Option<
 /// de etapa no descarta el resto: queda en el `Result` de `Outcome`.
 pub fn compute(inputs: &Inputs, basis: &Basis) -> Result<Outcome, FieldErrors> {
     let case = case_from_inputs(&with_locked_eta_m(inputs, basis), basis)?;
-    let analysis = analyze(&case, CurvePoints::clamped(CURVE_POINTS))
-        .map_err(|error| vec![engine_error_field(error, !inputs.eta_m.trim().is_empty())])?;
-    Ok(outcome_from(inputs, analysis))
+    let analysis = analyze(&case, CurvePoints::clamped(CURVE_POINTS)).map_err(|error| {
+        let (field, mut message) = engine_error_field(error, !inputs.eta_m.trim().is_empty());
+        if reselecting_helps(inputs, basis) {
+            message.push(' ');
+            message.push_str(RESELECT_HINT);
+        }
+        vec![(field, message)]
+    })?;
+    let mut outcome = outcome_from(inputs, analysis);
+    outcome.reselect_hint = outcome.has_errors() && reselecting_helps(inputs, basis);
+    Ok(outcome)
+}
+
+/// Lo que se dice si el fallo viene de selecciones guardadas.
+pub const RESELECT_HINT: &str = "Pulsa «Reelegir con el motor»: viene de selecciones guardadas.";
+
+/// Reelegir saldría bien. Solo se pregunta tras un fallo, no en cada tecla.
+fn reselecting_helps(inputs: &Inputs, basis: &Basis) -> bool {
+    basis.project.is_some() && reselect_project(inputs, basis).is_ok()
 }
 
 /// El análisis tal cual: la interfaz no reordena ni descarta nada.
@@ -516,6 +534,7 @@ fn outcome_from(inputs: &Inputs, analysis: Analysis) -> Outcome {
         mechanics: analysis.mechanics,
         viscous: analysis.viscous,
         diagnostics: analysis.diagnostics,
+        reselect_hint: false,
     }
 }
 

@@ -1040,6 +1040,9 @@ fn diagnostics_panel(ui: &mut egui::Ui, app: &App) {
             let Some(outcome) = &app.outcome else {
                 return;
             };
+            if outcome.reselect_hint {
+                ui.label(RichText::new(model::RESELECT_HINT).color(ui.visuals().warn_fg_color));
+            }
             // Los avisos del archivo sustituyen a los de `compute` hasta que
             // cambia una caja. Sumarlos repetiría los del método actual.
             let from_file = app.session.opened_diagnostics.as_ref();

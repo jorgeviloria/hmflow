@@ -817,6 +817,55 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
     }
 
+    fn saved_session(name: &str) -> (PathBuf, Session) {
+        let dir = scratch(name);
+        let path = dir.join("rodete.hmf");
+        let mut session = Session::default();
+        session.save_to(&path).unwrap();
+        (dir, session)
+    }
+
+    #[test]
+    fn an_error_from_saved_selections_points_at_reselecting() {
+        let (dir, mut session) = saved_session("pista-error");
+        session.inputs.phi = "0.3".to_string();
+        let errors = crate::model::compute(&session.inputs, &session.basis).unwrap_err();
+        assert!(errors[0].1.contains("Reelegir con el motor"), "{errors:?}");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn an_error_reselecting_cannot_solve_has_no_hint() {
+        let (dir, mut session) = saved_session("pista-no");
+        session.inputs.h = "-3 m".to_string();
+        let errors = crate::model::compute(&session.inputs, &session.basis).unwrap_err();
+        assert!(!errors[0].1.contains("Reelegir"), "{errors:?}");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn diagnostic_errors_from_saved_selections_also_get_the_hint() {
+        let (dir, mut session) = saved_session("pista-aviso");
+        let mut hinted = false;
+        for q in [150, 250, 400, 800, 1200] {
+            for (h, n) in [
+                ("30 m", "1750 rpm"),
+                ("120 m", "3500 rpm"),
+                ("60 m", "2900 rpm"),
+            ] {
+                session.inputs.q = format!("{q} m3/h");
+                session.inputs.h = h.to_string();
+                session.inputs.n = n.to_string();
+                if let Ok(outcome) = crate::model::compute(&session.inputs, &session.basis) {
+                    assert!(!outcome.reselect_hint || outcome.has_errors());
+                    hinted |= outcome.reselect_hint;
+                }
+            }
+        }
+        assert!(hinted);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
     #[test]
     fn reselecting_needs_an_open_project() {
         let mut session = Session::default();

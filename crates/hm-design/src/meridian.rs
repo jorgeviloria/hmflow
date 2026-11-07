@@ -7,10 +7,15 @@
 //! leen el visor y la exportación.
 //!
 //! - P0 y P4, los extremos, los fija el 1D.
-//! - P2 se mueve libre.
-//! - P1 solo se desliza por la recta P0–P2 y P3 por la P4–P2, así que la
-//!   curvatura es nula en los dos extremos. Se guarda su fracción sobre la
-//!   recta: se mueven con P2.
+//! - P1 sale de P0 y P3 llega a P4 con un ángulo y una longitud propios (los
+//!   brazos). El ángulo va desde +z hacia +r, en grados: 0° es axial, 90°
+//!   radial; en P4 es el sentido de avance de la curva. No dependen de P2.
+//! - P2 se mueve libre dentro del rectángulo que forman P0 y P4, para que la
+//!   curva no se salga de él.
+//!
+//! En el diseño del motor los brazos son axial a la entrada y radial a la
+//! salida y P2 está en la esquina: P1 y P3 quedan sobre las rectas a P2 y la
+//! curvatura es nula en los extremos. Si se inclina un brazo ya no lo es.
 
 use hm_geometry::{Bezier, Curve, Point};
 
@@ -25,8 +30,24 @@ pub const RDS_RATIO: f64 = 0.7;
 pub const ZE_A: f64 = 0.75;
 pub const ZE_X: f64 = -0.05;
 
-/// Límites de la fracción de P1 y P3 sobre su recta.
-pub const FRACTION_RANGE: (f64, f64) = (0.02, 0.98);
+/// Límites del ángulo de un brazo, en grados: sin volver hacia atrás ni hacia
+/// el eje.
+pub const ANGLE_RANGE: (f64, f64) = (-90.0, 90.0);
+
+/// Ángulo de inicio y final del diseño del motor, en grados (εDs = εTs = 0,
+/// p. 417): axial a la entrada, radial a la salida.
+pub const AUTO_START_ANGLE: f64 = 0.0;
+pub const AUTO_END_ANGLE: f64 = 90.0;
+
+/// Longitud mínima de un brazo al arrastrarlo, en mm.
+pub const MIN_ARM: f64 = 0.1;
+
+/// Fracciones de la búsqueda de las longitudes del motor, sobre la distancia de
+/// cada extremo a la esquina.
+const SEARCH_FRACTIONS: (f64, f64) = (0.02, 0.98);
+
+/// Cota de tolerancia para estar dentro del rectángulo de P2, en mm.
+const RANGE_TOLERANCE: f64 = 1e-9;
 
 /// Muestras de cada tapa.
 const CURVE_POINTS: usize = 121;
@@ -68,12 +89,17 @@ impl Wall {
 /// Lo editado de una tapa, en mm; `None` es lo del motor.
 #[derive(Debug, Clone, Copy, Default, PartialEq)]
 pub struct WallEdit {
-    /// P2, `[z, r]`.
+    /// P2, `[z, r]`, dentro del rectángulo de los extremos.
     pub p2: Option<[f64; 2]>,
-    /// Fracción de P1 sobre P0–P2, en (0, 1).
-    pub p1: Option<f64>,
-    /// Fracción de P3 sobre P4–P2, en (0, 1).
-    pub p3: Option<f64>,
+    /// Ángulo del brazo de inicio (P0→P1), en grados dentro de
+    /// [`ANGLE_RANGE`].
+    pub start_angle: Option<f64>,
+    /// Longitud del brazo de inicio, en mm, mayor que 0.
+    pub start_length: Option<f64>,
+    /// Ángulo del brazo final (P3→P4), en grados dentro de [`ANGLE_RANGE`].
+    pub end_angle: Option<f64>,
+    /// Longitud del brazo final, en mm, mayor que 0.
+    pub end_length: Option<f64>,
 }
 
 /// Lo editado del corte.
@@ -105,11 +131,17 @@ impl MeridianEdits {
 pub struct WallShape {
     /// Los 5 puntos de la Bézier, de P0 a P4.
     pub points: [[f64; 2]; 5],
-    pub p1: f64,
-    pub p3: f64,
-    /// Las fracciones del diseño del motor: las de la curva más suave.
-    pub auto_p1: f64,
-    pub auto_p3: f64,
+    /// Brazos usados: ángulos en grados y longitudes en mm.
+    pub start_angle: f64,
+    pub start_length: f64,
+    pub end_angle: f64,
+    pub end_length: f64,
+    /// Longitudes del diseño del motor: las de la curva más suave. Los
+    /// ángulos del motor son [`AUTO_START_ANGLE`] y [`AUTO_END_ANGLE`].
+    pub auto_start_length: f64,
+    pub auto_end_length: f64,
+    /// Rectángulo de P2: esquinas `[z, r]` mínima y máxima, las de P0 y P4.
+    pub p2_range: ([f64; 2], [f64; 2]),
     /// Radio de curvatura mínimo a lo largo de la tapa.
     pub min_radius: f64,
 }
@@ -159,18 +191,18 @@ pub struct ControlPoint {
 /// Lo que se escribe al mover un punto de control.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum Moved {
-    /// P2 en `[z, r]`.
+    /// P2 en `[z, r]`, dentro del rectángulo de los extremos.
     Point([f64; 2]),
-    /// P1 o P3, como fracción de su recta.
-    Fraction(f64),
+    /// P1 o P3: ángulo en grados y longitud en mm del brazo.
+    Arm { angle: f64, length: f64 },
 }
 
-/// Un punto de control y, si está acoplado, la recta por la que se desliza.
+/// Un punto de control y, si es de un brazo, el brazo que lo une a su extremo.
 #[derive(Debug, Clone, PartialEq)]
 pub struct Handle {
     pub control: ControlPoint,
     pub at: [f64; 2],
-    /// De dónde a dónde va su recta: de P0 a P2 para P1, de P4 a P2 para P3.
+    /// Del extremo al punto: de P0 a P1 y de P4 a P3. P2 no tiene.
     pub line: Option<([f64; 2], [f64; 2])>,
 }
 
@@ -246,8 +278,8 @@ impl MeridionalModel {
             let points = self.params.wall(wall).points;
             for index in 1..=3 {
                 let line = match index {
-                    1 => Some((points[0], points[2])),
-                    3 => Some((points[4], points[2])),
+                    1 => Some((points[0], points[1])),
+                    3 => Some((points[4], points[3])),
                     _ => None,
                 };
                 handles.push(Handle {
@@ -261,24 +293,32 @@ impl MeridionalModel {
     }
 
     /// Lo que se escribe si el punto de control se lleva a `pointer`: P2 va
-    /// donde esté el puntero; P1 y P3, a la proyección sobre su recta, como
-    /// fracción dentro de [`FRACTION_RANGE`].
+    /// donde esté el puntero, recortado a su rectángulo; P1 y P3, al ángulo y
+    /// la distancia del puntero a su extremo, recortados a [`ANGLE_RANGE`] y
+    /// [`MIN_ARM`].
     #[must_use]
     pub fn moved(&self, control: ControlPoint, pointer: [f64; 2]) -> Moved {
-        let points = self.params.wall(control.wall).points;
-        let (from, to) = match control.index {
-            1 => (points[0], points[2]),
-            3 => (points[4], points[2]),
-            _ => return Moved::Point(pointer),
+        let shape = self.params.wall(control.wall);
+        let (from, sign) = match control.index {
+            1 => (shape.points[0], 1.0),
+            3 => (shape.points[4], -1.0),
+            _ => {
+                let (low, high) = shape.p2_range;
+                return Moved::Point([
+                    pointer[0].clamp(low[0], high[0]),
+                    pointer[1].clamp(low[1], high[1]),
+                ]);
+            }
         };
-        let (dx, dy) = (to[0] - from[0], to[1] - from[1]);
-        let length = dx * dx + dy * dy;
-        let fraction = if length > 0.0 {
-            ((pointer[0] - from[0]) * dx + (pointer[1] - from[1]) * dy) / length
-        } else {
-            0.5
-        };
-        Moved::Fraction(fraction.clamp(FRACTION_RANGE.0, FRACTION_RANGE.1))
+        // P1 está a +brazo desde P0; P3, a −brazo desde P4 (se avanza hacia P4).
+        let (dz, dr) = (sign * (pointer[0] - from[0]), sign * (pointer[1] - from[1]));
+        Moved::Arm {
+            angle: dr
+                .atan2(dz)
+                .to_degrees()
+                .clamp(ANGLE_RANGE.0, ANGLE_RANGE.1),
+            length: dz.hypot(dr).max(MIN_ARM),
+        }
     }
 
     /// CSV para exportar, con columnas `z_mm,r_mm`.
@@ -296,15 +336,15 @@ pub fn meridional_model(result: &DesignResult) -> Result<MeridionalModel, Design
 /// Corte meridional con lo editado.
 ///
 /// Diseño del motor: P2 en la esquina de las tangentes extremas, axial a la
-/// entrada y radial a la salida (εDs = εTs = 0, p. 417), y las fracciones de
-/// P1 y P3 que hacen cada tapa lo más suave posible (mayor radio mínimo).
+/// entrada y radial a la salida (εDs = εTs = 0, p. 417), y las longitudes de
+/// los brazos que hacen cada tapa lo más suave posible (mayor radio mínimo).
 /// Gülich pide RDs = 0,6 a 0,8·b1 (p. 416), pero con zE de la ec. (7.2) un
 /// giro de 90° de ese radio a menudo no cabe; la p. 417 admite radios
 /// menores en bombas pequeñas. Es elección de hmflow.
 ///
-/// Errores: el área de entrada no cabe en el ojo, una fracción fuera de
-/// (0, 1), un P2 que no es finito, tapas que se cruzan o un cubo que toca el
-/// eje.
+/// Errores: el área de entrada no cabe en el ojo, un ángulo fuera de ±90° o
+/// una longitud no positiva, un P2 que no es finito o que sale del rectángulo
+/// de los extremos, tapas que se cruzan o un cubo que toca el eje.
 pub fn meridional_model_with(
     result: &DesignResult,
     edits: &MeridianEdits,
@@ -379,8 +419,9 @@ pub fn meridional_model_with(
     })
 }
 
-/// Los 5 puntos: P1 a `p1` de P0 hacia P2 y P3 a `p3` de P4 hacia P2.
-fn five_points(ends: ([f64; 2], [f64; 2]), p2: [f64; 2], p1: f64, p3: f64) -> [[f64; 2]; 5] {
+/// Los 5 puntos con P1 a `p1` de P0 hacia P2 y P3 a `p3` de P4 hacia P2: solo
+/// para buscar las longitudes más suaves con P2 en la esquina.
+fn fraction_points(ends: ([f64; 2], [f64; 2]), p2: [f64; 2], p1: f64, p3: f64) -> [[f64; 2]; 5] {
     let (p0, p4) = ends;
     let toward = |from: [f64; 2], fraction: f64| {
         [
@@ -389,6 +430,32 @@ fn five_points(ends: ([f64; 2], [f64; 2]), p2: [f64; 2], p1: f64, p3: f64) -> [[
         ]
     };
     [p0, toward(p0, p1), p2, toward(p4, p3), p4]
+}
+
+/// Los 5 puntos con los brazos: P1 sale de P0 y P3 llega a P4 con su ángulo
+/// (grados, desde +z hacia +r) y su longitud.
+fn arm_points(
+    ends: ([f64; 2], [f64; 2]),
+    p2: [f64; 2],
+    start: (f64, f64),
+    end: (f64, f64),
+) -> [[f64; 2]; 5] {
+    let (p0, p4) = ends;
+    let (start_angle, start_length) = (start.0.to_radians(), start.1);
+    let (end_angle, end_length) = (end.0.to_radians(), end.1);
+    [
+        p0,
+        [
+            p0[0] + start_length * start_angle.cos(),
+            p0[1] + start_length * start_angle.sin(),
+        ],
+        p2,
+        [
+            p4[0] - end_length * end_angle.cos(),
+            p4[1] - end_length * end_angle.sin(),
+        ],
+        p4,
+    ]
 }
 
 fn bezier(points: &[[f64; 2]; 5]) -> Result<Bezier, DesignError> {
@@ -409,7 +476,7 @@ fn sample(points: &[[f64; 2]; 5]) -> Result<Vec<[f64; 2]>, DesignError> {
     Ok(sampled)
 }
 
-/// Radio de curvatura mínimo, sin los extremos, donde la curvatura es nula.
+/// Radio de curvatura mínimo a lo largo de toda la curva.
 fn min_radius(points: &[[f64; 2]; 5]) -> Result<f64, DesignError> {
     min_radius_sampled(points, RADIUS_SAMPLES)
 }
@@ -417,7 +484,8 @@ fn min_radius(points: &[[f64; 2]; 5]) -> Result<f64, DesignError> {
 fn min_radius_sampled(points: &[[f64; 2]; 5], samples: usize) -> Result<f64, DesignError> {
     let curve = bezier(points)?;
     let mut radius = f64::INFINITY;
-    for index in 1..samples {
+    // Con los brazos inclinados la curvatura de los extremos no es nula: cuenta.
+    for index in 0..=samples {
         let t = index as f64 / samples as f64;
         let curvature = curve.curvature_at(t).map_err(geometry_failed)?.abs();
         if curvature > 0.0 {
@@ -435,9 +503,10 @@ fn smoothest_fractions(
     ends: ([f64; 2], [f64; 2]),
     corner: [f64; 2],
 ) -> Result<(f64, f64), DesignError> {
-    let radius =
-        |p1: f64, p3: f64| min_radius_sampled(&five_points(ends, corner, p1, p3), SEARCH_SAMPLES);
-    let (low, high) = FRACTION_RANGE;
+    let radius = |p1: f64, p3: f64| {
+        min_radius_sampled(&fraction_points(ends, corner, p1, p3), SEARCH_SAMPLES)
+    };
+    let (low, high) = SEARCH_FRACTIONS;
     let mut best = (0.5, 0.5);
     let mut best_radius = radius(best.0, best.1)?;
     for step in [0.2, 0.1, 0.05, 0.02, 0.01, 0.005] {
@@ -469,34 +538,71 @@ fn wall_shape(
     corner: [f64; 2],
     edit: &WallEdit,
 ) -> Result<WallShape, DesignError> {
-    let (auto_p1, auto_p3) = smoothest_fractions(ends, corner)?;
+    let name = wall.name().to_lowercase();
+    let (fraction_1, fraction_3) = smoothest_fractions(ends, corner)?;
+    let distance = |a: [f64; 2], b: [f64; 2]| (a[0] - b[0]).hypot(a[1] - b[1]);
+    let auto_start_length = fraction_1 * distance(ends.0, corner);
+    let auto_end_length = fraction_3 * distance(ends.1, corner);
+
+    let low = [ends.0[0].min(ends.1[0]), ends.0[1].min(ends.1[1])];
+    let high = [ends.0[0].max(ends.1[0]), ends.0[1].max(ends.1[1])];
     let p2 = edit.p2.unwrap_or(corner);
     if !(p2[0].is_finite() && p2[1].is_finite()) {
         return Err(DesignError::Input(format!(
-            "meridiano: P2 de la {} no es un punto",
-            wall.name().to_lowercase()
+            "meridiano: P2 de la {name} no es un punto"
         )));
     }
-    let fraction = |value: Option<f64>, auto: f64, name: &str| {
+    let inside = (0..2).all(|axis| {
+        p2[axis] >= low[axis] - RANGE_TOLERANCE && p2[axis] <= high[axis] + RANGE_TOLERANCE
+    });
+    if !inside {
+        return Err(DesignError::Input(format!(
+            "meridiano: P2 de la {name} (z = {:.2}, r = {:.2} mm) queda fuera del rectángulo de los extremos: z entre {:.2} y {:.2} mm, r entre {:.2} y {:.2} mm",
+            p2[0], p2[1], low[0], high[0], low[1], high[1]
+        )));
+    }
+
+    let angle = |value: Option<f64>, auto: f64, what: &str| {
         let value = value.unwrap_or(auto);
-        if value.is_finite() && value > 0.0 && value < 1.0 {
+        if value.is_finite() && (ANGLE_RANGE.0..=ANGLE_RANGE.1).contains(&value) {
             Ok(value)
         } else {
             Err(DesignError::Input(format!(
-                "meridiano: {name} de la {} vale {value} y tiene que estar entre 0 y 1",
-                wall.name().to_lowercase()
+                "meridiano: {what} de la {name} vale {value} y tiene que estar entre {} y {} grados",
+                ANGLE_RANGE.0, ANGLE_RANGE.1
             )))
         }
     };
-    let p1 = fraction(edit.p1, auto_p1, "P1")?;
-    let p3 = fraction(edit.p3, auto_p3, "P3")?;
-    let points = five_points(ends, p2, p1, p3);
+    let length = |value: Option<f64>, auto: f64, what: &str| {
+        let value = value.unwrap_or(auto);
+        if value.is_finite() && value > 0.0 {
+            Ok(value)
+        } else {
+            Err(DesignError::Input(format!(
+                "meridiano: {what} de la {name} vale {value} y tiene que ser mayor que 0 mm"
+            )))
+        }
+    };
+    let start_angle = angle(edit.start_angle, AUTO_START_ANGLE, "ángulo de inicio")?;
+    let end_angle = angle(edit.end_angle, AUTO_END_ANGLE, "ángulo final")?;
+    let start_length = length(edit.start_length, auto_start_length, "longitud de inicio")?;
+    let end_length = length(edit.end_length, auto_end_length, "longitud final")?;
+
+    let points = arm_points(
+        ends,
+        p2,
+        (start_angle, start_length),
+        (end_angle, end_length),
+    );
     Ok(WallShape {
         points,
-        p1,
-        p3,
-        auto_p1,
-        auto_p3,
+        start_angle,
+        start_length,
+        end_angle,
+        end_length,
+        auto_start_length,
+        auto_end_length,
+        p2_range: (low, high),
         min_radius: min_radius(&points)?,
     })
 }

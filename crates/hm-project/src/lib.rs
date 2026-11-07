@@ -79,26 +79,41 @@ pub struct Meridian {
 #[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct MeridianWall {
-    /// P2: z (con el flujo, 0 en el borde de ataque) y r, con unidad. Van
-    /// los dos o ninguno.
+    /// P2: z (con el flujo, 0 en el borde de ataque) y r, con unidad, dentro
+    /// del rectángulo de los extremos de la tapa. Van los dos o ninguno.
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub p2_z: String,
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub p2_r: String,
-    /// Fracción de P1 sobre P0–P2, entre 0 y 1.
+    /// Ángulo del brazo de inicio (P0→P1) en grados, sin unidad, de −90 a
+    /// 90, medido desde +z hacia +r: 0 axial, 90 radial.
     #[serde(default, skip_serializing_if = "String::is_empty")]
-    pub p1: String,
-    /// Fracción de P3 sobre P4–P2, entre 0 y 1.
+    pub start_angle_deg: String,
+    /// Longitud del brazo de inicio, con unidad, mayor que 0.
     #[serde(default, skip_serializing_if = "String::is_empty")]
-    pub p3: String,
+    pub start_length: String,
+    /// Ángulo del brazo final (P3→P4): el sentido de avance en P4, en grados
+    /// de −90 a 90 desde +z hacia +r.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub end_angle_deg: String,
+    /// Longitud del brazo final, con unidad, mayor que 0.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub end_length: String,
 }
 
 impl MeridianWall {
     #[must_use]
     pub fn is_empty(&self) -> bool {
-        [&self.p2_z, &self.p2_r, &self.p1, &self.p3]
-            .iter()
-            .all(|text| text.trim().is_empty())
+        [
+            &self.p2_z,
+            &self.p2_r,
+            &self.start_angle_deg,
+            &self.start_length,
+            &self.end_angle_deg,
+            &self.end_length,
+        ]
+        .iter()
+        .all(|text| text.trim().is_empty())
     }
 }
 
@@ -658,12 +673,14 @@ fn casing_value(diagnostics: &mut Diagnostics, name: &str, text: &str, unit: &st
 }
 
 /// Cada campo de `[meridian]`: P2 como longitudes (z cualquiera, r
-/// positiva), los dos o ninguno, y las fracciones entre 0 y 1.
+/// positiva), los dos o ninguno; los ángulos de los brazos entre −90 y 90
+/// grados y sus longitudes positivas. Que P2 esté dentro del rectángulo de los
+/// extremos lo comprueba el diseño, que es quien conoce los extremos.
 fn check_meridian(diagnostics: &mut Diagnostics, meridian: &Meridian) {
     let mut problem = |name: String, text: String| {
         diagnostics.push(
             Diagnostic::error("HM-PROJ-031", format!("[meridian] `{name}` {text}"))
-                .with_hint("P2 lleva z y r con unidad, como \"24 mm\"; P1 y P3, una fracción entre 0 y 1. Vacío: el motor."),
+                .with_hint("P2 lleva z y r con unidad, como \"24 mm\"; los ángulos van en grados, de -90 a 90, y las longitudes de los brazos con unidad. Vacío: el motor."),
         );
     };
     for (table, wall) in [("shroud", &meridian.shroud), ("hub", &meridian.hub)] {
@@ -684,16 +701,29 @@ fn check_meridian(diagnostics: &mut Diagnostics, meridian: &Meridian) {
         {
             problem(format!("{table}.p2_r"), text);
         }
-        for (name, text) in [("p1", wall.p1.trim()), ("p3", wall.p3.trim())] {
+        for (name, text) in [
+            ("start_angle_deg", wall.start_angle_deg.trim()),
+            ("end_angle_deg", wall.end_angle_deg.trim()),
+        ] {
             if text.is_empty() {
                 continue;
             }
             match text.parse::<f64>() {
-                Ok(value) if value > 0.0 && value < 1.0 => {}
+                Ok(value) if (-90.0..=90.0).contains(&value) => {}
                 _ => problem(
                     format!("{table}.{name}"),
-                    format!("debe estar entre 0 y 1: {text}"),
+                    format!("debe estar entre -90 y 90 grados: {text}"),
                 ),
+            }
+        }
+        for (name, text) in [
+            ("start_length", wall.start_length.trim()),
+            ("end_length", wall.end_length.trim()),
+        ] {
+            if !text.is_empty()
+                && let Err(error) = positive_value(text, "m")
+            {
+                problem(format!("{table}.{name}"), error);
             }
         }
     }

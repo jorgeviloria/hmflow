@@ -339,20 +339,23 @@ fn wall_edit_of(wall: &hm_project::MeridianWall) -> WallEdit {
             })
             .map(|quantity| quantity.si * 1000.0)
     };
-    let fraction = |text: &str| {
+    let angle = |text: &str| {
         text.trim()
             .parse::<f64>()
             .ok()
-            .filter(|value| *value > 0.0 && *value < 1.0)
+            .filter(|value| (-90.0..=90.0).contains(value))
     };
+    let arm = |text: &str| mm(text).filter(|value| *value > 0.0);
     let p2 = match (mm(&wall.p2_z), mm(&wall.p2_r)) {
         (Some(z), Some(r)) if r > 0.0 => Some([z, r]),
         _ => None,
     };
     WallEdit {
         p2,
-        p1: fraction(&wall.p1),
-        p3: fraction(&wall.p3),
+        start_angle: angle(&wall.start_angle_deg),
+        start_length: arm(&wall.start_length),
+        end_angle: angle(&wall.end_angle_deg),
+        end_length: arm(&wall.end_length),
     }
 }
 

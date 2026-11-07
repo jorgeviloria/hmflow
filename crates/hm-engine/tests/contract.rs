@@ -426,14 +426,16 @@ fn the_meridian_reads_the_edits() {
         shroud: hm_project::MeridianWall {
             p2_z: "2 cm".to_string(),
             p2_r: "60 mm".to_string(),
-            p1: "0.3".to_string(),
+            start_angle_deg: "15".to_string(),
+            end_length: "3 mm".to_string(),
             ..hm_project::MeridianWall::default()
         },
         ..hm_project::Meridian::default()
     });
     let mut edits = hm_design::meridian::MeridianEdits::default();
     edits.shroud.p2 = Some([20.0, 60.0]);
-    edits.shroud.p1 = Some(0.3);
+    edits.shroud.start_angle = Some(15.0);
+    edits.shroud.end_length = Some(3.0);
     let expected = hm_design::meridian::meridional_model_with(&analysis.result, &edits).unwrap();
     assert_eq!(hm_engine::meridian(&project).unwrap(), expected);
 

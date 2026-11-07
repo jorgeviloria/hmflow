@@ -2549,11 +2549,11 @@ mod tests {
         );
     }
 
-    /// Un `[meridian]` con solo la fracción de P1 de la tapa delantera.
-    fn arms(shroud_p1: &str) -> hm_project::Meridian {
+    /// Un `[meridian]` con solo el ángulo de inicio de la tapa delantera.
+    fn arms(start_angle: &str) -> hm_project::Meridian {
         hm_project::Meridian {
             shroud: hm_project::MeridianWall {
-                p1: shroud_p1.into(),
+                start_angle_deg: start_angle.into(),
                 ..hm_project::MeridianWall::default()
             },
             ..hm_project::Meridian::default()
@@ -2604,6 +2604,6 @@ mod tests {
             ..Inputs::default()
         };
         let error = build_project(&inputs, &Basis::default(), None, "x").unwrap_err();
-        assert!(error.contains("shroud.p1"), "{error}");
+        assert!(error.contains("shroud.start_angle_deg"), "{error}");
     }
 }

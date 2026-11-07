@@ -1,5 +1,5 @@
 //! Sección `[meridian]` (esquema 4): lo editado de cada tapa del corte, una
-//! Bézier de 5 puntos: P2 y las fracciones de P1 y P3.
+//! Bézier de 5 puntos: P2 y el ángulo y la longitud de los dos brazos.
 
 use hm_formula::Registry;
 use hm_project::{Meridian, MeridianWall, Project, PumpType, SCHEMA_VERSION};
@@ -53,11 +53,11 @@ fn edits_round_trip_and_empty_fields_stay_out() {
         shroud: MeridianWall {
             p2_z: "24 mm".into(),
             p2_r: "60 mm".into(),
-            p1: "0.3".into(),
+            start_angle_deg: "12.5".into(),
             ..MeridianWall::default()
         },
         hub: MeridianWall {
-            p3: "0.4".into(),
+            end_length: "4 mm".into(),
             ..MeridianWall::default()
         },
     });
@@ -65,7 +65,8 @@ fn edits_round_trip_and_empty_fields_stay_out() {
     assert!(text.contains("[meridian.shroud]"), "{text}");
     assert!(text.contains("p2_z = \"24 mm\""), "{text}");
     assert!(text.contains("[meridian.hub]"), "{text}");
-    assert!(!text.contains("p3 = \"\""), "{text}");
+    assert!(text.contains("start_angle_deg = \"12.5\""), "{text}");
+    assert!(!text.contains("end_length = \"\""), "{text}");
     assert_eq!(
         Project::from_toml(&text).unwrap().meridian,
         project.meridian
@@ -73,7 +74,7 @@ fn edits_round_trip_and_empty_fields_stay_out() {
 
     let only_hub = with(Meridian {
         hub: MeridianWall {
-            p1: "0.5".into(),
+            start_length: "5 mm".into(),
             ..MeridianWall::default()
         },
         ..Meridian::default()
@@ -87,8 +88,10 @@ fn valid_edits_have_no_problems() {
         problems(shroud(MeridianWall {
             p2_z: "-2 mm".into(),
             p2_r: "6 cm".into(),
-            p1: "0.02".into(),
-            p3: "0.98".into(),
+            start_angle_deg: "-90".into(),
+            start_length: "0.5 mm".into(),
+            end_angle_deg: "90".into(),
+            end_length: "3 cm".into(),
         })),
         Vec::<String>::new()
     );
@@ -122,17 +125,31 @@ fn each_bad_field_is_reported_by_name() {
         ),
         (
             MeridianWall {
-                p1: "1".into(),
+                start_angle_deg: "91".into(),
                 ..MeridianWall::default()
             },
-            "shroud.p1",
+            "shroud.start_angle_deg",
         ),
         (
             MeridianWall {
-                p3: "medio".into(),
+                end_angle_deg: "recto".into(),
                 ..MeridianWall::default()
             },
-            "shroud.p3",
+            "shroud.end_angle_deg",
+        ),
+        (
+            MeridianWall {
+                start_length: "0 mm".into(),
+                ..MeridianWall::default()
+            },
+            "shroud.start_length",
+        ),
+        (
+            MeridianWall {
+                end_length: "5".into(),
+                ..MeridianWall::default()
+            },
+            "shroud.end_length",
         ),
     ] {
         let found = problems(shroud(wall));

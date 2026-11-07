@@ -1,6 +1,7 @@
 //! Pestaña Meridiano: el corte meridional, dibujado desde `MeridionalModel`,
 //! con cada tapa como Bézier de 5 puntos que se edita con cajas o arrastrando
-//! P1, P2 y P3.
+//! P1, P2 y P3: P2 dentro del rectángulo de los extremos y los brazos de
+//! inicio y final con su ángulo y su longitud.
 
 use eframe::egui;
 use egui::{Color32, RichText};
@@ -8,7 +9,7 @@ use egui_plot::{Legend, Plot, PlotPoint, Points};
 
 use crate::curves::line;
 use hm_design::meridian::{
-    ChannelStation, ControlPoint, MeridianEdits, MeridionalModel, Moved, Wall, meridional_model,
+    AUTO_END_ANGLE, AUTO_START_ANGLE, ChannelStation, ControlPoint, MeridianEdits, MeridionalModel, Moved, Wall, meridional_model,
     meridional_model_with,
 };
 use hm_project::{Meridian, MeridianWall};
@@ -76,6 +77,25 @@ pub(super) fn meridian_view(ui: &mut egui::Ui, outcome: &Outcome, boxes: &mut Me
                 let color = meridian_color(&curve.name);
                 plot_ui.line(line(&curve.name, curve.points.clone(), color));
             }
+            // El tope de P2: el rectángulo que forman P0 y P4.
+            for wall in Wall::ALL {
+                let (low, high) = model.params.wall(wall).p2_range;
+                plot_ui.line(
+                    line(
+                        "Tope de P2",
+                        vec![
+                            [low[0], low[1]],
+                            [high[0], low[1]],
+                            [high[0], high[1]],
+                            [low[0], high[1]],
+                            [low[0], low[1]],
+                        ],
+                        Color32::from_gray(90),
+                    )
+                    .width(1.0)
+                    .style(egui_plot::LineStyle::dotted_dense()),
+                );
+            }
             // El polígono de control de cada tapa, P0 a P4.
             for wall in Wall::ALL {
                 plot_ui.line(
@@ -122,8 +142,8 @@ fn header(model: &MeridionalModel, edits: &MeridianEdits) -> String {
     format!(
         "Corte meridional, mm: z con el flujo (0 en el borde de ataque), r radial. zE = {:.1}, \
          d1i = {:.1}, anchura de entrada = {:.1}. Radio mínimo: tapa delantera {shroud:.1}{verdict}; \
-         trasera {:.1}. Cada tapa es una Bézier de 5 puntos; P2 se mueve libre y P1 y P3 por su \
-         recta. Gülich §7.2.2.1.{} El álabe sigue siendo 2D hasta F4. Huella {}.",
+         trasera {:.1}. Cada tapa es una Bézier de 5 puntos: P2 se mueve dentro del rectángulo de los \
+         extremos y P1 y P3 salen de ellos con su ángulo (° desde +z hacia +r) y su longitud. Gülich §7.2.2.1.{} El álabe sigue siendo 2D hasta F4. Huella {}.",
         p.z_e,
         p.d1i,
         p.inlet_width,
@@ -150,16 +170,28 @@ fn wall_boxes(ui: &mut egui::Ui, boxes: &mut Meridian, auto: Option<&MeridionalM
                     [
                         format!("{} (auto)", length_text(shape.points[2][0])),
                         format!("{} (auto)", length_text(shape.points[2][1])),
-                        format!("{} (auto)", fraction_text(shape.p1)),
-                        format!("{} (auto)", fraction_text(shape.p3)),
+                        format!("{} (auto)", angle_text(AUTO_START_ANGLE)),
+                        format!("{} (auto)", length_text(shape.auto_start_length)),
+                        format!("{} (auto)", angle_text(AUTO_END_ANGLE)),
+                        format!("{} (auto)", length_text(shape.auto_end_length)),
                     ]
                 })
                 .unwrap_or_default();
-            let fields: [(&str, &mut String, bool); 4] = [
+            let fields: [(&str, &mut String, bool); 6] = [
                 ("P2 z", &mut texts.p2_z, edit.p2.is_none()),
                 ("P2 r", &mut texts.p2_r, edit.p2.is_none()),
-                ("P1", &mut texts.p1, edit.p1.is_none()),
-                ("P3", &mut texts.p3, edit.p3.is_none()),
+                (
+                    "Inicio °",
+                    &mut texts.start_angle_deg,
+                    edit.start_angle.is_none(),
+                ),
+                (
+                    "Inicio L",
+                    &mut texts.start_length,
+                    edit.start_length.is_none(),
+                ),
+                ("Final °", &mut texts.end_angle_deg, edit.end_angle.is_none()),
+                ("Final L", &mut texts.end_length, edit.end_length.is_none()),
             ];
             for (index, (label, text, unread)) in fields.into_iter().enumerate() {
                 let bad = unread && !text.trim().is_empty();
@@ -167,13 +199,15 @@ fn wall_boxes(ui: &mut egui::Ui, boxes: &mut Meridian, auto: Option<&MeridionalM
                 let mut field = egui::TextEdit::singleline(text)
                     .id_salt((wall.file_name(), label))
                     .hint_text(hints[index].as_str())
-                    .desired_width(120.0);
+                    .desired_width(100.0);
                 if bad {
                     field = field.text_color(ui.visuals().error_fg_color);
                 }
                 changed |= ui
                     .add(field)
-                    .on_hover_text("P2: longitud con unidad, como 24 mm. P1 y P3: fracción entre 0 y 1. Vacía: el motor.")
+                    .on_hover_text("P2: longitud con unidad, como 24 mm, dentro del rectángulo de los extremos. \
+                         Ángulo: grados de -90 a 90 desde +z hacia +r (0 axial, 90 radial). \
+                         Longitud del brazo: con unidad, mayor que 0. Vacía: el motor.")
                     .changed();
             }
         });
@@ -234,8 +268,14 @@ fn write_moved(boxes: &mut Meridian, control: ControlPoint, moved: Moved) -> boo
             (&mut texts.p2_z, length_text(z)),
             (&mut texts.p2_r, length_text(r)),
         ],
-        (Moved::Fraction(value), 1) => vec![(&mut texts.p1, fraction_text(value))],
-        (Moved::Fraction(value), _) => vec![(&mut texts.p3, fraction_text(value))],
+        (Moved::Arm { angle, length }, 1) => vec![
+            (&mut texts.start_angle_deg, angle_text(angle)),
+            (&mut texts.start_length, length_text(length)),
+        ],
+        (Moved::Arm { angle, length }, _) => vec![
+            (&mut texts.end_angle_deg, angle_text(angle)),
+            (&mut texts.end_length, length_text(length)),
+        ],
     };
     let mut changed = false;
     for (target, text) in updates {
@@ -265,8 +305,9 @@ fn length_text(value: f64) -> String {
     format!("{value:.2} mm")
 }
 
-fn fraction_text(value: f64) -> String {
-    format!("{value:.3}")
+/// Un ángulo en grados, sin unidad (así lo guarda `[meridian]`).
+fn angle_text(value: f64) -> String {
+    format!("{value:.1}")
 }
 
 fn wall_mut(boxes: &mut Meridian, wall: Wall) -> &mut MeridianWall {
@@ -283,8 +324,8 @@ fn edited_note(edits: &MeridianEdits) -> String {
         let edit = edits.wall(wall);
         for (present, point) in [
             (edit.p2.is_some(), "P2"),
-            (edit.p1.is_some(), "P1"),
-            (edit.p3.is_some(), "P3"),
+            (edit.start_angle.is_some() || edit.start_length.is_some(), "P1"),
+            (edit.end_angle.is_some() || edit.end_length.is_some(), "P3"),
         ] {
             if present {
                 names.push(format!("{point} {}", wall.name().to_lowercase()));
@@ -380,7 +421,7 @@ mod tests {
         assert_eq!(edited_note(&MeridianEdits::default()), "");
         let mut edits = MeridianEdits::default();
         edits.shroud.p2 = Some([20.0, 60.0]);
-        edits.hub.p3 = Some(0.4);
+        edits.hub.end_length = Some(4.0);
         assert_eq!(
             edited_note(&edits),
             " Editado: P2 tapa delantera, P3 tapa trasera."
@@ -403,7 +444,7 @@ mod tests {
     }
 
     #[test]
-    fn a_drag_writes_the_point_or_the_fraction_in_its_boxes() {
+    fn a_drag_writes_the_point_or_the_arm_in_its_boxes() {
         let mut boxes = Meridian::default();
         let p2 = ControlPoint {
             wall: Wall::Hub,
@@ -417,17 +458,35 @@ mod tests {
         // Lo mismo otra vez no cambia nada.
         assert!(!write_moved(&mut boxes, p2, Moved::Point([30.0, 25.5])));
 
+        let arm = Moved::Arm {
+            angle: 33.34,
+            length: 7.456,
+        };
         let p3 = ControlPoint {
             wall: Wall::Shroud,
             index: 3,
         };
-        assert!(write_moved(&mut boxes, p3, Moved::Fraction(0.4567)));
-        assert_eq!(boxes.shroud.p3, "0.457");
-        assert_eq!(boxes.shroud.p1, "");
+        assert!(write_moved(&mut boxes, p3, arm));
+        assert_eq!(boxes.shroud.end_angle_deg, "33.3");
+        assert_eq!(boxes.shroud.end_length, "7.46 mm");
+        assert_eq!(boxes.shroud.start_angle_deg, "");
+        let p1 = ControlPoint {
+            wall: Wall::Shroud,
+            index: 1,
+        };
+        assert!(write_moved(&mut boxes, p1, arm));
+        assert_eq!(
+            (
+                boxes.shroud.start_angle_deg.as_str(),
+                boxes.shroud.start_length.as_str()
+            ),
+            ("33.3", "7.46 mm")
+        );
         let edits = hm_engine::meridian_edits_of(&boxes);
         let [z, r] = edits.hub.p2.unwrap();
         assert!((z - 30.0).abs() < 1e-9 && (r - 25.5).abs() < 1e-9);
-        assert_eq!(edits.shroud.p3, Some(0.457));
+        assert_eq!(edits.shroud.end_angle, Some(33.3));
+        assert!((edits.shroud.end_length.unwrap() - 7.46).abs() < 1e-9);
     }
 
     #[test]

@@ -276,7 +276,13 @@ fn meridian_edit(ui: &mut egui::Ui, outcome: &Outcome, boxes: &mut Meridian) -> 
             return changed;
         }
     };
-    ui.label(RichText::new(summary(&model, &edits)).small());
+    let fit_id = egui::Id::unique("meridian_fitted");
+    ui.horizontal(|ui| {
+        ui.label(RichText::new(summary(&model, &edits)).small());
+        if ui.small_button("Encuadrar").clicked() {
+            ui.data_mut(|data| data.remove::<bool>(fit_id));
+        }
+    });
     egui::CollapsingHeader::new(RichText::new("Datos del corte").small())
         .default_open(false)
         .show(ui, |ui| {
@@ -305,6 +311,14 @@ fn meridian_edit(ui: &mut egui::Ui, outcome: &Outcome, boxes: &mut Meridian) -> 
             .allow_drag(false)
             .height(ui.available_height() - graphs_height)
             .show(ui, |plot_ui| {
+                // Al abrir (o con «Encuadrar») el corte llena el lienzo.
+                let fitted = plot_ui.ctx().data(|data| data.get_temp::<bool>(fit_id));
+                if fitted != Some(true)
+                    && let Some((min, max)) = section_bounds(&model)
+                {
+                    plot_ui.set_plot_bounds(egui_plot::PlotBounds::from_min_max(min, max));
+                    plot_ui.ctx().data_mut(|data| data.insert_temp(fit_id, true));
+                }
                 changed |= draw_section(plot_ui, &model, engine.as_ref(), boxes);
             });
     });
@@ -314,6 +328,28 @@ fn meridian_edit(ui: &mut egui::Ui, outcome: &Outcome, boxes: &mut Meridian) -> 
         })
         .body(|ui| channel_graphs(ui, &model, outcome.result.qth.si));
     changed
+}
+
+/// Rectángulo de las dos tapas con un 10 % de margen, para encuadrar el corte.
+fn section_bounds(model: &MeridionalModel) -> Option<([f64; 2], [f64; 2])> {
+    let mut min = [f64::INFINITY; 2];
+    let mut max = [f64::NEG_INFINITY; 2];
+    for wall in Wall::ALL {
+        for point in &model.curve(wall.name())?.points {
+            for axis in 0..2 {
+                min[axis] = min[axis].min(point[axis]);
+                max[axis] = max[axis].max(point[axis]);
+            }
+        }
+    }
+    if !(min[0].is_finite() && max[0] > min[0] && max[1] > min[1]) {
+        return None;
+    }
+    let margin = [(max[0] - min[0]) * 0.1, (max[1] - min[1]) * 0.1];
+    Some((
+        [min[0] - margin[0], min[1] - margin[1]],
+        [max[0] + margin[0], max[1] + margin[1]],
+    ))
 }
 
 /// Una línea de una sola frase con lo esencial del corte.

@@ -102,6 +102,8 @@ cargo run -p hmflow-cli -- eval "Q/(pi*d2*b2)" --var "Q=120 m3/h" --var "d2=0.3 
 | `hm-core` | Diagnósticos, severidad, revisión, tipo de bomba |
 | `hm-units` | Dimensiones, unidades, cantidades |
 | `hm-math` | Interpolación, raíces, utilidades |
+| `hm-geometry` | Línea, arco y Bézier cúbica: punto, tangente, longitud y muestreo |
+| `hm-cad-occt` | OpenCASCADE enlazado: cilindro de prueba a STL |
 | `hm-formula` | AST, parser, análisis dimensional, evaluación, packs |
 | `hm-design` | Diseño preliminar, voluta, curvas y validación end-suction |
 | `hm-project` | Formato `.hmf`, parámetros, validación |

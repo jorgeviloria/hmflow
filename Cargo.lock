@@ -277,6 +277,10 @@ dependencies = [
 ]
 
 [[package]]
+name = "hm-geometry"
+version = "0.0.1"
+
+[[package]]
 name = "hm-math"
 version = "0.0.1"
 dependencies = [

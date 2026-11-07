@@ -14,6 +14,7 @@ members = [
     "crates/hm-engine",
     "crates/hm-cli",
     "crates/hm-cad-occt",
+    "crates/hm-geometry",
     "xtask",
 ]
 

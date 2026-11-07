@@ -220,3 +220,59 @@ fn a_high_specific_speed_is_refused_with_its_reason() {
         "{error}"
     );
 }
+
+#[test]
+fn the_channel_area_starts_at_pi_d1_b1_and_ends_at_pi_d2_b2() {
+    let (result, model) = model();
+    let channel = model.channel();
+    let inlet = PI * mm(&result.d1) * mm(&result.b1);
+    let outlet = PI * mm(&result.d2) * mm(&result.b2);
+    let first = &channel[0];
+    let last = &channel[channel.len() - 1];
+    assert!(
+        (first.area - inlet).abs() / inlet < 1e-9,
+        "{} frente a {inlet}",
+        first.area
+    );
+    assert!(
+        (last.area - outlet).abs() / outlet < 1e-9,
+        "{} frente a {outlet}",
+        last.area
+    );
+    assert_eq!(first.m, 0.0);
+    assert!(channel.windows(2).all(|pair| pair[1].m > pair[0].m));
+    // Cada estación cumple A = 2π·r·b.
+    for station in &channel {
+        assert!((station.area - 2.0 * PI * station.r * station.width).abs() < 1e-9);
+    }
+}
+
+#[test]
+fn the_meridional_velocity_is_the_flow_through_the_area() {
+    let (result, model) = model();
+    let channel = model.channel();
+    let station = &channel[channel.len() - 1];
+    let expected = result.qth.si / (PI * result.d2.si * result.b2.si);
+    let cm = station.cm(result.qth.si);
+    assert!(
+        (cm - expected).abs() / expected < 1e-9,
+        "{cm} frente a {expected}"
+    );
+}
+
+/// El área no salta: entre dos estaciones vecinas cambia poco. Emparejar con
+/// el punto más cercano daba un pico y una caída de 40 cm² en pocos mm.
+#[test]
+fn the_channel_area_has_no_jumps() {
+    let (_, model) = model();
+    let channel = model.channel();
+    for pair in channel.windows(2) {
+        let step = (pair[1].area - pair[0].area).abs() / pair[0].area;
+        assert!(
+            step < 0.03,
+            "salto de {:.1} % en m = {:.1}",
+            step * 100.0,
+            pair[1].m
+        );
+    }
+}

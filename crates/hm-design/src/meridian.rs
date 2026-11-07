@@ -74,6 +74,51 @@ impl MeridionalModel {
         format!("{:016x}", self.fingerprint())
     }
 
+    /// El canal a lo largo de la línea media, una estación por punto de la
+    /// tapa delantera. Cada estación une ese punto con el de la trasera que
+    /// está a la misma fracción de su longitud: en el borde de ataque une sus
+    /// extremos y en la salida, los de d2. El punto medio está en la línea
+    /// media, la distancia es la anchura b, y A = 2π·r·b (Gülich, p. 417). Es
+    /// geometría del corte, sin el bloqueo de los álabes.
+    #[must_use]
+    pub fn channel(&self) -> Vec<ChannelStation> {
+        let (Some(front), Some(rear)) = (self.curve("Tapa delantera"), self.curve("Tapa trasera"))
+        else {
+            return Vec::new();
+        };
+        let front_length = cumulative(&front.points);
+        let rear_length = cumulative(&rear.points);
+        let (front_total, rear_total) = (
+            front_length[front_length.len() - 1],
+            rear_length[rear_length.len() - 1],
+        );
+        let mut stations: Vec<ChannelStation> = Vec::with_capacity(front.points.len());
+        let mut previous: Option<[f64; 2]> = None;
+        for (point, length) in front.points.iter().zip(&front_length) {
+            let partner = at_length(
+                &rear.points,
+                &rear_length,
+                length / front_total * rear_total,
+            );
+            let middle = [(point[0] + partner[0]) / 2.0, (point[1] + partner[1]) / 2.0];
+            let width = (point[0] - partner[0]).hypot(point[1] - partner[1]);
+            let m = match (previous, stations.last()) {
+                (Some(before), Some(last)) => {
+                    last.m + (middle[0] - before[0]).hypot(middle[1] - before[1])
+                }
+                _ => 0.0,
+            };
+            previous = Some(middle);
+            stations.push(ChannelStation {
+                m,
+                r: middle[1],
+                width,
+                area: 2.0 * std::f64::consts::PI * middle[1] * width,
+            });
+        }
+        stations
+    }
+
     /// CSV para exportar, con columnas `z_mm,r_mm`.
     #[must_use]
     pub fn to_csv(&self) -> String {
@@ -190,6 +235,59 @@ pub fn meridional_model(result: &DesignResult) -> Result<MeridionalModel, Design
             g1,
         },
     })
+}
+
+/// Una estación del canal sobre la línea media, en mm y mm².
+#[derive(Debug, Clone, PartialEq)]
+pub struct ChannelStation {
+    /// Longitud desarrollada de la línea media desde el borde de ataque.
+    pub m: f64,
+    /// Radio de la línea media.
+    pub r: f64,
+    /// Anchura del canal, de tapa a tapa.
+    pub width: f64,
+    /// Área de paso, 2π·r·b.
+    pub area: f64,
+}
+
+impl ChannelStation {
+    /// Velocidad meridional, m/s, con el caudal que pasa por el rodete en
+    /// m³/s (Qth, con las fugas). Sin bloqueo de álabes.
+    #[must_use]
+    pub fn cm(&self, flow_m3s: f64) -> f64 {
+        flow_m3s / (self.area * 1e-6)
+    }
+}
+
+/// Longitud acumulada de una polilínea en cada punto.
+fn cumulative(line: &[[f64; 2]]) -> Vec<f64> {
+    let mut lengths = vec![0.0];
+    for pair in line.windows(2) {
+        let last = lengths[lengths.len() - 1];
+        lengths.push(last + (pair[1][0] - pair[0][0]).hypot(pair[1][1] - pair[0][1]));
+    }
+    lengths
+}
+
+/// El punto de la polilínea a esa longitud desde su inicio. En los extremos
+/// devuelve el punto exacto.
+fn at_length(line: &[[f64; 2]], lengths: &[f64], target: f64) -> [f64; 2] {
+    if target <= 0.0 {
+        return line[0];
+    }
+    for index in 1..line.len() {
+        if lengths[index] >= target {
+            let span = lengths[index] - lengths[index - 1];
+            let t = if span > 0.0 {
+                (target - lengths[index - 1]) / span
+            } else {
+                0.0
+            };
+            let (a, b) = (line[index - 1], line[index]);
+            return [a[0] + t * (b[0] - a[0]), a[1] + t * (b[1] - a[1])];
+        }
+    }
+    line[line.len() - 1]
 }
 
 /// Brazo radial de la Bézier para que su radio de curvatura al salir de g1

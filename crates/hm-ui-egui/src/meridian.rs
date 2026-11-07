@@ -5,6 +5,8 @@ use egui::{Color32, RichText};
 use egui_plot::{Legend, Plot};
 
 use crate::curves::line;
+use hm_design::meridian::{ChannelStation, MeridionalModel};
+
 use crate::model::Outcome;
 
 /// Color de cada curva del corte. Una curva sin color asignado se dibuja
@@ -44,15 +46,58 @@ pub(super) fn meridian_view(ui: &mut egui::Ui, outcome: &Outcome) {
         .small()
         .weak(),
     );
+    let graphs_height = (ui.available_height() * 0.35).max(140.0);
     Plot::new("meridian")
         .data_aspect(1.0)
         .legend(Legend::default())
+        .height(ui.available_height() - graphs_height)
         .show(ui, |plot_ui| {
             for curve in &model.curves {
                 let color = meridian_color(&curve.name);
                 plot_ui.line(line(&curve.name, curve.points.clone(), color));
             }
         });
+    channel_graphs(ui, &model, outcome.result.qth.si);
+}
+
+/// A(m) y cm(m) sobre la línea media: geometría del corte, sin bloqueo de
+/// álabes. No predicen rendimiento.
+fn channel_graphs(ui: &mut egui::Ui, model: &MeridionalModel, qth: f64) {
+    let channel = model.channel();
+    let (area, velocity) = profiles(&channel, qth);
+    ui.label(
+        RichText::new(
+            "Sobre la línea media, m en mm desde el borde de ataque. A = 2π·r·b y cm = Qth/A, sin \
+             bloqueo de álabes: es geometría del corte, no una predicción de rendimiento.",
+        )
+        .small()
+        .weak(),
+    );
+    ui.columns(2, |columns| {
+        Plot::new("channel_area")
+            .legend(Legend::default())
+            .show(&mut columns[0], |plot_ui| {
+                plot_ui.line(line("A, cm²", area, Color32::from_rgb(70, 150, 240)));
+            });
+        Plot::new("channel_cm")
+            .legend(Legend::default())
+            .show(&mut columns[1], |plot_ui| {
+                plot_ui.line(line("cm, m/s", velocity, Color32::from_rgb(240, 160, 50)));
+            });
+    });
+}
+
+/// Puntos de A(m) en cm² y de cm(m) en m/s.
+fn profiles(channel: &[ChannelStation], qth: f64) -> (Vec<[f64; 2]>, Vec<[f64; 2]>) {
+    let area = channel
+        .iter()
+        .map(|station| [station.m, station.area / 100.0])
+        .collect();
+    let velocity = channel
+        .iter()
+        .map(|station| [station.m, station.cm(qth)])
+        .collect();
+    (area, velocity)
 }
 
 #[cfg(test)]
@@ -90,5 +135,18 @@ mod tests {
         .unwrap();
         let model = hm_design::meridian::meridional_model(&outcome.result).unwrap();
         assert_eq!(model.curves.len(), 4);
+    }
+
+    #[test]
+    fn the_graphs_are_the_channel_in_cm2_and_m_per_s() {
+        let station = ChannelStation {
+            m: 12.0,
+            r: 50.0,
+            width: 20.0,
+            area: 2.0 * std::f64::consts::PI * 50.0 * 20.0,
+        };
+        let (area, velocity) = profiles(std::slice::from_ref(&station), 0.01);
+        assert_eq!(area, vec![[12.0, station.area / 100.0]]);
+        assert_eq!(velocity, vec![[12.0, 0.01 / (station.area * 1e-6)]]);
     }
 }

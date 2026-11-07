@@ -327,14 +327,22 @@ impl MeridionalModel {
     /// geometría del corte, sin el bloqueo de los álabes.
     #[must_use]
     pub fn channel(&self) -> Vec<ChannelStation> {
+        // Solo el canal a partir del borde de ataque: las curvas siguen aguas
+        // arriba de él.
+        self.channel_from(self.params.edge_shroud, self.params.edge_hub)
+    }
+
+    /// Lo mismo que [`Self::channel`] pero a partir de esas fracciones de la
+    /// longitud de la tapa delantera y del cubo. Con (0, 0) es el canal entero,
+    /// desde el plano de entrada, donde arrancan las dos curvas.
+    #[must_use]
+    pub fn channel_from(&self, shroud: f64, hub: f64) -> Vec<ChannelStation> {
         let (Some(front), Some(rear)) = (self.curve("Tapa delantera"), self.curve("Tapa trasera"))
         else {
             return Vec::new();
         };
-        // Solo el canal a partir del borde de ataque: las curvas siguen aguas
-        // arriba de él.
-        let front = cut_from(&front.points, self.params.edge_shroud);
-        let rear = cut_from(&rear.points, self.params.edge_hub);
+        let front = cut_from(&front.points, shroud);
+        let rear = cut_from(&rear.points, hub);
         let front_length = cumulative(&front);
         let rear_length = cumulative(&rear);
         let (front_total, rear_total) = (

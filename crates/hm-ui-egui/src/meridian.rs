@@ -1109,10 +1109,11 @@ fn nearest_on(polyline: &[[f64; 2]], c: [f64; 2]) -> ([f64; 2], f64) {
 /// el centro está en la cuerda de tapa a tapa de la estación, a igual distancia
 /// de las dos, y el radio es esa distancia, así que cada círculo es tangente a
 /// la tapa delantera y a la trasera. Los bordes no lo limitan: el de la entrada
-/// puede sobresalir del borde de ataque.
+/// puede sobresalir del borde de ataque. Van del plano de entrada, donde
+/// arrancan las dos tapas, a la salida: el borde de ataque no los recorta.
 fn area_circles(model: &MeridionalModel, count: usize) -> Vec<([f64; 2], f64)> {
     const ITERATIONS: usize = 50;
-    let channel = model.channel();
+    let channel = model.channel_from(0.0, 0.0);
     let (Some(shroud), Some(hub)) = (
         model.curve(Wall::Shroud.name()),
         model.curve(Wall::Hub.name()),
@@ -1605,5 +1606,48 @@ mod tests {
             (Some(25.0), Some(6.26), Some(-15.0))
         );
         assert_eq!((edit.p2_along, edit.p2_offset), (Some(0.4), Some(0.0)));
+    }
+
+    /// Los círculos de área van del plano de entrada a la salida: mover el
+    /// borde de ataque no los recorta.
+    #[test]
+    fn the_area_circles_run_from_the_inlet_plane_to_the_outlet_whatever_the_edge() {
+        use hm_design::meridian::{EdgeEdit, MeridianEdits, meridional_model_with};
+        let result = hm_design::design(&hm_design::DesignInput {
+            q: hm_units::parse_quantity("120 m3/h").unwrap(),
+            h: hm_units::parse_quantity("45 m").unwrap(),
+            n: hm_units::parse_quantity("2900 rpm").unwrap(),
+            rho: hm_units::parse_quantity("998.2 kg/m3").unwrap(),
+            eta_m: 0.95,
+            npsha: None,
+            nu: None,
+        })
+        .unwrap();
+        let auto = meridional_model(&result).unwrap();
+        let moved = meridional_model_with(
+            &result,
+            &MeridianEdits {
+                edge_shroud: Some(0.3),
+                edge_hub: Some(0.5),
+                edge: EdgeEdit {
+                    p2_offset: Some(4.0),
+                    ..EdgeEdit::default()
+                },
+                ..MeridianEdits::default()
+            },
+        )
+        .unwrap();
+        // Con el borde recortando el canal, el primer círculo antes estaba en el
+        // borde (z > 0); ahora sigue en el plano de entrada, igual que sin mover.
+        let (first_auto, first_moved) = (
+            area_circles(&auto, AREA_CIRCLES)[0],
+            area_circles(&moved, AREA_CIRCLES)[0],
+        );
+        assert!(moved.params.edge_points[0][0] > 1.0);
+        assert!(first_moved.0[0].abs() < 1e-6, "{first_moved:?}");
+        assert_eq!(first_moved, first_auto);
+        // Y el último es el mismo en los dos, el de la salida.
+        let last = |model| *area_circles(model, AREA_CIRCLES).last().unwrap();
+        assert_eq!(last(&auto), last(&moved));
     }
 }

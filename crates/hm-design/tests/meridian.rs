@@ -891,3 +891,28 @@ fn the_edge_points_are_draggable_in_the_chord_frame() {
     };
     assert_eq!(along, 0.0);
 }
+
+/// El canal entero arranca en el plano de entrada, donde empiezan las tapas, y
+/// el del borde de ataque es su cola: acaban en la misma salida.
+#[test]
+fn the_whole_channel_starts_at_the_inlet_plane_and_the_edge_channel_is_its_tail() {
+    let (_, auto) = model();
+    // Con el borde en el plano de entrada son el mismo canal.
+    assert_eq!(auto.channel_from(0.0, 0.0), auto.channel());
+    let moved = edited(&MeridianEdits {
+        edge_shroud: Some(0.3),
+        edge_hub: Some(0.5),
+        ..MeridianEdits::default()
+    });
+    let (whole, tail) = (moved.channel_from(0.0, 0.0), moved.channel());
+    assert!(whole.len() > tail.len());
+    assert_eq!(tail[0].shroud_point, moved.params.edge_points[0]);
+    // El entero parte de P0 de las dos tapas, en z = 0, y sale por d2.
+    assert_eq!(whole[0].shroud_point, points(&moved, "Tapa delantera")[0]);
+    assert_eq!(whole[0].hub_point, points(&moved, "Tapa trasera")[0]);
+    assert_eq!(whole[0].shroud_point[0], 0.0);
+    assert_eq!(whole[0].hub_point[0], 0.0);
+    let (last_whole, last_tail) = (&whole[whole.len() - 1], &tail[tail.len() - 1]);
+    assert_eq!(last_whole.shroud_point, last_tail.shroud_point);
+    assert_eq!(last_whole.hub_point, last_tail.hub_point);
+}

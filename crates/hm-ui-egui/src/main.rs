@@ -8,6 +8,7 @@ mod curves;
 mod diagnostics;
 mod inputs;
 mod inspector;
+mod meridian;
 mod model;
 mod plan;
 mod session;
@@ -24,6 +25,7 @@ use curves::curves;
 use diagnostics::diagnostics_panel;
 use inputs::inputs_panel;
 use inspector::inspector_panel;
+use meridian::meridian_view;
 use plan::plan_view;
 use summary::summary;
 
@@ -47,6 +49,7 @@ enum Tab {
     Summary,
     Curves,
     Geometry,
+    Meridian,
 }
 
 struct App {
@@ -62,7 +65,7 @@ struct App {
     reselect_requested: bool,
 }
 
-/// `HMF_SCREENSHOT=ruta.ppm` (y opcionalmente `HMF_TAB=curves|geometry`)
+/// `HMF_SCREENSHOT=ruta.ppm` (y opcionalmente `HMF_TAB=curves|geometry|meridian`)
 /// guarda la ventana en PPM tras unos fotogramas y cierra la aplicación.
 struct Capture {
     path: std::path::PathBuf,
@@ -80,6 +83,7 @@ impl App {
             tab: match std::env::var("HMF_TAB").as_deref() {
                 Ok("curves") => Tab::Curves,
                 Ok("geometry") => Tab::Geometry,
+                Ok("meridian") => Tab::Meridian,
                 _ => Tab::Summary,
             },
             registry: Registry::all(),
@@ -132,6 +136,7 @@ impl eframe::App for App {
                 ui.selectable_value(&mut self.tab, Tab::Summary, "Resumen");
                 ui.selectable_value(&mut self.tab, Tab::Curves, "Curvas");
                 ui.selectable_value(&mut self.tab, Tab::Geometry, "Geometría");
+                ui.selectable_value(&mut self.tab, Tab::Meridian, "Meridiano");
             });
             ui.separator();
             let Some(outcome) = &self.outcome else {
@@ -146,6 +151,7 @@ impl eframe::App for App {
                 }
                 Tab::Curves => curves(ui, outcome),
                 Tab::Geometry => plan_view(ui, outcome),
+                Tab::Meridian => meridian_view(ui, outcome),
             }
         });
     }

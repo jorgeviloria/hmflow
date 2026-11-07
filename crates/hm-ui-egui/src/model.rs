@@ -933,12 +933,13 @@ fn change_lines(changes: &[ParamChange], keep: impl Fn(&ParamChange) -> bool) ->
         .filter(|change| keep(change))
         .map(|change| {
             let before = change.before.as_deref().unwrap_or("nada");
-            format!(
-                "{}: {} → {}",
-                change.name,
-                short_value(before),
-                short_value(&change.after)
-            )
+            let (old, new) = (short_value(before), short_value(&change.after));
+            // Si redondeados son iguales, se muestran enteros: el cambio es real.
+            if old == new {
+                format!("{}: {before} → {}", change.name, change.after)
+            } else {
+                format!("{}: {old} → {new}", change.name)
+            }
         })
         .collect()
 }
@@ -979,8 +980,8 @@ pub fn reselect_project(inputs: &Inputs, basis: &Basis) -> Result<Reselected, St
         }) => Some(value.clone()),
         _ => None,
     };
-    // Compara lo que se ve: lo rellenado no trae `before`, y una cifra lejana no
-    // es un cambio.
+    // Decide la tolerancia del motor, no el texto redondeado: si no, un cambio real
+    // en la quinta cifra se daría por nada y se tiraría. Lo rellenado no trae `before`.
     let known: Vec<ParamChange> = recalculated
         .changes
         .iter()
@@ -991,7 +992,10 @@ pub fn reselect_project(inputs: &Inputs, basis: &Basis) -> Result<Reselected, St
         })
         .collect();
     let changes = change_lines(&known, |change| {
-        change.before.as_deref().map(short_value) != Some(short_value(&change.after))
+        !change
+            .before
+            .as_deref()
+            .is_some_and(|before| hm_engine::same_value(before, &change.after))
     });
     Ok(Reselected {
         project: recalculated.project,

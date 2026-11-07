@@ -1116,6 +1116,31 @@ mod tests {
     }
 
     #[test]
+    fn a_small_real_difference_is_reselected_not_called_nothing() {
+        let (dir, session) = saved_session("reelegir-fino");
+        let path = session.file.clone().unwrap();
+        let mut project = Project::load(&path).unwrap();
+        project.params.insert(
+            "phi".to_string(),
+            Param::Manual {
+                value: "0.0993".to_string(),
+            },
+        );
+        project.save(&path).unwrap();
+        let mut session = Session::default();
+        assert!(session.open_path(&path), "{:?}", session.notice);
+        session.reselect().unwrap();
+        assert!(session.dirty);
+        assert!(matches!(
+            &session.project.as_ref().unwrap().params["phi"],
+            Param::Manual { value } if value != "0.0993"
+        ));
+        let notice = session.notice.clone().unwrap();
+        assert!(notice.contains("phi: 0.0993 → 0.09927"), "{notice}");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
     fn reselecting_needs_an_open_project() {
         let mut session = Session::default();
         assert!(session.reselect().is_err());

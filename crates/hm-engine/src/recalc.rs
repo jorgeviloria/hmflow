@@ -243,7 +243,7 @@ fn assemble_changes(
 
 /// Con tolerancia: el redondeo de `rho` en el archivo mueve la duodécima cifra de
 /// lo que depende de ν.
-fn same_value(old: &str, new: &str) -> bool {
+pub fn same_value(old: &str, new: &str) -> bool {
     match (parse_quantity(old), parse_quantity(new)) {
         (Ok(old), Ok(new)) => crate::project_ops::same_value(old.si, new.si),
         _ => old == new,

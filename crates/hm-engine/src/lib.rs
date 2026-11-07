@@ -42,5 +42,5 @@ pub use hm_design::{
     DesignOptions, DesignReport, METHOD, PARAM_SPECS, PREFERRED_OPERATING_REGION, REPORT_FORMAT,
 };
 pub use project_ops::{lock_selection, new_casing_project, new_project, report};
-pub use recalc::{Recalculated, recalc, redefines_eta_m};
+pub use recalc::{Recalculated, recalc, redefines_eta_m, same_value};
 pub use validate::{design_input, validate_case};

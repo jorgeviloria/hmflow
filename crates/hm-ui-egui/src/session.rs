@@ -1141,6 +1141,24 @@ mod tests {
     }
 
     #[test]
+    fn a_hint_to_reselect_shows_the_block_with_the_button() {
+        let (dir, mut session) = saved_session("pista-visible");
+        session.inputs.phi = "0.3".to_string();
+        let errors = crate::model::compute(&session.inputs, &session.basis).unwrap_err();
+        assert!(crate::model::selections_needed(&errors, None));
+        assert!(!crate::model::selections_needed(&[], None));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_hint_in_the_outcome_also_shows_the_block() {
+        let mut outcome = crate::model::compute(&Inputs::default(), &Basis::default()).unwrap();
+        assert!(!crate::model::selections_needed(&[], Some(&outcome)));
+        outcome.reselect_hint = true;
+        assert!(crate::model::selections_needed(&[], Some(&outcome)));
+    }
+
+    #[test]
     fn reselecting_needs_an_open_project() {
         let mut session = Session::default();
         assert!(session.reselect().is_err());

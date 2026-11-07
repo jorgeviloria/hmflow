@@ -531,6 +531,16 @@ pub fn selection_has_error(errors: &[(Field, String)]) -> bool {
         .any(|(field, _)| matches!(field, Field::Selection(_)))
 }
 
+/// Hay que mostrar «Selecciones»: un error de sus cajas, o una pista que manda
+/// pulsar el botón que hay dentro.
+pub fn selections_needed(errors: &[(Field, String)], outcome: Option<&Outcome>) -> bool {
+    selection_has_error(errors)
+        || errors
+            .iter()
+            .any(|(_, message)| message.contains(RESELECT_HINT))
+        || outcome.is_some_and(|outcome| outcome.reselect_hint)
+}
+
 /// Lo que se dice si el fallo viene de selecciones guardadas.
 pub const RESELECT_HINT: &str = "Pulsa «Reelegir con el motor»: viene de selecciones guardadas.";
 

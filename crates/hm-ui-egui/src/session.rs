@@ -55,6 +55,8 @@ pub struct Session {
     armed: Option<Command>,
     /// El último título enviado a la ventana.
     shown_title: Option<String>,
+    /// El aviso que se va al editar.
+    fading_notice: Option<String>,
     /// Las cajas de una carcasa quitada, por si se vuelve a marcar.
     removed_casing: Option<CasingBoxes>,
     /// Hay que desplegar «Selecciones»: marcar la carcasa deja φ y β2 obsoletos, y
@@ -158,6 +160,9 @@ impl Session {
         self.dirty = true;
         self.armed = None;
         self.clear_gate_notice();
+        if self.notice.is_some() && self.notice == self.fading_notice {
+            self.notice = None;
+        }
     }
 
     /// Quita el aviso de una orden armada: sin la orden no significa nada.
@@ -165,6 +170,12 @@ impl Session {
         if matches!(self.notice.as_deref(), Some(DISCARD_NOTICE | CASING_NOTICE)) {
             self.notice = None;
         }
+    }
+
+    /// Un aviso sobre la última orden: editar lo deja atrás.
+    fn fading(&mut self, message: String) {
+        self.fading_notice = Some(message.clone());
+        self.notice = Some(message);
     }
 
     /// Guardar desarma el descarte: no tira el trabajo, lo escribe.
@@ -178,14 +189,14 @@ impl Session {
     pub fn reselect(&mut self) -> Result<(), String> {
         self.disarm();
         let reselected = reselect_project(&self.inputs, &self.basis).inspect_err(|message| {
-            self.notice = Some(message.clone());
+            self.fading(message.clone());
         })?;
         if reselected.changes.is_empty() {
-            self.notice = Some("Reelegido: no cambió nada.".to_string());
+            self.fading("Reelegido: no cambió nada.".to_string());
             return Ok(());
         }
         let reopened = open_loaded(reselected.project.clone()).inspect_err(|message| {
-            self.notice = Some(message.clone());
+            self.fading(message.clone());
         })?;
         // El archivo solo guarda el modo elegido: lo escrito en el otro se conserva.
         let typed = std::mem::replace(&mut self.inputs, reopened.inputs);
@@ -202,7 +213,7 @@ impl Session {
         self.project = Some(reselected.project);
         self.opened_diagnostics = None;
         self.dirty = true;
-        self.notice = Some(format!(
+        self.fading(format!(
             "Reelegido, sin guardar: {}.",
             reselected.changes.join("; ")
         ));
@@ -323,8 +334,13 @@ impl Session {
         self.file = Some(path);
         self.dirty = false;
         // Un método anterior cambia números sin que se haya tocado una caja.
-        self.notice = (!built.migrated.is_empty())
-            .then(|| format!("Migrado al guardar: {}.", built.migrated.join("; ")));
+        self.notice = None;
+        if !built.migrated.is_empty() {
+            self.fading(format!(
+                "Migrado al guardar: {}.",
+                built.migrated.join("; ")
+            ));
+        }
         self.opened_diagnostics = had_project.then_some(built.diagnostics);
         Ok(())
     }
@@ -997,6 +1013,68 @@ mod tests {
         assert_eq!(session.inputs.suction_pressure, "2 bar");
         assert_eq!(session.inputs.suction_height, "3 m");
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn editing_clears_the_notice_of_a_reselection() {
+        let dir = scratch("aviso-reelegir");
+        let path = dir.join("rodete.hmf");
+        let mut session = Session::default();
+        session.save_to(&path).unwrap();
+        let mut project = Project::load(&path).unwrap();
+        project.params.insert(
+            "beta2".to_string(),
+            Param::Manual {
+                value: "25 deg".to_string(),
+            },
+        );
+        project.save(&path).unwrap();
+        assert!(session.open_path(&path), "{:?}", session.notice);
+        session.reselect().unwrap();
+        assert!(session.notice.is_some());
+        session.edited();
+        assert_eq!(session.notice, None);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn editing_clears_the_notice_of_a_migration_on_saving() {
+        let dir = scratch("aviso-migrar");
+        let path = copy_fixture(&dir, "end_suction_v0.8.hmf");
+        let mut session = Session::default();
+        assert!(session.open_path(&path), "{:?}", session.notice);
+        session.save_to(&path).unwrap();
+        assert!(
+            session
+                .notice
+                .clone()
+                .unwrap()
+                .contains("Migrado al guardar")
+        );
+        session.edited();
+        assert_eq!(session.notice, None);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn editing_clears_a_failed_reselection() {
+        let (dir, mut session) = saved_session("aviso-fallo");
+        session.inputs.phi = "abc".to_string();
+        assert!(session.reselect().is_err());
+        assert!(session.notice.is_some());
+        session.edited();
+        assert_eq!(session.notice, None);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn editing_keeps_a_notice_that_is_not_about_the_last_order() {
+        let mut session = Session {
+            notice: Some("no se pudo escribir".to_string()),
+            ..Session::default()
+        };
+        session.edited();
+        assert_eq!(session.notice.as_deref(), Some("no se pudo escribir"));
     }
 
     #[test]

@@ -324,27 +324,33 @@ pub fn meridian_edits(project: &Project) -> MeridianEdits {
 #[must_use]
 pub fn meridian_edits_of(section: &hm_project::Meridian) -> MeridianEdits {
     MeridianEdits {
-        edge_angle: section
-            .edge_angle_deg
-            .trim()
-            .parse::<f64>()
-            .ok()
-            .filter(|value| (0.0..=60.0).contains(value)),
+        hub_diameter: length_mm(&section.hub_diameter).filter(|value| *value >= 0.0),
+        edge_shroud: fraction(&section.edge_shroud),
+        edge_hub: fraction(&section.edge_hub),
         shroud: wall_edit_of(&section.shroud),
         hub: wall_edit_of(&section.hub),
     }
 }
 
+/// Una longitud con unidad, en mm; `None` si está vacía o no se entiende.
+fn length_mm(text: &str) -> Option<f64> {
+    (!text.trim().is_empty())
+        .then(|| hm_units::parse_quantity(text).ok())
+        .flatten()
+        .filter(|quantity| quantity.dim() == hm_units::Dimension::LENGTH && quantity.si.is_finite())
+        .map(|quantity| quantity.si * 1000.0)
+}
+
+/// Una fracción de 0 a 0,9; `None` si está vacía o fuera de rango.
+fn fraction(text: &str) -> Option<f64> {
+    text.trim()
+        .parse::<f64>()
+        .ok()
+        .filter(|value| (0.0..=0.9).contains(value))
+}
+
 fn wall_edit_of(wall: &hm_project::MeridianWall) -> WallEdit {
-    let mm = |text: &str| {
-        (!text.trim().is_empty())
-            .then(|| hm_units::parse_quantity(text).ok())
-            .flatten()
-            .filter(|quantity| {
-                quantity.dim() == hm_units::Dimension::LENGTH && quantity.si.is_finite()
-            })
-            .map(|quantity| quantity.si * 1000.0)
-    };
+    let mm = length_mm;
     let angle = |text: &str| {
         text.trim()
             .parse::<f64>()

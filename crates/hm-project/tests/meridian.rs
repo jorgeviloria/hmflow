@@ -50,7 +50,9 @@ fn schema_3_migrates_without_touching_anything_else() {
 #[test]
 fn edits_round_trip_and_empty_fields_stay_out() {
     let project = with(Meridian {
-        edge_angle_deg: "20".into(),
+        hub_diameter: "0 mm".into(),
+        edge_shroud: "0.2".into(),
+        edge_hub: "0.35".into(),
         shroud: MeridianWall {
             p2_z: "24 mm".into(),
             p2_r: "60 mm".into(),
@@ -63,7 +65,9 @@ fn edits_round_trip_and_empty_fields_stay_out() {
         },
     });
     let text = project.to_toml().unwrap();
-    assert!(text.contains("edge_angle_deg = \"20\""), "{text}");
+    assert!(text.contains("hub_diameter = \"0 mm\""), "{text}");
+    assert!(text.contains("edge_shroud = \"0.2\""), "{text}");
+    assert!(text.contains("edge_hub = \"0.35\""), "{text}");
     assert!(text.contains("[meridian.shroud]"), "{text}");
     assert!(text.contains("p2_z = \"24 mm\""), "{text}");
     assert!(text.contains("[meridian.hub]"), "{text}");
@@ -172,21 +176,40 @@ fn an_unknown_meridian_field_is_rejected() {
 }
 
 #[test]
-fn the_leading_edge_angle_is_checked_between_0_and_60() {
+fn the_hub_diameter_and_the_edge_positions_are_checked() {
+    let bad = |meridian: Meridian, name: &str| {
+        problems(meridian)
+            .iter()
+            .any(|message| message.contains(name))
+    };
+    for (text, ok) in [
+        ("0 mm", true),
+        ("30 mm", true),
+        ("-1 mm", false),
+        ("ancho", false),
+    ] {
+        let meridian = Meridian {
+            hub_diameter: text.into(),
+            ..Meridian::default()
+        };
+        assert_eq!(bad(meridian, "hub_diameter"), !ok, "{text}");
+    }
     for (text, ok) in [
         ("0", true),
-        ("60", true),
-        ("-1", false),
-        ("61", false),
-        ("recto", false),
+        ("0.9", true),
+        ("-0.1", false),
+        ("0.95", false),
+        ("x", false),
     ] {
-        let project = with(Meridian {
-            edge_angle_deg: text.into(),
+        let shroud = Meridian {
+            edge_shroud: text.into(),
             ..Meridian::default()
-        });
-        let found = problems(project.meridian.clone().unwrap())
-            .iter()
-            .any(|message| message.contains("edge_angle_deg"));
-        assert_eq!(found, !ok, "{text}");
+        };
+        let hub = Meridian {
+            edge_hub: text.into(),
+            ..Meridian::default()
+        };
+        assert_eq!(bad(shroud, "edge_shroud"), !ok, "{text}");
+        assert_eq!(bad(hub, "edge_hub"), !ok, "{text}");
     }
 }

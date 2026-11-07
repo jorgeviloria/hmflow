@@ -39,8 +39,9 @@ pub const ANGLE_RANGE: (f64, f64) = (-90.0, 90.0);
 pub const AUTO_START_ANGLE: f64 = 0.0;
 pub const AUTO_END_ANGLE: f64 = 90.0;
 
-/// Inclinación del borde de ataque εEK, en grados: ángulo con la radial.
-pub const EDGE_ANGLE_RANGE: (f64, f64) = (0.0, 60.0);
+/// Dónde puede estar un extremo del borde de ataque sobre su curva, como
+/// fracción de su longitud desde la entrada: 0 es el plano de entrada.
+pub const EDGE_FRACTION_RANGE: (f64, f64) = (0.0, 0.9);
 
 /// Longitud mínima de un brazo al arrastrarlo, en mm.
 pub const MIN_ARM: f64 = 0.1;
@@ -108,9 +109,14 @@ pub struct WallEdit {
 /// Lo editado del corte.
 #[derive(Debug, Clone, Copy, Default, PartialEq)]
 pub struct MeridianEdits {
-    /// Inclinación del borde de ataque, εEK, en grados dentro de
-    /// [`EDGE_ANGLE_RANGE`]; `None` es 0 (radial).
-    pub edge_angle: Option<f64>,
+    /// Diámetro del cubo en el plano de entrada, dH, en mm: de 0 (el cubo
+    /// arranca en el eje) a menos que d1. `None` es el que da el área del 1D.
+    pub hub_diameter: Option<f64>,
+    /// Posición del borde de ataque sobre la tapa delantera y sobre el cubo,
+    /// como fracción de la longitud de cada curva desde el plano de entrada,
+    /// dentro de [`EDGE_FRACTION_RANGE`]. `None` es 0.
+    pub edge_shroud: Option<f64>,
+    pub edge_hub: Option<f64>,
     pub shroud: WallEdit,
     pub hub: WallEdit,
 }
@@ -157,17 +163,27 @@ pub struct WallShape {
 /// Las cotas con que se construyó el corte, en mm.
 #[derive(Debug, Clone, PartialEq)]
 pub struct MeridianParams {
-    /// Diámetro del borde de ataque en la tapa trasera: el que da el área de
-    /// entrada del 1D, π·(d1² − d1i²)/4 = π·d1·b1.
+    /// Diámetro del cubo en el plano de entrada, dH: el editado o, si no, el que
+    /// da el área del 1D con el borde radial, π·(d1² − d1i²)/4 = π·d1·b1.
     pub d1i: f64,
-    /// Anchura del canal en el borde de ataque, (d1 − d1i)/2: el b1 de Gülich.
+    /// El d1i del 1D, el que usa el motor cuando no se edita dH.
+    pub auto_d1i: f64,
+    /// Anchura del canal en la entrada del 1D, (d1 − d1i)/2: el b1 de Gülich.
     pub inlet_width: f64,
-    /// Inclinación usada del borde de ataque, en grados con la radial.
+    /// Dónde está el borde de ataque sobre la tapa delantera y sobre el cubo,
+    /// como fracción de la longitud de cada curva.
+    pub edge_shroud: f64,
+    pub edge_hub: f64,
+    /// Los dos extremos del borde de ataque, `[z, r]`: el de la tapa y el del
+    /// cubo.
+    pub edge_points: [[f64; 2]; 2],
+    /// Inclinación resultante del borde con la radial, en grados: positiva si
+    /// el cubo queda aguas abajo de la tapa.
     pub edge_angle: f64,
     /// Longitud de la recta del borde de ataque, de la tapa al cubo.
     pub edge_length: f64,
     /// Área de entrada sobre la superficie real del borde, π·(r_tapa +
-    /// r_cubo)·longitud: la del 1D, π·d1·b1.
+    /// r_cubo)·longitud. Con el borde radial y el dH del 1D es la del 1D.
     pub edge_area: f64,
     /// Del borde de ataque al plano de salida de la tapa delantera.
     pub z_e: f64,
@@ -252,20 +268,20 @@ impl MeridionalModel {
         else {
             return Vec::new();
         };
-        let front_length = cumulative(&front.points);
-        let rear_length = cumulative(&rear.points);
+        // Solo el canal a partir del borde de ataque: las curvas siguen aguas
+        // arriba de él.
+        let front = cut_from(&front.points, self.params.edge_shroud);
+        let rear = cut_from(&rear.points, self.params.edge_hub);
+        let front_length = cumulative(&front);
+        let rear_length = cumulative(&rear);
         let (front_total, rear_total) = (
             front_length[front_length.len() - 1],
             rear_length[rear_length.len() - 1],
         );
-        let mut stations: Vec<ChannelStation> = Vec::with_capacity(front.points.len());
+        let mut stations: Vec<ChannelStation> = Vec::with_capacity(front.len());
         let mut previous: Option<[f64; 2]> = None;
-        for (point, length) in front.points.iter().zip(&front_length) {
-            let partner = at_length(
-                &rear.points,
-                &rear_length,
-                length / front_total * rear_total,
-            );
+        for (point, length) in front.iter().zip(&front_length) {
+            let partner = at_length(&rear, &rear_length, length / front_total * rear_total);
             let middle = [(point[0] + partner[0]) / 2.0, (point[1] + partner[1]) / 2.0];
             let width = (point[0] - partner[0]).hypot(point[1] - partner[1]);
             let m = match (previous, stations.last()) {
@@ -373,35 +389,39 @@ pub fn meridional_model_with(
     let r2 = result.d2.si * MM / 2.0;
     let b2 = result.b2.si * MM;
 
-    let edge_angle = edits.edge_angle.unwrap_or(0.0);
-    if !(edge_angle.is_finite() && (EDGE_ANGLE_RANGE.0..=EDGE_ANGLE_RANGE.1).contains(&edge_angle))
-    {
-        return Err(DesignError::Input(format!(
-            "meridiano: la inclinación del borde de ataque vale {edge_angle} y tiene que estar entre {} y {} grados",
-            EDGE_ANGLE_RANGE.0, EDGE_ANGLE_RANGE.1
-        )));
-    }
-    let edge_cos = edge_angle.to_radians().cos();
-
-    // El área sobre la recta inclinada es π·(r1² − ri²)/cos ε = π·d1·b1.
-    let hub_squared = d1 * d1 - 4.0 * d1 * b1 * edge_cos;
+    let hub_squared = d1 * d1 - 4.0 * d1 * b1;
     if !hub_squared.is_finite() || hub_squared <= 0.0 {
         return Err(DesignError::Input(format!(
             "el área de entrada π·d1·b1 no cabe en el ojo: b1 = {b1:.2} mm es al menos d1/4 = {:.2} mm",
             d1 / 4.0
         )));
     }
-    let d1i = hub_squared.sqrt();
-    let inlet_width = (d1 - d1i) / 2.0;
-    // El cubo empieza aguas abajo de la tapa.
-    let edge_dz = inlet_width * edge_angle.to_radians().tan();
-    let edge_length = inlet_width / edge_cos;
-    let edge_area = std::f64::consts::PI * (r1 + d1i / 2.0) * edge_length;
+    let auto_d1i = hub_squared.sqrt();
+    let inlet_width = (d1 - auto_d1i) / 2.0;
+    let d1i = edits.hub_diameter.unwrap_or(auto_d1i);
+    if !(d1i.is_finite() && d1i >= 0.0 && d1i < d1) {
+        return Err(DesignError::Input(format!(
+            "meridiano: el diámetro del cubo dH vale {d1i} mm y tiene que estar entre 0 y d1 = {d1:.2} mm"
+        )));
+    }
+    let fraction = |value: Option<f64>, what: &str| {
+        let value = value.unwrap_or(0.0);
+        if value.is_finite() && (EDGE_FRACTION_RANGE.0..=EDGE_FRACTION_RANGE.1).contains(&value) {
+            Ok(value)
+        } else {
+            Err(DesignError::Input(format!(
+                "meridiano: la posición del borde de ataque {what} vale {value} y tiene que estar entre {} y {}",
+                EDGE_FRACTION_RANGE.0, EDGE_FRACTION_RANGE.1
+            )))
+        }
+    };
+    let edge_shroud = fraction(edits.edge_shroud, "sobre la tapa delantera")?;
+    let edge_hub = fraction(edits.edge_hub, "sobre el cubo")?;
     let z_e = ZE_A * inlet_width * result.nq.powf(ZE_X);
     let r_ds = RDS_RATIO * inlet_width;
 
     let shroud_ends = ([0.0, r1], [z_e, r2]);
-    let hub_ends = ([edge_dz, d1i / 2.0], [z_e + b2, r2]);
+    let hub_ends = ([0.0, d1i / 2.0], [z_e + b2, r2]);
     let shroud_corner = [z_e, r1];
     let hub_corner = [z_e + b2, d1i / 2.0];
 
@@ -410,9 +430,10 @@ pub fn meridional_model_with(
 
     let front = sample(&shroud.points)?;
     let rear = sample(&hub.points)?;
-    if rear.iter().any(|point| point[1] <= 0.0) {
+    // Con dH = 0 el cubo va sobre el eje: se admite hasta el redondeo.
+    if rear.iter().any(|point| point[1] < -RANGE_TOLERANCE) {
         return Err(DesignError::Input(
-            "meridiano: la tapa trasera toca o cruza el eje".to_string(),
+            "meridiano: la tapa trasera cruza el eje".to_string(),
         ));
     }
     if crosses(&front, &rear) {
@@ -420,6 +441,19 @@ pub fn meridional_model_with(
             "meridiano: las tapas delantera y trasera se cruzan".to_string(),
         ));
     }
+
+    // El borde de ataque se apoya sobre las dos curvas, que siguen aguas arriba.
+    let on_curve = |line: &[[f64; 2]], fraction: f64| {
+        let lengths = cumulative(line);
+        at_length(line, &lengths, fraction * lengths[lengths.len() - 1])
+    };
+    let edge_points = [on_curve(&front, edge_shroud), on_curve(&rear, edge_hub)];
+    let (shroud_edge, hub_edge) = (edge_points[0], edge_points[1]);
+    let edge_length = (hub_edge[0] - shroud_edge[0]).hypot(hub_edge[1] - shroud_edge[1]);
+    let edge_angle = (hub_edge[0] - shroud_edge[0])
+        .atan2(shroud_edge[1] - hub_edge[1])
+        .to_degrees();
+    let edge_area = std::f64::consts::PI * (shroud_edge[1] + hub_edge[1]) * edge_length;
 
     let curves = vec![
         PlanCurve {
@@ -432,7 +466,7 @@ pub fn meridional_model_with(
         },
         PlanCurve {
             name: "Borde de ataque".to_string(),
-            points: vec![[0.0, r1], [edge_dz, d1i / 2.0]],
+            points: edge_points.to_vec(),
         },
         PlanCurve {
             name: "Borde de salida".to_string(),
@@ -443,7 +477,11 @@ pub fn meridional_model_with(
         curves,
         params: MeridianParams {
             d1i,
+            auto_d1i,
             inlet_width,
+            edge_shroud,
+            edge_hub,
+            edge_points,
             edge_angle,
             edge_length,
             edge_area,
@@ -704,6 +742,20 @@ fn cumulative(line: &[[f64; 2]]) -> Vec<f64> {
         lengths.push(last + (pair[1][0] - pair[0][0]).hypot(pair[1][1] - pair[0][1]));
     }
     lengths
+}
+
+/// La polilínea desde la fracción `fraction` de su longitud: el punto exacto
+/// de partida y los vértices que le siguen.
+fn cut_from(line: &[[f64; 2]], fraction: f64) -> Vec<[f64; 2]> {
+    let lengths = cumulative(line);
+    let start = fraction * lengths[lengths.len() - 1];
+    let mut cut = vec![at_length(line, &lengths, start)];
+    for (point, length) in line.iter().zip(&lengths) {
+        if *length > start {
+            cut.push(*point);
+        }
+    }
+    cut
 }
 
 /// El punto de la polilínea a esa longitud desde su inicio. En los extremos

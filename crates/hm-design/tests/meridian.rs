@@ -408,44 +408,112 @@ fn an_inlet_wider_than_the_eye_is_refused() {
     assert!(error.to_string().contains("b1"), "{error}");
 }
 
-/// El borde de ataque inclinado es una recta de la tapa al cubo; el cubo
-/// empieza aguas abajo y el área sobre la recta sigue siendo la del 1D.
+/// Por defecto el borde de ataque es la radial del plano de entrada y su área
+/// es la del 1D; con los dos extremos en 0 el cubo arranca en (0, dH/2).
 #[test]
-fn a_tilted_leading_edge_keeps_the_inlet_area_on_the_real_surface() {
+fn by_default_the_leading_edge_is_the_radial_with_the_inlet_area_of_the_1d() {
     let (result, auto) = model();
-    assert_eq!(auto.params.edge_angle, 0.0);
+    let p = &auto.params;
     let one_d = PI * mm(&result.d1) * mm(&result.b1);
-    assert!((auto.params.edge_area - one_d).abs() < 1e-6 * one_d);
+    assert!((p.edge_area - one_d).abs() < 1e-6 * one_d);
+    assert_eq!((p.edge_shroud, p.edge_hub, p.edge_angle), (0.0, 0.0, 0.0));
+    assert_eq!(p.d1i, p.auto_d1i);
+    let edge = points(&auto, "Borde de ataque");
+    assert_eq!(edge[0][0], 0.0);
+    assert_eq!(edge[1], [0.0, p.d1i / 2.0]);
+    assert_eq!(points(&auto, "Tapa trasera")[0], edge[1]);
+}
 
+/// dH es editable, también 0: el cubo arranca en el eje con el brazo axial.
+#[test]
+fn the_hub_diameter_is_editable_and_zero_puts_the_hub_on_the_axis() {
+    let (_, auto) = model();
     let edits = MeridianEdits {
-        edge_angle: Some(30.0),
+        hub_diameter: Some(0.0),
         ..MeridianEdits::default()
     };
-    let tilted = edited(&edits);
-    let p = &tilted.params;
-    assert!(
-        (p.edge_area - one_d).abs() < 1e-6 * one_d,
-        "{}",
-        p.edge_area
+    let axis = edited(&edits);
+    assert_eq!(axis.params.d1i, 0.0);
+    assert_eq!(axis.params.auto_d1i, auto.params.auto_d1i);
+    let hub = points(&axis, "Tapa trasera");
+    assert_eq!(hub[0], [0.0, 0.0]);
+    assert!(hub.iter().all(|point| point[1] >= -1e-9));
+    // La tapa delantera no cambia.
+    assert_eq!(
+        points(&axis, "Tapa delantera"),
+        points(&auto, "Tapa delantera")
     );
-    let edge = points(&tilted, "Borde de ataque");
-    assert_eq!(edge[0][0], 0.0);
-    let (dz, dr) = (edge[1][0] - edge[0][0], edge[0][1] - edge[1][1]);
-    assert!((dz.atan2(dr).to_degrees() - 30.0).abs() < 1e-9);
-    assert!((dz.hypot(dr) - p.edge_length).abs() < 1e-9);
-    // El cubo arranca en el extremo inclinado y el canal parte de la recta.
-    assert_eq!(points(&tilted, "Tapa trasera")[0], edge[1]);
-    let first = tilted.channel().remove(0);
-    assert!((first.area - one_d).abs() < 1e-6 * one_d);
-    // La recta es más larga que la radial: para el mismo área, el cubo sube.
-    assert!(p.d1i > auto.params.d1i);
+
+    for bad in [-1.0, f64::NAN, 1e6] {
+        let edits = MeridianEdits {
+            hub_diameter: Some(bad),
+            ..MeridianEdits::default()
+        };
+        let error = meridional_model_with(&design(&input()).unwrap(), &edits).unwrap_err();
+        assert!(error.to_string().contains("dH"), "{error}");
+    }
+}
+
+/// El borde se apoya sobre las dos curvas, que siguen aguas arriba de él; el
+/// canal parte de él y el área es la de la recta real.
+#[test]
+fn the_leading_edge_rests_on_both_curves_and_the_channel_starts_there() {
+    let (_, auto) = model();
+    let edits = MeridianEdits {
+        edge_shroud: Some(0.25),
+        edge_hub: Some(0.4),
+        ..MeridianEdits::default()
+    };
+    let moved = edited(&edits);
+    let p = &moved.params;
+    assert_eq!((p.edge_shroud, p.edge_hub), (0.25, 0.4));
+    // Las curvas son las mismas: solo se mueve el borde.
+    for name in ["Tapa delantera", "Tapa trasera"] {
+        assert_eq!(points(&moved, name), points(&auto, name), "{name}");
+    }
+    // Cada extremo está sobre su curva.
+    for (name, end) in [
+        ("Tapa delantera", p.edge_points[0]),
+        ("Tapa trasera", p.edge_points[1]),
+    ] {
+        let near = points(&moved, name)
+            .windows(2)
+            .map(|pair| {
+                let (a, b) = (pair[0], pair[1]);
+                let (dx, dy) = (b[0] - a[0], b[1] - a[1]);
+                let t = (((end[0] - a[0]) * dx + (end[1] - a[1]) * dy) / (dx * dx + dy * dy))
+                    .clamp(0.0, 1.0);
+                (end[0] - a[0] - t * dx).hypot(end[1] - a[1] - t * dy)
+            })
+            .fold(f64::MAX, f64::min);
+        assert!(near < 1e-9, "{name}: {near}");
+    }
+    assert_eq!(points(&moved, "Borde de ataque"), p.edge_points);
+    let length = (p.edge_points[0][0] - p.edge_points[1][0])
+        .hypot(p.edge_points[0][1] - p.edge_points[1][1]);
+    assert!((p.edge_length - length).abs() < 1e-12);
+    let area = PI * (p.edge_points[0][1] + p.edge_points[1][1]) * length;
+    assert!((p.edge_area - area).abs() < 1e-9 * area);
+    // El canal arranca en el borde y su primera área es la del borde.
+    let channel = moved.channel();
+    let first = &channel[0];
+    assert_eq!(first.shroud_point, p.edge_points[0]);
+    assert_eq!(first.hub_point, p.edge_points[1]);
+    assert!((first.area - p.edge_area).abs() < 1e-9 * area);
+    assert!(channel.len() < auto.channel().len());
 }
 
 #[test]
-fn a_leading_edge_angle_out_of_range_is_an_error() {
-    for angle in [-1.0, 61.0, f64::NAN] {
+fn a_leading_edge_position_out_of_range_is_an_error() {
+    for (shroud, hub) in [
+        (Some(-0.1), None),
+        (Some(0.95), None),
+        (None, Some(f64::NAN)),
+        (None, Some(1.0)),
+    ] {
         let edits = MeridianEdits {
-            edge_angle: Some(angle),
+            edge_shroud: shroud,
+            edge_hub: hub,
             ..MeridianEdits::default()
         };
         let error = meridional_model_with(&design(&input()).unwrap(), &edits).unwrap_err();

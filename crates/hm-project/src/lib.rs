@@ -67,11 +67,17 @@ pub struct Project {
 #[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Meridian {
-    /// Inclinación del borde de ataque, εEK, en grados sin unidad, de 0 a 60:
-    /// el ángulo de la recta cubo–tapa con la radial; el cubo empieza aguas
-    /// abajo de la tapa. Vacío: 0 (borde radial).
+    /// Diámetro del cubo en el plano de entrada, dH, con unidad: de 0 (el
+    /// cubo arranca en el eje) a menos que d1. Vacío: el del 1D.
     #[serde(default, skip_serializing_if = "String::is_empty")]
-    pub edge_angle_deg: String,
+    pub hub_diameter: String,
+    /// Posición del borde de ataque sobre la tapa delantera y sobre el cubo:
+    /// fracción de la longitud de cada curva desde el plano de entrada, sin
+    /// unidad, de 0 a 0,9. Vacío: 0 (el borde en el plano de entrada).
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub edge_shroud: String,
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub edge_hub: String,
     /// Tapa delantera.
     #[serde(default, skip_serializing_if = "MeridianWall::is_empty")]
     pub shroud: MeridianWall,
@@ -125,7 +131,11 @@ impl MeridianWall {
 impl Meridian {
     #[must_use]
     pub fn is_empty(&self) -> bool {
-        self.edge_angle_deg.trim().is_empty() && self.shroud.is_empty() && self.hub.is_empty()
+        [&self.hub_diameter, &self.edge_shroud, &self.edge_hub]
+            .iter()
+            .all(|text| text.trim().is_empty())
+            && self.shroud.is_empty()
+            && self.hub.is_empty()
     }
 }
 
@@ -688,13 +698,24 @@ fn check_meridian(diagnostics: &mut Diagnostics, meridian: &Meridian) {
                 .with_hint("P2 lleva z y r con unidad, como \"24 mm\"; los ángulos van en grados, de -90 a 90, y las longitudes de los brazos con unidad. Vacío: el motor."),
         );
     };
-    let edge = meridian.edge_angle_deg.trim();
-    if !edge.is_empty() {
-        match edge.parse::<f64>() {
-            Ok(value) if (0.0..=60.0).contains(&value) => {}
+    let diameter = meridian.hub_diameter.trim();
+    if !diameter.is_empty()
+        && let Err(text) = non_negative_length(diameter)
+    {
+        problem("hub_diameter".to_string(), text);
+    }
+    for (name, text) in [
+        ("edge_shroud", meridian.edge_shroud.trim()),
+        ("edge_hub", meridian.edge_hub.trim()),
+    ] {
+        if text.is_empty() {
+            continue;
+        }
+        match text.parse::<f64>() {
+            Ok(value) if (0.0..=0.9).contains(&value) => {}
             _ => problem(
-                "edge_angle_deg".to_string(),
-                format!("debe estar entre 0 y 60 grados: {edge}"),
+                name.to_string(),
+                format!("debe estar entre 0 y 0.9: {text}"),
             ),
         }
     }
@@ -741,6 +762,16 @@ fn check_meridian(diagnostics: &mut Diagnostics, meridian: &Meridian) {
                 problem(format!("{table}.{name}"), error);
             }
         }
+    }
+}
+
+/// Una longitud finita, cero o positiva.
+fn non_negative_length(text: &str) -> Result<f64, String> {
+    let value = length_value(text)?;
+    if value >= 0.0 {
+        Ok(value)
+    } else {
+        Err(format!("no puede ser negativa: {text}"))
     }
 }
 

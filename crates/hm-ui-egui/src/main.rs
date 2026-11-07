@@ -97,6 +97,18 @@ impl App {
             reselect_requested: false,
             meridian_history: meridian::History::default(),
         };
+        // Solo para las capturas: `HMF_MERIDIAN="hub_diameter=0 mm;edge_hub=0.4"`.
+        if let Ok(text) = std::env::var("HMF_MERIDIAN") {
+            let boxes = &mut app.session.inputs.meridian;
+            for pair in text.split(';') {
+                match pair.split_once('=') {
+                    Some(("hub_diameter", value)) => boxes.hub_diameter = value.trim().into(),
+                    Some(("edge_shroud", value)) => boxes.edge_shroud = value.trim().into(),
+                    Some(("edge_hub", value)) => boxes.edge_hub = value.trim().into(),
+                    _ => eprintln!("HMF_MERIDIAN: no entiendo `{pair}`"),
+                }
+            }
+        }
         app.recompute();
         app
     }

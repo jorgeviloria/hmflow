@@ -75,12 +75,24 @@ fn dimensioning(model: &MeridionalModel, at: [f64; 2]) -> Dimensioning {
     let pad = p.inlet_width / 2.0 + 0.05 * r2;
     let mut out = Dimensioning::default();
     let span = |r: f64| vec![[-pad, r], [z_max + 3.0 * gap, r]];
-    for (r, name) in [
-        (0.0, "eje".to_string()),
+    // Con dH = 0 el cubo va sobre el eje y las dos referencias coinciden: un solo rótulo.
+    let hub_on_axis = ri < 1e-6;
+    let mut named = vec![
+        (
+            0.0,
+            if hub_on_axis {
+                "eje, dH = 0.0".to_string()
+            } else {
+                "eje".to_string()
+            },
+        ),
         (r1, format!("dS = {:.1}", 2.0 * r1)),
-        (ri, format!("dH = {:.1}", 2.0 * ri)),
         (r2, format!("d2 = {:.1}", 2.0 * r2)),
-    ] {
+    ];
+    if !hub_on_axis {
+        named.push((ri, format!("dH = {:.1}", 2.0 * ri)));
+    }
+    for (r, name) in named {
         out.references.push(span(r));
         out.texts
             .push(([-pad, r], name, egui::Align2::RIGHT_BOTTOM));
@@ -411,10 +423,13 @@ fn header(model: &MeridionalModel, edits: &MeridianEdits) -> String {
     } else {
         format!(" (Gülich: {low:.1}–{high:.1})")
     };
+    // El área de entrada del 1D, π·d1·b1 = π·(r1² − (d1i/2)²) con el d1i del 1D.
+    let r1 = p.shroud.points[0][1];
+    let one_d_area = std::f64::consts::PI * (r1 * r1 - (p.auto_d1i / 2.0).powi(2));
     format!(
-        "Corte meridional, mm: z con el flujo (0 en el borde de ataque), r radial. zE = {:.1}, \
-         d1i = {:.1}, anchura de entrada = {:.1}. Borde de ataque: {:.1}° con la radial, longitud {:.1}, \
-         área {:.0} mm². Radio mínimo: tapa delantera {shroud:.1}{verdict}; \
+        "Corte meridional, mm: z con el flujo (0 en el plano de entrada), r radial. zE = {:.1}, \
+         dH = {:.1}, anchura de entrada del 1D = {:.1}. Borde de ataque: {:.1}° con la radial, longitud {:.1}, \
+         área {:.0} mm² (1D: {:.0}). Radio mínimo: tapa delantera {shroud:.1}{verdict}; \
          trasera {:.1}. Cada tapa es una Bézier de 5 puntos: P2 se mueve dentro del rectángulo de los \
          extremos y P1 y P3 salen de ellos con su ángulo (° desde +z hacia +r) y su longitud. Gülich §7.2.2.1.{} El álabe sigue siendo 2D hasta F4. Huella {}.",
         p.z_e,
@@ -423,6 +438,7 @@ fn header(model: &MeridionalModel, edits: &MeridianEdits) -> String {
         p.edge_angle,
         p.edge_length,
         p.edge_area,
+        one_d_area,
         p.hub.min_radius,
         edited_note(edits),
         model.fingerprint_text()
@@ -435,24 +451,46 @@ fn wall_boxes(ui: &mut egui::Ui, boxes: &mut Meridian, auto: Option<&MeridionalM
     let mut changed = false;
     let parsed = hm_engine::meridian_edits_of(boxes);
     ui.horizontal_wrapped(|ui| {
-        ui.label(RichText::new("Borde de ataque").strong());
-        ui.label(RichText::new("εEK °").small());
-        let bad = parsed.edge_angle.is_none() && !boxes.edge_angle_deg.trim().is_empty();
-        let mut field = egui::TextEdit::singleline(&mut boxes.edge_angle_deg)
-            .id_salt("edge_angle")
-            .hint_text(format!("{} (auto)", angle_text(0.0)))
-            .desired_width(100.0);
-        if bad {
-            field = field.text_color(ui.visuals().error_fg_color);
+        ui.label(RichText::new("Entrada").strong());
+        let auto_hub = auto.map(|model| length_text(model.params.auto_d1i));
+        let fields: [(&str, &mut String, bool, String, &str); 3] = [
+            (
+                "dH",
+                &mut boxes.hub_diameter,
+                parsed.hub_diameter.is_none(),
+                auto_hub.map_or_else(String::new, |text| format!("{text} (auto)")),
+                "Diámetro del cubo en el plano de entrada, con unidad: de 0 (el cubo arranca en el \
+                 eje) a menos que d1. Vacío: el que da el área del 1D con el borde radial.",
+            ),
+            (
+                "Borde en tapa",
+                &mut boxes.edge_shroud,
+                parsed.edge_shroud.is_none(),
+                "0 (auto)".to_string(),
+                "Dónde se apoya el borde de ataque sobre la tapa delantera: fracción de su longitud \
+                 desde el plano de entrada, de 0 a 0,9. La curva sigue aguas arriba del borde.",
+            ),
+            (
+                "Borde en cubo",
+                &mut boxes.edge_hub,
+                parsed.edge_hub.is_none(),
+                "0 (auto)".to_string(),
+                "Dónde se apoya el borde de ataque sobre el cubo: fracción de su longitud desde el \
+                 plano de entrada, de 0 a 0,9.",
+            ),
+        ];
+        for (label, text, unread, hint, help) in fields {
+            let bad = unread && !text.trim().is_empty();
+            ui.label(RichText::new(label).small());
+            let mut field = egui::TextEdit::singleline(text)
+                .id_salt(("entry", label))
+                .hint_text(hint)
+                .desired_width(100.0);
+            if bad {
+                field = field.text_color(ui.visuals().error_fg_color);
+            }
+            changed |= ui.add(field).on_hover_text(help).changed();
         }
-        changed |= ui
-            .add(field)
-            .on_hover_text(
-                "Inclinación de la recta cubo–tapa con la radial, de 0 a 60 grados: el cubo \
-                 empieza aguas abajo de la tapa. El área de entrada sobre esa recta sigue \
-                 siendo la del 1D. Vacía: 0.",
-            )
-            .changed();
     });
     for wall in Wall::ALL {
         let shape = auto.map(|model| model.params.wall(wall).clone());
@@ -637,7 +675,10 @@ fn wall_mut(boxes: &mut Meridian, wall: Wall) -> &mut MeridianWall {
 /// Qué viene editado, para la cabecera.
 fn edited_note(edits: &MeridianEdits) -> String {
     let mut names = Vec::new();
-    if edits.edge_angle.is_some() {
+    if edits.hub_diameter.is_some() {
+        names.push("dH".to_string());
+    }
+    if edits.edge_shroud.is_some() || edits.edge_hub.is_some() {
         names.push("borde de ataque".to_string());
     }
     for wall in Wall::ALL {
@@ -1118,5 +1159,29 @@ mod tests {
         assert_eq!(tips.len(), 2);
         assert!(tips.contains(&[at[0], z_line[0][1]]));
         assert!(tips.contains(&[r_line[0][0], at[1]]));
+    }
+
+    #[test]
+    fn with_the_hub_on_the_axis_the_axis_and_dh_share_one_label() {
+        let result = hm_design::design(&hm_design::DesignInput {
+            q: hm_units::parse_quantity("120 m3/h").unwrap(),
+            h: hm_units::parse_quantity("45 m").unwrap(),
+            n: hm_units::parse_quantity("2900 rpm").unwrap(),
+            rho: hm_units::parse_quantity("998.2 kg/m3").unwrap(),
+            eta_m: 0.95,
+            npsha: None,
+            nu: None,
+        })
+        .unwrap();
+        let edits = MeridianEdits {
+            hub_diameter: Some(0.0),
+            ..MeridianEdits::default()
+        };
+        let model = meridional_model_with(&result, &edits).unwrap();
+        let d = dimensioning(&model, [10.0, 20.0]);
+        let texts: Vec<&str> = d.texts.iter().map(|t| t.1.as_str()).collect();
+        assert!(texts.contains(&"eje, dH = 0.0"), "{texts:?}");
+        assert!(!texts.iter().any(|t| t.starts_with("dH")), "{texts:?}");
+        assert_eq!(d.references.len(), 3);
     }
 }

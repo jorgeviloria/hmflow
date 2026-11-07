@@ -117,6 +117,13 @@ pub struct MeridianEdits {
     /// dentro de [`EDGE_FRACTION_RANGE`]. `None` es 0.
     pub edge_shroud: Option<f64>,
     pub edge_hub: Option<f64>,
+    /// Cuánto se abomba el borde de ataque, en mm: la Bézier cúbica del borde
+    /// lleva P1 en el tercio de la cuerda, cerca de la tapa, y P2 en los dos
+    /// tercios, cerca del cubo, cada uno desplazado esta distancia en
+    /// perpendicular a la cuerda. Positivo abomba hacia aguas arriba. `None`
+    /// es 0: el borde recto.
+    pub edge_bow_shroud: Option<f64>,
+    pub edge_bow_hub: Option<f64>,
     pub shroud: WallEdit,
     pub hub: WallEdit,
 }
@@ -177,13 +184,17 @@ pub struct MeridianParams {
     /// Los dos extremos del borde de ataque, `[z, r]`: el de la tapa y el del
     /// cubo.
     pub edge_points: [[f64; 2]; 2],
+    /// El abombado aplicado a P1 (cerca de la tapa) y a P2 (cerca del cubo),
+    /// en mm.
+    pub edge_bow: [f64; 2],
     /// Inclinación resultante del borde con la radial, en grados: positiva si
     /// el cubo queda aguas abajo de la tapa.
     pub edge_angle: f64,
-    /// Longitud de la recta del borde de ataque, de la tapa al cubo.
+    /// Longitud del borde de ataque, de la tapa al cubo, medida sobre la curva.
     pub edge_length: f64,
-    /// Área de entrada sobre la superficie real del borde, π·(r_tapa +
-    /// r_cubo)·longitud. Con el borde radial y el dH del 1D es la del 1D.
+    /// Área de entrada sobre la superficie real del borde, 2π·∫r ds a lo largo
+    /// de la curva (π·(r_tapa + r_cubo)·longitud si es recta). Con el borde
+    /// radial y el dH del 1D es la del 1D.
     pub edge_area: f64,
     /// Del borde de ataque al plano de salida de la tapa delantera.
     pub z_e: f64,
@@ -501,11 +512,37 @@ pub fn meridional_model_with(
     };
     let edge_points = [on_curve(&front, edge_shroud), on_curve(&rear, edge_hub)];
     let (shroud_edge, hub_edge) = (edge_points[0], edge_points[1]);
-    let edge_length = (hub_edge[0] - shroud_edge[0]).hypot(hub_edge[1] - shroud_edge[1]);
+    let bow = |value: Option<f64>, what: &str| match value {
+        Some(value) if !value.is_finite() => Err(DesignError::Input(format!(
+            "meridiano: el abombado del borde de ataque {what} no es un número"
+        ))),
+        Some(value) => Ok(value),
+        None => Ok(0.0),
+    };
+    let edge_bow = [
+        bow(edits.edge_bow_shroud, "cerca de la tapa")?,
+        bow(edits.edge_bow_hub, "cerca del cubo")?,
+    ];
+    let chord = (hub_edge[0] - shroud_edge[0]).hypot(hub_edge[1] - shroud_edge[1]);
     let edge_angle = (hub_edge[0] - shroud_edge[0])
         .atan2(shroud_edge[1] - hub_edge[1])
         .to_degrees();
-    let edge_area = std::f64::consts::PI * (shroud_edge[1] + hub_edge[1]) * edge_length;
+    // Recto (y con la cuerda nula no hay perpendicular): dos puntos, como
+    // siempre. Curvo: la Bézier cúbica muestreada.
+    let edge_line = if (edge_bow == [0.0, 0.0]) || chord < RANGE_TOLERANCE {
+        edge_points.to_vec()
+    } else {
+        edge_bezier(shroud_edge, hub_edge, edge_bow)
+    };
+    let edge_length = cumulative(&edge_line)[edge_line.len() - 1];
+    let edge_area = edge_line
+        .windows(2)
+        .map(|pair| {
+            std::f64::consts::PI
+                * (pair[0][1] + pair[1][1])
+                * (pair[1][0] - pair[0][0]).hypot(pair[1][1] - pair[0][1])
+        })
+        .sum();
 
     let curves = vec![
         PlanCurve {
@@ -518,7 +555,7 @@ pub fn meridional_model_with(
         },
         PlanCurve {
             name: "Borde de ataque".to_string(),
-            points: edge_points.to_vec(),
+            points: edge_line,
         },
         PlanCurve {
             name: "Borde de salida".to_string(),
@@ -534,6 +571,7 @@ pub fn meridional_model_with(
             edge_shroud,
             edge_hub,
             edge_points,
+            edge_bow,
             edge_angle,
             edge_length,
             edge_area,
@@ -543,6 +581,38 @@ pub fn meridional_model_with(
             hub,
         },
     })
+}
+
+/// Tramos con que se muestrea la Bézier del borde de ataque.
+const EDGE_SEGMENTS: usize = 24;
+
+/// El borde de ataque como Bézier cúbica de la tapa al cubo: P1 y P2 en el
+/// tercio y los dos tercios de la cuerda, desplazados `bow` mm en perpendicular
+/// (positivo hacia aguas arriba: la normal es (Δr, −Δz)/|cuerda|, que en un
+/// borde radial apunta a −z).
+fn edge_bezier(from: [f64; 2], to: [f64; 2], bow: [f64; 2]) -> Vec<[f64; 2]> {
+    let (dz, dr) = (to[0] - from[0], to[1] - from[1]);
+    let chord = dz.hypot(dr);
+    let normal = [dr / chord, -dz / chord];
+    let at = |fraction: f64, offset: f64| {
+        [
+            from[0] + fraction * dz + offset * normal[0],
+            from[1] + fraction * dr + offset * normal[1],
+        ]
+    };
+    let (p1, p2) = (at(1.0 / 3.0, bow[0]), at(2.0 / 3.0, bow[1]));
+    (0..=EDGE_SEGMENTS)
+        .map(|step| {
+            let t = step as f64 / EDGE_SEGMENTS as f64;
+            let u = 1.0 - t;
+            let weights = [u * u * u, 3.0 * u * u * t, 3.0 * u * t * t, t * t * t];
+            let points = [from, p1, p2, to];
+            [
+                (0..4).map(|k| weights[k] * points[k][0]).sum(),
+                (0..4).map(|k| weights[k] * points[k][1]).sum(),
+            ]
+        })
+        .collect()
 }
 
 /// Los 5 puntos con P1 a `p1` de P0 hacia P2 y P3 a `p3` de P4 hacia P2: solo

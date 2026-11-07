@@ -78,6 +78,13 @@ pub struct Meridian {
     pub edge_shroud: String,
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub edge_hub: String,
+    /// Abombado del borde de ataque: la Bézier cúbica del borde lleva P1 y P2
+    /// en el tercio y los dos tercios de la cuerda, desplazados esta longitud
+    /// (con unidad, con signo; positivo hacia aguas arriba). Vacío: 0, recto.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub edge_bow_shroud: String,
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub edge_bow_hub: String,
     /// Tapa delantera.
     #[serde(default, skip_serializing_if = "MeridianWall::is_empty")]
     pub shroud: MeridianWall,
@@ -131,9 +138,15 @@ impl MeridianWall {
 impl Meridian {
     #[must_use]
     pub fn is_empty(&self) -> bool {
-        [&self.hub_diameter, &self.edge_shroud, &self.edge_hub]
-            .iter()
-            .all(|text| text.trim().is_empty())
+        [
+            &self.hub_diameter,
+            &self.edge_shroud,
+            &self.edge_hub,
+            &self.edge_bow_shroud,
+            &self.edge_bow_hub,
+        ]
+        .iter()
+        .all(|text| text.trim().is_empty())
             && self.shroud.is_empty()
             && self.hub.is_empty()
     }
@@ -717,6 +730,16 @@ fn check_meridian(diagnostics: &mut Diagnostics, meridian: &Meridian) {
                 name.to_string(),
                 format!("debe estar entre 0 y 0.9: {text}"),
             ),
+        }
+    }
+    for (name, text) in [
+        ("edge_bow_shroud", meridian.edge_bow_shroud.trim()),
+        ("edge_bow_hub", meridian.edge_bow_hub.trim()),
+    ] {
+        if !text.is_empty()
+            && let Err(text) = length_value(text)
+        {
+            problem(name.to_string(), text);
         }
     }
     for (table, wall) in [("shroud", &meridian.shroud), ("hub", &meridian.hub)] {

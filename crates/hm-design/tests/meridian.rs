@@ -655,3 +655,86 @@ fn a_dragged_p2_survives_rounding_to_hundredths_of_a_millimetre() {
         }
     }
 }
+
+/// Sin abombado el borde es la recta de siempre, de dos puntos.
+#[test]
+fn a_zero_bow_leaves_the_edge_straight() {
+    let (_, auto) = model();
+    let zero = edited(&MeridianEdits {
+        edge_bow_shroud: Some(0.0),
+        edge_bow_hub: Some(0.0),
+        ..MeridianEdits::default()
+    });
+    assert_eq!(points(&zero, "Borde de ataque").len(), 2);
+    assert_eq!(zero.params.edge_bow, [0.0, 0.0]);
+    assert_eq!(zero.params.edge_area, auto.params.edge_area);
+    assert_eq!(zero.params.edge_length, auto.params.edge_length);
+}
+
+/// Con el mismo abombado en P1 y P2 el punto medio de la Bézier se desplaza
+/// 0,75·b; positivo es aguas arriba (−z en un borde radial), los extremos no se
+/// mueven y la curva es más larga que la cuerda.
+#[test]
+fn a_bowed_edge_is_a_cubic_that_keeps_its_ends_and_bulges_upstream() {
+    let (_, auto) = model();
+    let bow = 4.0;
+    let bowed = edited(&MeridianEdits {
+        edge_bow_shroud: Some(bow),
+        edge_bow_hub: Some(bow),
+        ..MeridianEdits::default()
+    });
+    let line = points(&bowed, "Borde de ataque");
+    assert!(line.len() > 2);
+    assert_eq!(line[0], bowed.params.edge_points[0]);
+    assert_eq!(line[line.len() - 1], bowed.params.edge_points[1]);
+    assert_eq!(bowed.params.edge_points, auto.params.edge_points);
+    assert_eq!(bowed.params.edge_bow, [bow, bow]);
+    // Borde radial en z = 0: el punto medio queda 0,75·bow aguas arriba, a
+    // media altura entre los extremos.
+    let ends = bowed.params.edge_points;
+    let middle = line[line.len() / 2];
+    assert!(
+        (middle[0] - ends[0][0] + 0.75 * bow).abs() < 1e-9,
+        "{middle:?}"
+    );
+    assert!((middle[1] - (ends[0][1] + ends[1][1]) / 2.0).abs() < 1e-9);
+    // Más larga que la cuerda; el área sale de la curva, no de la cuerda.
+    let polyline: f64 = line
+        .windows(2)
+        .map(|pair| (pair[1][0] - pair[0][0]).hypot(pair[1][1] - pair[0][1]))
+        .sum();
+    assert!((bowed.params.edge_length - polyline).abs() < 1e-12);
+    assert!(bowed.params.edge_length > auto.params.edge_length);
+    let area: f64 = line
+        .windows(2)
+        .map(|pair| {
+            PI * (pair[0][1] + pair[1][1])
+                * (pair[1][0] - pair[0][0]).hypot(pair[1][1] - pair[0][1])
+        })
+        .sum();
+    assert!((bowed.params.edge_area - area).abs() < 1e-9 * area);
+    assert!(bowed.params.edge_area > auto.params.edge_area);
+    // Un abombado negativo va hacia aguas abajo.
+    let other = edited(&MeridianEdits {
+        edge_bow_shroud: Some(-bow),
+        edge_bow_hub: Some(-bow),
+        ..MeridianEdits::default()
+    });
+    let line = points(&other, "Borde de ataque");
+    assert!((line[line.len() / 2][0] - 0.75 * bow).abs() < 1e-9);
+}
+
+#[test]
+fn a_bow_that_is_not_a_number_is_an_error() {
+    for (shroud, hub) in [(Some(f64::NAN), None), (None, Some(f64::INFINITY))] {
+        let edits = MeridianEdits {
+            edge_bow_shroud: shroud,
+            edge_bow_hub: hub,
+            ..MeridianEdits::default()
+        };
+        let error = meridional_model_with(&design(&input()).unwrap(), &edits)
+            .unwrap_err()
+            .to_string();
+        assert!(error.contains("abombado"), "{error}");
+    }
+}

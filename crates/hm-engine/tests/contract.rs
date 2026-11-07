@@ -416,6 +416,22 @@ fn the_meridian_is_the_meridian_of_the_analysis() {
     );
 }
 
+/// El abombado del borde de ataque de `[meridian]` llega al corte, con signo.
+#[test]
+fn the_edge_bow_of_the_project_reaches_the_section() {
+    let mut project = fixture("end_suction_v0.9.hmf");
+    let straight = hm_engine::meridian(&project).unwrap();
+    project.meridian = Some(hm_project::Meridian {
+        edge_bow_shroud: "3 mm".into(),
+        edge_bow_hub: "-1.5 mm".into(),
+        ..hm_project::Meridian::default()
+    });
+    let bowed = hm_engine::meridian(&project).unwrap();
+    assert_eq!(bowed.params.edge_bow, [3.0, -1.5]);
+    assert!(bowed.curve("Borde de ataque").unwrap().points.len() > 2);
+    assert_eq!(bowed.params.edge_points, straight.params.edge_points);
+}
+
 /// Lo editado en `[meridian]` llega al corte, en mm, y unas tapas que se
 /// cruzan son un error.
 #[test]

@@ -327,6 +327,8 @@ pub fn meridian_edits_of(section: &hm_project::Meridian) -> MeridianEdits {
         hub_diameter: length_mm(&section.hub_diameter).filter(|value| *value >= 0.0),
         edge_shroud: fraction(&section.edge_shroud),
         edge_hub: fraction(&section.edge_hub),
+        edge_bow_shroud: length_mm(&section.edge_bow_shroud),
+        edge_bow_hub: length_mm(&section.edge_bow_hub),
         shroud: wall_edit_of(&section.shroud),
         hub: wall_edit_of(&section.hub),
     }

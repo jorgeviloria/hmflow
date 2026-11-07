@@ -53,6 +53,8 @@ fn edits_round_trip_and_empty_fields_stay_out() {
         hub_diameter: "0 mm".into(),
         edge_shroud: "0.2".into(),
         edge_hub: "0.35".into(),
+        edge_bow_shroud: "6 mm".into(),
+        edge_bow_hub: "-2.5 mm".into(),
         shroud: MeridianWall {
             p2_z: "24 mm".into(),
             p2_r: "60 mm".into(),
@@ -68,6 +70,8 @@ fn edits_round_trip_and_empty_fields_stay_out() {
     assert!(text.contains("hub_diameter = \"0 mm\""), "{text}");
     assert!(text.contains("edge_shroud = \"0.2\""), "{text}");
     assert!(text.contains("edge_hub = \"0.35\""), "{text}");
+    assert!(text.contains("edge_bow_shroud = \"6 mm\""), "{text}");
+    assert!(text.contains("edge_bow_hub = \"-2.5 mm\""), "{text}");
     assert!(text.contains("[meridian.shroud]"), "{text}");
     assert!(text.contains("p2_z = \"24 mm\""), "{text}");
     assert!(text.contains("[meridian.hub]"), "{text}");
@@ -211,5 +215,32 @@ fn the_hub_diameter_and_the_edge_positions_are_checked() {
         };
         assert_eq!(bad(shroud, "edge_shroud"), !ok, "{text}");
         assert_eq!(bad(hub, "edge_hub"), !ok, "{text}");
+    }
+}
+
+#[test]
+fn the_edge_bow_is_a_signed_length() {
+    let bad = |meridian: Meridian, name: &str| {
+        problems(meridian)
+            .iter()
+            .any(|message| message.contains(name))
+    };
+    for (text, ok) in [
+        ("0 mm", true),
+        ("5 mm", true),
+        ("-3 mm", true),
+        ("5", false),
+        ("x", false),
+    ] {
+        let shroud = Meridian {
+            edge_bow_shroud: text.into(),
+            ..Meridian::default()
+        };
+        let hub = Meridian {
+            edge_bow_hub: text.into(),
+            ..Meridian::default()
+        };
+        assert_eq!(bad(shroud, "edge_bow_shroud"), !ok, "{text}");
+        assert_eq!(bad(hub, "edge_bow_hub"), !ok, "{text}");
     }
 }

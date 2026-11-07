@@ -1042,6 +1042,9 @@ fn diagnostics_panel(ui: &mut egui::Ui, app: &App) {
         .resizable(true)
         .default_size(150.0)
         .show(ui, |ui| {
+            if let Some(note) = app.session.migration_note() {
+                ui.label(RichText::new(note).color(ui.visuals().warn_fg_color));
+            }
             if let Some(notice) = app.session.panel_notice() {
                 ui.label(RichText::new(notice).color(ui.visuals().error_fg_color));
             }

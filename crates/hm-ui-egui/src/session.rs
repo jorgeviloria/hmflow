@@ -55,6 +55,10 @@ pub struct Session {
     armed: Option<Command>,
     /// El último título enviado a la ventana.
     shown_title: Option<String>,
+    /// Lo que cambió al migrar, hasta guardarlo.
+    migrated: Vec<String>,
+    /// Por qué no se pudo migrar al abrir, hasta reelegir.
+    migration_failure: Option<String>,
     /// El aviso que se va al editar.
     fading_notice: Option<String>,
     /// Las cajas de una carcasa quitada, por si se vuelve a marcar.
@@ -135,17 +139,9 @@ impl Session {
                 self.file = Some(path.to_path_buf());
                 self.project = Some(opened.project);
                 self.dirty = !opened.migrated.is_empty();
-                self.notice = match &opened.migration_failure {
-                    Some(reason) => Some(format!(
-                        "No se pudo migrar este método al abrir ({reason}). Pulsa «Reelegir con                          el motor»."
-                    )),
-                    None => (!opened.migrated.is_empty()).then(|| {
-                        format!(
-                            "Migrado al abrir, sin guardar: {}.",
-                            opened.migrated.join("; ")
-                        )
-                    }),
-                };
+                self.notice = None;
+                self.migrated = opened.migrated;
+                self.migration_failure = opened.migration_failure;
                 self.armed = None;
                 self.opened_diagnostics = Some(opened.diagnostics);
                 self.removed_casing = None;
@@ -218,6 +214,7 @@ impl Session {
         self.project = Some(reselected.project);
         self.opened_diagnostics = None;
         self.dirty = true;
+        self.migration_failure = None;
         self.fading(format!(
             "Reelegido, sin guardar: {}.",
             reselected.changes.join("; ")
@@ -229,6 +226,22 @@ impl Session {
     /// cambiara al escribir, la caja perdería el foco en el primer carácter.
     pub fn view_key(&self) -> Option<&Path> {
         self.file.as_deref()
+    }
+
+    /// Lo que la migración cambió o por qué falló. Sigue a la vista hasta guardar:
+    /// esos números se escribirán aunque no se toque una caja.
+    pub fn migration_note(&self) -> Option<String> {
+        if let Some(reason) = &self.migration_failure {
+            return Some(format!(
+                "No se pudo migrar este método al abrir ({reason}). Pulsa «Reelegir con el motor»."
+            ));
+        }
+        (!self.migrated.is_empty()).then(|| {
+            format!(
+                "Migrado al abrir, sin guardar: {}.",
+                self.migrated.join("; ")
+            )
+        })
     }
 
     /// Marca la carcasa: vuelven las cajas quitadas, o unas en blanco.
@@ -340,11 +353,11 @@ impl Session {
         self.dirty = false;
         // Un método anterior cambia números sin que se haya tocado una caja.
         self.notice = None;
-        if !built.migrated.is_empty() {
-            self.fading(format!(
-                "Migrado al guardar: {}.",
-                built.migrated.join("; ")
-            ));
+        let mut migrated = std::mem::take(&mut self.migrated);
+        migrated.extend(built.migrated);
+        self.migration_failure = None;
+        if !migrated.is_empty() {
+            self.fading(format!("Migrado al guardar: {}.", migrated.join("; ")));
         }
         self.opened_diagnostics = had_project.then_some(built.diagnostics);
         Ok(())
@@ -923,7 +936,7 @@ mod tests {
         assert!(session.open_path(&path), "{:?}", session.notice);
 
         // Se avisa antes de escribir, y el archivo sigue igual.
-        let notice = session.notice.clone().unwrap();
+        let notice = session.migration_note().unwrap();
         assert!(notice.contains("Migrado al abrir"), "{notice}");
         assert!(notice.contains("eta_m: 0.9600 → "), "{notice}");
         assert!(notice.contains("method: end_suction_v0.2 → "), "{notice}");
@@ -933,7 +946,8 @@ mod tests {
 
         // Lo que se ve es lo que se guarda.
         session.save_to(&path).unwrap();
-        assert_eq!(session.notice, None);
+        assert!(session.notice.clone().unwrap().contains("eta_m: 0.9600"));
+        assert_eq!(session.migration_note(), None);
         let saved = crate::model::compute(&session.inputs, &session.basis).unwrap();
         assert!((shown.result.eta / saved.result.eta - 1.0).abs() < 1e-9);
         let _ = std::fs::remove_dir_all(&dir);
@@ -1101,13 +1115,14 @@ mod tests {
         let (dir, path) = very_old_file("migrar-falla", "0.3");
         let mut session = Session::default();
         assert!(session.open_path(&path), "{:?}", session.notice);
-        let notice = session.notice.clone().unwrap();
+        let notice = session.migration_note().unwrap();
         assert!(notice.contains("No se pudo migrar"), "{notice}");
         assert!(notice.contains("Reelegir"), "{notice}");
         assert!(!session.dirty);
 
         // La salida es la de siempre: reelegir migra y rehace la selección.
         session.reselect().unwrap();
+        assert_eq!(session.migration_note(), None);
         assert_eq!(
             session.project.as_ref().unwrap().design.method,
             hm_engine::METHOD
@@ -1156,6 +1171,58 @@ mod tests {
         assert!(!crate::model::selections_needed(&[], Some(&outcome)));
         outcome.reselect_hint = true;
         assert!(crate::model::selections_needed(&[], Some(&outcome)));
+    }
+
+    #[test]
+    fn the_migration_stays_said_until_it_is_saved() {
+        let dir = scratch("migrar-nota");
+        let path = copy_fixture(&dir, "end_suction_v0.2.hmf");
+        let mut session = Session::default();
+        assert!(session.open_path(&path), "{:?}", session.notice);
+        let note = session.migration_note().unwrap();
+
+        session.inputs.h = "46 m".to_string();
+        session.edited();
+        assert_eq!(session.migration_note(), Some(note.clone()));
+        let _ = session.export_json();
+        assert_eq!(session.migration_note(), Some(note));
+
+        session.save_to(&path).unwrap();
+        let saved = session.notice.clone().unwrap();
+        assert!(saved.contains("Migrado al guardar"), "{saved}");
+        assert!(saved.contains("eta_m"), "{saved}");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_lost_lock_is_said_when_migrating() {
+        let dir = scratch("migrar-bloqueo");
+        let path = copy_fixture(&dir, "end_suction_v0.2.hmf");
+        let mut project = Project::load(&path).unwrap();
+        project.params.insert(
+            "eta_m".to_string(),
+            Param::Locked {
+                value: "0.9".to_string(),
+            },
+        );
+        project.save(&path).unwrap();
+        let mut session = Session::default();
+        assert!(session.open_path(&path), "{:?}", session.notice);
+        let note = session.migration_note().unwrap();
+        assert!(note.contains("locked"), "{note}");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn opening_another_file_forgets_the_migration() {
+        let dir = scratch("migrar-otro");
+        let old = copy_fixture(&dir, "end_suction_v0.2.hmf");
+        let new = copy_fixture(&dir, "end_suction_v0.9.hmf");
+        let mut session = Session::default();
+        assert!(session.open_path(&old), "{:?}", session.notice);
+        assert!(session.open_path(&new), "{:?}", session.notice);
+        assert_eq!(session.migration_note(), None);
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]

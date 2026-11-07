@@ -760,11 +760,15 @@ pub fn open_file(path: &Path) -> Result<OpenedFile, String> {
 /// antes de escribir nada.
 pub fn open_loaded(project: Project) -> Result<OpenedFile, String> {
     let mut migration_failure = None;
+    let eta_m_was_locked = matches!(project.params.get("eta_m"), Some(Param::Locked { .. }));
     let (project, migrated) = if redefines_eta_m(&project.design.method) {
         // Si no se puede migrar, se abre igual: antes abría, y reelegir es la salida.
         match hm_engine::recalc(project.clone(), false) {
             Ok(recalculated) => {
-                let migrated = migration_lines(&recalculated.changes);
+                let mut migrated = migration_lines(&recalculated.changes);
+                if eta_m_was_locked {
+                    migrated.push("eta_m deja de estar en locked: cambió de significado".into());
+                }
                 (recalculated.project, migrated)
             }
             Err(error) => {

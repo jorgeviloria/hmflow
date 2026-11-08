@@ -596,16 +596,21 @@ fn draw_section(
         .width(1.2),
     );
     // Las curvas del corte, por encima.
+    // Una tapa con algún tramo en recta deja su Bézier hidráulica de
+    // referencia, fina y gris, y el contorno mecánico se dibuja encima.
     for curve in &model.curves {
-        plot_ui.line(
-            line(
-                &curve.name,
-                curve.points.clone(),
-                meridian_color(&curve.name),
-            )
-            .width(meridian_width(&curve.name)),
-        );
+        let reference = Wall::ALL.into_iter().any(|wall| {
+            wall.name() == curve.name
+                && crate::meridian_segments::reference_only(plot_ui.ctx(), wall)
+        });
+        let (colour, width) = if reference {
+            (Color32::from_gray(150), 1.0)
+        } else {
+            (meridian_color(&curve.name), meridian_width(&curve.name))
+        };
+        plot_ui.line(line(&curve.name, curve.points.clone(), colour).width(width));
     }
+    crate::meridian_segments::draw(plot_ui, model);
     // Las cotas del punto seleccionado.
     for dimension_line in dimensioning.lines {
         plot_ui.line(line("Cotas", dimension_line, DIMENSION_GREY).width(1.0));
@@ -722,6 +727,7 @@ fn draw_section(
         );
     }
     crate::meridian_cut::draw(plot_ui, model);
+    crate::meridian_segments::interact(plot_ui, model);
     drag_handles(plot_ui, model, boxes)
 }
 

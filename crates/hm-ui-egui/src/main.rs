@@ -10,6 +10,7 @@ mod inputs;
 mod inspector;
 mod meridian;
 mod meridian_cut;
+mod meridian_segments;
 mod model;
 mod plan;
 mod session;

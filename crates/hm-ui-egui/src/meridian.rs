@@ -799,10 +799,21 @@ fn draw_section(
     crate::meridian_cut::draw(plot_ui, model);
     // Un corte agarrado se lleva el arrastre: los puntos de control no se mueven.
     let (cut, dragging_cut) = crate::meridian_segments::interact(plot_ui, model, boxes);
+    // Las cotas que mandan, tras cada edición: un padre arrastrado lleva a
+    // sus hijos en directo.
+    let cut = crate::meridian_constraints::enforce(model, boxes) || cut;
     if dragging_cut {
         return cut;
     }
     drag_handles(plot_ui, model, boxes) || cut
+}
+
+/// Cumple las cotas que mandan con el modelo de `outcome`. Devuelve si cambió
+/// algo en `boxes`.
+pub(super) fn enforce_constraints(outcome: &Outcome, boxes: &mut Meridian) -> bool {
+    let edits = hm_engine::meridian_edits_of(boxes);
+    model_or_uncut(&outcome.result, &edits)
+        .is_ok_and(|(model, _)| crate::meridian_constraints::enforce(&model, boxes))
 }
 
 /// La cabecera: cotas, radios mínimos frente a RDs y lo editado.

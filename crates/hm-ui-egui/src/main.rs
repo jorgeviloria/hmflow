@@ -12,6 +12,7 @@ mod meridian;
 mod meridian_arc;
 mod meridian_cut;
 mod meridian_fillet;
+mod meridian_constraints;
 mod meridian_segments;
 mod model;
 mod plan;
@@ -147,6 +148,12 @@ impl App {
     fn recompute(&mut self) {
         match compute(&self.session.inputs, &self.session.basis) {
             Ok(outcome) => {
+                // Las cotas que mandan siguen al perfil nuevo aunque la pestaña
+                // Meridiano esté cerrada. Los nodos libres no entran en el
+                // cálculo, pero `outcome.inputs` tiene que coincidir.
+                if meridian::enforce_constraints(&outcome, &mut self.session.inputs.meridian) {
+                    return self.recompute();
+                }
                 self.outcome = Some(outcome);
                 self.errors.clear();
             }

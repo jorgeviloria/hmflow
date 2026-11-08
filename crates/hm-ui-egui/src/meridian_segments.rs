@@ -27,6 +27,7 @@ use hm_project::{Meridian, MeridianWallSegments};
 
 use crate::curves::line;
 use crate::meridian_arc::{self, Arc, Tangent};
+use crate::meridian_constraints::Constraints;
 use crate::meridian_fillet::{self, Fillet, Side};
 
 /// Distancia en píxeles para tocar una tapa o un punto con el ratón.
@@ -300,7 +301,7 @@ impl WallSegments {
         self.pieces.iter().any(|piece| piece.rigid())
     }
 
-    fn node_count(&self) -> usize {
+    pub(super) fn node_count(&self) -> usize {
         self.cuts.len() + 2
     }
 
@@ -315,7 +316,7 @@ impl WallSegments {
 
     /// Dónde está el nodo `index`: libre, o sobre la Bézier en su `t`. El
     /// nodo lejano de un arco tangente va a su círculo.
-    fn node_at(&self, points: &[[f64; 2]; 5], index: usize) -> [f64; 2] {
+    pub(super) fn node_at(&self, points: &[[f64; 2]; 5], index: usize) -> [f64; 2] {
         let at = self.free[index].unwrap_or_else(|| point_at(points, self.node_t(index)));
         self.tangent_circle(points, index).map_or(at, |circle| circle.project(at))
     }
@@ -479,10 +480,35 @@ impl WallSegments {
 
     /// Si el nodo puede quedar libre: todos sus tramos vecinos son rectas o
     /// arcos.
-    fn can_free(&self, index: usize) -> bool {
+    pub(super) fn can_free(&self, index: usize) -> bool {
         let left = index == 0 || self.pieces[index - 1].rigid();
         let right = index >= self.pieces.len() || self.pieces[index].rigid();
         left && right
+    }
+
+    /// Si el nodo es un punto libre de verdad: puede serlo y no lo lleva el
+    /// círculo de una tangencia. Es lo que pide el hijo de una cota.
+    pub(super) fn is_free_node(&self, index: usize) -> bool {
+        index < self.node_count() && self.can_free(index) && self.driver(index).is_none()
+    }
+
+    /// Escribe la coordenada `axis` (0 z, 1 r, en mm) del nodo libre `index`,
+    /// partiendo de donde está. Devuelve si cambió.
+    pub(super) fn set_free_axis(
+        &mut self,
+        points: &[[f64; 2]; 5],
+        index: usize,
+        axis: usize,
+        value: f64,
+    ) -> bool {
+        if !self.is_free_node(index) {
+            return false;
+        }
+        let mut at = self.node_at(points, index);
+        at[axis] = value;
+        let before = self.free[index];
+        self.free[index] = Some(at);
+        before != self.free[index]
     }
 
     /// Si el nodo es una esquina que se puede redondear: interior y con una
@@ -572,14 +598,14 @@ impl WallSegments {
     }
 
     /// Corta en `t` sobre la Bézier, si cae en un tramo curvo.
-    fn cut_at_t(&mut self, points: &[[f64; 2]; 5], t: f64) -> bool {
+    pub(super) fn cut_at_t(&mut self, points: &[[f64; 2]; 5], t: f64) -> bool {
         let piece = self.cuts.iter().take_while(|cut| **cut < t).count();
         self.pieces[piece] == Piece::Curve && self.cut(points, piece, t)
     }
 
     /// Pasa el tramo `piece` a recta si es curva, o a curva si no. Al volver
     /// a curva, sus nodos vuelven a la Bézier.
-    fn toggle(&mut self, piece: usize) {
+    pub(super) fn toggle(&mut self, piece: usize) {
         let kind = if self.pieces[piece] == Piece::Curve {
             Piece::Line
         } else {
@@ -960,7 +986,7 @@ impl WallSegments {
 }
 
 /// Un número con `decimals` decimales, sin ceros de sobra: 0.3 y no 0.300000.
-fn trimmed(value: f64, decimals: usize) -> String {
+pub(super) fn trimmed(value: f64, decimals: usize) -> String {
     let text = format!("{value:.decimals$}");
     let text = text.trim_end_matches('0').trim_end_matches('.');
     if text == "-0" { "0" } else { text }.to_string()
@@ -983,7 +1009,9 @@ fn node_position(text: &str) -> Option<[f64; 2]> {
 /// Los cortes de las dos tapas.
 #[derive(Clone, Debug, Default, PartialEq)]
 pub(super) struct Segments {
-    walls: [WallSegments; 2],
+    pub(super) walls: [WallSegments; 2],
+    /// Las cotas que mandan, de las dos tapas.
+    pub(super) constraints: Constraints,
 }
 
 impl Segments {
@@ -998,24 +1026,29 @@ impl Segments {
 
 /// Los cortes escritos en `[meridian]`. Una tapa que no se entiende se toma
 /// entera, sin cortes.
-fn read(boxes: &Meridian) -> Segments {
+pub(super) fn read(boxes: &Meridian) -> Segments {
     let wall = |texts| WallSegments::from_texts(texts).unwrap_or_default();
     Segments {
         walls: [wall(&boxes.segments.shroud), wall(&boxes.segments.hub)],
+        constraints: Constraints::from_texts(&boxes.segments.constraints),
     }
 }
 
-/// Escribe los cortes en `[meridian]`. Devuelve si cambió algo.
-fn write(boxes: &mut Meridian, segments: &Segments) -> bool {
+/// Escribe los cortes y las cotas en `[meridian]`. Devuelve si cambió algo.
+pub(super) fn write(boxes: &mut Meridian, segments: &Segments) -> bool {
     let shroud = segments.wall(Wall::Shroud).to_texts();
     let hub = segments.wall(Wall::Hub).to_texts();
-    let changed = boxes.segments.shroud != shroud || boxes.segments.hub != hub;
+    let constraints = segments.constraints.to_texts();
+    let changed = boxes.segments.shroud != shroud
+        || boxes.segments.hub != hub
+        || boxes.segments.constraints != constraints;
     boxes.segments.shroud = shroud;
     boxes.segments.hub = hub;
+    boxes.segments.constraints = constraints;
     changed
 }
 
-fn wall_index(wall: Wall) -> usize {
+pub(super) fn wall_index(wall: Wall) -> usize {
     match wall {
         Wall::Shroud => 0,
         Wall::Hub => 1,
@@ -1557,6 +1590,7 @@ pub(super) fn reference_only(boxes: &Meridian, wall: Wall) -> bool {
 /// libres.
 pub(super) fn draw(plot_ui: &mut egui_plot::PlotUi<'_>, model: &MeridionalModel, boxes: &Meridian) {
     let segments = read(boxes);
+    crate::meridian_constraints::draw(plot_ui, model, &segments);
     let selected: Option<(Wall, usize)> = plot_ui.ctx().data(|data| data.get_temp(selected_id()));
     for wall in Wall::ALL {
         let state = segments.wall(wall);
@@ -1879,7 +1913,8 @@ pub(super) fn interact(
 ) -> (bool, bool) {
     let ctx = plot_ui.ctx().clone();
     let response = plot_ui.response().clone();
-    let seeded = seed_from_env(&ctx, model, boxes);
+    let seeded = seed_from_env(&ctx, model, boxes)
+        | crate::meridian_constraints::seed_from_env(&ctx, boxes);
     let mut segments = read(boxes);
     let (moved, dragging) = drag_node(plot_ui, model, &mut segments);
     if dragging {

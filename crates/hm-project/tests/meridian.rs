@@ -519,3 +519,49 @@ fn corner_radii_round_trip_and_validate() {
         );
     }
 }
+
+fn hub_arcs(pieces: &[&str], arcs: &[&str]) -> Meridian {
+    Meridian {
+        segments: MeridianSegments {
+            hub: MeridianWallSegments {
+                cuts: texts(&["0.5"]),
+                pieces: texts(pieces),
+                arcs: texts(arcs),
+                ..MeridianWallSegments::default()
+            },
+            ..MeridianSegments::default()
+        },
+        ..Meridian::default()
+    }
+}
+
+#[test]
+fn arcs_round_trip_and_validate() {
+    let project = with(hub_arcs(&["arc", "arc"], &["40 mm", "-614 mm"]));
+    let text = project.to_toml().unwrap();
+    assert!(text.contains("arcs"), "{text}");
+    let back = Project::from_toml(&text).unwrap();
+    assert_eq!(back.meridian, project.meridian);
+    assert_eq!(problems(project.meridian.unwrap()), Vec::<String>::new());
+    assert_eq!(
+        problems(hub_arcs(&["curve", "line"], &[])),
+        Vec::<String>::new()
+    );
+    for (pieces, arcs) in [
+        (&["arc", "line"][..], &[][..]),
+        (&["arc", "line"][..], &["40 mm"][..]),
+        (&["arc", "line"][..], &["", ""][..]),
+        (&["line", "line"][..], &["40 mm", ""][..]),
+        (&["arc", "line"][..], &["0 mm", ""][..]),
+        (&["arc", "line"][..], &["40", ""][..]),
+        (&["arc", "line"][..], &["abc", ""][..]),
+    ] {
+        let found = problems(hub_arcs(pieces, arcs));
+        assert!(
+            found
+                .iter()
+                .any(|message| message.contains("segments.hub.arcs")),
+            "{pieces:?} {arcs:?}: {found:?}"
+        );
+    }
+}

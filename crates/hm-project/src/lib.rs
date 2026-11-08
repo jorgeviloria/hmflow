@@ -116,13 +116,18 @@ impl MeridianSegments {
 /// Los cortes de una tapa, como texto: cada uno es el parámetro `t` de la
 /// Bézier hidráulica, de 0 a 1 sin incluirlos y en orden creciente. `pieces`
 /// dice qué es cada tramo, del arranque al final: `curve` (la Bézier entre
-/// sus cortes) o `line` (la recta entre ellos). Tiene un elemento más que
+/// sus cortes), `line` (la recta entre ellos) o `arc` (el arco menor de
+/// radio dado entre sus dos nodos). Tiene un elemento más que
 /// `cuts`; vacío, todos son `curve`. `nodes` da la posición de cada nodo
 /// (el arranque, los cortes y el final, uno más que `pieces`) como
 /// «z, r» con unidad, por ejemplo `"60 mm, 0 mm"`; vacío, el nodo está
-/// sobre la Bézier. Solo un nodo entre dos rectas puede ir fuera de ella.
+/// sobre la Bézier. Solo un nodo entre rectas o arcos puede ir fuera de ella.
 /// `radii` da el radio de redondeo de cada nodo, uno por nodo como `nodes`,
 /// con unidad, por ejemplo `"5 mm"`; vacío, la esquina es viva.
+/// `arcs` da el radio de cada tramo `arc`, uno por tramo como `pieces`, con
+/// unidad y vacío en los demás. El signo dice hacia dónde se curva: positivo
+/// a la izquierda de la cuerda recorrida del arranque al final (en el plano
+/// z, r), negativo a la derecha.
 #[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct MeridianWallSegments {
@@ -134,6 +139,8 @@ pub struct MeridianWallSegments {
     pub nodes: Vec<String>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub radii: Vec<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub arcs: Vec<String>,
 }
 
 impl MeridianWallSegments {
@@ -143,6 +150,7 @@ impl MeridianWallSegments {
             && self.pieces.is_empty()
             && self.nodes.is_empty()
             && self.radii.is_empty()
+            && self.arcs.is_empty()
     }
 }
 
@@ -989,10 +997,10 @@ fn check_wall_segments(
         );
     }
     for piece in &wall.pieces {
-        if !matches!(piece.trim(), "curve" | "line") {
+        if !matches!(piece.trim(), "curve" | "line" | "arc") {
             problem(
                 format!("{table}.pieces"),
-                format!("cada tramo es curve o line: {piece}"),
+                format!("cada tramo es curve, line o arc: {piece}"),
             );
         }
     }
@@ -1043,6 +1051,44 @@ fn check_wall_segments(
                 format!("debe ser positivo: {radius}"),
             ),
             Err(text) => problem(format!("{table}.radii"), text),
+        }
+    }
+    check_arcs(problem, table, wall);
+}
+
+fn check_arcs(problem: &mut impl FnMut(String, String), table: &str, wall: &MeridianWallSegments) {
+    let pieces = wall.cuts.len() + 1;
+    if !wall.arcs.is_empty() && wall.arcs.len() != pieces {
+        problem(
+            format!("{table}.arcs"),
+            format!(
+                "debe tener un radio por tramo: {pieces} tramos y {} radios",
+                wall.arcs.len()
+            ),
+        );
+        return;
+    }
+    for i in 0..pieces {
+        let is_arc = wall.pieces.get(i).is_some_and(|piece| piece.trim() == "arc");
+        let radius = wall.arcs.get(i).map_or("", |radius| radius.trim());
+        match (is_arc, radius.is_empty()) {
+            (true, true) => problem(
+                format!("{table}.arcs"),
+                format!("el tramo {} es arc y le falta el radio", i + 1),
+            ),
+            (false, false) => problem(
+                format!("{table}.arcs"),
+                format!("el tramo {} no es arc y lleva radio: {radius}", i + 1),
+            ),
+            (true, false) => match length_value(radius) {
+                Ok(value) if value != 0.0 => {}
+                Ok(_) => problem(
+                    format!("{table}.arcs"),
+                    format!("no puede ser cero: {radius}"),
+                ),
+                Err(text) => problem(format!("{table}.arcs"), text),
+            },
+            (false, true) => {}
         }
     }
 }

@@ -203,6 +203,7 @@ impl WallSegments {
             pieces,
             nodes,
             radii,
+            arcs: Vec::new(),
         }
     }
 

@@ -330,7 +330,7 @@ impl WallSegments {
     }
 
     /// El nodo del otro extremo del arco `piece`, que queda sobre su círculo.
-    fn far_of(piece: usize, tangency: Tangency) -> usize {
+    pub(super) fn far_of(piece: usize, tangency: Tangency) -> usize {
         match tangency {
             Tangency::Start => piece + 1,
             Tangency::End => piece,
@@ -1246,9 +1246,16 @@ fn editor_id() -> egui::Id {
 }
 
 /// Un número en mm escrito con punto o con coma.
-fn mm_value(text: &str) -> Option<f64> {
+pub(super) fn mm_value(text: &str) -> Option<f64> {
     let text = text.trim().trim_end_matches("mm").trim().replace(',', ".");
     text.parse::<f64>().ok().filter(|value| value.is_finite())
+}
+
+/// El punto de la ventana abierta, si la hay.
+pub(super) fn open_node(ctx: &egui::Context) -> Option<(Wall, usize)> {
+    ctx.data(|data| data.get_temp::<Option<Editor>>(editor_id()))
+        .flatten()
+        .map(|editor| (editor.wall, editor.index))
 }
 
 /// Abre la ventana del punto `index` de `wall`.
@@ -1590,7 +1597,8 @@ pub(super) fn reference_only(boxes: &Meridian, wall: Wall) -> bool {
 /// libres.
 pub(super) fn draw(plot_ui: &mut egui_plot::PlotUi<'_>, model: &MeridionalModel, boxes: &Meridian) {
     let segments = read(boxes);
-    crate::meridian_constraints::draw(plot_ui, model, &segments);
+    let open = open_node(plot_ui.ctx());
+    crate::meridian_constraints::draw(plot_ui, model, &segments, open);
     let selected: Option<(Wall, usize)> = plot_ui.ctx().data(|data| data.get_temp(selected_id()));
     for wall in Wall::ALL {
         let state = segments.wall(wall);
@@ -1923,6 +1931,7 @@ pub(super) fn interact(
     }
     if let Some(pointer) = plot_ui.pointer_coordinate() {
         if response.secondary_clicked() {
+            crate::meridian_constraints::remember_menu(&ctx);
             let target = touched(plot_ui, model, &segments, pointer).map(|hit| Target {
                 hit,
                 node: near_node(plot_ui, model, &segments, pointer, |_, _| true)
@@ -1936,7 +1945,17 @@ pub(super) fn interact(
             }
             ctx.data_mut(|data| data.insert_temp(target_id(), target));
         }
-        if response.clicked()
+        if response.clicked() && crate::meridian_constraints::click(&ctx, model, &segments) {
+            // Se abrió la caja de una cota que manda.
+        } else if response.clicked()
+            && ctx.input(|input| input.modifiers.shift)
+            && let Some(open) = open_node(&ctx)
+            && let Some(parent) = near_node(plot_ui, model, &segments, pointer, |_, _| true)
+            && parent != open
+        {
+            // Mayús+clic: el padre de una cota del punto abierto.
+            crate::meridian_constraints::pick_parent(&ctx, &segments, open, parent);
+        } else if response.clicked()
             && let Some((wall, piece)) = arc_label_under(plot_ui, model, &segments)
         {
             open_arc_typing(plot_ui, model, &segments, wall, piece);
@@ -1962,12 +1981,21 @@ pub(super) fn interact(
     // El arco cuyo radio se va a escribir, al salir del menú.
     let mut arc_typing: Option<(Wall, usize)> = None;
     response.context_menu(|ui| {
+        if let Some(index) = crate::meridian_constraints::menu_constraint(ui.ctx()) {
+            if ui.button("Borrar cota").clicked() {
+                segments.constraints.remove(index);
+                changed = true;
+                ui.close();
+            }
+            ui.separator();
+        }
         let Some(Target { hit, node }) = target else {
             ui.label("Haz clic derecho sobre una tapa para cortarla.");
             return;
         };
         let points = model.params.wall(hit.wall).points;
-        let state = segments.wall_mut(hit.wall);
+        let Segments { walls, constraints } = &mut segments;
+        let state = &mut walls[wall_index(hit.wall)];
         ui.label(
             egui::RichText::new(format!(
                 "{} · z = {:.2} mm, Ø = {:.2} mm",
@@ -1982,7 +2010,10 @@ pub(super) fn interact(
         match state.cut_refusal(hit.piece, hit.s) {
             None => {
                 if ui.button("Cortar aquí").clicked() {
-                    changed |= state.cut(&points, hit.piece, hit.s);
+                    if state.cut(&points, hit.piece, hit.s) {
+                        constraints.node_inserted(hit.wall, hit.piece + 1);
+                        changed = true;
+                    }
                     ui.close();
                 }
             }
@@ -2015,15 +2046,20 @@ pub(super) fn interact(
                         continue;
                     }
                     let mut on = state.tangent[piece] == Some(tangency);
-                    let possible = on || state.clone().set_tangent(&points, piece, Some(tangency));
+                    let far = WallSegments::far_of(piece, tangency);
+                    let led = constraints.has_child(hit.wall, far);
+                    let possible = on
+                        || (!led && state.clone().set_tangent(&points, piece, Some(tangency)));
                     let response = ui.add_enabled(possible, egui::Checkbox::new(&mut on, label));
                     if response.changed() {
                         changed |= state.set_tangent(&points, piece, on.then_some(tangency));
                         ui.close();
                     }
-                    response.on_disabled_hover_text(
-                        "el punto del otro extremo tiene una curva al lado, o ya lo lleva otro arco",
-                    );
+                    response.on_disabled_hover_text(if led {
+                        "el punto del otro extremo tiene cotas; bórralas antes"
+                    } else {
+                        "el punto del otro extremo tiene una curva al lado, o ya lo lleva otro arco"
+                    });
                 }
             } else if ui.button("Convertir en arco…").clicked() {
                 let radius = state.proposed_arc(&points, piece);
@@ -2037,9 +2073,15 @@ pub(super) fn interact(
             }
         }
         if let Some(index) = node {
-            if state.free[index].is_some() && ui.button("Devolver el punto a la curva").clicked() {
-                changed |= state.unfree(index);
-                ui.close();
+            if state.free[index].is_some() {
+                let led = constraints.has_child(hit.wall, index);
+                let button = ui
+                    .add_enabled(!led, egui::Button::new("Devolver el punto a la curva"))
+                    .on_disabled_hover_text("tiene cotas; bórralas antes");
+                if button.clicked() {
+                    changed |= state.unfree(index);
+                    ui.close();
+                }
             }
             if state.can_round(index) && ui.button("Redondear con radio…").clicked() {
                 let at = state.node_at(&points, index);
@@ -2052,13 +2094,27 @@ pub(super) fn interact(
                 changed |= state.set_radius(index, None);
                 ui.close();
             }
-            if (1..=state.cuts.len()).contains(&index) && ui.button("Quitar este corte").clicked() {
-                changed |= state.remove_node(index);
+            let touching = constraints.touching(hit.wall, index);
+            let label = match touching {
+                0 => "Quitar este corte".to_string(),
+                1 => "Quitar este corte (borra su cota)".to_string(),
+                n => format!("Quitar este corte (borra sus {n} cotas)"),
+            };
+            if (1..=state.cuts.len()).contains(&index) && ui.button(label).clicked() {
+                if state.remove_node(index) {
+                    constraints.node_removed(hit.wall, index);
+                    changed = true;
+                }
                 ui.close();
             }
         }
-        if !state.is_plain() && ui.button("Quitar todos los cortes de esta tapa").clicked() {
+        let label = match constraints.touching_wall(hit.wall) {
+            0 => "Quitar todos los cortes de esta tapa".to_string(),
+            n => format!("Quitar todos los cortes de esta tapa (borra {n} cotas)"),
+        };
+        if !state.is_plain() && ui.button(label).clicked() {
             *state = WallSegments::default();
+            constraints.remove_wall(hit.wall);
             changed = true;
             ui.close();
         }
@@ -2077,6 +2133,7 @@ pub(super) fn interact(
     }
     changed |= node_editor(plot_ui, model, &mut segments);
     changed |= dimension_typing(&ctx, model, &mut segments);
+    changed |= crate::meridian_constraints::writing(&ctx, &mut segments);
     if changed {
         return (write(boxes, &segments) || seeded, false);
     }

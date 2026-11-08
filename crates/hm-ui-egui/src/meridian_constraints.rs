@@ -11,7 +11,9 @@ use hm_design::meridian::{MeridionalModel, Wall};
 use hm_project::{Constraint, ConstraintKind, Meridian, NodeRef, WallId};
 
 use crate::curves::line;
-use crate::meridian_segments::{Segments, WallSegments, read, trimmed, wall_index, write};
+use crate::meridian_segments::{
+    Segments, WallSegments, mm_value, read, trimmed, wall_index, write,
+};
 
 /// Las cotas escritas en `[meridian.segments]`, en su orden.
 #[derive(Clone, Debug, Default, PartialEq)]
@@ -58,6 +60,136 @@ impl Constraints {
             .collect()
     }
 
+    /// Todas las cotas que se entienden, también las de ángulo.
+    fn read_mut(&mut self) -> impl Iterator<Item = (&mut Constraint, &mut Option<String>)> {
+        self.items.iter_mut().filter_map(|item| match item {
+            Item::Read(constraint, text) => Some((constraint, text)),
+            Item::Kept(_) => None,
+        })
+    }
+
+    fn all(&self) -> impl Iterator<Item = &Constraint> {
+        self.items.iter().filter_map(|item| match item {
+            Item::Read(constraint, _) => Some(constraint),
+            Item::Kept(_) => None,
+        })
+    }
+
+    /// Por qué no se puede añadir `new`, o `None`.
+    pub(super) fn refusal(&self, walls: &[WallSegments; 2], new: &Constraint) -> Option<&'static str> {
+        if new.parent == new.child {
+            return Some("padre e hijo son el mismo punto");
+        }
+        if !walls[wall_index(wall_of(new.child.wall))].is_free_node(new.child.index) {
+            return Some("el hijo tiene que ser un punto libre");
+        }
+        if self
+            .all()
+            .any(|c| c.child == new.child && c.kind == new.kind)
+        {
+            return Some("esa cota ya la fija otra");
+        }
+        // Un ciclo: el hijo nuevo ya está entre los antepasados del padre.
+        let mut ancestors = vec![new.parent];
+        while let Some(node) = ancestors.pop() {
+            if node == new.child {
+                return Some("haría un ciclo");
+            }
+            ancestors.extend(self.all().filter(|c| c.child == node).map(|c| c.parent));
+        }
+        None
+    }
+
+    pub(super) fn add(&mut self, new: Constraint) {
+        self.items.push(Item::Read(new, None));
+    }
+
+    /// Cambia el valor (en metros) de la cota `index`.
+    pub(super) fn set_value(&mut self, index: usize, value: f64) {
+        if let Some(Item::Read(constraint, text)) = self.items.get_mut(index) {
+            constraint.value = value;
+            *text = None;
+        }
+    }
+
+    pub(super) fn remove(&mut self, index: usize) {
+        if index < self.items.len() {
+            self.items.remove(index);
+        }
+    }
+
+    /// Se insertó un nodo en `index` de `wall`: los de detrás suben uno.
+    pub(super) fn node_inserted(&mut self, wall: Wall, index: usize) {
+        let id = id_of(wall);
+        for (constraint, text) in self.read_mut() {
+            for node in [&mut constraint.parent, &mut constraint.child] {
+                if node.wall == id && node.index >= index {
+                    node.index += 1;
+                    *text = None;
+                }
+            }
+        }
+    }
+
+    /// Se quitó el nodo `index` de `wall`: se borran sus cotas y los de detrás
+    /// bajan uno. Devuelve cuántas cotas se borraron.
+    pub(super) fn node_removed(&mut self, wall: Wall, index: usize) -> usize {
+        let gone = NodeRef {
+            wall: id_of(wall),
+            index,
+        };
+        let before = self.items.len();
+        self.items.retain(|item| {
+            !matches!(item, Item::Read(c, _) if c.parent == gone || c.child == gone)
+        });
+        let removed = before - self.items.len();
+        for (constraint, text) in self.read_mut() {
+            for node in [&mut constraint.parent, &mut constraint.child] {
+                if node.wall == gone.wall && node.index > index {
+                    node.index -= 1;
+                    *text = None;
+                }
+            }
+        }
+        removed
+    }
+
+    /// Cuántas cotas tocan algún nodo de `wall`.
+    pub(super) fn touching_wall(&self, wall: Wall) -> usize {
+        let id = id_of(wall);
+        self.all()
+            .filter(|c| c.parent.wall == id || c.child.wall == id)
+            .count()
+    }
+
+    /// Quita las cotas que tocan algún nodo de `wall`.
+    pub(super) fn remove_wall(&mut self, wall: Wall) {
+        let id = id_of(wall);
+        self.items.retain(|item| {
+            !matches!(item, Item::Read(c, _) if c.parent.wall == id || c.child.wall == id)
+        });
+    }
+
+    /// Cuántas cotas tocan el nodo `index` de `wall`.
+    pub(super) fn touching(&self, wall: Wall, index: usize) -> usize {
+        let node = NodeRef {
+            wall: id_of(wall),
+            index,
+        };
+        self.all()
+            .filter(|c| c.parent == node || c.child == node)
+            .count()
+    }
+
+    /// Si el nodo `index` de `wall` es hijo de alguna cota.
+    pub(super) fn has_child(&self, wall: Wall, index: usize) -> bool {
+        let node = NodeRef {
+            wall: id_of(wall),
+            index,
+        };
+        self.all().any(|c| c.child == node)
+    }
+
     /// Las cotas Δz y ΔØ, con su índice en la lista.
     pub(super) fn iter(&self) -> impl Iterator<Item = (usize, &Constraint)> {
         self.items
@@ -76,6 +208,13 @@ pub(super) fn wall_of(id: WallId) -> Wall {
     match id {
         WallId::Shroud => Wall::Shroud,
         WallId::Hub => Wall::Hub,
+    }
+}
+
+pub(super) fn id_of(wall: Wall) -> WallId {
+    match wall {
+        Wall::Shroud => WallId::Shroud,
+        Wall::Hub => WallId::Hub,
     }
 }
 
@@ -108,53 +247,362 @@ fn enforce_with(points: [&[[f64; 2]; 5]; 2], boxes: &mut Meridian) -> bool {
 const COMMANDING: Color32 = Color32::from_gray(40);
 const BROKEN: Color32 = Color32::from_rgb(200, 30, 30);
 
-/// Dibuja las cotas que mandan: una línea fina entre la coordenada del padre
-/// y la del hijo y su valor; en rojo y con el motivo las que no se cumplen.
-/// Devuelve, por cada valor, su rectángulo en pantalla y su índice.
+/// Qué es un valor dibujado: una cota que manda, o una provisional del par
+/// que se está acotando.
+#[derive(Clone, Copy, Debug, PartialEq)]
+enum Value {
+    Existing(usize),
+    New(ConstraintKind),
+}
+
+fn values_id() -> egui::Id {
+    egui::Id::unique("meridian_constraints_values")
+}
+
+fn pending_id() -> egui::Id {
+    egui::Id::unique("meridian_constraints_pending")
+}
+
+fn notice_id() -> egui::Id {
+    egui::Id::unique("meridian_constraints_notice")
+}
+
+fn writing_id() -> egui::Id {
+    egui::Id::unique("meridian_constraints_writing")
+}
+
+fn menu_id() -> egui::Id {
+    egui::Id::unique("meridian_constraints_menu")
+}
+
+fn node_of(wall: Wall, index: usize) -> NodeRef {
+    NodeRef {
+        wall: id_of(wall),
+        index,
+    }
+}
+
+/// Dónde está un nodo, si existe.
+fn position(walls: &[WallSegments; 2], points: [&[[f64; 2]; 5]; 2], node: NodeRef) -> Option<[f64; 2]> {
+    let wall = wall_index(wall_of(node.wall));
+    (node.index < walls[wall].node_count()).then(|| walls[wall].node_at(points[wall], node.index))
+}
+
+/// Los dos extremos de la línea de una cota del hijo `to` desde `from`:
+/// horizontal a la r del hijo para Δz, vertical a la z del hijo para ΔØ.
+fn ends(kind: ConstraintKind, from: [f64; 2], to: [f64; 2]) -> [[f64; 2]; 2] {
+    match kind {
+        ConstraintKind::Dd => [[to[0], from[1]], to],
+        _ => [[from[0], to[1]], to],
+    }
+}
+
+/// Dibuja una cota y devuelve el rectángulo en pantalla de su valor.
+fn dimension(
+    plot_ui: &mut egui_plot::PlotUi<'_>,
+    ends: [[f64; 2]; 2],
+    text: String,
+    colour: Color32,
+) -> egui::Rect {
+    plot_ui.line(line("Cota que manda", ends.to_vec(), colour).width(1.0));
+    let middle = PlotPoint::new((ends[0][0] + ends[1][0]) / 2.0, (ends[0][1] + ends[1][1]) / 2.0);
+    let width = 7.0 * text.chars().count() as f32;
+    plot_ui.text(
+        egui_plot::Text::new(
+            "Cota que manda",
+            middle,
+            egui::RichText::new(text).small().color(colour),
+        )
+        .anchor(egui::Align2::CENTER_BOTTOM),
+    );
+    let screen = plot_ui.screen_from_plot(middle);
+    egui::Rect::from_center_size(screen - egui::vec2(0.0, 7.0), egui::vec2(width, 14.0))
+}
+
+fn mm_text(value: f64) -> String {
+    trimmed(value, 2).replace('-', "−")
+}
+
+/// Dibuja las cotas que mandan (en rojo y con el motivo las que no se
+/// cumplen) y, si el punto abierto (`open`) es el hijo de un par que se está
+/// acotando, sus dos cotas provisionales en gris. Guarda dónde queda cada
+/// valor, para el clic.
 pub(super) fn draw(
     plot_ui: &mut egui_plot::PlotUi<'_>,
     model: &MeridionalModel,
     segments: &Segments,
-) -> Vec<(egui::Rect, usize)> {
+    open: Option<(Wall, usize)>,
+) {
+    let ctx = plot_ui.ctx().clone();
     let points = wall_points(model);
     let mut walls = segments.walls.clone();
     let problems = apply(&segments.constraints, points, &mut walls);
-    let mut rects = Vec::new();
+    let mut values = Vec::new();
     for (index, constraint) in segments.constraints.iter() {
-        let place = |node: NodeRef| (wall_index(wall_of(node.wall)), node.index);
-        let ((pw, p), (cw, c)) = (place(constraint.parent), place(constraint.child));
-        if p >= walls[pw].node_count() || c >= walls[cw].node_count() {
+        let (Some(from), Some(to)) = (
+            position(&walls, points, constraint.parent),
+            position(&walls, points, constraint.child),
+        ) else {
             continue;
-        }
-        let (from, to) = (walls[pw].node_at(points[pw], p), walls[cw].node_at(points[cw], c));
-        let value = trimmed(constraint.value * 1000.0, 2).replace('-', "−");
-        let (ends, label) = match constraint.kind {
-            ConstraintKind::Dz => ([[from[0], to[1]], to], format!("Δz {value}")),
-            ConstraintKind::Dd => ([[to[0], from[1]], to], format!("ΔØ {value}")),
-            ConstraintKind::Ang => continue,
         };
-        let problem = problems.iter().find(|problem| problem.index == index);
-        let (colour, text) = match problem {
+        let symbol = if constraint.kind == ConstraintKind::Dz { "Δz" } else { "ΔØ" };
+        let label = format!("{symbol} {}", mm_text(constraint.value * 1000.0));
+        let (colour, text) = match problems.iter().find(|problem| problem.index == index) {
             Some(problem) => (BROKEN, format!("{label} · {}", problem.reason)),
             None => (COMMANDING, label),
         };
-        plot_ui.line(line("Cota que manda", ends.to_vec(), colour).width(1.0));
-        let middle = [(ends[0][0] + ends[1][0]) / 2.0, (ends[0][1] + ends[1][1]) / 2.0];
-        plot_ui.text(
-            egui_plot::Text::new(
-                "Cota que manda",
-                PlotPoint::new(middle[0], middle[1]),
-                egui::RichText::new(text).small().color(colour),
-            )
-            .anchor(egui::Align2::CENTER_BOTTOM),
-        );
-        let screen = plot_ui.screen_from_plot(PlotPoint::new(middle[0], middle[1]));
-        rects.push((
-            egui::Rect::from_center_size(screen - egui::vec2(0.0, 7.0), egui::vec2(60.0, 14.0)),
-            index,
-        ));
+        let rect = dimension(plot_ui, ends(constraint.kind, from, to), text, colour);
+        values.push((rect, Value::Existing(index)));
     }
-    rects
+    let open = open.map(|(wall, index)| node_of(wall, index));
+    let pending: Option<Pending> = ctx.data(|data| data.get_temp(pending_id())).flatten();
+    match pending {
+        Some(pending) if Some(pending.child) == open => {
+            if let (Some(from), Some(to)) = (
+                position(&walls, points, pending.parent),
+                position(&walls, points, pending.child),
+            ) {
+                let (dz, dd) = measured(&walls, points, &pending);
+                for (kind, symbol, value) in
+                    [(ConstraintKind::Dz, "Δz", dz), (ConstraintKind::Dd, "ΔØ", dd)]
+                {
+                    let text = format!("{symbol} {}?", mm_text(value));
+                    let rect = dimension(plot_ui, ends(kind, from, to), text, Color32::GRAY);
+                    values.push((rect, Value::New(kind)));
+                }
+            }
+        }
+        Some(_) => {
+            ctx.data_mut(|data| data.insert_temp::<Option<Pending>>(pending_id(), None));
+        }
+        None => {}
+    }
+    let notice: Option<(NodeRef, String)> = ctx.data(|data| data.get_temp(notice_id())).flatten();
+    if let Some((node, text)) = notice {
+        match position(&walls, points, node) {
+            Some(at) if Some(node) == open => {
+                plot_ui.text(
+                    egui_plot::Text::new(
+                        "Cota que manda",
+                        PlotPoint::new(at[0], at[1]),
+                        egui::RichText::new(format!("  {text}")).small().color(BROKEN),
+                    )
+                    .anchor(egui::Align2::LEFT_TOP),
+                );
+            }
+            _ => ctx.data_mut(|data| {
+                data.insert_temp::<Option<(NodeRef, String)>>(notice_id(), None);
+            }),
+        }
+    }
+    ctx.data_mut(|data| data.insert_temp(values_id(), values));
+}
+
+/// Mayús+clic en `parent` con la ventana de `child` abierta: empieza a acotar
+/// el par, o dice por qué no se puede.
+pub(super) fn pick_parent(
+    ctx: &egui::Context,
+    segments: &Segments,
+    child: (Wall, usize),
+    parent: (Wall, usize),
+) {
+    let (child, parent) = (node_of(child.0, child.1), node_of(parent.0, parent.1));
+    let free = segments.walls[wall_index(wall_of(child.wall))].is_free_node(child.index);
+    ctx.data_mut(|data| {
+        if free {
+            data.insert_temp(pending_id(), Some(Pending { child, parent }));
+            data.insert_temp::<Option<(NodeRef, String)>>(notice_id(), None);
+        } else {
+            data.insert_temp::<Option<Pending>>(pending_id(), None);
+            data.insert_temp(
+                notice_id(),
+                Some((child, "el hijo tiene que ser un punto libre".to_string())),
+            );
+        }
+    });
+}
+
+/// El valor bajo el puntero, si lo hay.
+fn value_under(ctx: &egui::Context) -> Option<Value> {
+    let pointer = ctx.input(|input| input.pointer.interact_pos())?;
+    let values: Vec<(egui::Rect, Value)> = ctx.data(|data| data.get_temp(values_id()))?;
+    values
+        .into_iter()
+        .find(|(rect, _)| rect.contains(pointer))
+        .map(|(_, value)| value)
+}
+
+/// Una cota que se está escribiendo.
+#[derive(Clone, Debug)]
+struct Writing {
+    value: Value,
+    pending: Option<Pending>,
+    text: String,
+    screen: egui::Pos2,
+    fresh: bool,
+    refusal: Option<&'static str>,
+}
+
+/// Clic en el valor de una cota (que manda o provisional): se abre para
+/// escribirlo. Devuelve si el clic cayó en uno.
+pub(super) fn click(ctx: &egui::Context, model: &MeridionalModel, segments: &Segments) -> bool {
+    let Some(value) = value_under(ctx) else {
+        return false;
+    };
+    let points = wall_points(model);
+    let pending: Option<Pending> = ctx.data(|data| data.get_temp(pending_id())).flatten();
+    let text = match value {
+        Value::Existing(index) => segments
+            .constraints
+            .iter()
+            .find(|(i, _)| *i == index)
+            .map(|(_, c)| trimmed(c.value * 1000.0, 2)),
+        Value::New(kind) => pending.map(|pending| {
+            let (dz, dd) = measured(&segments.walls, points, &pending);
+            trimmed(if kind == ConstraintKind::Dz { dz } else { dd }, 2)
+        }),
+    };
+    let (Some(text), Some(screen)) = (text, ctx.input(|input| input.pointer.interact_pos())) else {
+        return false;
+    };
+    let writing = Writing {
+        value,
+        pending,
+        text,
+        screen,
+        fresh: true,
+        refusal: None,
+    };
+    ctx.data_mut(|data| data.insert_temp(writing_id(), Some(writing)));
+    true
+}
+
+/// Clic derecho: recuerda la cota que manda bajo el puntero, para el menú.
+pub(super) fn remember_menu(ctx: &egui::Context) {
+    let index = match value_under(ctx) {
+        Some(Value::Existing(index)) => Some(index),
+        _ => None,
+    };
+    ctx.data_mut(|data| data.insert_temp(menu_id(), index));
+}
+
+/// La cota que manda sobre la que se abrió el menú.
+pub(super) fn menu_constraint(ctx: &egui::Context) -> Option<usize> {
+    ctx.data(|data| data.get_temp(menu_id())).flatten()
+}
+
+/// La caja de la cota que se escribe. Intro la crea o la cambia; Esc o un
+/// clic fuera la cierran. Devuelve si cambió algo.
+pub(super) fn writing(ctx: &egui::Context, segments: &mut Segments) -> bool {
+    let Some(mut writing) = ctx
+        .data(|data| data.get_temp::<Option<Writing>>(writing_id()))
+        .flatten()
+    else {
+        return false;
+    };
+    let field_id = writing_id().with("field");
+    let (mut done, mut apply) = (false, false);
+    egui::Area::new(writing_id().with("area"))
+        .order(egui::Order::Foreground)
+        .fixed_pos(writing.screen - egui::vec2(50.0, 14.0))
+        .show(ctx, |ui| {
+            egui::Frame::popup(ui.style()).show(ui, |ui| {
+                ui.horizontal(|ui| {
+                    let kind = match writing.value {
+                        Value::New(kind) => Some(kind),
+                        Value::Existing(index) => segments
+                            .constraints
+                            .iter()
+                            .find(|(i, _)| *i == index)
+                            .map(|(_, c)| c.kind),
+                    };
+                    ui.label(if kind == Some(ConstraintKind::Dz) { "Δz" } else { "ΔØ" });
+                    let field = ui.add(
+                        egui::TextEdit::singleline(&mut writing.text)
+                            .id(field_id)
+                            .desired_width(72.0),
+                    );
+                    ui.label("mm");
+                    if writing.fresh {
+                        field.request_focus();
+                    } else if field.lost_focus() {
+                        apply = ui.input(|input| input.key_pressed(egui::Key::Enter));
+                        done = true;
+                    }
+                });
+                if let Some(refusal) = writing.refusal {
+                    ui.label(egui::RichText::new(refusal).small().color(BROKEN));
+                }
+            });
+        });
+    if ctx.input(|input| input.key_pressed(egui::Key::Escape)) {
+        done = true;
+        apply = false;
+    }
+    writing.fresh = false;
+    let mut changed = false;
+    if apply && let Some(value) = mm_value(&writing.text) {
+        match (writing.value, writing.pending) {
+            (Value::Existing(index), _) => {
+                segments.constraints.set_value(index, value / 1000.0);
+                changed = true;
+            }
+            (Value::New(kind), Some(pending)) => {
+                let new = Constraint {
+                    kind,
+                    parent: pending.parent,
+                    child: pending.child,
+                    value: value / 1000.0,
+                };
+                match segments.constraints.refusal(&segments.walls, &new) {
+                    None => {
+                        segments.constraints.add(new);
+                        ctx.data_mut(|data| data.insert_temp::<Option<Pending>>(pending_id(), None));
+                        changed = true;
+                    }
+                    Some(refusal) => {
+                        // Sigue abierta, con el motivo.
+                        writing.refusal = Some(refusal);
+                        writing.fresh = true;
+                        done = false;
+                    }
+                }
+            }
+            (Value::New(_), None) => {}
+        }
+    }
+    ctx.data_mut(|data| data.insert_temp(writing_id(), (!done).then_some(writing)));
+    changed
+}
+
+/// Un par que se está acotando: el hijo (el punto de la ventana abierta) y el
+/// padre (Mayús+clic).
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub(super) struct Pending {
+    pub child: NodeRef,
+    pub parent: NodeRef,
+}
+
+/// La medida de hoy entre el padre y el hijo, en mm: (Δz, ΔØ).
+fn measured(walls: &[WallSegments; 2], points: [&[[f64; 2]; 5]; 2], pending: &Pending) -> (f64, f64) {
+    match (position(walls, points, pending.parent), position(walls, points, pending.child)) {
+        (Some(p), Some(c)) => (c[0] - p[0], 2.0 * (c[1] - p[1])),
+        _ => (0.0, 0.0),
+    }
+}
+
+/// «hub:2» o «shroud:0».
+fn node_ref(text: &str) -> Option<NodeRef> {
+    let (wall, index) = text.split_once(':')?;
+    let wall = match wall {
+        "hub" => WallId::Hub,
+        "shroud" => WallId::Shroud,
+        _ => return None,
+    };
+    Some(NodeRef {
+        wall,
+        index: index.parse().ok()?,
+    })
 }
 
 /// Solo para las capturas: `HMF_CONSTRAINTS="dz hub:1 hub:2 = 40 mm;dd …"`
@@ -168,12 +616,19 @@ pub(super) fn seed_from_env(ctx: &egui::Context, boxes: &mut Meridian) -> bool {
     let Ok(text) = std::env::var("HMF_CONSTRAINTS") else {
         return false;
     };
-    boxes.segments.constraints = text
-        .split(';')
-        .map(str::trim)
-        .filter(|part| !part.is_empty())
-        .map(str::to_string)
-        .collect();
+    let mut constraints = Vec::new();
+    for part in text.split(';').map(str::trim).filter(|part| !part.is_empty()) {
+        // `pending <padre> <hijo>` deja el par a medio acotar.
+        if let Some(rest) = part.strip_prefix("pending") {
+            let nodes: Vec<NodeRef> = rest.split_whitespace().filter_map(node_ref).collect();
+            if let [parent, child] = nodes[..] {
+                ctx.data_mut(|data| data.insert_temp(pending_id(), Some(Pending { child, parent })));
+            }
+        } else {
+            constraints.push(part.to_string());
+        }
+    }
+    boxes.segments.constraints = constraints;
     true
 }
 
@@ -370,6 +825,76 @@ mod tests {
         assert_eq!(problems.len(), 1);
         assert_eq!(problems[0].reason, "Ø −100 mm no cabe");
         assert_eq!(at(&walls, Wall::Hub, 2), before);
+    }
+
+    fn texts(constraints: &Constraints) -> Vec<String> {
+        constraints.to_texts()
+    }
+
+    fn parsed(text: &str) -> Constraint {
+        Constraint::parse(text).unwrap()
+    }
+
+    #[test]
+    fn cutting_renumbers_the_constraints() {
+        let mut constraints = with(&["dz hub:1 hub:2 = 4 mm", "dd shroud:1 shroud:2 = 3 mm"]);
+        constraints.node_inserted(Wall::Hub, 1);
+        assert_eq!(
+            texts(&constraints),
+            ["dz hub:2 hub:3 = 4 mm", "dd shroud:1 shroud:2 = 3 mm"]
+        );
+        constraints.node_inserted(Wall::Hub, 3);
+        assert_eq!(texts(&constraints)[0], "dz hub:2 hub:4 = 4 mm");
+    }
+
+    #[test]
+    fn removing_a_node_drops_its_constraints() {
+        let mut constraints = with(&["dz hub:1 hub:2 = 4 mm", "dd hub:3 hub:4 = 3 mm"]);
+        assert_eq!(constraints.node_removed(Wall::Hub, 2), 1);
+        assert_eq!(texts(&constraints), ["dd hub:2 hub:3 = 3 mm"]);
+    }
+
+    #[test]
+    fn refusals() {
+        let walls = walls(curve_then_lines());
+        let constraints = with(&["dz hub:2 hub:3 = 4 mm"]);
+        let refusal = |text: &str| constraints.refusal(&walls, &parsed(text));
+        assert_eq!(refusal("dz hub:2 hub:1 = 1 mm"), Some("el hijo tiene que ser un punto libre"));
+        assert_eq!(refusal("dz hub:1 hub:3 = 1 mm"), Some("esa cota ya la fija otra"));
+        assert_eq!(refusal("dd hub:2 hub:2 = 1 mm"), Some("padre e hijo son el mismo punto"));
+        assert_eq!(refusal("dd hub:3 hub:2 = 1 mm"), Some("haría un ciclo"));
+        assert!(constraints.has_child(Wall::Hub, 3));
+        assert!(!constraints.has_child(Wall::Hub, 2));
+    }
+
+    #[test]
+    fn dz_and_dd_on_the_same_child_are_fine() {
+        let walls = walls(curve_then_lines());
+        let mut constraints = with(&["dz hub:1 hub:3 = 4 mm"]);
+        let new = parsed("dd hub:1 hub:3 = -2 mm");
+        assert_eq!(constraints.refusal(&walls, &new), None);
+        constraints.add(new);
+        constraints.set_value(0, 0.006);
+        assert_eq!(texts(&constraints), ["dz hub:1 hub:3 = 6 mm", "dd hub:1 hub:3 = -2 mm"]);
+        constraints.remove(0);
+        assert_eq!(texts(&constraints), ["dd hub:1 hub:3 = -2 mm"]);
+    }
+
+    #[test]
+    fn measured_values_of_a_pending_pair() {
+        let mut walls = walls(three_lines());
+        let hub = &mut walls[wall_index(Wall::Hub)];
+        assert!(hub.set_free_axis(&POINTS, 2, 0, 60.0) && hub.set_free_axis(&POINTS, 2, 1, 40.0));
+        assert!(hub.set_free_axis(&POINTS, 1, 0, 20.0) && hub.set_free_axis(&POINTS, 1, 1, 50.0));
+        let node = |index| NodeRef {
+            wall: WallId::Hub,
+            index,
+        };
+        let pending = Pending {
+            child: node(2),
+            parent: node(1),
+        };
+        assert_eq!(measured(&walls, [&POINTS; 2], &pending), (40.0, -20.0));
     }
 
     #[test]

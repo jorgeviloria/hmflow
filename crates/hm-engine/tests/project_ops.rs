@@ -328,3 +328,32 @@ fn meridian_with_a_hub_cut_draws_the_cut_curve() {
             .any(|curve| curve.name == hm_design::meridian::CUT_NAME)
     );
 }
+
+#[test]
+fn hub_cut_survives_save_reopen_and_csv() {
+    let case = duty_case("175 m3/h", "70 m", "2900 rpm");
+    let mut project = new_project("recorte", &case, &analyzed(&case)).unwrap();
+    project.meridian = Some(hm_project::Meridian {
+        edge_hub: "0.9".into(),
+        hub_cut: hm_project::MeridianHubCut {
+            z: "37.5 mm".into(),
+            mode: "through".into(),
+            shaft_diameter: "41.275 mm".into(),
+            counterbore_diameter: "58 mm".into(),
+            counterbore_depth: "7 mm".into(),
+            chamfer: "1 mm".into(),
+        },
+        ..hm_project::Meridian::default()
+    });
+    let before = hm_engine::meridian(&project).unwrap();
+
+    let path = std::env::temp_dir().join(format!("hm-engine-hub-cut-{}.hmf", std::process::id()));
+    project.save(&path).unwrap();
+    let reopened = Project::load(&path).unwrap();
+    std::fs::remove_file(&path).unwrap();
+
+    assert_eq!(reopened.meridian, project.meridian);
+    let after = hm_engine::meridian(&reopened).unwrap();
+    assert_eq!(before, after);
+    assert!(after.to_csv().contains(hm_design::meridian::CUT_NAME));
+}

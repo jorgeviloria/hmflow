@@ -1288,3 +1288,63 @@ fn the_cut_control_point_resolves_to_the_cut_handle_only_when_there_is_a_cut() {
     let (_, plain) = self::model();
     assert_eq!(plain.control_position(CUT_CONTROL), None);
 }
+
+/// Aceptación: proporciones parecidas a las de un cubo de bomba de succión
+/// final (datos redondeados, sin etiquetas ni cotas de ningún plano ajeno).
+/// El recorte pasante con avellanado y chaflán da el contorno exacto y no toca
+/// nada hidráulico.
+#[test]
+fn b1_like_hub_cut_reproduces_the_drawing_contour() {
+    let result = design(&big_input()).unwrap();
+    let cut_edits = far_edge(HubCutEdit {
+        z: Some(37.5),
+        mode: CutMode::Through,
+        shaft_diameter: Some(41.275),
+        counterbore_diameter: Some(58.0),
+        counterbore_depth: Some(7.0),
+        chamfer: Some(1.0),
+    });
+    let plain_edits = MeridianEdits {
+        edge_hub: Some(0.9),
+        ..Default::default()
+    };
+    let cut = meridional_model_with(&result, &cut_edits).unwrap();
+    let plain = meridional_model_with(&result, &plain_edits).unwrap();
+
+    let z_end = points(&cut, "Tapa trasera").last().unwrap()[0];
+    let rc = rear_radius_at(&cut, 37.5);
+    assert!(rc > 29.0, "el avellanado tiene que caber en el cubo: {rc}");
+    let expected = [
+        [37.5, rc],
+        [37.5, 29.0],
+        [44.5, 29.0],
+        [44.5, 21.6375],
+        [45.5, 20.6375],
+        [z_end, 20.6375],
+    ];
+    let contour = points(&cut, CUT_NAME);
+    assert_eq!(contour.len(), expected.len());
+    for (got, want) in contour.iter().zip(expected) {
+        assert!(close(*got, want), "{got:?} != {want:?}");
+    }
+
+    // Lo hidráulico es idéntico al diseño sin recorte; solo se añade la curva.
+    assert_eq!(cut.curves.len(), plain.curves.len() + 1);
+    for name in [
+        "Tapa delantera",
+        "Tapa trasera",
+        "Borde de ataque",
+        "Borde de salida",
+    ] {
+        assert_eq!(plain.curve(name), cut.curve(name), "{name}");
+    }
+    assert_eq!(plain.channel(), cut.channel());
+    let (a, b) = (&plain.params, &cut.params);
+    assert_eq!(a.edge_points, b.edge_points);
+    assert_eq!(a.edge_area, b.edge_area);
+    assert_eq!(a.edge_length, b.edge_length);
+    assert_eq!(a.shroud, b.shroud);
+    assert_eq!(a.hub, b.hub);
+    assert_eq!(a.d1i, b.d1i);
+    assert_eq!(a.z_e, b.z_e);
+}

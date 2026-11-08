@@ -996,8 +996,8 @@ fn a_curved_edge_starts_the_channel_with_its_own_inlet_area() {
 // --- Recorte del cubo -------------------------------------------------------
 
 /// Un diseño con el cubo más largo que el de `input()`: llega a z = 45,6 mm y
-/// a z = 37,5 mm su radio pasa de 29 mm, así que cabe el avellanado del plano
-/// de B1.
+/// a z = 37,5 mm su radio pasa de 29 mm, así que cabe un avellanado de tamaño
+/// normalizado (valores redondos genéricos, no de ningún plano).
 fn big_input() -> DesignInput {
     let q = |text: &str| parse_quantity(text).unwrap();
     DesignInput {
@@ -1169,6 +1169,9 @@ fn hub_cut_past_the_leading_edge_is_an_error() {
         ..Default::default()
     });
     assert!(text.contains("borde de ataque"), "{text}");
+    // Dice el z máximo actual y qué mover antes si es muy pequeño.
+    assert!(text.contains(&format!("{edge_z:.2}")), "{text}");
+    assert!(text.contains("Borde en cubo"), "{text}");
 }
 
 #[test]
@@ -1290,7 +1293,8 @@ fn the_cut_control_point_resolves_to_the_cut_handle_only_when_there_is_a_cut() {
 }
 
 /// Aceptación: proporciones parecidas a las de un cubo de bomba de succión
-/// final (datos redondeados, sin etiquetas ni cotas de ningún plano ajeno).
+/// final (valores redondos genéricos y tamaños normalizados, no sacados de ningún
+/// plano real).
 /// El recorte pasante con avellanado y chaflán da el contorno exacto y no toca
 /// nada hidráulico.
 #[test]

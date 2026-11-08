@@ -54,10 +54,25 @@ pub(super) fn limit_z(z: f64, edge_z: f64) -> f64 {
     z.min(edge_z).max(0.0)
 }
 
-/// Escribe z en la caja del recorte. Devuelve si cambió.
+/// Como `grid` pero hacia abajo: nunca pasa de `value`.
+fn grid_floor(value: f64) -> f64 {
+    let floored = (value * 100.0 + 1e-9).floor() / 100.0;
+    if floored == 0.0 { 0.0 } else { floored }
+}
+
+/// Escribe z en la caja del recorte. Devuelve si cambió (el valor, no el
+/// texto: «30 mm» y «30.00 mm» son lo mismo). Al tope del borde de ataque
+/// redondea hacia abajo, para que el texto nunca pase del borde.
 pub(super) fn write_z(boxes: &mut Meridian, z: f64, edge_z: f64) -> bool {
-    let text = format!("{:.2} mm", grid(limit_z(z, edge_z)));
-    let changed = boxes.hub_cut.z != text;
+    let limited = limit_z(z, edge_z);
+    let value = if limited >= edge_z {
+        grid_floor(limited)
+    } else {
+        grid(limited)
+    };
+    let text = format!("{value:.2} mm");
+    let before = hm_engine::meridian_edits_of(boxes).hub_cut.z;
+    let changed = before != Some(value);
     boxes.hub_cut.z = text;
     changed
 }
@@ -198,6 +213,27 @@ mod tests {
         // Un borde por debajo de 0 no entra en pánico.
         write_z(&mut boxes, 10.0, -1.0);
         assert_eq!(boxes.hub_cut.z, "0.00 mm");
+    }
+
+    #[test]
+    fn z_at_a_non_round_edge_is_rounded_down_and_stays_valid() {
+        let mut boxes = Meridian::default();
+        write_z(&mut boxes, 99.0, 37.456);
+        assert_eq!(boxes.hub_cut.z, "37.45 mm");
+        let z = hm_engine::meridian_edits_of(&boxes).hub_cut.z.unwrap();
+        assert!(z <= 37.456, "{z}");
+        // Por debajo del borde sigue redondeando al más cercano.
+        write_z(&mut boxes, 30.006, 37.456);
+        assert_eq!(boxes.hub_cut.z, "30.01 mm");
+    }
+
+    #[test]
+    fn writing_the_same_value_in_other_text_is_not_a_change() {
+        let mut boxes = Meridian::default();
+        boxes.hub_cut.z = "30 mm".into();
+        assert!(!write_z(&mut boxes, 30.0, 40.0));
+        assert_eq!(boxes.hub_cut.z, "30.00 mm");
+        assert!(write_z(&mut boxes, 31.0, 40.0));
     }
 
     #[test]

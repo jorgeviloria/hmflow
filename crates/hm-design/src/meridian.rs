@@ -805,7 +805,7 @@ fn hub_cut_shape(
     }
     if zc > edge_hub_z {
         return Err(DesignError::Input(format!(
-            "recorte del cubo: z = {zc} mm pasa del borde de ataque, que está en z = {edge_hub_z:.2} mm sobre el cubo"
+            "recorte del cubo: z = {zc} mm pasa del borde de ataque: el z máximo ahora es {edge_hub_z:.2} mm (el borde de ataque sobre el cubo); si es muy pequeño, mueve antes «Borde en cubo» aguas abajo"
         )));
     }
     let rc = rear

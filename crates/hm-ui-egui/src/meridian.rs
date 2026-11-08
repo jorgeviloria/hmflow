@@ -10,8 +10,10 @@ use egui_plot::{Legend, Plot, PlotPoint, Points};
 use crate::curves::line;
 use hm_design::meridian::{
     AUTO_END_ANGLE, AUTO_START_ANGLE, CUT_CONTROL, CUT_NAME, ChannelStation, ControlPoint,
-    MeridianEdits, MeridionalModel, Moved, Wall, meridional_model, meridional_model_with,
+    HubCutEdit, MeridianEdits, MeridionalModel, Moved, Wall, meridional_model,
+    meridional_model_with,
 };
+use hm_design::{DesignError, DesignResult};
 use hm_project::{Meridian, MeridianWall};
 
 use crate::model::Outcome;
@@ -326,16 +328,45 @@ fn draw_pin(plot_ui: &mut egui_plot::PlotUi<'_>, tip: [f64; 2]) {
     }
 }
 
+/// El modelo con las ediciones. Si falla por el recorte del cubo, el modelo
+/// sin recorte (el perfil hidráulico no cambia por él) y el error del recorte;
+/// un error que no es del recorte se devuelve tal cual.
+fn model_or_uncut(
+    result: &DesignResult,
+    edits: &MeridianEdits,
+) -> Result<(MeridionalModel, Option<String>), DesignError> {
+    match meridional_model_with(result, edits) {
+        Ok(model) => Ok((model, None)),
+        Err(error) if edits.hub_cut.is_active() => {
+            let plain = MeridianEdits {
+                hub_cut: HubCutEdit::default(),
+                ..*edits
+            };
+            let model = meridional_model_with(result, &plain)?;
+            Ok((model, Some(error.to_string())))
+        }
+        Err(error) => Err(error),
+    }
+}
+
 /// Edita `[meridian]` en `boxes` con texto o arrastrando los puntos de
 /// control. Devuelve si cambió algo.
 fn meridian_edit(ui: &mut egui::Ui, outcome: &Outcome, boxes: &mut Meridian) -> bool {
     let auto = meridional_model(&outcome.result);
     let mut changed = wall_boxes(ui, boxes, auto.as_ref().ok());
-    changed |= cut_boxes(ui, boxes, auto.as_ref().ok());
+    // El modelo con el recorte tal como está escrito, para los avisos de las
+    // cajas; si el recorte falla, el perfil sin él y el error del recorte.
+    let before = model_or_uncut(&outcome.result, &hm_engine::meridian_edits_of(boxes));
+    changed |= cut_boxes(
+        ui,
+        boxes,
+        before.as_ref().ok().map(|(model, _)| model),
+        before.as_ref().ok().and_then(|(_, error)| error.as_deref()),
+    );
     let edits = hm_engine::meridian_edits_of(boxes);
     // El visor no calcula: dibuja el mismo modelo que se exporta.
-    let model = match meridional_model_with(&outcome.result, &edits) {
-        Ok(model) => model,
+    let model = match model_or_uncut(&outcome.result, &edits) {
+        Ok((model, _)) => model,
         Err(error) => {
             ui.label(
                 RichText::new(format!("Sin meridiano: {error}."))
@@ -919,10 +950,17 @@ fn cut_field(
 
 /// Las cajas del recorte del cubo, geometría mecánica que no toca el perfil
 /// hidráulico. Con la z vacía no hay recorte. Devuelve si cambió algo.
-fn cut_boxes(ui: &mut egui::Ui, boxes: &mut Meridian, model: Option<&MeridionalModel>) -> bool {
+fn cut_boxes(
+    ui: &mut egui::Ui,
+    boxes: &mut Meridian,
+    model: Option<&MeridionalModel>,
+    cut_error: Option<&str>,
+) -> bool {
     let mut changed = false;
     let parsed = hm_engine::meridian_edits_of(boxes).hub_cut;
     let used = model.and_then(|model| model.params.hub_cut.as_ref());
+    let max_z = model.map(|model| model.params.edge_points[1][0]);
+    let z_help = z_help(max_z);
     let size_hint = |value: Option<f64>| value.map_or("sin valor".to_string(), length_text);
     ui.horizontal_wrapped(|ui| {
         ui.label(RichText::new("Recorte del cubo").strong());
@@ -931,11 +969,8 @@ fn cut_boxes(ui: &mut egui::Ui, boxes: &mut Meridian, model: Option<&MeridionalM
             "Corte z (mm)",
             &mut boxes.hub_cut.z,
             parsed.z.is_none(),
-            used.map_or("sin recorte".to_string(), |cut| {
-                format!("{} (usado)", length_text(cut.z))
-            }),
-            "z de la cara del recorte, con unidad, desde el plano de entrada: como mucho la z del \
-             borde de ataque sobre el cubo. Vacía: sin recorte.",
+            z_hint(used.map(|cut| cut.z), max_z),
+            &z_help,
         );
         let through = boxes.hub_cut.mode.trim() == "through";
         let mut selected = through;
@@ -1002,7 +1037,37 @@ fn cut_boxes(ui: &mut egui::Ui, boxes: &mut Meridian, model: Option<&MeridionalM
             changed = true;
         }
     });
+    if let Some(error) = cut_error {
+        ui.label(
+            RichText::new(format!("{error}."))
+                .small()
+                .color(ui.visuals().error_fg_color),
+        );
+    }
     changed
+}
+
+/// Lo que dice la caja de z cuando está vacía o cuando el recorte se usa.
+fn z_hint(used: Option<f64>, max_z: Option<f64>) -> String {
+    match (used, max_z) {
+        (Some(z), _) => format!("{} (usado)", length_text(z)),
+        (None, Some(max)) => format!("máx. {}", length_text(max)),
+        (None, None) => "sin recorte".to_string(),
+    }
+}
+
+/// La ayuda de la caja de z, con el máximo actual.
+fn z_help(max_z: Option<f64>) -> String {
+    let max = max_z.map_or(String::new(), |max| {
+        format!(
+            " Ahora el máximo es {}; si es muy pequeño, mueve antes «Borde en cubo» aguas abajo.",
+            length_text(max)
+        )
+    });
+    format!(
+        "z de la cara del recorte, con unidad, desde el plano de entrada: como mucho la z del \
+         borde de ataque sobre el cubo. Vacía: sin recorte.{max}"
+    )
 }
 
 /// Agarra el punto de control más cercano al empezar a arrastrar y, mientras
@@ -1489,7 +1554,7 @@ mod tests {
         let mut boxes = Meridian::default();
         let mut changed = true;
         let mut output = ctx.run_ui(egui::RawInput::default(), |ui| {
-            changed = cut_boxes(ui, &mut boxes, None);
+            changed = cut_boxes(ui, &mut boxes, None, None);
         });
         output.textures_delta.clear();
         assert!(!changed);
@@ -1501,6 +1566,51 @@ mod tests {
         assert_eq!(boxes.hub_cut.z, "37.5 mm");
         assert_eq!(cut.z, Some(37.5));
         assert_eq!(cut.shaft_diameter, Some(41.275));
+    }
+
+    #[test]
+    fn an_invalid_cut_still_gives_a_drawable_model_and_its_error() {
+        let result = hm_design::design(&hm_design::DesignInput {
+            q: hm_units::parse_quantity("120 m3/h").unwrap(),
+            h: hm_units::parse_quantity("45 m").unwrap(),
+            n: hm_units::parse_quantity("2900 rpm").unwrap(),
+            rho: hm_units::parse_quantity("998.2 kg/m3").unwrap(),
+            eta_m: 0.95,
+            npsha: None,
+            nu: None,
+        })
+        .unwrap();
+        let plain = meridional_model(&result).unwrap();
+        let edits = MeridianEdits {
+            hub_cut: HubCutEdit {
+                z: Some(1000.0),
+                ..HubCutEdit::default()
+            },
+            ..MeridianEdits::default()
+        };
+        assert!(meridional_model_with(&result, &edits).is_err());
+        let (model, error) = model_or_uncut(&result, &edits).unwrap();
+        assert_eq!(model.curves, plain.curves, "el perfil no cambia");
+        assert!(model.cut_handle().is_none());
+        assert!(error.unwrap().contains("recorte del cubo"));
+        // Un error que no es del recorte sigue siendo error.
+        let bad = MeridianEdits {
+            edge_hub: Some(f64::NAN),
+            ..edits
+        };
+        assert!(model_or_uncut(&result, &bad).is_err());
+        // Sin recorte activo, nada cambia.
+        let (_, none) = model_or_uncut(&result, &MeridianEdits::default()).unwrap();
+        assert!(none.is_none());
+    }
+
+    #[test]
+    fn the_z_hint_shows_the_used_value_or_the_maximum() {
+        assert_eq!(z_hint(Some(37.5), Some(40.0)), "37.50 mm (usado)");
+        assert_eq!(z_hint(None, Some(40.0)), "máx. 40.00 mm");
+        assert_eq!(z_hint(None, None), "sin recorte");
+        assert!(z_help(Some(40.0)).contains("40.00 mm"));
+        assert!(z_help(Some(40.0)).contains("Borde en cubo"));
     }
 
     #[test]

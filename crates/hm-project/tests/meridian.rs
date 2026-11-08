@@ -3,7 +3,8 @@
 
 use hm_formula::Registry;
 use hm_project::{
-    Meridian, MeridianEdge, MeridianHubCut, MeridianWall, Project, PumpType, SCHEMA_VERSION,
+    Meridian, MeridianEdge, MeridianHubCut, MeridianSegments, MeridianWall, MeridianWallSegments,
+    Project, PumpType, SCHEMA_VERSION,
 };
 
 const CASING_V3: &str = include_str!("fixtures/casing_v3.hmf");
@@ -366,6 +367,75 @@ fn hub_cut_bad_texts_are_hm_proj_031() {
             hub_cut: full_cut(),
             ..Meridian::default()
         }),
+        Vec::<String>::new()
+    );
+}
+
+fn texts(items: &[&str]) -> Vec<String> {
+    items.iter().map(|item| (*item).to_string()).collect()
+}
+
+fn shroud_segments(cuts: &[&str], pieces: &[&str]) -> Meridian {
+    Meridian {
+        segments: MeridianSegments {
+            shroud: MeridianWallSegments {
+                cuts: texts(cuts),
+                pieces: texts(pieces),
+            },
+            ..MeridianSegments::default()
+        },
+        ..Meridian::default()
+    }
+}
+
+#[test]
+fn segments_round_trip_through_the_hmf() {
+    let project = with(shroud_segments(
+        &["0.3", "0.65"],
+        &["curve", "line", "curve"],
+    ));
+    let text = project.to_toml().unwrap();
+    assert!(text.contains("[meridian.segments.shroud]"), "{text}");
+    assert!(!text.contains("segments.hub"), "{text}");
+    let back = Project::from_toml(&text).unwrap();
+    assert_eq!(back.meridian, project.meridian);
+    assert_eq!(problems(project.meridian.unwrap()), Vec::<String>::new());
+
+    let plain = with(Meridian {
+        hub_diameter: "20 mm".into(),
+        ..Meridian::default()
+    });
+    assert!(!plain.to_toml().unwrap().contains("segments"));
+}
+
+#[test]
+fn segments_bad_texts_are_hm_proj_031() {
+    let cases = [
+        ("segments.shroud.cuts", shroud_segments(&["abc"], &[])),
+        ("segments.shroud.cuts", shroud_segments(&["0"], &[])),
+        (
+            "segments.shroud.cuts",
+            shroud_segments(&["0.6", "0.3"], &[]),
+        ),
+        ("segments.shroud.cuts", shroud_segments(&["1"], &[])),
+        (
+            "segments.shroud.pieces",
+            shroud_segments(&["0.5"], &["line"]),
+        ),
+        (
+            "segments.shroud.pieces",
+            shroud_segments(&["0.5"], &["curve", "arco"]),
+        ),
+    ];
+    for (name, meridian) in cases {
+        let found = problems(meridian);
+        assert!(
+            found.iter().any(|message| message.contains(name)),
+            "{name}: {found:?}"
+        );
+    }
+    assert_eq!(
+        problems(shroud_segments(&["0.5"], &[])),
         Vec::<String>::new()
     );
 }

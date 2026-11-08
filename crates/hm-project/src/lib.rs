@@ -90,6 +90,48 @@ pub struct Meridian {
     /// Recorte mecánico del cubo (geometría de fabricación, no hidráulica).
     #[serde(default, skip_serializing_if = "MeridianHubCut::is_empty")]
     pub hub_cut: MeridianHubCut,
+    /// Cortes del contorno mecánico de cada tapa sobre su Bézier (geometría
+    /// de fabricación, no hidráulica).
+    #[serde(default, skip_serializing_if = "MeridianSegments::is_empty")]
+    pub segments: MeridianSegments,
+}
+
+/// Los cortes de las dos tapas. Vacío: cada tapa es su Bézier entera.
+#[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct MeridianSegments {
+    #[serde(default, skip_serializing_if = "MeridianWallSegments::is_empty")]
+    pub shroud: MeridianWallSegments,
+    #[serde(default, skip_serializing_if = "MeridianWallSegments::is_empty")]
+    pub hub: MeridianWallSegments,
+}
+
+impl MeridianSegments {
+    #[must_use]
+    pub fn is_empty(&self) -> bool {
+        self.shroud.is_empty() && self.hub.is_empty()
+    }
+}
+
+/// Los cortes de una tapa, como texto: cada uno es el parámetro `t` de la
+/// Bézier hidráulica, de 0 a 1 sin incluirlos y en orden creciente. `pieces`
+/// dice qué es cada tramo, del arranque al final: `curve` (la Bézier entre
+/// sus cortes) o `line` (la recta entre ellos). Tiene un elemento más que
+/// `cuts`; vacío, todos son `curve`.
+#[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct MeridianWallSegments {
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub cuts: Vec<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub pieces: Vec<String>,
+}
+
+impl MeridianWallSegments {
+    #[must_use]
+    pub fn is_empty(&self) -> bool {
+        self.cuts.is_empty() && self.pieces.is_empty()
+    }
 }
 
 /// Recorte del cubo, como texto. Con `z` vacío no hay recorte.
@@ -898,6 +940,50 @@ fn check_meridian(diagnostics: &mut Diagnostics, meridian: &Meridian) {
         }
     }
     check_hub_cut(&mut problem, &meridian.hub_cut);
+    for (table, wall) in [
+        ("segments.shroud", &meridian.segments.shroud),
+        ("segments.hub", &meridian.segments.hub),
+    ] {
+        check_wall_segments(&mut problem, table, wall);
+    }
+}
+
+fn check_wall_segments(
+    problem: &mut impl FnMut(String, String),
+    table: &str,
+    wall: &MeridianWallSegments,
+) {
+    let mut previous = 0.0;
+    for text in &wall.cuts {
+        match text.trim().parse::<f64>() {
+            Ok(t) if t > previous && t < 1.0 => previous = t,
+            _ => {
+                problem(
+                    format!("{table}.cuts"),
+                    format!("deben ir entre 0 y 1, sin incluirlos, en orden creciente: {text}"),
+                );
+                return;
+            }
+        }
+    }
+    if !wall.pieces.is_empty() && wall.pieces.len() != wall.cuts.len() + 1 {
+        problem(
+            format!("{table}.pieces"),
+            format!(
+                "debe tener un tramo más que cortes: {} cortes y {} tramos",
+                wall.cuts.len(),
+                wall.pieces.len()
+            ),
+        );
+    }
+    for piece in &wall.pieces {
+        if !matches!(piece.trim(), "curve" | "line") {
+            problem(
+                format!("{table}.pieces"),
+                format!("cada tramo es curve o line: {piece}"),
+            );
+        }
+    }
 }
 
 fn check_hub_cut(problem: &mut impl FnMut(String, String), cut: &MeridianHubCut) {

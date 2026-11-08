@@ -600,8 +600,7 @@ fn draw_section(
     // referencia, fina y gris, y el contorno mecánico se dibuja encima.
     for curve in &model.curves {
         let reference = Wall::ALL.into_iter().any(|wall| {
-            wall.name() == curve.name
-                && crate::meridian_segments::reference_only(plot_ui.ctx(), wall)
+            wall.name() == curve.name && crate::meridian_segments::reference_only(boxes, wall)
         });
         let (colour, width) = if reference {
             (Color32::from_gray(150), 1.0)
@@ -610,7 +609,7 @@ fn draw_section(
         };
         plot_ui.line(line(&curve.name, curve.points.clone(), colour).width(width));
     }
-    crate::meridian_segments::draw(plot_ui, model);
+    crate::meridian_segments::draw(plot_ui, model, boxes);
     // Las cotas del punto seleccionado.
     for dimension_line in dimensioning.lines {
         plot_ui.line(line("Cotas", dimension_line, DIMENSION_GREY).width(1.0));
@@ -727,8 +726,8 @@ fn draw_section(
         );
     }
     crate::meridian_cut::draw(plot_ui, model);
-    crate::meridian_segments::interact(plot_ui, model);
-    drag_handles(plot_ui, model, boxes)
+    let cut = crate::meridian_segments::interact(plot_ui, model, boxes);
+    drag_handles(plot_ui, model, boxes) || cut
 }
 
 /// La cabecera: cotas, radios mínimos frente a RDs y lo editado.

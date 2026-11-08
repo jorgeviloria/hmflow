@@ -3,13 +3,14 @@
 //! no cambia: los cortes son parámetros `t` sobre ella y cada tramo es curva
 //! (la Bézier entre sus dos cortes) o recta (la cuerda entre ellos).
 //!
-//! De momento vive en la memoria de la ventana: no se guarda en el `.hmf` ni
-//! entra en deshacer. Sirve para que Jorge pruebe la interacción.
+//! Se guarda en `[meridian.segments]` del `.hmf`, así que entra en deshacer
+//! como lo demás de la pestaña.
 
 use eframe::egui;
 use egui::Color32;
 use egui_plot::{PlotPoint, Points};
 use hm_design::meridian::{MeridionalModel, Wall};
+use hm_project::{Meridian, MeridianWallSegments};
 
 use crate::curves::line;
 
@@ -43,6 +44,49 @@ impl Default for WallSegments {
 }
 
 impl WallSegments {
+    /// Lee los textos del `.hmf`; `None` si no se entienden (la validación
+    /// del proyecto ya lo avisa con HM-PROJ-031).
+    fn from_texts(texts: &MeridianWallSegments) -> Option<Self> {
+        let mut cuts = Vec::with_capacity(texts.cuts.len());
+        for text in &texts.cuts {
+            let t: f64 = text.trim().parse().ok()?;
+            if !(t > cuts.last().copied().unwrap_or(0.0) && t < 1.0) {
+                return None;
+            }
+            cuts.push(t);
+        }
+        let straight = if texts.pieces.is_empty() {
+            vec![false; cuts.len() + 1]
+        } else if texts.pieces.len() == cuts.len() + 1 {
+            texts
+                .pieces
+                .iter()
+                .map(|piece| match piece.trim() {
+                    "curve" => Some(false),
+                    "line" => Some(true),
+                    _ => None,
+                })
+                .collect::<Option<Vec<bool>>>()?
+        } else {
+            return None;
+        };
+        Some(Self { cuts, straight })
+    }
+
+    /// Los textos para el `.hmf`: sin tramos en recta, `pieces` va vacío.
+    fn to_texts(&self) -> MeridianWallSegments {
+        let cuts = self.cuts.iter().map(|t| fraction_text(*t)).collect();
+        let pieces = if self.has_straight() {
+            self.straight
+                .iter()
+                .map(|straight| if *straight { "line" } else { "curve" }.to_string())
+                .collect()
+        } else {
+            Vec::new()
+        };
+        MeridianWallSegments { cuts, pieces }
+    }
+
     fn is_plain(&self) -> bool {
         self.cuts.is_empty()
     }
@@ -138,6 +182,31 @@ impl Segments {
     }
 }
 
+/// `t` con seis decimales, sin ceros de sobra: 0.3 y no 0.300000.
+fn fraction_text(t: f64) -> String {
+    let text = format!("{t:.6}");
+    text.trim_end_matches('0').trim_end_matches('.').to_string()
+}
+
+/// Los cortes escritos en `[meridian]`. Una tapa que no se entiende se toma
+/// entera, sin cortes.
+fn read(boxes: &Meridian) -> Segments {
+    let wall = |texts| WallSegments::from_texts(texts).unwrap_or_default();
+    Segments {
+        walls: [wall(&boxes.segments.shroud), wall(&boxes.segments.hub)],
+    }
+}
+
+/// Escribe los cortes en `[meridian]`. Devuelve si cambió algo.
+fn write(boxes: &mut Meridian, segments: &Segments) -> bool {
+    let shroud = segments.wall(Wall::Shroud).to_texts();
+    let hub = segments.wall(Wall::Hub).to_texts();
+    let changed = boxes.segments.shroud != shroud || boxes.segments.hub != hub;
+    boxes.segments.shroud = shroud;
+    boxes.segments.hub = hub;
+    changed
+}
+
 fn wall_index(wall: Wall) -> usize {
     match wall {
         Wall::Shroud => 0,
@@ -196,10 +265,6 @@ struct Target {
     near_cut: Option<usize>,
 }
 
-fn state_id() -> egui::Id {
-    egui::Id::unique("meridian_segments_state")
-}
-
 fn target_id() -> egui::Id {
     egui::Id::unique("meridian_segments_target")
 }
@@ -208,20 +273,10 @@ fn selected_id() -> egui::Id {
     egui::Id::unique("meridian_segments_selected")
 }
 
-fn load(ctx: &egui::Context) -> Segments {
-    seed_from_env(ctx);
-    ctx.data(|data| data.get_temp::<Segments>(state_id()))
-        .unwrap_or_default()
-}
-
-fn store(ctx: &egui::Context, segments: Segments) {
-    ctx.data_mut(|data| data.insert_temp(state_id(), segments));
-}
-
 /// Si la tapa tiene algún tramo en recta: entonces la Bézier hidráulica se
 /// dibuja de referencia, en gris, y el contorno mecánico encima.
-pub(super) fn reference_only(ctx: &egui::Context, wall: Wall) -> bool {
-    load(ctx).wall(wall).has_straight()
+pub(super) fn reference_only(boxes: &Meridian, wall: Wall) -> bool {
+    read(boxes).wall(wall).has_straight()
 }
 
 /// La tapa y el `t` más cercanos a `pointer`, si quedan a pocos píxeles.
@@ -276,8 +331,8 @@ fn near_cut(
 
 /// Dibuja el contorno mecánico de las tapas cortadas, el tramo seleccionado
 /// y los puntos de corte.
-pub(super) fn draw(plot_ui: &mut egui_plot::PlotUi<'_>, model: &MeridionalModel) {
-    let segments = load(plot_ui.ctx());
+pub(super) fn draw(plot_ui: &mut egui_plot::PlotUi<'_>, model: &MeridionalModel, boxes: &Meridian) {
+    let segments = read(boxes);
     let selected: Option<(Wall, usize)> = plot_ui.ctx().data(|data| data.get_temp(selected_id()));
     for wall in Wall::ALL {
         let state = segments.wall(wall);
@@ -315,11 +370,16 @@ pub(super) fn draw(plot_ui: &mut egui_plot::PlotUi<'_>, model: &MeridionalModel)
 }
 
 /// Clic sobre una tapa cortada: selecciona el tramo. Clic derecho: el menú
-/// con «Cortar aquí», «Convertir en recta» y lo demás.
-pub(super) fn interact(plot_ui: &mut egui_plot::PlotUi<'_>, model: &MeridionalModel) {
+/// con «Cortar aquí», «Convertir en recta» y lo demás. Devuelve si cambió algo.
+pub(super) fn interact(
+    plot_ui: &mut egui_plot::PlotUi<'_>,
+    model: &MeridionalModel,
+    boxes: &mut Meridian,
+) -> bool {
     let ctx = plot_ui.ctx().clone();
     let response = plot_ui.response().clone();
-    let mut segments = load(&ctx);
+    let seeded = seed_from_env(&ctx, boxes);
+    let mut segments = read(boxes);
     if let Some(pointer) = plot_ui.pointer_coordinate() {
         if response.secondary_clicked() {
             let target = touched(plot_ui, model, pointer).map(|(wall, t)| Target {
@@ -405,21 +465,22 @@ pub(super) fn interact(plot_ui: &mut egui_plot::PlotUi<'_>, model: &MeridionalMo
     if changed {
         // Los índices de los tramos cambian: se olvida la selección.
         ctx.data_mut(|data| data.remove::<(Wall, usize)>(selected_id()));
-        store(&ctx, segments);
+        return write(boxes, &segments) || seeded;
     }
+    seeded
 }
 
 /// Solo para las capturas: `HMF_SEGMENTS="shroud:0.3,0.6:1"` corta la tapa
 /// delantera en `t = 0,3` y `0,6` y pone en recta el tramo 1. Varias tapas
 /// se separan con `;`.
-fn seed_from_env(ctx: &egui::Context) {
+fn seed_from_env(ctx: &egui::Context, boxes: &mut Meridian) -> bool {
     let seeded = egui::Id::unique("meridian_segments_seeded");
     if ctx.data(|data| data.get_temp::<bool>(seeded)).is_some() {
-        return;
+        return false;
     }
     ctx.data_mut(|data| data.insert_temp(seeded, true));
     let Ok(text) = std::env::var("HMF_SEGMENTS") else {
-        return;
+        return false;
     };
     let mut segments = Segments::default();
     for part in text.split(';').filter(|p| !p.trim().is_empty()) {
@@ -452,7 +513,7 @@ fn seed_from_env(ctx: &egui::Context) {
             }
         }
     }
-    store(ctx, segments);
+    write(boxes, &segments)
 }
 
 #[cfg(test)]
@@ -530,5 +591,34 @@ mod tests {
         assert_eq!(state.straight, vec![false, false]);
         state.remove_cut(0);
         assert_eq!(state, WallSegments::default());
+    }
+
+    #[test]
+    fn texts_round_trip() {
+        let mut state = WallSegments::default();
+        state.cut(0.3);
+        state.cut(0.65);
+        state.straight[1] = true;
+        let texts = state.to_texts();
+        assert_eq!(texts.cuts, vec!["0.3", "0.65"]);
+        assert_eq!(texts.pieces, vec!["curve", "line", "curve"]);
+        assert_eq!(WallSegments::from_texts(&texts), Some(state));
+    }
+
+    #[test]
+    fn plain_wall_writes_nothing() {
+        assert!(WallSegments::default().to_texts().is_empty());
+        let mut curves = WallSegments::default();
+        curves.cut(0.5);
+        assert!(curves.to_texts().pieces.is_empty());
+    }
+
+    #[test]
+    fn bad_texts_read_as_the_whole_wall() {
+        let texts = MeridianWallSegments {
+            cuts: vec!["0.6".into(), "0.3".into()],
+            pieces: Vec::new(),
+        };
+        assert_eq!(WallSegments::from_texts(&texts), None);
     }
 }

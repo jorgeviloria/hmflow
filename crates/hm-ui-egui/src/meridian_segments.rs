@@ -1317,8 +1317,11 @@ fn node_editor(
         .open(&mut open)
         .collapsible(false)
         .resizable(false)
+        .max_width(270.0)
         .default_pos(screen + egui::vec2(18.0, 18.0))
         .show(&ctx, |ui| {
+            // Los avisos largos se parten en líneas en vez de ensanchar la ventana.
+            ui.set_max_width(270.0);
             egui::Grid::new(editor_id().with("grid"))
                 .num_columns(3)
                 .show(ui, |ui| {
@@ -1588,6 +1591,19 @@ pub(super) fn reference_only(boxes: &Meridian, wall: Wall) -> bool {
     read(boxes).wall(wall).has_rigid()
 }
 
+/// Posición de todos los nodos del contorno mecánico, para encuadrar el corte
+/// aunque un punto libre salga del rectángulo de las curvas.
+pub(super) fn node_positions(boxes: &Meridian, model: &MeridionalModel) -> Vec<[f64; 2]> {
+    let segments = read(boxes);
+    let mut out = Vec::new();
+    for wall in Wall::ALL {
+        let state = segments.wall(wall);
+        let points = &model.params.wall(wall).points;
+        out.extend((0..=state.pieces.len()).map(|node| state.node_at(points, node)));
+    }
+    out
+}
+
 /// Dibuja el contorno mecánico de las tapas cortadas, el tramo seleccionado
 /// y los puntos: círculos los que se deslizan por la curva, cuadrados los
 /// libres.
@@ -1679,6 +1695,23 @@ pub(super) fn draw(plot_ui: &mut egui_plot::PlotUi<'_>, model: &MeridionalModel,
                 .anchor(egui::Align2::LEFT_BOTTOM),
             );
         }
+    }
+}
+
+/// Los puntos del contorno (círculos que se deslizan, cuadrados libres).
+/// Van después de los extremos grises P0 y P4 para que no los tapen.
+pub(super) fn draw_nodes(
+    plot_ui: &mut egui_plot::PlotUi<'_>,
+    model: &MeridionalModel,
+    boxes: &Meridian,
+) {
+    let segments = read(boxes);
+    for wall in Wall::ALL {
+        let state = segments.wall(wall);
+        if state.is_plain() && !state.has_rigid() {
+            continue;
+        }
+        let points = &model.params.wall(wall).points;
         let (mut sliding, mut free) = (Vec::new(), Vec::new());
         for index in 0..state.node_count() {
             let at = state.node_at(points, index);

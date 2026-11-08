@@ -444,7 +444,7 @@ fn meridian_edit(ui: &mut egui::Ui, outcome: &Outcome, boxes: &mut Meridian) -> 
                 // Al abrir (o con «Encuadrar») el corte llena el lienzo.
                 let fitted = plot_ui.ctx().data(|data| data.get_temp::<bool>(fit_id));
                 if fitted != Some(true)
-                    && let Some((min, max)) = section_bounds(&model)
+                    && let Some((min, max)) = section_bounds(&model, boxes)
                 {
                     plot_ui.set_plot_bounds(egui_plot::PlotBounds::from_min_max(min, max));
                     plot_ui
@@ -464,7 +464,7 @@ fn meridian_edit(ui: &mut egui::Ui, outcome: &Outcome, boxes: &mut Meridian) -> 
 }
 
 /// Rectángulo de las dos tapas con un 10 % de margen, para encuadrar el corte.
-fn section_bounds(model: &MeridionalModel) -> Option<([f64; 2], [f64; 2])> {
+fn section_bounds(model: &MeridionalModel, boxes: &Meridian) -> Option<([f64; 2], [f64; 2])> {
     let mut min = [f64::INFINITY; 2];
     let mut max = [f64::NEG_INFINITY; 2];
     for wall in Wall::ALL {
@@ -473,6 +473,12 @@ fn section_bounds(model: &MeridionalModel) -> Option<([f64; 2], [f64; 2])> {
                 min[axis] = min[axis].min(point[axis]);
                 max[axis] = max[axis].max(point[axis]);
             }
+        }
+    }
+    for node in crate::meridian_segments::node_positions(boxes, model) {
+        for axis in 0..2 {
+            min[axis] = min[axis].min(node[axis]);
+            max[axis] = max[axis].max(node[axis]);
         }
     }
     if !(min[0].is_finite() && max[0] > min[0] && max[1] > min[1]) {
@@ -741,6 +747,7 @@ fn draw_section(
                 .color(colour.gamma_multiply(0.55)),
         );
     }
+    crate::meridian_segments::draw_nodes(plot_ui, model, boxes);
     // Del borde de ataque: su polígono de control P0 a P4, sus extremos en
     // puntos llenos y P1, P2 y P3 en círculos huecos.
     let edge_handles = model.edge_handles();

@@ -128,33 +128,6 @@ fn dimensioning(model: &MeridionalModel, at: [f64; 2], node: Option<&NodeDimensi
         true,
         writable(Dimension::Diameter),
     ));
-    // El largo de las rectas vecinas, en una línea paralela por encima.
-    for (other, kind) in node.map_or(&[][..], |node| &node.lines[..]) {
-        let (dz, dr) = (at[0] - other[0], at[1] - other[1]);
-        let length = dz.hypot(dr);
-        if length < 1e-9 {
-            continue;
-        }
-        let along = [dz / length, dr / length];
-        // La normal que sube (o, en una recta vertical, la que va a la izquierda).
-        let mut normal = [-along[1], along[0]];
-        if normal[1] < 0.0 || (normal[1] == 0.0 && normal[0] > 0.0) {
-            normal = [-normal[0], -normal[1]];
-        }
-        let shift = |p: [f64; 2], k: f64| [p[0] + normal[0] * gap * k, p[1] + normal[1] * gap * k];
-        let (a, b) = (shift(at, 0.6), shift(*other, 0.6));
-        out.lines.push(vec![at, shift(at, 0.9)]);
-        out.lines.push(vec![*other, shift(*other, 0.9)]);
-        out.lines.push(vec![b, a]);
-        out.arrows.push((a, along));
-        out.arrows.push((b, [-along[0], -along[1]]));
-        out.texts.push((
-            [(a[0] + b[0]) / 2.0, (a[1] + b[1]) / 2.0],
-            format!("{length:.3}"),
-            false,
-            *kind,
-        ));
-    }
     out
 }
 
@@ -2102,15 +2075,13 @@ mod tests {
         let model = meridional_model(&result).unwrap();
         let node = NodeDimensions {
             at: [30.0, 40.0],
-            lines: vec![([0.0, 0.0], Some(Dimension::Length(0)))],
         };
         let d = dimensioning(&model, node.at, Some(&node));
         let kinds: Vec<_> = d.texts.iter().map(|t| (t.1.clone(), t.3)).collect();
         assert!(kinds.contains(&("30.000".to_string(), Some(Dimension::Z))));
         assert!(kinds.contains(&("Ø80.000".to_string(), Some(Dimension::Diameter))));
-        assert!(kinds.contains(&("50.000".to_string(), Some(Dimension::Length(0)))));
-        // Una flecha en cada extremo de la cota del largo, más las de z y Ø.
-        assert_eq!(d.arrows.len(), 4);
+        // Sin cota del largo de las rectas vecinas.
+        assert_eq!(d.texts.len(), 2);
         // Un punto de control no se escribe desde sus cotas.
         let d = dimensioning(&model, node.at, None);
         assert!(d.texts.iter().all(|t| t.3.is_none()));

@@ -109,8 +109,6 @@ pub(super) enum Dimension {
     Z,
     /// El diámetro, desde el eje.
     Diameter,
-    /// El largo de la recta hasta el nodo vecino que se indica.
-    Length(usize),
     /// El radio de un arco; el índice que la acompaña es el del tramo.
     Arc,
 }
@@ -793,24 +791,9 @@ impl WallSegments {
         self.slide_to(points, index, axis, to[axis])
     }
 
-    /// Las rectas vecinas del nodo `index`: el nodo del otro extremo y el
-    /// largo de vértice a vértice (sin descontar los radios, como en un plano).
-    fn line_lengths(&self, points: &[[f64; 2]; 5], index: usize) -> Vec<(usize, f64)> {
-        let at = self.node_at(points, index);
-        let mut lengths = Vec::new();
-        if index > 0 && self.pieces[index - 1] == Piece::Line {
-            lengths.push((index - 1, distance(at, self.node_at(points, index - 1))));
-        }
-        if index < self.pieces.len() && self.pieces[index] == Piece::Line {
-            lengths.push((index + 1, distance(at, self.node_at(points, index + 1))));
-        }
-        lengths
-    }
-
     /// Pone la cota `kind` del nodo `index` en `value` mm. Un nodo libre va a
     /// la z o al Ø escritos sin tocar la otra coordenada; uno sobre la curva
-    /// se desliza hasta ellos. El largo de una recta mueve el nodo libre por
-    /// la propia recta, con el otro extremo quieto. Devuelve si se movió.
+    /// se desliza hasta ellos. Devuelve si se movió.
     fn set_dimension(
         &mut self,
         points: &[[f64; 2]; 5],
@@ -841,26 +824,6 @@ impl WallSegments {
             Dimension::Diameter if free => self.move_node(points, index, [at[0], value / 2.0]),
             Dimension::Diameter => self.slide_to(points, index, 1, value / 2.0),
             Dimension::Arc => self.set_arc_radius(index, value),
-            Dimension::Length(other) => {
-                let neighbour = self
-                    .line_lengths(points, index)
-                    .into_iter()
-                    .any(|(k, _)| k == other);
-                if !free || !neighbour || value <= 0.0 {
-                    return false;
-                }
-                let from = self.node_at(points, other);
-                let length = distance(at, from);
-                if length < 1.0e-9 {
-                    return false;
-                }
-                let scale = value / length;
-                let to = [
-                    from[0] + (at[0] - from[0]) * scale,
-                    from[1] + (at[1] - from[1]) * scale,
-                ];
-                self.move_node(points, index, to)
-            }
         }
     }
 
@@ -1435,12 +1398,9 @@ fn node_editor(
     changed
 }
 
-/// El punto con la ventana abierta, para acotarlo: dónde está y sus rectas
-/// vecinas (el otro extremo y la cota que se puede escribir; `None` si el
-/// punto se desliza por la curva y su largo solo se lee).
+/// El punto con la ventana abierta, para acotarlo: dónde está.
 pub(super) struct NodeDimensions {
     pub(super) at: [f64; 2],
-    pub(super) lines: Vec<([f64; 2], Option<Dimension>)>,
 }
 
 /// El punto que se acota: el de la ventana abierta, si la hay.
@@ -1458,20 +1418,8 @@ pub(super) fn selected_node(
         return None;
     }
     let points = &model.params.wall(editor.wall).points;
-    let free = state.can_free(editor.index);
-    let lines = state
-        .line_lengths(points, editor.index)
-        .into_iter()
-        .map(|(other, _)| {
-            (
-                state.node_at(points, other),
-                free.then_some(Dimension::Length(other)),
-            )
-        })
-        .collect();
     Some(NodeDimensions {
         at: state.node_at(points, editor.index),
-        lines,
     })
 }
 
@@ -2523,9 +2471,6 @@ mod tests {
         assert!(state.set_dimension(&POINTS, 1, Dimension::Diameter, 2.0 * r));
         assert!((state.node_at(&POINTS, 1)[1] - r).abs() < 1e-6);
         assert!(!state.set_dimension(&POINTS, 1, Dimension::Diameter, -1.0));
-        // Sin recta al lado no hay largo.
-        assert!(state.line_lengths(&POINTS, 1).is_empty());
-        assert!(!state.set_dimension(&POINTS, 1, Dimension::Length(0), 10.0));
     }
 
     #[test]
@@ -2538,26 +2483,6 @@ mod tests {
         assert!(same(state.node_at(&POINTS, 1), [35.0, 40.0]));
         assert!(state.set_dimension(&POINTS, 1, Dimension::Diameter, 100.0));
         assert!(same(state.node_at(&POINTS, 1), [35.0, 50.0]));
-    }
-
-    #[test]
-    fn a_line_length_moves_the_free_end_along_the_line() {
-        let mut state = cut_twice();
-        state.toggle(0);
-        state.toggle(1);
-        let start = state.node_at(&POINTS, 0);
-        assert!(state.move_node(&POINTS, 1, [start[0] + 30.0, start[1] + 40.0]));
-        let lengths = state.line_lengths(&POINTS, 1);
-        assert_eq!(lengths.len(), 2);
-        assert_eq!(lengths[0].0, 0);
-        assert!((lengths[0].1 - 50.0).abs() < 1e-9);
-        assert!(state.set_dimension(&POINTS, 1, Dimension::Length(0), 25.0));
-        // Misma dirección, la mitad de largo; el arranque no se mueve.
-        assert!(same(state.node_at(&POINTS, 1), [start[0] + 15.0, start[1] + 20.0]));
-        assert!(same(state.node_at(&POINTS, 0), start));
-        assert!(!state.set_dimension(&POINTS, 1, Dimension::Length(0), 0.0));
-        // Solo a un vecino por recta.
-        assert!(!state.set_dimension(&POINTS, 1, Dimension::Length(3), 10.0));
     }
 
     fn middle_line() -> WallSegments {
@@ -2844,8 +2769,6 @@ mod tests {
         let at = state.node_at(&POINTS, 2);
         assert!((at[0] - z).abs() < 1e-6, "{at:?}");
         assert!((distance(at, center) - 60.0).abs() < 1e-6);
-        // El largo de la recta vecina lo sacaría del círculo.
-        assert!(!state.set_dimension(&POINTS, 2, Dimension::Length(3), 5.0));
     }
 
     #[test]

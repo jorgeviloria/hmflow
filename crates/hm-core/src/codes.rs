@@ -174,6 +174,11 @@ pub const CODES: &[CodeInfo] = &[
         Error,
         "Un punto o una fracción de [meridian] no se entiende o está fuera de rango.",
     ),
+    active(
+        "HM-PROJ-032",
+        Error,
+        "Una cota que manda de [meridian.segments] no se entiende, no tiene sus nodos, choca con otra o forma un ciclo.",
+    ),
     // Diseño
     active(
         "HM-DES-001",

@@ -104,12 +104,141 @@ pub struct MeridianSegments {
     pub shroud: MeridianWallSegments,
     #[serde(default, skip_serializing_if = "MeridianWallSegments::is_empty")]
     pub hub: MeridianWallSegments,
+    /// Cotas que mandan, como «dz shroud:4 hub:2 = 40 mm»: el hijo (el segundo
+    /// nodo) sigue al padre. Van aquí y no en una tapa porque pueden unir las dos.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub constraints: Vec<String>,
 }
 
 impl MeridianSegments {
     #[must_use]
     pub fn is_empty(&self) -> bool {
-        self.shroud.is_empty() && self.hub.is_empty()
+        self.shroud.is_empty() && self.hub.is_empty() && self.constraints.is_empty()
+    }
+}
+
+/// Qué fija una cota que manda.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ConstraintKind {
+    /// `z_hijo = z_padre + valor`.
+    Dz,
+    /// `Ø_hijo = Ø_padre + valor`.
+    Dd,
+    /// El hijo, sobre la recta que sale del padre con esa dirección.
+    Ang,
+}
+
+/// Una de las dos tapas del corte meridiano.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+pub enum WallId {
+    Shroud,
+    Hub,
+}
+
+impl WallId {
+    fn name(self) -> &'static str {
+        match self {
+            Self::Shroud => "shroud",
+            Self::Hub => "hub",
+        }
+    }
+}
+
+/// Un nodo del contorno: su tapa y su índice en `nodes`, desde 0.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+pub struct NodeRef {
+    pub wall: WallId,
+    pub index: usize,
+}
+
+impl NodeRef {
+    fn parse(text: &str) -> Result<Self, String> {
+        let (wall, index) = text
+            .split_once(':')
+            .ok_or_else(|| format!("cada nodo es «hub:i» o «shroud:i»: {text}"))?;
+        let wall = match wall {
+            "hub" => WallId::Hub,
+            "shroud" => WallId::Shroud,
+            _ => return Err(format!("la tapa es hub o shroud: {text}")),
+        };
+        let index = index
+            .parse()
+            .map_err(|_| format!("el índice del nodo es un entero desde 0: {text}"))?;
+        Ok(Self { wall, index })
+    }
+
+    fn to_text(self) -> String {
+        format!("{}:{}", self.wall.name(), self.index)
+    }
+}
+
+/// Una cota que manda, leída de su texto.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct Constraint {
+    pub kind: ConstraintKind,
+    pub parent: NodeRef,
+    pub child: NodeRef,
+    /// En metros para `Dz` y `Dd`; en grados, en (−180, 180], para `Ang`.
+    pub value: f64,
+}
+
+impl Constraint {
+    /// Lee «<dz|dd|ang> <padre> <hijo> = <valor> <unidad>».
+    ///
+    /// # Errors
+    ///
+    /// El problema, en español, si el texto no tiene esa forma.
+    pub fn parse(text: &str) -> Result<Self, String> {
+        let (left, right) = text
+            .split_once('=')
+            .ok_or_else(|| format!("falta «=»: {text}"))?;
+        let words: Vec<&str> = left.split_whitespace().collect();
+        let [kind, parent, child] = words[..] else {
+            return Err(format!("antes de «=» van el tipo, el padre y el hijo: {text}"));
+        };
+        let kind = match kind {
+            "dz" => ConstraintKind::Dz,
+            "dd" => ConstraintKind::Dd,
+            "ang" => ConstraintKind::Ang,
+            _ => return Err(format!("el tipo es dz, dd o ang: {text}")),
+        };
+        let parent = NodeRef::parse(parent)?;
+        let child = NodeRef::parse(child)?;
+        let right = right.trim();
+        let value = match kind {
+            ConstraintKind::Dz | ConstraintKind::Dd => length_value(right)?,
+            ConstraintKind::Ang => {
+                let number = right
+                    .strip_suffix("deg")
+                    .ok_or_else(|| format!("el ángulo va en deg: {text}"))?;
+                match number.trim().parse::<f64>() {
+                    Ok(value) if value > -180.0 && value <= 180.0 => value,
+                    _ => return Err(format!("el ángulo va de -180 (sin incluir) a 180: {text}")),
+                }
+            }
+        };
+        Ok(Self {
+            kind,
+            parent,
+            child,
+            value,
+        })
+    }
+
+    /// El texto de la cota, con las longitudes en mm y los ángulos en deg.
+    #[must_use]
+    pub fn to_text(self) -> String {
+        let round = |value: f64| (value * 1e6).round() / 1e6;
+        let (kind, value) = match self.kind {
+            ConstraintKind::Dz => ("dz", format!("{} mm", round(self.value * 1000.0))),
+            ConstraintKind::Dd => ("dd", format!("{} mm", round(self.value * 1000.0))),
+            ConstraintKind::Ang => ("ang", format!("{} deg", round(self.value))),
+        };
+        format!(
+            "{kind} {} {} = {value}",
+            self.parent.to_text(),
+            self.child.to_text()
+        )
     }
 }
 
@@ -973,6 +1102,110 @@ fn check_meridian(diagnostics: &mut Diagnostics, meridian: &Meridian) {
     ] {
         check_wall_segments(&mut problem, table, wall);
     }
+    check_constraints(diagnostics, &meridian.segments);
+}
+
+/// HM-PROJ-032: las cotas que mandan se entienden, sus nodos existen, ninguna
+/// coordenada tiene dos dueños y no hay ciclos. Que el hijo sea un nodo libre
+/// depende de la geometría y lo comprueba la interfaz.
+fn check_constraints(diagnostics: &mut Diagnostics, segments: &MeridianSegments) {
+    let mut problem = |text: String| {
+        diagnostics.push(
+            Diagnostic::error(
+                "HM-PROJ-032",
+                format!("[meridian] `segments.constraints` {text}"),
+            )
+            .with_hint("Cada cota es «dz|dd|ang padre hijo = valor unidad», como \"dz shroud:4 hub:2 = 40 mm\" o \"ang hub:3 hub:4 = 135 deg\"."),
+        );
+    };
+    let wall = |id: WallId| match id {
+        WallId::Shroud => &segments.shroud,
+        WallId::Hub => &segments.hub,
+    };
+    let exists = |node: NodeRef| node.index < wall(node.wall).cuts.len() + 2;
+    let mut valid: Vec<(Constraint, &str)> = Vec::new();
+    for text in &segments.constraints {
+        let constraint = match Constraint::parse(text) {
+            Ok(constraint) => constraint,
+            Err(error) => {
+                problem(error);
+                continue;
+            }
+        };
+        let (parent, child) = (constraint.parent, constraint.child);
+        let error = if !exists(parent) || !exists(child) {
+            Some("el nodo no existe en esa tapa")
+        } else if parent == child {
+            Some("el padre y el hijo son el mismo nodo")
+        } else if constraint.kind == ConstraintKind::Ang
+            && !(parent.wall == child.wall
+                && parent.index.abs_diff(child.index) == 1
+                && wall(parent.wall)
+                    .pieces
+                    .get(parent.index.min(child.index))
+                    .is_some_and(|piece| piece.trim() == "line"))
+        {
+            Some("el ángulo va entre los dos extremos de una recta")
+        } else {
+            None
+        };
+        match error {
+            Some(error) => problem(format!("{error}: {text}")),
+            None => valid.push((constraint, text.as_str())),
+        }
+    }
+    // Dueños: una cota de cada tipo por hijo, y como mucho dos tipos.
+    let mut owners: BTreeMap<NodeRef, [usize; 3]> = BTreeMap::new();
+    for (constraint, text) in &valid {
+        let count = owners.entry(constraint.child).or_default();
+        let slot = match constraint.kind {
+            ConstraintKind::Dz => 0,
+            ConstraintKind::Dd => 1,
+            ConstraintKind::Ang => 2,
+        };
+        count[slot] += 1;
+        if count[slot] > 1 {
+            problem(format!("esa coordenada del hijo ya tiene otra cota: {text}"));
+        } else if count.iter().all(|&n| n > 0) {
+            problem(format!("el hijo ya está fijado por dz y dd; el ángulo sobra: {text}"));
+        }
+    }
+    // Ciclos: recorrido en profundidad del grafo padre → hijo, las dos tapas juntas.
+    let mut children: BTreeMap<NodeRef, Vec<(NodeRef, &str)>> = BTreeMap::new();
+    for (constraint, text) in &valid {
+        children
+            .entry(constraint.parent)
+            .or_default()
+            .push((constraint.child, text));
+    }
+    let mut state: BTreeMap<NodeRef, bool> = BTreeMap::new(); // false: en curso; true: hecho
+    let mut cycles = Vec::new();
+    for &start in children.keys() {
+        visit(start, &children, &mut state, &mut cycles);
+    }
+    for text in cycles {
+        problem(format!("las cotas forman un ciclo: {text}"));
+    }
+}
+
+fn visit<'a>(
+    node: NodeRef,
+    children: &BTreeMap<NodeRef, Vec<(NodeRef, &'a str)>>,
+    state: &mut BTreeMap<NodeRef, bool>,
+    cycles: &mut Vec<&'a str>,
+) {
+    if state.contains_key(&node) {
+        return;
+    }
+    state.insert(node, false);
+    for &(child, text) in children.get(&node).map_or(&[][..], Vec::as_slice) {
+        match state.get(&child) {
+            Some(false) => cycles.push(text),
+            Some(true) => {}
+            None => visit(child, children, state, cycles),
+        }
+    }
+    state.insert(node, true);
 }
 
 fn check_wall_segments(

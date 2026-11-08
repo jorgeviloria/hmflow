@@ -3,8 +3,8 @@
 
 use hm_formula::Registry;
 use hm_project::{
-    Meridian, MeridianEdge, MeridianHubCut, MeridianSegments, MeridianWall, MeridianWallSegments,
-    Project, PumpType, SCHEMA_VERSION,
+    Constraint, ConstraintKind, Meridian, MeridianEdge, MeridianHubCut, MeridianSegments,
+    MeridianWall, MeridianWallSegments, NodeRef, Project, PumpType, SCHEMA_VERSION, WallId,
 };
 
 const CASING_V3: &str = include_str!("fixtures/casing_v3.hmf");
@@ -16,10 +16,14 @@ fn with(meridian: Meridian) -> Project {
 }
 
 fn problems(meridian: Meridian) -> Vec<String> {
+    problems_with("HM-PROJ-031", meridian)
+}
+
+fn problems_with(code: &str, meridian: Meridian) -> Vec<String> {
     with(meridian)
         .validate(&Registry::all())
         .iter()
-        .filter(|diagnostic| diagnostic.code == "HM-PROJ-031")
+        .filter(|diagnostic| diagnostic.code == code)
         .map(|diagnostic| diagnostic.message.clone())
         .collect()
 }
@@ -617,4 +621,147 @@ fn tangents_round_trip_and_validate() {
             "{pieces:?} {tangents:?}: {found:?}"
         );
     }
+}
+
+/// Hub con nodos 0–3 (tramos curve, line, line) y shroud con nodos 0–2
+/// (tramos curve, line), más las cotas que se pasan.
+fn with_constraints(items: &[&str]) -> Meridian {
+    Meridian {
+        segments: MeridianSegments {
+            hub: MeridianWallSegments {
+                cuts: texts(&["0.3", "0.6"]),
+                pieces: texts(&["curve", "line", "line"]),
+                ..MeridianWallSegments::default()
+            },
+            shroud: MeridianWallSegments {
+                cuts: texts(&["0.5"]),
+                pieces: texts(&["curve", "line"]),
+                ..MeridianWallSegments::default()
+            },
+            constraints: texts(items),
+        },
+        ..Meridian::default()
+    }
+}
+
+fn problems_032(meridian: Meridian) -> Vec<String> {
+    problems_with("HM-PROJ-032", meridian)
+}
+
+#[test]
+fn constraint_text_parses_and_formats() {
+    let c = Constraint::parse("dz shroud:2 hub:3 = 40 mm").unwrap();
+    assert_eq!(c.kind, ConstraintKind::Dz);
+    assert_eq!(
+        c.parent,
+        NodeRef {
+            wall: WallId::Shroud,
+            index: 2
+        }
+    );
+    assert_eq!(
+        c.child,
+        NodeRef {
+            wall: WallId::Hub,
+            index: 3
+        }
+    );
+    assert!((c.value - 0.040).abs() < 1e-12);
+    assert_eq!(c.to_text(), "dz shroud:2 hub:3 = 40 mm");
+    let a = Constraint::parse("ang hub:2 hub:3 = 135 deg").unwrap();
+    assert_eq!(a.kind, ConstraintKind::Ang);
+    assert!((a.value - 135.0).abs() < 1e-12);
+    assert_eq!(a.to_text(), "ang hub:2 hub:3 = 135 deg");
+    assert_eq!(
+        Constraint::parse("dd hub:1 hub:2 = -3 cm").unwrap().to_text(),
+        "dd hub:1 hub:2 = -30 mm"
+    );
+}
+
+#[test]
+fn constraint_text_tolerates_spacing() {
+    assert_eq!(
+        Constraint::parse("  dz  hub:1   hub:2 =40 mm ").unwrap(),
+        Constraint::parse("dz hub:1 hub:2 = 40 mm").unwrap()
+    );
+}
+
+#[test]
+fn constraints_round_trip_through_the_hmf() {
+    let project = with(with_constraints(&[
+        "dz shroud:2 hub:3 = 40 mm",
+        "ang hub:2 hub:3 = 135 deg",
+    ]));
+    let text = project.to_toml().unwrap();
+    assert!(text.contains("constraints"), "{text}");
+    assert_eq!(Project::from_toml(&text).unwrap().meridian, project.meridian);
+}
+
+#[test]
+fn constraints_stay_out_when_empty() {
+    let text = with(with_constraints(&[])).to_toml().unwrap();
+    assert!(!text.contains("constraints"), "{text}");
+}
+
+#[test]
+fn constraints_valid_set_has_no_problems() {
+    assert_eq!(
+        problems_032(with_constraints(&[
+            "dz shroud:2 hub:3 = 40 mm",
+            // Cadena shroud:2 → hub:3 → hub:2, sin ciclo.
+            "dd hub:3 hub:2 = 12 mm",
+            // El tramo 1 (nodos 1–2) es line; límite superior del ángulo.
+            "ang hub:1 hub:2 = 180 deg",
+            "dz hub:0 hub:1 = 5 mm",
+        ])),
+        Vec::<String>::new()
+    );
+}
+
+#[test]
+fn constraints_bad_texts_are_hm_proj_032() {
+    for items in [
+        // Falta «=».
+        &["dz hub:1 hub:2 40 mm"][..],
+        // Tipo desconocido.
+        &["dx hub:1 hub:2 = 40 mm"][..],
+        // Tapa desconocida.
+        &["dz tapa:1 hub:2 = 40 mm"][..],
+        // Nodo inexistente.
+        &["dz hub:1 hub:9 = 40 mm"][..],
+        // dz sin longitud.
+        &["dz hub:1 hub:2 = 40 deg"][..],
+        // ang sin deg.
+        &["ang hub:1 hub:2 = 40 mm"][..],
+        // Fuera de (−180, 180].
+        &["ang hub:1 hub:2 = -180 deg"][..],
+        // Padre = hijo.
+        &["dz hub:2 hub:2 = 1 mm"][..],
+        // Ciclo entre tapas.
+        &["dz hub:1 shroud:1 = 1 mm", "dd shroud:1 hub:1 = 1 mm"][..],
+        // La z con dos dueños.
+        &["dz hub:1 hub:2 = 1 mm", "dz hub:3 hub:2 = 2 mm"][..],
+        // Tres dueños.
+        &[
+            "dz hub:1 hub:2 = 1 mm",
+            "dd hub:1 hub:2 = 1 mm",
+            "ang hub:1 hub:2 = 45 deg",
+        ][..],
+        // El tramo 0 es curve.
+        &["ang hub:0 hub:1 = 45 deg"][..],
+        // No son vecinos.
+        &["ang hub:1 hub:3 = 45 deg"][..],
+    ] {
+        let found = problems_032(with_constraints(items));
+        assert!(
+            found
+                .iter()
+                .any(|message| message.contains("segments.constraints")),
+            "{items:?}: {found:?}"
+        );
+    }
+    // Tapa sin cortes: solo existen los nodos 0 y 1.
+    let mut meridian = with_constraints(&["dz hub:0 hub:2 = 1 mm"]);
+    meridian.segments.hub = MeridianWallSegments::default();
+    assert!(!problems_032(meridian).is_empty());
 }

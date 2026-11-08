@@ -9,6 +9,9 @@
 //! nodo que toca una curva se desliza sobre ella, para que el contorno no se
 //! rompa.
 //!
+//! Un tramo también puede ser un arco de radio dado entre sus dos nodos;
+//! para los nodos cuenta como una recta (puede haber nodos libres a su lado).
+//!
 //! Una esquina con una recta al lado se puede redondear con un radio: el
 //! nodo sigue siendo el vértice teórico y el arco tangente recorta los dos
 //! tramos al dibujar.
@@ -23,6 +26,7 @@ use hm_design::meridian::{MeridionalModel, Wall};
 use hm_project::{Meridian, MeridianWallSegments};
 
 use crate::curves::line;
+use crate::meridian_arc::{self, Arc};
 use crate::meridian_fillet::{self, Fillet, Side};
 
 /// Distancia en píxeles para tocar una tapa o un punto con el ratón.
@@ -44,8 +48,30 @@ const ARC_POINTS: usize = 40;
 /// Color de un radio que no cabe.
 const REFUSED: Color32 = Color32::from_rgb(210, 40, 40);
 
+/// Color de una cota que se escribe con un clic, como las del paso C1.
+const DIMENSION: Color32 = Color32::from_rgb(20, 90, 200);
+
 /// Color del tramo seleccionado y de las guías de ajuste.
 const SELECTED: Color32 = Color32::from_rgb(230, 120, 0);
+
+/// Qué es un tramo.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub(super) enum Piece {
+    /// La Bézier entre los `t` de sus nodos.
+    Curve,
+    /// La recta entre sus nodos.
+    Line,
+    /// El arco menor de radio |R| mm entre sus nodos; el signo, como en
+    /// [`Arc`]: positivo, curvado a la izquierda de la cuerda.
+    Arc(f64),
+}
+
+impl Piece {
+    /// Recta o arco: sus extremos no tienen por qué estar en la Bézier.
+    fn rigid(self) -> bool {
+        self != Self::Curve
+    }
+}
 
 /// Los nodos y los tramos de una tapa. Hay `cuts.len() + 2` nodos (el 0 es el
 /// arranque y el último el final) y `cuts.len() + 1` tramos; el tramo `i` va
@@ -54,8 +80,8 @@ const SELECTED: Color32 = Color32::from_rgb(230, 120, 0);
 pub(super) struct WallSegments {
     /// El `t` de cada corte sobre la Bézier, creciente.
     cuts: Vec<f64>,
-    /// Si cada tramo es recta.
-    straight: Vec<bool>,
+    /// Qué es cada tramo.
+    pieces: Vec<Piece>,
     /// La posición (z, r) en mm de cada nodo libre; `None`, sobre la Bézier.
     free: Vec<Option<[f64; 2]>>,
     /// El radio en mm de cada nodo; `None`, esquina viva.
@@ -71,6 +97,8 @@ pub(super) enum Dimension {
     Diameter,
     /// El largo de la recta hasta el nodo vecino que se indica.
     Length(usize),
+    /// El radio de un arco; el índice que la acompaña es el del tramo.
+    Arc,
 }
 
 /// Cómo queda la esquina de un nodo.
@@ -88,7 +116,7 @@ impl Default for WallSegments {
     fn default() -> Self {
         Self {
             cuts: Vec::new(),
-            straight: vec![false],
+            pieces: vec![Piece::Curve],
             free: vec![None, None],
             radius: vec![None, None],
         }
@@ -107,21 +135,23 @@ impl WallSegments {
             }
             cuts.push(t);
         }
-        let straight = if texts.pieces.is_empty() {
-            vec![false; cuts.len() + 1]
-        } else if texts.pieces.len() == cuts.len() + 1 {
-            texts
-                .pieces
-                .iter()
-                .map(|piece| match piece.trim() {
-                    "curve" => Some(false),
-                    "line" => Some(true),
-                    _ => None,
-                })
-                .collect::<Option<Vec<bool>>>()?
-        } else {
+        let count = cuts.len() + 1;
+        if !(texts.pieces.is_empty() || texts.pieces.len() == count)
+            || !(texts.arcs.is_empty() || texts.arcs.len() == count)
+        {
             return None;
-        };
+        }
+        let pieces = (0..count)
+            .map(|i| {
+                let arc = texts.arcs.get(i).map_or("", |text| text.trim());
+                match (texts.pieces.get(i).map_or("curve", |piece| piece.trim()), arc) {
+                    ("curve", "") => Some(Piece::Curve),
+                    ("line", "") => Some(Piece::Line),
+                    ("arc", text) => length_mm(text).filter(|r| *r != 0.0).map(Piece::Arc),
+                    _ => None,
+                }
+            })
+            .collect::<Option<Vec<Piece>>>()?;
         let free = if texts.nodes.is_empty() {
             vec![None; cuts.len() + 2]
         } else if texts.nodes.len() == cuts.len() + 2 {
@@ -158,7 +188,7 @@ impl WallSegments {
         };
         let mut state = Self {
             cuts,
-            straight,
+            pieces,
             free,
             radius,
         };
@@ -170,10 +200,26 @@ impl WallSegments {
     /// libres, `nodes` también.
     fn to_texts(&self) -> MeridianWallSegments {
         let cuts = self.cuts.iter().map(|t| trimmed(*t, 6)).collect();
-        let pieces = if self.has_straight() {
-            self.straight
+        let pieces = if self.has_rigid() {
+            self.pieces
                 .iter()
-                .map(|straight| if *straight { "line" } else { "curve" }.to_string())
+                .map(|piece| match piece {
+                    Piece::Curve => "curve",
+                    Piece::Line => "line",
+                    Piece::Arc(_) => "arc",
+                })
+                .map(str::to_string)
+                .collect()
+        } else {
+            Vec::new()
+        };
+        let arcs = if self.pieces.iter().any(|piece| matches!(piece, Piece::Arc(_))) {
+            self.pieces
+                .iter()
+                .map(|piece| match piece {
+                    Piece::Arc(r) => format!("{} mm", trimmed(*r, 4)),
+                    _ => String::new(),
+                })
                 .collect()
         } else {
             Vec::new()
@@ -203,7 +249,7 @@ impl WallSegments {
             pieces,
             nodes,
             radii,
-            arcs: Vec::new(),
+            arcs,
         }
     }
 
@@ -211,8 +257,9 @@ impl WallSegments {
         self.cuts.is_empty()
     }
 
-    fn has_straight(&self) -> bool {
-        self.straight.iter().any(|s| *s)
+    /// Si algún tramo es recta o arco.
+    fn has_rigid(&self) -> bool {
+        self.pieces.iter().any(|piece| piece.rigid())
     }
 
     fn node_count(&self) -> usize {
@@ -233,10 +280,11 @@ impl WallSegments {
         self.free[index].unwrap_or_else(|| point_at(points, self.node_t(index)))
     }
 
-    /// Si el nodo puede quedar libre: todos sus tramos vecinos son rectas.
+    /// Si el nodo puede quedar libre: todos sus tramos vecinos son rectas o
+    /// arcos.
     fn can_free(&self, index: usize) -> bool {
-        let left = index == 0 || self.straight[index - 1];
-        let right = index >= self.straight.len() || self.straight[index];
+        let left = index == 0 || self.pieces[index - 1].rigid();
+        let right = index >= self.pieces.len() || self.pieces[index].rigid();
         left && right
     }
 
@@ -244,7 +292,7 @@ impl WallSegments {
     /// recta al menos a un lado. Entre dos curvas la Bézier es lisa.
     fn can_round(&self, index: usize) -> bool {
         (1..=self.cuts.len()).contains(&index)
-            && (self.straight[index - 1] || self.straight[index])
+            && (self.pieces[index - 1] == Piece::Line || self.pieces[index] == Piece::Line)
     }
 
     /// Pone el radio del nodo `index` (`None` lo quita). Devuelve si cambió.
@@ -278,10 +326,11 @@ impl WallSegments {
     }
 
     /// Por qué no se puede cortar el tramo `piece` en `s` (el `t` de la
-    /// Bézier si es curva, la fracción de su largo si es recta), o `None`.
+    /// Bézier si es curva, la fracción de su largo si es recta o arco), o
+    /// `None`.
     fn cut_refusal(&self, piece: usize, s: f64) -> Option<&'static str> {
         let (start, end) = (self.node_t(piece), self.node_t(piece + 1));
-        let t = if self.straight[piece] {
+        let t = if self.pieces[piece].rigid() {
             start + (end - start) * s
         } else {
             s
@@ -291,22 +340,21 @@ impl WallSegments {
     }
 
     /// Corta el tramo `piece` en `s`. Una curva se parte en dos curvas que
-    /// dibujan lo mismo; una recta, en dos rectas con un punto libre en medio.
+    /// dibujan lo mismo; una recta, en dos rectas con un punto libre en medio;
+    /// un arco, en dos arcos del mismo radio.
     fn cut(&mut self, points: &[[f64; 2]; 5], piece: usize, s: f64) -> bool {
         if self.cut_refusal(piece, s).is_some() {
             return false;
         }
-        let straight = self.straight[piece];
-        let (t, free) = if straight {
+        let kind = self.pieces[piece];
+        let (t, free) = if kind.rigid() {
             let (start, end) = (self.node_t(piece), self.node_t(piece + 1));
-            let (a, b) = (self.node_at(points, piece), self.node_at(points, piece + 1));
-            let at = [a[0] + (b[0] - a[0]) * s, a[1] + (b[1] - a[1]) * s];
-            (start + (end - start) * s, Some(at))
+            (start + (end - start) * s, Some(self.rigid_at(points, piece, s)))
         } else {
             (s, None)
         };
         self.cuts.insert(piece, t);
-        self.straight.insert(piece, straight);
+        self.pieces.insert(piece, kind);
         self.free.insert(piece + 1, free);
         self.radius.insert(piece + 1, None);
         true
@@ -315,14 +363,89 @@ impl WallSegments {
     /// Corta en `t` sobre la Bézier, si cae en un tramo curvo.
     fn cut_at_t(&mut self, points: &[[f64; 2]; 5], t: f64) -> bool {
         let piece = self.cuts.iter().take_while(|cut| **cut < t).count();
-        !self.straight[piece] && self.cut(points, piece, t)
+        self.pieces[piece] == Piece::Curve && self.cut(points, piece, t)
     }
 
-    /// Pasa el tramo `piece` a recta, o a curva si ya lo era. Al volver a
-    /// curva, sus nodos vuelven a la Bézier.
+    /// Pasa el tramo `piece` a recta si es curva, o a curva si no. Al volver
+    /// a curva, sus nodos vuelven a la Bézier.
     fn toggle(&mut self, piece: usize) {
-        self.straight[piece] = !self.straight[piece];
+        let kind = if self.pieces[piece] == Piece::Curve {
+            Piece::Line
+        } else {
+            Piece::Curve
+        };
+        self.set_piece(piece, kind);
+    }
+
+    /// Cambia el tramo `piece` a `kind`. Devuelve si cambió.
+    fn set_piece(&mut self, piece: usize, kind: Piece) -> bool {
+        if piece >= self.pieces.len() || self.pieces[piece] == kind {
+            return false;
+        }
+        self.pieces[piece] = kind;
         self.settle();
+        true
+    }
+
+    /// El arco del tramo `piece`, si lo es y su radio cabe.
+    fn arc(&self, points: &[[f64; 2]; 5], piece: usize) -> Option<Arc> {
+        match self.pieces.get(piece) {
+            Some(Piece::Arc(r)) => {
+                Arc::new(self.node_at(points, piece), self.node_at(points, piece + 1), *r)
+            }
+            _ => None,
+        }
+    }
+
+    /// Si el tramo `piece` es un arco cuyo radio no llega a media cuerda.
+    fn arc_refused(&self, points: &[[f64; 2]; 5], piece: usize) -> bool {
+        matches!(self.pieces.get(piece), Some(Piece::Arc(_))) && self.arc(points, piece).is_none()
+    }
+
+    /// El punto en la fracción `f` de un tramo recto o en arco; un arco que
+    /// no cabe se toma por su cuerda.
+    fn rigid_at(&self, points: &[[f64; 2]; 5], piece: usize, f: f64) -> [f64; 2] {
+        if let Some(arc) = self.arc(points, piece) {
+            return arc.at(f);
+        }
+        let (a, b) = (self.node_at(points, piece), self.node_at(points, piece + 1));
+        [a[0] + (b[0] - a[0]) * f, a[1] + (b[1] - a[1]) * f]
+    }
+
+    /// El radio que se propone al pasar el tramo `piece` a arco: el del
+    /// círculo por sus dos nodos y el punto medio de la Bézier, redondeado.
+    /// Nunca menos de media cuerda.
+    fn proposed_arc(&self, points: &[[f64; 2]; 5], piece: usize) -> f64 {
+        let (a, b) = (self.node_at(points, piece), self.node_at(points, piece + 1));
+        let middle = point_at(points, (self.node_t(piece) + self.node_t(piece + 1)) / 2.0);
+        let half = distance(a, b) / 2.0;
+        let radius = meridian_arc::through(a, middle, b).unwrap_or(4.0 * half);
+        let step = if radius.abs() >= 10.0 { 1.0 } else { 0.1 };
+        let size = ((radius.abs() / step).round() * step).max((half / step).ceil() * step);
+        size.max(step).copysign(radius)
+    }
+
+    /// Pone el radio |`value`| al arco `piece`, sin cambiar hacia dónde se
+    /// curva. Devuelve si cambió.
+    fn set_arc_radius(&mut self, piece: usize, value: f64) -> bool {
+        match self.pieces.get(piece) {
+            Some(Piece::Arc(r)) if value.is_finite() && value > 0.0 => {
+                let r = *r;
+                self.set_piece(piece, Piece::Arc(value.copysign(r)))
+            }
+            _ => false,
+        }
+    }
+
+    /// Curva el arco `piece` hacia el otro lado.
+    fn flip_arc(&mut self, piece: usize) -> bool {
+        match self.pieces.get(piece) {
+            Some(Piece::Arc(r)) => {
+                let r = *r;
+                self.set_piece(piece, Piece::Arc(-r))
+            }
+            _ => false,
+        }
     }
 
     /// Lleva el nodo `index` hacia `to`: libre si puede, si no deslizándose
@@ -427,10 +550,10 @@ impl WallSegments {
     fn line_lengths(&self, points: &[[f64; 2]; 5], index: usize) -> Vec<(usize, f64)> {
         let at = self.node_at(points, index);
         let mut lengths = Vec::new();
-        if index > 0 && self.straight[index - 1] {
+        if index > 0 && self.pieces[index - 1] == Piece::Line {
             lengths.push((index - 1, distance(at, self.node_at(points, index - 1))));
         }
-        if index < self.straight.len() && self.straight[index] {
+        if index < self.pieces.len() && self.pieces[index] == Piece::Line {
             lengths.push((index + 1, distance(at, self.node_at(points, index + 1))));
         }
         lengths
@@ -458,6 +581,7 @@ impl WallSegments {
             Dimension::Diameter if value < 0.0 => false,
             Dimension::Diameter if free => self.move_node(points, index, [at[0], value / 2.0]),
             Dimension::Diameter => self.slide_to(points, index, 1, value / 2.0),
+            Dimension::Arc => self.set_arc_radius(index, value),
             Dimension::Length(other) => {
                 let neighbour = self
                     .line_lengths(points, index)
@@ -487,7 +611,8 @@ impl WallSegments {
     }
 
     /// Quita el nodo interior `index` y une sus dos tramos: recta si los dos
-    /// lo eran.
+    /// lo eran, arco (con el radio del primero que lo sea) si los dos son
+    /// rectas o arcos, y curva si no.
     fn remove_node(&mut self, index: usize) -> bool {
         if !(1..=self.cuts.len()).contains(&index) {
             return false;
@@ -495,9 +620,13 @@ impl WallSegments {
         self.cuts.remove(index - 1);
         self.free.remove(index);
         self.radius.remove(index);
-        let merged = self.straight[index - 1] && self.straight[index];
-        self.straight.remove(index);
-        self.straight[index - 1] = merged;
+        let merged = match (self.pieces[index - 1], self.pieces[index]) {
+            (Piece::Line, Piece::Line) => Piece::Line,
+            (Piece::Arc(r), other) | (other, Piece::Arc(r)) if other.rigid() => Piece::Arc(r),
+            _ => Piece::Curve,
+        };
+        self.pieces.remove(index);
+        self.pieces[index - 1] = merged;
         self.settle();
         true
     }
@@ -513,7 +642,7 @@ impl WallSegments {
                 _ => Corner::Sharp,
             })
             .collect();
-        for piece in 0..self.straight.len() {
+        for piece in 0..self.pieces.len() {
             if let (Corner::Round(start), Corner::Round(end)) =
                 (corners[piece], corners[piece + 1])
                 && start.sb + end.sa > 1.0
@@ -533,15 +662,19 @@ impl WallSegments {
         let (t_in, t_out) = (self.node_t(index - 1), self.node_t(index + 1));
         let curve_in = |s: f64| point_at(points, t - (t - t_in) * s);
         let curve_out = |s: f64| point_at(points, t + (t_out - t) * s);
-        let side_in = if self.straight[index - 1] {
-            Side::Line(self.node_at(points, index - 1))
-        } else {
-            Side::Curve(&curve_in)
+        // Un arco se ve como una curva más, recorrida desde el vértice.
+        let (arc_in, arc_out) = (self.arc(points, index - 1), self.arc(points, index));
+        let arc_in_at = |s: f64| arc_in.map_or(vertex, |arc| arc.at(1.0 - s));
+        let arc_out_at = |s: f64| arc_out.map_or(vertex, |arc| arc.at(s));
+        let side_in = match self.pieces[index - 1] {
+            Piece::Curve => Side::Curve(&curve_in),
+            _ if arc_in.is_some() => Side::Curve(&arc_in_at),
+            _ => Side::Line(self.node_at(points, index - 1)),
         };
-        let side_out = if self.straight[index] {
-            Side::Line(self.node_at(points, index + 1))
-        } else {
-            Side::Curve(&curve_out)
+        let side_out = match self.pieces[index] {
+            Piece::Curve => Side::Curve(&curve_out),
+            _ if arc_out.is_some() => Side::Curve(&arc_out_at),
+            _ => Side::Line(self.node_at(points, index + 1)),
         };
         meridian_fillet::fillet(vertex, &side_in, &side_out, radius)
     }
@@ -560,13 +693,21 @@ impl WallSegments {
             }
             _ => 0.0,
         };
-        (0..self.straight.len())
+        (0..self.pieces.len())
             .map(|piece| {
                 let (from, to) = (trim(corners[piece], true), 1.0 - trim(corners[piece + 1], false));
-                let mut polyline: Vec<[f64; 2]> = if self.straight[piece] {
-                    let (a, b) = (self.node_at(points, piece), self.node_at(points, piece + 1));
-                    let at = |f: f64| [a[0] + (b[0] - a[0]) * f, a[1] + (b[1] - a[1]) * f];
-                    vec![at(from), at(to)]
+                let mut polyline: Vec<[f64; 2]> = if self.arc(points, piece).is_some() {
+                    (0..=SEGMENT_POINTS)
+                        .map(|k| {
+                            let f = from + (to - from) * k as f64 / SEGMENT_POINTS as f64;
+                            self.rigid_at(points, piece, f)
+                        })
+                        .collect()
+                } else if self.pieces[piece].rigid() {
+                    vec![
+                        self.rigid_at(points, piece, from),
+                        self.rigid_at(points, piece, to),
+                    ]
                 } else {
                     let (start, end) = (self.node_t(piece), self.node_t(piece + 1));
                     let (start, end) = (
@@ -739,26 +880,38 @@ fn touched(
     for wall in Wall::ALL {
         let state = segments.wall(wall);
         let points = &model.params.wall(wall).points;
-        for piece in 0..state.straight.len() {
-            let hit = if state.straight[piece] {
-                let a = state.node_at(points, piece);
-                let b = state.node_at(points, piece + 1);
-                let (sa, sb) = (to_screen(plot_ui, a), to_screen(plot_ui, b));
-                let f = f64::from(nearest_on_segment(
-                    [sa.x, sa.y],
-                    [sb.x, sb.y],
-                    [screen.x, screen.y],
-                ));
-                let at = [a[0] + (b[0] - a[0]) * f, a[1] + (b[1] - a[1]) * f];
-                (
-                    Hit {
-                        wall,
-                        piece,
-                        s: f,
-                        at,
-                    },
-                    metric(at, at),
-                )
+        for piece in 0..state.pieces.len() {
+            let hit = if state.pieces[piece].rigid() {
+                // Una recta es un trozo; un arco, muchos.
+                let parts = if state.arc(points, piece).is_some() {
+                    SEGMENT_POINTS
+                } else {
+                    1
+                };
+                (0..parts)
+                    .map(|k| {
+                        let (fa, fb) = (k as f64 / parts as f64, (k + 1) as f64 / parts as f64);
+                        let sa = to_screen(plot_ui, state.rigid_at(points, piece, fa));
+                        let sb = to_screen(plot_ui, state.rigid_at(points, piece, fb));
+                        let f = f64::from(nearest_on_segment(
+                            [sa.x, sa.y],
+                            [sb.x, sb.y],
+                            [screen.x, screen.y],
+                        ));
+                        let s = fa + (fb - fa) * f;
+                        let at = state.rigid_at(points, piece, s);
+                        (
+                            Hit {
+                                wall,
+                                piece,
+                                s,
+                                at,
+                            },
+                            metric(at, at),
+                        )
+                    })
+                    .min_by(|a, b| a.1.total_cmp(&b.1))
+                    .expect("al menos un trozo")
             } else {
                 let (low, high) = (state.node_t(piece), state.node_t(piece + 1));
                 let (t, d) = nearest_t(points, [pointer.x, pointer.y], low, high, metric);
@@ -1111,8 +1264,14 @@ fn dimension_typing(ctx: &egui::Context, model: &MeridionalModel, segments: &mut
         .show(ctx, |ui| {
             egui::Frame::popup(ui.style()).show(ui, |ui| {
                 ui.horizontal(|ui| {
-                    if typing.kind == Dimension::Diameter {
-                        ui.label("Ø");
+                    match typing.kind {
+                        Dimension::Diameter => {
+                            ui.label("Ø");
+                        }
+                        Dimension::Arc => {
+                            ui.label("R");
+                        }
+                        _ => {}
                     }
                     let field = ui.add(
                         egui::TextEdit::singleline(&mut typing.text)
@@ -1158,7 +1317,7 @@ fn dimension_typing(ctx: &egui::Context, model: &MeridionalModel, segments: &mut
 /// Si la tapa tiene algún tramo en recta: entonces la Bézier hidráulica se
 /// dibuja de referencia, en gris, y el contorno mecánico encima.
 pub(super) fn reference_only(boxes: &Meridian, wall: Wall) -> bool {
-    read(boxes).wall(wall).has_straight()
+    read(boxes).wall(wall).has_rigid()
 }
 
 /// Dibuja el contorno mecánico de las tapas cortadas, el tramo seleccionado
@@ -1169,7 +1328,7 @@ pub(super) fn draw(plot_ui: &mut egui_plot::PlotUi<'_>, model: &MeridionalModel,
     let selected: Option<(Wall, usize)> = plot_ui.ctx().data(|data| data.get_temp(selected_id()));
     for wall in Wall::ALL {
         let state = segments.wall(wall);
-        if state.is_plain() && !state.has_straight() {
+        if state.is_plain() && !state.has_rigid() {
             continue;
         }
         let points = &model.params.wall(wall).points;
@@ -1213,6 +1372,37 @@ pub(super) fn draw(plot_ui: &mut egui_plot::PlotUi<'_>, model: &MeridionalModel,
                 .anchor(egui::Align2::LEFT_BOTTOM),
             );
         }
+        for piece in 0..state.pieces.len() {
+            let Piece::Arc(radius) = state.pieces[piece] else {
+                continue;
+            };
+            let at = arc_label_at(state, points, piece);
+            let refused = state.arc_refused(points, piece);
+            if refused {
+                plot_ui.line(
+                    line(
+                        "Arco que no cabe",
+                        vec![
+                            state.node_at(points, piece),
+                            state.node_at(points, piece + 1),
+                        ],
+                        REFUSED,
+                    )
+                    .width(2.5),
+                );
+            }
+            let (text, colour) = if refused {
+                (format!("R{} no cabe", trimmed(radius.abs(), 2)), REFUSED)
+            } else {
+                (format!("R{}", trimmed(radius.abs(), 2)), DIMENSION)
+            };
+            plot_ui.text(
+                egui_plot::Text::new("Arco", PlotPoint::new(at[0], at[1]), {
+                    egui::RichText::new(format!("  {text}")).color(colour)
+                })
+                .anchor(egui::Align2::LEFT_BOTTOM),
+            );
+        }
         let (mut sliding, mut free) = (Vec::new(), Vec::new());
         for index in 0..state.node_count() {
             let at = state.node_at(points, index);
@@ -1241,6 +1431,64 @@ pub(super) fn draw(plot_ui: &mut egui_plot::PlotUi<'_>, model: &MeridionalModel,
             );
         }
     }
+}
+
+/// Dónde va la cota del arco `piece`: en su punto medio, o en el de su
+/// cuerda si no cabe.
+fn arc_label_at(state: &WallSegments, points: &[[f64; 2]; 5], piece: usize) -> [f64; 2] {
+    state.rigid_at(points, piece, 0.5)
+}
+
+/// El rectángulo en pantalla de la cota de un arco, que se escribe a la
+/// derecha de `at` con «  R…».
+fn arc_label_rect(plot_ui: &egui_plot::PlotUi<'_>, at: [f64; 2]) -> egui::Rect {
+    let corner = to_screen(plot_ui, at);
+    egui::Rect::from_min_max(corner + egui::vec2(4.0, -16.0), corner + egui::vec2(70.0, 2.0))
+}
+
+/// El arco cuya cota está bajo el ratón.
+fn arc_label_under(
+    plot_ui: &egui_plot::PlotUi<'_>,
+    model: &MeridionalModel,
+    segments: &Segments,
+) -> Option<(Wall, usize)> {
+    let pointer = plot_ui.ctx().input(|input| input.pointer.interact_pos())?;
+    Wall::ALL.into_iter().find_map(|wall| {
+        let state = segments.wall(wall);
+        let points = &model.params.wall(wall).points;
+        (0..state.pieces.len())
+            .filter(|piece| matches!(state.pieces[*piece], Piece::Arc(_)))
+            .find(|piece| {
+                arc_label_rect(plot_ui, arc_label_at(state, points, *piece)).contains(pointer)
+            })
+            .map(|piece| (wall, piece))
+    })
+}
+
+/// Abre, sobre su cota, la caja para escribir el radio del arco `piece`.
+fn open_arc_typing(
+    plot_ui: &egui_plot::PlotUi<'_>,
+    model: &MeridionalModel,
+    segments: &Segments,
+    wall: Wall,
+    piece: usize,
+) {
+    let state = segments.wall(wall);
+    let Some(Piece::Arc(radius)) = state.pieces.get(piece).copied() else {
+        return;
+    };
+    let at = arc_label_at(state, &model.params.wall(wall).points, piece);
+    let typing = Typing {
+        wall,
+        index: piece,
+        kind: Dimension::Arc,
+        text: trimmed(radius.abs(), 2),
+        screen: arc_label_rect(plot_ui, at).center(),
+        fresh: true,
+    };
+    plot_ui
+        .ctx()
+        .data_mut(|data| data.insert_temp(typing_id(), Some(typing)));
 }
 
 fn target_id() -> egui::Id {
@@ -1420,7 +1668,11 @@ pub(super) fn interact(
             }
             ctx.data_mut(|data| data.insert_temp(target_id(), target));
         }
-        if response.clicked() {
+        if response.clicked()
+            && let Some((wall, piece)) = arc_label_under(plot_ui, model, &segments)
+        {
+            open_arc_typing(plot_ui, model, &segments, wall, piece);
+        } else if response.clicked() {
             // Clic en un punto: su ventana con z y r.
             if let Some((wall, index)) =
                 near_node(plot_ui, model, &segments, pointer, WallSegments::draggable)
@@ -1439,6 +1691,8 @@ pub(super) fn interact(
     }
     let target: Option<Target> = ctx.data(|data| data.get_temp(target_id())).flatten();
     let mut changed = false;
+    // El arco cuyo radio se va a escribir, al salir del menú.
+    let mut arc_typing: Option<(Wall, usize)> = None;
     response.context_menu(|ui| {
         let Some(Target { hit, node }) = target else {
             ui.label("Haz clic derecho sobre una tapa para cortarla.");
@@ -1470,14 +1724,29 @@ pub(super) fn interact(
             }
         }
         if !state.is_plain() {
-            let label = if state.straight[hit.piece] {
-                "Volver a curva"
-            } else {
-                "Convertir en recta"
-            };
-            if ui.button(label).clicked() {
-                state.toggle(hit.piece);
-                changed = true;
+            let piece = hit.piece;
+            let kind = state.pieces[piece];
+            if kind != Piece::Line && ui.button("Convertir en recta").clicked() {
+                changed |= state.set_piece(piece, Piece::Line);
+                ui.close();
+            }
+            if let Piece::Arc(_) = kind {
+                if ui.button("Cambiar el radio…").clicked() {
+                    arc_typing = Some((hit.wall, piece));
+                    ui.close();
+                }
+                if ui.button("Invertir arco").clicked() {
+                    changed |= state.flip_arc(piece);
+                    ui.close();
+                }
+            } else if ui.button("Convertir en arco…").clicked() {
+                let radius = state.proposed_arc(&points, piece);
+                changed |= state.set_piece(piece, Piece::Arc(radius));
+                arc_typing = Some((hit.wall, piece));
+                ui.close();
+            }
+            if kind != Piece::Curve && ui.button("Volver a curva").clicked() {
+                changed |= state.set_piece(piece, Piece::Curve);
                 ui.close();
             }
         }
@@ -1517,6 +1786,9 @@ pub(super) fn interact(
             data.remove::<Option<Typing>>(typing_id());
         });
     }
+    if let Some((wall, piece)) = arc_typing {
+        open_arc_typing(plot_ui, model, &segments, wall, piece);
+    }
     changed |= node_editor(plot_ui, model, &mut segments);
     changed |= dimension_typing(&ctx, model, &mut segments);
     if changed {
@@ -1528,7 +1800,8 @@ pub(super) fn interact(
 /// Solo para las capturas: `HMF_SEGMENTS="hub:0.5:1:2=60/0"` corta el cubo
 /// en `t = 0,5`, pone en recta el tramo 1 y lleva el nodo 2 (el final) a
 /// z = 60 mm, r = 0. Un quinto campo abre la ventana de ese nodo y un sexto
-/// pone radios con la forma `i=R` en mm. Cortes,
+/// pone radios con la forma `i=R` en mm; un séptimo pasa tramos a arco con
+/// la forma `i=R` (R con signo, en mm). Cortes,
 /// tramos y nodos se separan con `,`; las tapas (`shroud`, `hub`), con `;`.
 fn seed_from_env(ctx: &egui::Context, model: &MeridionalModel, boxes: &mut Meridian) -> bool {
     let seeded = egui::Id::unique("meridian_segments_seeded");
@@ -1566,7 +1839,7 @@ fn seed_from_env(ctx: &egui::Context, model: &MeridionalModel, boxes: &mut Merid
             state.cut_at_t(&points, t);
         }
         for piece in list().iter().filter_map(|i| i.parse::<usize>().ok()) {
-            if piece < state.straight.len() && !state.straight[piece] {
+            if piece < state.pieces.len() && state.pieces[piece] == Piece::Curve {
                 state.toggle(piece);
             }
         }
@@ -1589,6 +1862,14 @@ fn seed_from_env(ctx: &egui::Context, model: &MeridionalModel, boxes: &mut Merid
                 && index < state.node_count()
             {
                 state.set_radius(index, Some(radius));
+            }
+        }
+        for item in list() {
+            if let Some((piece, radius)) = item.split_once('=')
+                && let (Ok(piece), Ok(radius)) = (piece.parse::<usize>(), radius.parse::<f64>())
+                && radius != 0.0
+            {
+                state.set_piece(piece, Piece::Arc(radius));
             }
         }
         if let Some(index) = editor
@@ -1700,7 +1981,10 @@ mod tests {
         state.move_node(&POINTS, 3, [60.0, 0.0]);
         let a = state.node_at(&POINTS, 2);
         assert!(state.cut(&POINTS, 2, 0.5));
-        assert_eq!(state.straight, vec![false, true, true, true]);
+        assert_eq!(
+            state.pieces,
+            vec![Piece::Curve, Piece::Line, Piece::Line, Piece::Line]
+        );
         let middle = state.node_at(&POINTS, 3);
         assert_eq!(middle, [(a[0] + 60.0) / 2.0, a[1] / 2.0]);
         assert!(state.can_free(3));
@@ -1815,7 +2099,7 @@ mod tests {
         state.toggle(1);
         assert!(state.remove_node(1));
         assert_eq!(state.cuts, vec![0.6]);
-        assert_eq!(state.straight, vec![false, false]);
+        assert_eq!(state.pieces, vec![Piece::Curve, Piece::Curve]);
         assert!(state.remove_node(1));
         assert_eq!(state, WallSegments::default());
         assert!(!state.remove_node(0));
@@ -2007,5 +2291,111 @@ mod tests {
             u.corners(&POINTS)[1..3],
             [Corner::TooBig(15.0), Corner::TooBig(15.0)]
         );
+    }
+
+    /// Corte en 0,3 y 0,6 con el tramo del medio en arco de radio `radius`.
+    fn middle_arc(radius: f64) -> WallSegments {
+        let mut state = cut_twice();
+        assert!(state.set_piece(1, Piece::Arc(radius)));
+        state
+    }
+
+    #[test]
+    fn arcs_survive_the_texts() {
+        let mut state = middle_arc(-40.0);
+        state.toggle(2);
+        let texts = state.to_texts();
+        assert_eq!(texts.pieces, vec!["curve", "arc", "line"]);
+        assert_eq!(texts.arcs, vec!["", "-40 mm", ""]);
+        assert_eq!(WallSegments::from_texts(&texts), Some(state));
+        let mut bad = texts.clone();
+        bad.arcs = vec![String::new(), String::new(), String::new()];
+        assert_eq!(WallSegments::from_texts(&bad), None);
+    }
+
+    #[test]
+    fn an_arc_joins_its_nodes_and_lets_its_ends_go_free() {
+        let mut state = middle_arc(40.0);
+        let (a, b) = (state.node_at(&POINTS, 1), state.node_at(&POINTS, 2));
+        let polyline = &state.contour(&POINTS)[1];
+        assert!(same(polyline[0], a) && same(*polyline.last().unwrap(), b));
+        for p in polyline {
+            let arc = state.arc(&POINTS, 1).unwrap();
+            assert!((distance(*p, arc.center) - 40.0).abs() < 1e-6);
+        }
+        // Con una recta al otro lado, el nodo 2 queda libre.
+        assert!(!state.can_free(2));
+        state.toggle(2);
+        assert!(state.can_free(2));
+        assert!(state.move_node(&POINTS, 2, [45.0, 80.0]));
+        assert!(same(*state.contour(&POINTS)[1].last().unwrap(), [45.0, 80.0]));
+    }
+
+    #[test]
+    fn cutting_an_arc_gives_two_arcs_on_the_same_circle() {
+        let mut state = middle_arc(40.0);
+        let circle = state.arc(&POINTS, 1).unwrap();
+        let at = circle.at(0.5);
+        assert!(state.cut(&POINTS, 1, 0.5));
+        assert_eq!(state.pieces[1..3], [Piece::Arc(40.0), Piece::Arc(40.0)]);
+        assert!(same(state.node_at(&POINTS, 2), at));
+        for piece in [1, 2] {
+            assert!(same(state.arc(&POINTS, piece).unwrap().center, circle.center));
+        }
+        // Al quitar el corte vuelve un solo arco.
+        assert!(state.remove_node(2));
+        assert_eq!(state.pieces[1], Piece::Arc(40.0));
+    }
+
+    #[test]
+    fn the_radius_is_written_and_flipped_keeping_its_side() {
+        let mut state = middle_arc(-40.0);
+        assert!(state.set_dimension(&POINTS, 1, Dimension::Arc, 614.0));
+        assert_eq!(state.pieces[1], Piece::Arc(-614.0));
+        assert!(!state.set_dimension(&POINTS, 1, Dimension::Arc, 0.0));
+        assert!(!state.set_dimension(&POINTS, 0, Dimension::Arc, 50.0));
+        assert!(state.flip_arc(1));
+        assert_eq!(state.pieces[1], Piece::Arc(614.0));
+    }
+
+    #[test]
+    fn a_radius_shorter_than_half_the_chord_is_refused_and_drawn_straight() {
+        let state = middle_arc(1.0);
+        assert!(state.arc_refused(&POINTS, 1));
+        let polyline = &state.contour(&POINTS)[1];
+        assert_eq!(polyline.len(), 2);
+    }
+
+    #[test]
+    fn the_proposed_arc_looks_like_the_curve() {
+        let state = cut_twice();
+        let radius = state.proposed_arc(&POINTS, 1);
+        let mut arc_state = state.clone();
+        arc_state.set_piece(1, Piece::Arc(radius));
+        let arc = arc_state.arc(&POINTS, 1).expect("el propuesto cabe");
+        let middle = point_at(&POINTS, 0.45);
+        assert!(distance(arc.at(0.5), middle) < 1.0, "{radius}");
+        assert_eq!(radius, radius.round());
+    }
+
+    #[test]
+    fn a_corner_between_a_line_and_an_arc_takes_a_radius() {
+        let mut state = middle_arc(40.0);
+        state.toggle(2);
+        assert!(state.can_round(2));
+        assert!(state.set_radius(2, Some(2.0)));
+        let Corner::Round(f) = state.corners(&POINTS)[2] else {
+            panic!("debería caber");
+        };
+        // Tangente al arco: los centros quedan a 40 ± 2 y la tangencia está
+        // sobre el arco.
+        let arc = state.arc(&POINTS, 1).unwrap();
+        let gap = distance(f.center, arc.center);
+        assert!((gap - 38.0).abs() < 1e-3 || (gap - 42.0).abs() < 1e-3, "{gap} {f:?}");
+        assert!((distance(f.a, arc.center) - 40.0).abs() < 1e-3, "{f:?}");
+        // Entre dos arcos no hay redondeo.
+        let mut both = middle_arc(40.0);
+        both.set_piece(2, Piece::Arc(40.0));
+        assert!(!both.can_round(2));
     }
 }

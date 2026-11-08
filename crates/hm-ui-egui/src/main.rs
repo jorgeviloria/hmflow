@@ -9,6 +9,7 @@ mod diagnostics;
 mod inputs;
 mod inspector;
 mod meridian;
+mod meridian_arc;
 mod meridian_cut;
 mod meridian_fillet;
 mod meridian_segments;

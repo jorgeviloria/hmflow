@@ -137,6 +137,42 @@ impl EdgeEdit {
     }
 }
 
+/// Nombre de la curva del recorte del cubo.
+pub const CUT_NAME: &str = "Corte del cubo";
+
+/// Cómo termina el recorte del cubo.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum CutMode {
+    /// La cara del recorte baja hasta el eje: cubo cerrado.
+    #[default]
+    Closed,
+    /// Agujero pasante para el eje, con avellanado y chaflán opcionales.
+    Through,
+}
+
+/// El recorte del cubo editado. Es geometría mecánica: no entra en nada
+/// hidráulico.
+#[derive(Debug, Clone, Copy, Default, PartialEq)]
+pub struct HubCutEdit {
+    /// z de la cara del recorte, en mm. `None`: sin recorte.
+    pub z: Option<f64>,
+    pub mode: CutMode,
+    /// Diámetro del agujero del eje, en mm (solo pasante).
+    pub shaft_diameter: Option<f64>,
+    /// Diámetro y profundidad del avellanado, en mm (solo pasante).
+    pub counterbore_diameter: Option<f64>,
+    pub counterbore_depth: Option<f64>,
+    /// Chaflán a 45° del agujero, en mm (solo pasante).
+    pub chamfer: Option<f64>,
+}
+
+impl HubCutEdit {
+    #[must_use]
+    pub fn is_active(&self) -> bool {
+        self.z.is_some()
+    }
+}
+
 /// Lo editado del corte.
 #[derive(Debug, Clone, Copy, Default, PartialEq)]
 pub struct MeridianEdits {
@@ -152,6 +188,8 @@ pub struct MeridianEdits {
     pub edge: EdgeEdit,
     pub shroud: WallEdit,
     pub hub: WallEdit,
+    /// Recorte mecánico del cubo, sin efecto en el perfil hidráulico.
+    pub hub_cut: HubCutEdit,
 }
 
 impl MeridianEdits {
@@ -211,6 +249,18 @@ pub struct EdgeShape {
     pub auto_arm_length: f64,
 }
 
+/// El recorte del cubo usado: la cara en `z`, hasta `hub_radius` (el radio de
+/// la tapa trasera en esa z), y el contorno `[z, r]` hacia el interior.
+#[derive(Debug, Clone, PartialEq)]
+pub struct HubCutShape {
+    pub z: f64,
+    pub hub_radius: f64,
+    pub mode: CutMode,
+    /// Radio del agujero del eje; 0 si el cubo es cerrado.
+    pub shaft_radius: f64,
+    pub points: Vec<[f64; 2]>,
+}
+
 /// Las cotas con que se construyó el corte, en mm.
 #[derive(Debug, Clone, PartialEq)]
 pub struct MeridianParams {
@@ -245,6 +295,8 @@ pub struct MeridianParams {
     pub r_ds: f64,
     pub shroud: WallShape,
     pub hub: WallShape,
+    /// El recorte del cubo; `None` sin recorte.
+    pub hub_cut: Option<HubCutShape>,
 }
 
 impl MeridianParams {
@@ -300,6 +352,15 @@ pub struct Handle {
 }
 
 impl MeridionalModel {
+    /// El punto arrastrable del recorte, `[z, hub_radius]`.
+    #[must_use]
+    pub fn cut_handle(&self) -> Option<[f64; 2]> {
+        self.params
+            .hub_cut
+            .as_ref()
+            .map(|cut| [cut.z, cut.hub_radius])
+    }
+
     /// La curva con ese nombre.
     #[must_use]
     pub fn curve(&self, name: &str) -> Option<&PlanCurve> {
@@ -666,7 +727,10 @@ pub fn meridional_model_with(
         })
         .sum();
 
-    let curves = vec![
+    // El recorte es mecánico: se calcula aparte y no vuelve a lo hidráulico.
+    let hub_cut = hub_cut_shape(&rear, edge_points[1][0], &edits.hub_cut)?;
+
+    let mut curves = vec![
         PlanCurve {
             name: Wall::Shroud.name().to_string(),
             points: front,
@@ -684,6 +748,12 @@ pub fn meridional_model_with(
             points: vec![[z_e + b2, r2], [z_e, r2]],
         },
     ];
+    if let Some(cut) = &hub_cut {
+        curves.push(PlanCurve {
+            name: CUT_NAME.to_string(),
+            points: cut.points.clone(),
+        });
+    }
     Ok(MeridionalModel {
         curves,
         params: MeridianParams {
@@ -701,8 +771,116 @@ pub fn meridional_model_with(
             r_ds,
             shroud,
             hub,
+            hub_cut,
         },
     })
+}
+
+/// El contorno del recorte del cubo sobre la tapa trasera `rear`. `None` sin
+/// recorte. No toca el perfil hidráulico.
+fn hub_cut_shape(
+    rear: &[[f64; 2]],
+    edge_hub_z: f64,
+    edit: &HubCutEdit,
+) -> Result<Option<HubCutShape>, DesignError> {
+    let Some(zc) = edit.z else {
+        return Ok(None);
+    };
+    let z_end = rear[rear.len() - 1][0];
+    if !(zc.is_finite() && zc >= 0.0 && zc <= z_end) {
+        return Err(DesignError::Input(format!(
+            "recorte del cubo: z vale {zc} mm y tiene que estar entre 0 y {z_end:.2} mm, el final del cubo"
+        )));
+    }
+    if zc > edge_hub_z {
+        return Err(DesignError::Input(format!(
+            "recorte del cubo: z = {zc} mm pasa del borde de ataque, que está en z = {edge_hub_z:.2} mm sobre el cubo"
+        )));
+    }
+    let rc = rear
+        .windows(2)
+        .find(|pair| pair[0][0] <= zc && zc <= pair[1][0])
+        .map_or(rear[0][1], |pair| {
+            let span = pair[1][0] - pair[0][0];
+            if span > 0.0 {
+                pair[0][1] + (zc - pair[0][0]) / span * (pair[1][1] - pair[0][1])
+            } else {
+                pair[0][1]
+            }
+        });
+
+    if edit.mode == CutMode::Closed {
+        return Ok(Some(HubCutShape {
+            z: zc,
+            hub_radius: rc,
+            mode: CutMode::Closed,
+            shaft_radius: 0.0,
+            points: vec![[zc, rc], [zc, 0.0]],
+        }));
+    }
+
+    let Some(shaft_diameter) = edit.shaft_diameter else {
+        return Err(DesignError::Input(
+            "recorte del cubo: el recorte pasante necesita el diámetro del eje, y no hay"
+                .to_string(),
+        ));
+    };
+    let rs = shaft_diameter / 2.0;
+    if !(rs.is_finite() && rs > 0.0 && rs < rc) {
+        return Err(DesignError::Input(format!(
+            "recorte del cubo: el diámetro del eje vale {shaft_diameter} mm y su radio tiene que estar entre 0 y el radio del cubo en z = {zc} mm, {rc:.2} mm"
+        )));
+    }
+    let mut points = vec![[zc, rc]];
+    // z y radio hasta donde llega el fondo del avellanado (o la cara).
+    let (z0, widest) = if let Some(diameter) = edit.counterbore_diameter {
+        let rb = diameter / 2.0;
+        if !(rb.is_finite() && rb > rs && rb < rc) {
+            return Err(DesignError::Input(format!(
+                "recorte del cubo: el diámetro del avellanado vale {diameter} mm y su radio tiene que estar entre el del eje, {rs:.2} mm, y el del cubo, {rc:.2} mm"
+            )));
+        }
+        let depth = edit.counterbore_depth.unwrap_or(0.0);
+        if !(depth.is_finite() && depth > 0.0) {
+            return Err(DesignError::Input(format!(
+                "recorte del cubo: la profundidad del avellanado vale {depth} mm y tiene que ser positiva (diámetro {diameter} mm)"
+            )));
+        }
+        if zc + depth > z_end {
+            return Err(DesignError::Input(format!(
+                "recorte del cubo: la cara en z = {zc} mm más el avellanado de {depth} mm pasa del final del cubo, z = {z_end:.2} mm"
+            )));
+        }
+        points.extend([[zc, rb], [zc + depth, rb]]);
+        (zc + depth, rb)
+    } else {
+        (zc, rc)
+    };
+    match edit.chamfer {
+        Some(chamfer) => {
+            if !(chamfer.is_finite() && chamfer > 0.0 && chamfer <= widest - rs) {
+                return Err(DesignError::Input(format!(
+                    "recorte del cubo: el chaflán vale {chamfer} mm y tiene que ser positivo y no mayor que {:.2} mm, la diferencia entre el radio {widest:.2} mm y el del eje {rs:.2} mm",
+                    widest - rs
+                )));
+            }
+            if z0 + chamfer > z_end {
+                return Err(DesignError::Input(format!(
+                    "recorte del cubo: el chaflán de {chamfer} mm desde z = {z0} mm pasa del final del cubo, z = {z_end:.2} mm"
+                )));
+            }
+            points.extend([[z0, rs + chamfer], [z0 + chamfer, rs]]);
+        }
+        None => points.push([z0, rs]),
+    }
+    points.push([z_end, rs]);
+    Ok(Some(HubCutShape {
+        z: zc,
+        hub_radius: rc,
+        mode: CutMode::Through,
+        shaft_radius: rs,
+        points,
+    }))
 }
 
 /// Los ejes del marco de la cuerda de `from` a `to`: el unitario de la cuerda

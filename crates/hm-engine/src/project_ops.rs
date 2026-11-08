@@ -2,7 +2,7 @@
 
 use hm_core::PumpType;
 use hm_design::meridian::{
-    EdgeEdit, MeridianEdits, MeridionalModel, WallEdit, meridional_model_with,
+    EdgeEdit, HubCutEdit, MeridianEdits, MeridionalModel, WallEdit, meridional_model_with,
 };
 use hm_design::plan::{PlanModel, plan_model};
 use hm_design::{DesignInput, DesignReport, LEGACY_METHODS, METHOD, design_with_options};
@@ -332,6 +332,8 @@ pub fn meridian_edits_of(section: &hm_project::Meridian) -> MeridianEdits {
         edge: edge_edit_of(&section.edge),
         shroud: wall_edit_of(&section.shroud),
         hub: wall_edit_of(&section.hub),
+        // El recorte del cubo aún no se lee del proyecto.
+        hub_cut: HubCutEdit::default(),
     }
 }
 

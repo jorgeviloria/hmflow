@@ -4,9 +4,10 @@
 
 use std::f64::consts::PI;
 
+use hm_design::DesignError;
 use hm_design::meridian::{
-    ControlPoint, EdgeEdit, MIN_ARM, MeridianEdits, MeridionalModel, Moved, Wall, WallEdit,
-    meridional_model, meridional_model_with,
+    CUT_NAME, ControlPoint, CutMode, EdgeEdit, HubCutEdit, MIN_ARM, MeridianEdits, MeridionalModel,
+    Moved, Wall, WallEdit, meridional_model, meridional_model_with,
 };
 use hm_design::{DesignInput, DesignResult, design};
 use hm_geometry::{Bezier, Curve, Point};
@@ -430,7 +431,8 @@ fn an_inlet_wider_than_the_eye_is_refused() {
 /// Por defecto el borde de ataque es la radial del plano de entrada; con dH = 0
 /// va del eje a la tapa y su área es π·r1·r1. Con el dH del 1D es el área del 1D.
 #[test]
-fn by_default_the_leading_edge_is_the_radial_from_the_axis_and_with_the_1d_hub_it_has_the_1d_area() {
+fn by_default_the_leading_edge_is_the_radial_from_the_axis_and_with_the_1d_hub_it_has_the_1d_area()
+{
     let (result, auto) = model();
     let p = &auto.params;
     let r1 = mm(&result.d1) / 2.0;
@@ -989,4 +991,284 @@ fn a_curved_edge_starts_the_channel_with_its_own_inlet_area() {
     // Misma cuerda: la anchura de la primera estación y todas las demás igual.
     assert_eq!(after[0].width, before[0].width);
     assert_eq!(after[1..], before[1..]);
+}
+
+// --- Recorte del cubo -------------------------------------------------------
+
+/// Un diseño con el cubo más largo que el de `input()`: llega a z = 45,6 mm y
+/// a z = 37,5 mm su radio pasa de 29 mm, así que cabe el avellanado del plano
+/// de B1.
+fn big_input() -> DesignInput {
+    let q = |text: &str| parse_quantity(text).unwrap();
+    DesignInput {
+        q: q("175 m3/h"),
+        h: q("70 m"),
+        ..input()
+    }
+}
+
+/// Con el borde de ataque al final del cubo, para que el recorte quepa delante.
+fn far_edge(cut: HubCutEdit) -> MeridianEdits {
+    MeridianEdits {
+        edge_hub: Some(0.9),
+        hub_cut: cut,
+        ..Default::default()
+    }
+}
+
+fn closed_at(z: f64) -> HubCutEdit {
+    HubCutEdit {
+        z: Some(z),
+        ..Default::default()
+    }
+}
+
+fn rear_radius_at(model: &MeridionalModel, z: f64) -> f64 {
+    let line = points(model, "Tapa trasera");
+    line.windows(2)
+        .find(|pair| pair[0][0] <= z && z <= pair[1][0])
+        .map(|pair| {
+            let t = (z - pair[0][0]) / (pair[1][0] - pair[0][0]);
+            pair[0][1] + t * (pair[1][1] - pair[0][1])
+        })
+        .unwrap()
+}
+
+fn cut_error(edits: &MeridianEdits) -> String {
+    match meridional_model_with(&design(&input()).unwrap(), edits) {
+        Err(DesignError::Input(text)) => text,
+        other => panic!("se esperaba DesignError::Input, salió {other:?}"),
+    }
+}
+
+fn close(a: [f64; 2], b: [f64; 2]) -> bool {
+    (a[0] - b[0]).abs() < 1e-9 && (a[1] - b[1]).abs() < 1e-9
+}
+
+#[test]
+fn hub_cut_closed_goes_down_to_the_axis() {
+    let model = edited(&far_edge(closed_at(30.0)));
+    let cut = points(&model, CUT_NAME);
+    assert_eq!(cut.len(), 2);
+    assert!(close(cut[0], [30.0, rear_radius_at(&model, 30.0)]));
+    assert_eq!(cut[1], [30.0, 0.0]);
+    assert_eq!(model.curves.last().unwrap().name, CUT_NAME);
+    let shape = model.params.hub_cut.as_ref().unwrap();
+    assert_eq!(shape.mode, CutMode::Closed);
+    assert_eq!(shape.z, 30.0);
+}
+
+#[test]
+fn hub_cut_through_with_counterbore_and_chamfer_has_the_expected_contour() {
+    let result = design(&big_input()).unwrap();
+    let edits = far_edge(HubCutEdit {
+        z: Some(37.5),
+        mode: CutMode::Through,
+        shaft_diameter: Some(41.275),
+        counterbore_diameter: Some(58.0),
+        counterbore_depth: Some(7.0),
+        chamfer: Some(1.0),
+    });
+    let model = meridional_model_with(&result, &edits).unwrap();
+    let rear = points(&model, "Tapa trasera");
+    let z_end = rear[rear.len() - 1][0];
+    let rc = rear_radius_at(&model, 37.5);
+    let cut = points(&model, CUT_NAME);
+    let expected = [
+        [37.5, rc],
+        [37.5, 29.0],
+        [44.5, 29.0],
+        [44.5, 21.6375],
+        [45.5, 20.6375],
+        [z_end, 20.6375],
+    ];
+    assert_eq!(cut.len(), expected.len());
+    for (got, want) in cut.iter().zip(expected) {
+        assert!(close(*got, want), "{got:?} != {want:?}");
+    }
+    assert_eq!(model.cut_handle(), Some([37.5, rc]));
+}
+
+#[test]
+fn hub_cut_through_without_counterbore_goes_straight_to_the_shaft() {
+    let edits = far_edge(HubCutEdit {
+        z: Some(30.0),
+        mode: CutMode::Through,
+        shaft_diameter: Some(20.0),
+        ..Default::default()
+    });
+    let model = edited(&edits);
+    let cut = points(&model, CUT_NAME);
+    let z_end = points(&model, "Tapa trasera").last().unwrap()[0];
+    assert_eq!(cut.len(), 3);
+    assert_eq!(cut[1], [30.0, 10.0]);
+    assert_eq!(cut[2], [z_end, 10.0]);
+}
+
+#[test]
+fn hub_cut_leaves_the_hydraulic_profile_untouched() {
+    let plain = edited(&MeridianEdits {
+        edge_hub: Some(0.9),
+        ..Default::default()
+    });
+    let cut = edited(&far_edge(HubCutEdit {
+        z: Some(30.0),
+        mode: CutMode::Through,
+        shaft_diameter: Some(20.0),
+        counterbore_diameter: Some(26.0),
+        counterbore_depth: Some(3.0),
+        chamfer: Some(1.0),
+    }));
+    for name in [
+        "Tapa delantera",
+        "Tapa trasera",
+        "Borde de ataque",
+        "Borde de salida",
+    ] {
+        assert_eq!(plain.curve(name), cut.curve(name), "{name}");
+    }
+    assert_eq!(plain.channel(), cut.channel());
+    let (a, b) = (&plain.params, &cut.params);
+    assert_eq!(a.edge_area, b.edge_area);
+    assert_eq!(a.edge_length, b.edge_length);
+    assert_eq!(a.edge_points, b.edge_points);
+    assert_eq!(a.shroud, b.shroud);
+    assert_eq!(a.hub, b.hub);
+    assert_eq!(a.d1i, b.d1i);
+    assert_eq!(a.z_e, b.z_e);
+}
+
+#[test]
+fn hub_cut_without_cut_adds_no_curve() {
+    let (_, model) = model();
+    assert!(model.params.hub_cut.is_none());
+    assert_eq!(model.curves.len(), 4);
+    assert!(model.curve(CUT_NAME).is_none());
+    assert_eq!(model.cut_handle(), None);
+}
+
+#[test]
+fn hub_cut_at_zero_with_dh_zero_is_valid() {
+    let model = edited(&far_edge(closed_at(0.0)));
+    let cut = points(&model, CUT_NAME);
+    assert!(close(cut[0], [0.0, 0.0]));
+    assert_eq!(cut[1], [0.0, 0.0]);
+}
+
+#[test]
+fn hub_cut_past_the_leading_edge_is_an_error() {
+    let edge_z = edited(&MeridianEdits {
+        edge_hub: Some(0.5),
+        ..Default::default()
+    })
+    .params
+    .edge_points[1][0];
+    let text = cut_error(&MeridianEdits {
+        edge_hub: Some(0.5),
+        hub_cut: closed_at(edge_z + 1.0),
+        ..Default::default()
+    });
+    assert!(text.contains("borde de ataque"), "{text}");
+}
+
+#[test]
+fn hub_cut_outside_the_hub_is_an_error() {
+    let text = cut_error(&far_edge(closed_at(-1.0)));
+    assert!(text.contains("-1"), "{text}");
+    let text = cut_error(&far_edge(closed_at(1000.0)));
+    assert!(text.contains("1000"), "{text}");
+}
+
+#[test]
+fn hub_cut_shaft_not_smaller_than_hub_is_an_error() {
+    let rc = rear_radius_at(&edited(&far_edge(closed_at(30.0))), 30.0);
+    let text = cut_error(&far_edge(HubCutEdit {
+        z: Some(30.0),
+        mode: CutMode::Through,
+        shaft_diameter: Some(2.0 * rc + 1.0),
+        ..Default::default()
+    }));
+    assert!(text.contains("eje"), "{text}");
+}
+
+#[test]
+fn hub_cut_counterbore_not_larger_than_shaft_is_an_error() {
+    let text = cut_error(&far_edge(HubCutEdit {
+        z: Some(30.0),
+        mode: CutMode::Through,
+        shaft_diameter: Some(20.0),
+        counterbore_diameter: Some(20.0),
+        counterbore_depth: Some(3.0),
+        ..Default::default()
+    }));
+    assert!(text.contains("avellanado"), "{text}");
+}
+
+#[test]
+fn hub_cut_through_without_shaft_is_an_error() {
+    let text = cut_error(&far_edge(HubCutEdit {
+        z: Some(30.0),
+        mode: CutMode::Through,
+        ..Default::default()
+    }));
+    assert!(text.contains("eje"), "{text}");
+}
+
+#[test]
+fn hub_cut_counterbore_needs_depth_and_chamfer_must_fit() {
+    let base = HubCutEdit {
+        z: Some(30.0),
+        mode: CutMode::Through,
+        shaft_diameter: Some(20.0),
+        counterbore_diameter: Some(26.0),
+        counterbore_depth: Some(3.0),
+        chamfer: Some(1.0),
+    };
+    let text = cut_error(&far_edge(HubCutEdit {
+        counterbore_depth: None,
+        ..base
+    }));
+    assert!(text.contains("profundidad"), "{text}");
+    let text = cut_error(&far_edge(HubCutEdit {
+        chamfer: Some(4.0),
+        ..base
+    }));
+    assert!(text.contains("chaflán"), "{text}");
+    let text = cut_error(&far_edge(HubCutEdit {
+        chamfer: Some(0.0),
+        ..base
+    }));
+    assert!(text.contains("chaflán"), "{text}");
+}
+
+#[test]
+fn hub_cut_closed_ignores_counterbore_and_chamfer() {
+    let model = edited(&far_edge(HubCutEdit {
+        z: Some(30.0),
+        mode: CutMode::Closed,
+        shaft_diameter: Some(1000.0),
+        counterbore_diameter: Some(1.0),
+        counterbore_depth: Some(-5.0),
+        chamfer: Some(-2.0),
+    }));
+    assert_eq!(points(&model, CUT_NAME).len(), 2);
+}
+
+#[test]
+fn hub_cut_follows_the_hub_when_the_edge_changes() {
+    let edits = MeridianEdits {
+        edge_hub: Some(0.7),
+        hub_cut: closed_at(30.0),
+        ..Default::default()
+    };
+    let model = edited(&edits);
+    let cut = points(&model, CUT_NAME);
+    assert!(close(cut[0], [30.0, rear_radius_at(&model, 30.0)]));
+}
+
+#[test]
+fn cut_handle_is_the_face_top_point() {
+    let model = edited(&far_edge(closed_at(30.0)));
+    let rc = rear_radius_at(&model, 30.0);
+    assert!(close(model.cut_handle().unwrap(), [30.0, rc]));
 }

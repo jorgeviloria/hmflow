@@ -93,6 +93,18 @@ impl Constraints {
         {
             return Some("esa cota ya la fija otra");
         }
+        if new.kind == ConstraintKind::Ang {
+            let (wall, parent, child) = (new.child.wall, new.parent.index, new.child.index);
+            if new.parent.wall != wall
+                || parent.abs_diff(child) != 1
+                || !walls[wall_index(wall_of(wall))].is_line(parent.min(child))
+            {
+                return Some("el ángulo es de una recta: padre e hijo son sus dos extremos");
+            }
+            if self.owned(wall_of(wall), child).iter().all(Option::is_some) {
+                return Some("el hijo ya tiene z y Ø fijadas: el ángulo sobra");
+            }
+        }
         if self.reaches(walls, new.parent, new.child) {
             return Some("haría un ciclo");
         }
@@ -217,41 +229,129 @@ impl Constraints {
         self.all().any(|c| c.child == node)
     }
 
-    /// El padre que fija cada coordenada (z, Ø) del nodo `index` de `wall`,
-    /// si una cota Δz o ΔØ la manda. El ángulo aún no se aplica.
-    pub(super) fn fixing(&self, wall: Wall, index: usize) -> [Option<NodeRef>; 2] {
-        let node = NodeRef {
-            wall: id_of(wall),
-            index,
-        };
-        let mut fixed = [None; 2];
+    /// Las coordenadas (z, Ø) del nodo `index` de `wall` que fijan una Δz o
+    /// una ΔØ, con su padre.
+    fn owned(&self, wall: Wall, index: usize) -> [Option<NodeRef>; 2] {
+        let node = node_of(wall, index);
+        let mut owned = [None; 2];
         for constraint in self.all().filter(|c| c.child == node) {
             match constraint.kind {
-                ConstraintKind::Dz => fixed[0] = Some(constraint.parent),
-                ConstraintKind::Dd => fixed[1] = Some(constraint.parent),
+                ConstraintKind::Dz => owned[0] = Some(constraint.parent),
+                ConstraintKind::Dd => owned[1] = Some(constraint.parent),
                 ConstraintKind::Ang => {}
+            }
+        }
+        owned
+    }
+
+    /// El padre y el tipo de la cota que fija cada coordenada (z, Ø) del nodo
+    /// `index` de `wall`. Un ángulo fija la que deriva de la otra.
+    pub(super) fn fixing(
+        &self,
+        wall: Wall,
+        index: usize,
+    ) -> [Option<(NodeRef, ConstraintKind)>; 2] {
+        let owned = self.owned(wall, index);
+        let mut fixed = [
+            owned[0].map(|parent| (parent, ConstraintKind::Dz)),
+            owned[1].map(|parent| (parent, ConstraintKind::Dd)),
+        ];
+        let node = node_of(wall, index);
+        for constraint in self
+            .all()
+            .filter(|c| c.child == node && c.kind == ConstraintKind::Ang)
+        {
+            let flags = [owned[0].is_some(), owned[1].is_some()];
+            if let Some(axis) = derived_axis(constraint.value, flags) {
+                fixed[axis] = Some((constraint.parent, ConstraintKind::Ang));
             }
         }
         fixed
     }
 
-    /// Las cotas Δz y ΔØ, con su índice en la lista.
+    /// Si la recta `piece` de `wall` tiene un ángulo que manda.
+    pub(super) fn has_angle(&self, wall: Wall, piece: usize) -> bool {
+        let id = id_of(wall);
+        self.all().any(|c| {
+            c.kind == ConstraintKind::Ang
+                && c.parent.wall == id
+                && c.child.wall == id
+                && c.parent.index.min(c.child.index) == piece
+        })
+    }
+
+    /// Quita los ángulos de la recta `piece` de `wall`, que ya no lo es.
+    /// Devuelve cuántos quitó.
+    pub(super) fn line_lost(&mut self, wall: Wall, piece: usize) -> usize {
+        let id = id_of(wall);
+        let before = self.items.len();
+        self.items.retain(|item| {
+            !matches!(item, Item::Read(c, _) if c.kind == ConstraintKind::Ang
+                && c.parent.wall == id
+                && c.child.wall == id
+                && c.parent.index.min(c.child.index) == piece)
+        });
+        before - self.items.len()
+    }
+
+    /// Las cotas que se entienden, con su índice en la lista.
     pub(super) fn iter(&self) -> impl Iterator<Item = (usize, &Constraint)> {
         self.items
             .iter()
             .enumerate()
             .filter_map(|(index, item)| match item {
-                Item::Read(constraint, _) if constraint.kind != ConstraintKind::Ang => {
-                    Some((index, constraint))
-                }
-                _ => None,
+                Item::Read(constraint, _) => Some((index, constraint)),
+                Item::Kept(_) => None,
             })
+    }
+}
+
+/// El valor de una cota como se escribe: mm para Δz y ΔØ, grados para el
+/// ángulo.
+pub(super) fn shown(constraint: &Constraint) -> f64 {
+    if constraint.kind == ConstraintKind::Ang {
+        constraint.value
+    } else {
+        constraint.value * 1000.0
+    }
+}
+
+/// Lo contrario de `shown`: el valor guardado de lo escrito. El ángulo se
+/// lleva a (−180, 180].
+fn stored(kind: ConstraintKind, typed: f64) -> f64 {
+    if kind == ConstraintKind::Ang {
+        let mut angle = typed % 360.0;
+        if angle > 180.0 {
+            angle -= 360.0;
+        } else if angle <= -180.0 {
+            angle += 360.0;
+        }
+        angle
+    } else {
+        typed / 1000.0
+    }
+}
+
+/// La coordenada (0 z, 1 Ø) que deriva un ángulo `value` (grados) del hijo, o
+/// `None` si no hay ninguna libre. `owned` dice cuáles manda ya una Δz o una
+/// ΔØ. Sin ellas se conserva la que menos cambia: con menos de 45° contra el
+/// eje, la z.
+fn derived_axis(value: f64, owned: [bool; 2]) -> Option<usize> {
+    match owned {
+        [true, true] => None,
+        [true, false] => Some(1),
+        [false, true] => Some(0),
+        [false, false] => {
+            let angle = value.abs();
+            let acute = if angle > 90.0 { 180.0 - angle } else { angle };
+            Some(usize::from(acute < 45.0))
+        }
     }
 }
 
 /// `to` con las coordenadas que manda una cota en su valor de `at`: el
 /// arrastre de un hijo solo recorre la que queda libre.
-pub(super) fn lock_fixed(fixed: [Option<NodeRef>; 2], at: [f64; 2], mut to: [f64; 2]) -> [f64; 2] {
+pub(super) fn lock_fixed<T>(fixed: [Option<T>; 2], at: [f64; 2], mut to: [f64; 2]) -> [f64; 2] {
     for axis in 0..2 {
         if fixed[axis].is_some() {
             to[axis] = at[axis];
@@ -261,8 +361,12 @@ pub(super) fn lock_fixed(fixed: [Option<NodeRef>; 2], at: [f64; 2], mut to: [f64
 }
 
 /// Por qué una coordenada no se escribe: la fija una cota desde `parent`.
-pub(super) fn fixed_reason(axis: usize, parent: NodeRef) -> String {
-    let kind = if axis == 0 { "Δz" } else { "ΔØ" };
+pub(super) fn fixed_reason(parent: NodeRef, kind: ConstraintKind) -> String {
+    let kind = match kind {
+        ConstraintKind::Dz => "Δz",
+        ConstraintKind::Dd => "ΔØ",
+        ConstraintKind::Ang => "el ángulo",
+    };
     let wall = match parent.wall {
         WallId::Hub => "hub",
         WallId::Shroud => "shroud",
@@ -382,6 +486,17 @@ fn dimension(
     colour: Color32,
 ) -> egui::Rect {
     plot_ui.line(line("Cota que manda", ends.to_vec(), colour).width(1.0));
+    label_between(plot_ui, ends, text, colour)
+}
+
+/// El texto de una cota a mitad de `ends`, sin línea. Devuelve su rectángulo
+/// en pantalla.
+fn label_between(
+    plot_ui: &mut egui_plot::PlotUi<'_>,
+    ends: [[f64; 2]; 2],
+    text: String,
+    colour: Color32,
+) -> egui::Rect {
     let middle = PlotPoint::new(
         (ends[0][0] + ends[1][0]) / 2.0,
         (ends[0][1] + ends[1][1]) / 2.0,
@@ -397,6 +512,12 @@ fn dimension(
     );
     let screen = plot_ui.screen_from_plot(middle);
     egui::Rect::from_center_size(screen - egui::vec2(0.0, 7.0), egui::vec2(width, 14.0))
+}
+
+/// El ángulo agudo que hace una recta de dirección `value` (grados) con el eje.
+fn acute(value: f64) -> f64 {
+    let angle = value.abs();
+    if angle > 90.0 { 180.0 - angle } else { angle }
 }
 
 fn mm_text(value: f64) -> String {
@@ -425,18 +546,51 @@ pub(super) fn draw(
         ) else {
             continue;
         };
-        let symbol = if constraint.kind == ConstraintKind::Dz {
-            "Δz"
-        } else {
-            "ΔØ"
+        let label = match constraint.kind {
+            ConstraintKind::Dz => format!("Δz {}", mm_text(shown(constraint))),
+            ConstraintKind::Dd => format!("ΔØ {}", mm_text(shown(constraint))),
+            // En pantalla, el ángulo agudo con el eje; el signo se guarda.
+            ConstraintKind::Ang => format!("{}°", trimmed(acute(constraint.value), 1)),
         };
-        let label = format!("{symbol} {}", mm_text(constraint.value * 1000.0));
         let (colour, text) = match problems.iter().find(|problem| problem.index == index) {
             Some(problem) => (BROKEN, format!("{label} · {}", problem.reason)),
             None => (COMMANDING, label),
         };
-        let rect = dimension(plot_ui, ends(constraint.kind, from, to), text, colour);
+        let rect = if constraint.kind == ConstraintKind::Ang {
+            label_between(plot_ui, [from, to], text, colour)
+        } else {
+            dimension(plot_ui, ends(constraint.kind, from, to), text, colour)
+        };
         values.push((rect, Value::Existing(index)));
+    }
+    // Junto a cada hijo: qué tiene fijado.
+    let mut children: Vec<NodeRef> = segments.constraints.iter().map(|(_, c)| c.child).collect();
+    children.sort();
+    children.dedup();
+    for child in children {
+        let Some(at) = position(&walls, points, child) else {
+            continue;
+        };
+        let fixed = segments
+            .constraints
+            .fixing(wall_of(child.wall), child.index)
+            .map(|axis| axis.is_some());
+        let mark = match fixed {
+            [true, true] => "[z Ø]",
+            [true, false] => "[z]",
+            [false, true] => "[Ø]",
+            [false, false] => continue,
+        };
+        plot_ui.text(
+            egui_plot::Text::new(
+                "Cota que manda",
+                PlotPoint::new(at[0], at[1]),
+                egui::RichText::new(format!(" {mark}"))
+                    .small()
+                    .color(COMMANDING),
+            )
+            .anchor(egui::Align2::LEFT_BOTTOM),
+        );
     }
     let open = open.map(|(wall, index)| node_of(wall, index));
     let pending: Option<Pending> = ctx.data(|data| data.get_temp(pending_id())).flatten();
@@ -509,6 +663,74 @@ pub(super) fn pick_parent(
     });
 }
 
+/// El par (hijo, padre) de un ángulo sobre la recta `piece` de `wall`: el
+/// extremo libre es el hijo; si lo son los dos, el más cercano al clic
+/// (`s`, de 0 a 1 a lo largo del tramo). O por qué no se puede.
+pub(super) fn angle_pair(
+    walls: &[WallSegments; 2],
+    constraints: &Constraints,
+    wall: Wall,
+    piece: usize,
+    s: f64,
+) -> Result<Pending, &'static str> {
+    let state = &walls[wall_index(wall)];
+    if !state.is_line(piece) {
+        return Err("el ángulo es de una recta");
+    }
+    let (start, end) = (node_of(wall, piece), node_of(wall, piece + 1));
+    let pair = |child, parent| Pending { child, parent };
+    let candidates = [pair(start, end), pair(end, start)];
+    let probe = |pending: &Pending| {
+        let new = Constraint {
+            kind: ConstraintKind::Ang,
+            parent: pending.parent,
+            child: pending.child,
+            value: 0.0,
+        };
+        constraints.refusal(walls, &new)
+    };
+    let mut allowed: Vec<Pending> = candidates
+        .into_iter()
+        .filter(|pending| probe(pending).is_none())
+        .collect();
+    match allowed.len() {
+        0 => Err(probe(&candidates[0]).unwrap_or("no se puede fijar el ángulo")),
+        1 => Ok(allowed.remove(0)),
+        _ => Ok(if s < 0.5 {
+            candidates[0]
+        } else {
+            candidates[1]
+        }),
+    }
+}
+
+/// Abre la caja del ángulo de la recta `piece` con el que tiene hoy.
+pub(super) fn start_angle(
+    ctx: &egui::Context,
+    model: &MeridionalModel,
+    walls: &[WallSegments; 2],
+    pending: Pending,
+) {
+    let points = wall_points(model);
+    let (Some(from), Some(to), Some(screen)) = (
+        position(walls, points, pending.parent),
+        position(walls, points, pending.child),
+        ctx.input(|input| input.pointer.interact_pos()),
+    ) else {
+        return;
+    };
+    let angle = (to[1] - from[1]).atan2(to[0] - from[0]).to_degrees();
+    let writing = Writing {
+        value: Value::New(ConstraintKind::Ang),
+        pending: Some(pending),
+        text: trimmed(stored(ConstraintKind::Ang, angle), 1),
+        screen,
+        fresh: true,
+        refusal: None,
+    };
+    ctx.data_mut(|data| data.insert_temp(writing_id(), Some(writing)));
+}
+
 /// Se intentó arrastrar un hijo con z y Ø fijadas: el aviso junto a su punto.
 pub(super) fn refuse_drag(ctx: &egui::Context, wall: Wall, index: usize) {
     ctx.data_mut(|data| {
@@ -556,7 +778,7 @@ pub(super) fn click(ctx: &egui::Context, model: &MeridionalModel, segments: &Seg
             .constraints
             .iter()
             .find(|(i, _)| *i == index)
-            .map(|(_, c)| trimmed(c.value * 1000.0, 2)),
+            .map(|(_, c)| trimmed(shown(c), 2)),
         Value::New(kind) => pending.map(|pending| {
             let (dz, dd) = measured(&segments.walls, points, &pending);
             trimmed(if kind == ConstraintKind::Dz { dz } else { dd }, 2)
@@ -616,17 +838,21 @@ pub(super) fn writing(ctx: &egui::Context, segments: &mut Segments) -> bool {
                             .find(|(i, _)| *i == index)
                             .map(|(_, c)| c.kind),
                     };
-                    ui.label(if kind == Some(ConstraintKind::Dz) {
-                        "Δz"
-                    } else {
-                        "ΔØ"
+                    ui.label(match kind {
+                        Some(ConstraintKind::Dz) => "Δz",
+                        Some(ConstraintKind::Ang) => "∠",
+                        _ => "ΔØ",
                     });
                     let field = ui.add(
                         egui::TextEdit::singleline(&mut writing.text)
                             .id(field_id)
                             .desired_width(72.0),
                     );
-                    ui.label("mm");
+                    ui.label(if kind == Some(ConstraintKind::Ang) {
+                        "°"
+                    } else {
+                        "mm"
+                    });
                     if writing.fresh {
                         field.request_focus();
                     } else if field.lost_focus() {
@@ -681,11 +907,15 @@ fn commit(
                 .constraints
                 .iter()
                 .find(|(i, _)| *i == index)
-                .is_some_and(|(_, c)| (c.value * 1000.0 - mm).abs() < 1e-9);
+                .is_some_and(|(_, c)| (shown(c) - mm).abs() < 1e-9);
             if same {
                 return Ok(false);
             }
-            segments.constraints.set_value(index, mm / 1000.0);
+            let kind = segments.constraints.iter().find(|(i, _)| *i == index);
+            if let Some((_, c)) = kind {
+                let value = stored(c.kind, mm);
+                segments.constraints.set_value(index, value);
+            }
             Ok(true)
         }
         (Value::New(kind), Some(pending)) => {
@@ -693,7 +923,7 @@ fn commit(
                 kind,
                 parent: pending.parent,
                 child: pending.child,
-                value: mm / 1000.0,
+                value: stored(kind, mm),
             };
             match segments.constraints.refusal(&segments.walls, &new) {
                 None => {
@@ -802,7 +1032,14 @@ pub(super) fn apply(
     while !pending.is_empty() {
         let ready: Vec<(usize, Constraint)> = pending
             .iter()
-            .filter(|(_, c)| !pending.iter().any(|(_, other)| other.child == c.parent))
+            .filter(|(_, c)| {
+                !pending.iter().any(|(_, other)| other.child == c.parent)
+                    // El ángulo se cumple tras las Δz y ΔØ de su hijo.
+                    && !(c.kind == ConstraintKind::Ang
+                        && pending
+                            .iter()
+                            .any(|(_, o)| o.child == c.child && o.kind != ConstraintKind::Ang))
+            })
             .copied()
             .collect();
         if ready.is_empty() {
@@ -818,7 +1055,7 @@ pub(super) fn apply(
             let result = if constraints.reaches(walls, constraint.parent, constraint.child) {
                 Err("forma un ciclo".into())
             } else {
-                apply_one(&constraint, points, walls)
+                apply_one(&constraint, constraints, points, walls)
             };
             if let Err(reason) = result {
                 problems.push(Problem { index, reason });
@@ -832,6 +1069,7 @@ pub(super) fn apply(
 /// Aplica una cota, o dice por qué no se puede.
 fn apply_one(
     constraint: &Constraint,
+    constraints: &Constraints,
     points: [&[[f64; 2]; 5]; 2],
     walls: &mut [WallSegments; 2],
 ) -> Result<(), String> {
@@ -848,7 +1086,27 @@ fn apply_one(
     let (axis, value) = match constraint.kind {
         ConstraintKind::Dz => (0, from[0] + constraint.value * 1000.0),
         ConstraintKind::Dd => (1, from[1] + constraint.value * 500.0),
-        ConstraintKind::Ang => return Ok(()),
+        ConstraintKind::Ang => {
+            let owned = constraints.owned(wall_of(constraint.child.wall), child);
+            let flags = [owned[0].is_some(), owned[1].is_some()];
+            let Some(axis) = derived_axis(constraint.value, flags) else {
+                return Ok(());
+            };
+            let at = walls[child_wall].node_at(points[child_wall], child);
+            let (sin, cos) = constraint.value.to_radians().sin_cos();
+            let value = if axis == 1 {
+                if cos.abs() < 1e-9 {
+                    return Err("con esa z fijada una recta vertical no cabe".into());
+                }
+                from[1] + (at[0] - from[0]) * sin / cos
+            } else {
+                if sin.abs() < 1e-9 {
+                    return Err("con ese Ø fijado una recta horizontal no cabe".into());
+                }
+                from[0] + (at[1] - from[1]) * cos / sin
+            };
+            (axis, value)
+        }
     };
     if axis == 1 && value < 0.0 {
         let diameter = trimmed(2.0 * value, 1).replace('-', "−");
@@ -909,13 +1167,19 @@ mod tests {
     #[test]
     fn fixing_tells_which_coordinates_a_child_has_fixed() {
         let constraints = with(&["dz hub:1 hub:2 = 15 mm", "dd hub:0 hub:2 = 5 mm"]);
-        let parent = |index| {
-            Some(NodeRef {
-                wall: WallId::Hub,
-                index,
-            })
+        let parent = |index, kind| {
+            Some((
+                NodeRef {
+                    wall: WallId::Hub,
+                    index,
+                },
+                kind,
+            ))
         };
-        assert_eq!(constraints.fixing(Wall::Hub, 2), [parent(1), parent(0)]);
+        assert_eq!(
+            constraints.fixing(Wall::Hub, 2),
+            [parent(1, ConstraintKind::Dz), parent(0, ConstraintKind::Dd)]
+        );
         assert_eq!(constraints.fixing(Wall::Hub, 1), [None, None]);
         assert_eq!(constraints.fixing(Wall::Shroud, 2), [None, None]);
     }
@@ -935,8 +1199,126 @@ mod tests {
             wall: WallId::Shroud,
             index: 4,
         };
-        assert_eq!(fixed_reason(0, parent), "la fija Δz desde shroud:4");
-        assert_eq!(fixed_reason(1, parent), "la fija ΔØ desde shroud:4");
+        assert_eq!(
+            fixed_reason(parent, ConstraintKind::Dz),
+            "la fija Δz desde shroud:4"
+        );
+        assert_eq!(
+            fixed_reason(parent, ConstraintKind::Dd),
+            "la fija ΔØ desde shroud:4"
+        );
+        assert_eq!(
+            fixed_reason(parent, ConstraintKind::Ang),
+            "la fija el ángulo desde shroud:4"
+        );
+    }
+
+    fn angle_of(walls: &[WallSegments; 2], from: usize, to: usize) -> f64 {
+        let (a, b) = (at(walls, Wall::Hub, from), at(walls, Wall::Hub, to));
+        (b[1] - a[1]).atan2(b[0] - a[0]).to_degrees()
+    }
+
+    #[test]
+    fn a_shallow_angle_keeps_z_and_derives_r() {
+        let mut walls = walls(three_lines());
+        let z_before = at(&walls, Wall::Hub, 2)[0];
+        let problems = apply(
+            &with(&["ang hub:1 hub:2 = 30 deg"]),
+            [&POINTS; 2],
+            &mut walls,
+        );
+        assert!(problems.is_empty());
+        assert!(close(at(&walls, Wall::Hub, 2)[0], z_before));
+        assert!((angle_of(&walls, 1, 2) - 30.0).abs() < 1e-6);
+    }
+
+    #[test]
+    fn a_steep_angle_keeps_r_and_derives_z() {
+        let mut walls = walls(three_lines());
+        let r_before = at(&walls, Wall::Hub, 2)[1];
+        let problems = apply(
+            &with(&["ang hub:1 hub:2 = -120 deg"]),
+            [&POINTS; 2],
+            &mut walls,
+        );
+        assert!(problems.is_empty());
+        assert!(close(at(&walls, Wall::Hub, 2)[1], r_before));
+        // Conservando una coordenada el hijo queda sobre la recta, a un lado u
+        // otro del padre: el ángulo se cumple módulo 180°.
+        assert!(
+            (angle_of(&walls, 1, 2) + 120.0)
+                .rem_euclid(180.0)
+                .min(180.0 - (angle_of(&walls, 1, 2) + 120.0).rem_euclid(180.0))
+                < 1e-6
+        );
+    }
+
+    #[test]
+    fn a_dz_and_an_angle_leave_the_child_complete() {
+        let mut walls = walls(three_lines());
+        // El ángulo va primero en el archivo: se cumple después igualmente.
+        let constraints = with(&["ang hub:1 hub:2 = 80 deg", "dz hub:0 hub:2 = 40 mm"]);
+        let problems = apply(&constraints, [&POINTS; 2], &mut walls);
+        assert!(problems.is_empty());
+        let z0 = at(&walls, Wall::Hub, 0)[0];
+        assert!(close(at(&walls, Wall::Hub, 2)[0], z0 + 40.0));
+        assert!((angle_of(&walls, 1, 2) - 80.0).abs() < 1e-6);
+        let fixed = constraints.fixing(Wall::Hub, 2);
+        assert_eq!(fixed[0].map(|f| f.1), Some(ConstraintKind::Dz));
+        assert_eq!(fixed[1].map(|f| f.1), Some(ConstraintKind::Ang));
+    }
+
+    #[test]
+    fn an_angle_alone_fixes_the_derived_coordinate() {
+        let constraints = with(&["ang hub:1 hub:2 = 30 deg"]);
+        let fixed = constraints.fixing(Wall::Hub, 2);
+        assert!(fixed[0].is_none());
+        assert_eq!(fixed[1].map(|f| f.1), Some(ConstraintKind::Ang));
+    }
+
+    #[test]
+    fn a_vertical_line_cannot_keep_a_fixed_z() {
+        let mut walls = walls(three_lines());
+        let constraints = with(&["dz hub:0 hub:2 = 40 mm", "ang hub:1 hub:2 = 90 deg"]);
+        let problems = apply(&constraints, [&POINTS; 2], &mut walls);
+        assert_eq!(problems.len(), 1);
+        assert_eq!(problems[0].index, 1);
+    }
+
+    #[test]
+    fn an_angle_is_refused_off_a_line_or_when_the_child_is_complete() {
+        let walls = walls(curve_then_lines());
+        let refusal = |text: &str| with(&[]).refusal(&walls, &parsed(text));
+        assert!(refusal("ang hub:2 hub:3 = 30 deg").is_none());
+        // La curva (tramo 0) no tiene ángulo; tampoco nodos que no son vecinos.
+        assert!(refusal("ang hub:0 hub:1 = 30 deg").is_some());
+        assert!(refusal("ang hub:1 hub:3 = 30 deg").is_some());
+        let both = with(&["dz hub:1 hub:3 = 5 mm", "dd hub:1 hub:3 = 5 mm"]);
+        assert!(
+            both.refusal(&walls, &parsed("ang hub:2 hub:3 = 30 deg"))
+                .is_some()
+        );
+    }
+
+    #[test]
+    fn losing_a_line_drops_its_angle_only() {
+        let mut constraints = with(&[
+            "ang hub:1 hub:2 = 30 deg",
+            "ang hub:2 hub:3 = 30 deg",
+            "dz hub:1 hub:2 = 5 mm",
+        ]);
+        assert_eq!(constraints.line_lost(Wall::Hub, 1), 1);
+        assert_eq!(
+            constraints.to_texts(),
+            ["ang hub:2 hub:3 = 30 deg", "dz hub:1 hub:2 = 5 mm"]
+        );
+    }
+
+    #[test]
+    fn an_angle_is_stored_between_minus_180_and_180() {
+        assert!(close(stored(ConstraintKind::Ang, 270.0), -90.0));
+        assert!(close(stored(ConstraintKind::Ang, -180.0), 180.0));
+        assert!(close(stored(ConstraintKind::Dz, 15.0), 0.015));
     }
 
     #[test]

@@ -507,6 +507,11 @@ impl WallSegments {
         left && right
     }
 
+    /// Si el tramo `piece` es una recta.
+    pub(super) fn is_line(&self, piece: usize) -> bool {
+        self.pieces.get(piece) == Some(&Piece::Line)
+    }
+
     /// Si el nodo es un punto libre de verdad: puede serlo y no lo lleva el
     /// círculo de una tangencia. Es lo que pide el hijo de una cota.
     pub(super) fn is_free_node(&self, index: usize) -> bool {
@@ -1336,11 +1341,11 @@ fn node_editor(
                         }
                         ui.label("mm");
                         ui.end_row();
-                        if let Some(parent) = fixed[axis] {
+                        if let Some((parent, kind)) = fixed[axis] {
                             ui.label("");
                             ui.label(
                                 egui::RichText::new(crate::meridian_constraints::fixed_reason(
-                                    axis, parent,
+                                    parent, kind,
                                 ))
                                 .small()
                                 .weak(),
@@ -2020,6 +2025,15 @@ pub(super) fn interact(
         };
         let points = model.params.wall(hit.wall).points;
         let Segments { walls, constraints } = &mut segments;
+        // Para el ángulo, que mira las dos tapas mientras `state` se edita.
+        let walls_now = walls.clone();
+        let angle = crate::meridian_constraints::angle_pair(
+            &walls_now,
+            constraints,
+            hit.wall,
+            hit.piece,
+            hit.s,
+        );
         let state = &mut walls[wall_index(hit.wall)];
         ui.label(
             egui::RichText::new(format!(
@@ -2036,6 +2050,7 @@ pub(super) fn interact(
             None => {
                 if ui.button("Cortar aquí").clicked() {
                     if state.cut(&points, hit.piece, hit.s) {
+                        constraints.line_lost(hit.wall, hit.piece);
                         constraints.node_inserted(hit.wall, hit.piece + 1);
                         crate::meridian_constraints::forget_unfinished(ui.ctx());
                         changed = true;
@@ -2051,6 +2066,27 @@ pub(super) fn interact(
         if !state.is_plain() {
             let piece = hit.piece;
             let kind = state.pieces[piece];
+            if kind == Piece::Line {
+                if constraints.has_angle(hit.wall, piece) {
+                    ui.label(
+                        egui::RichText::new("Tiene un ángulo: cortarla o cambiarla lo borra.")
+                            .small()
+                            .weak(),
+                    );
+                }
+                let pair = angle;
+                let button = ui.add_enabled(pair.is_ok(), egui::Button::new("Fijar ángulo…"));
+                match pair {
+                    Ok(pair) if button.clicked() => {
+                        crate::meridian_constraints::start_angle(ui.ctx(), model, &walls_now, pair);
+                        ui.close();
+                    }
+                    Err(reason) => {
+                        button.on_disabled_hover_text(reason);
+                    }
+                    Ok(_) => {}
+                }
+            }
             if kind != Piece::Line && ui.button("Convertir en recta").clicked() {
                 changed |= state.set_piece(piece, Piece::Line);
                 ui.close();
@@ -2093,11 +2129,13 @@ pub(super) fn interact(
                 }
             } else if ui.button("Convertir en arco…").clicked() {
                 let radius = state.proposed_arc(&points, piece);
+                constraints.line_lost(hit.wall, piece);
                 changed |= state.set_piece(piece, Piece::Arc(radius));
                 arc_typing = Some((hit.wall, piece));
                 ui.close();
             }
             if kind != Piece::Curve && ui.button("Volver a curva").clicked() {
+                constraints.line_lost(hit.wall, piece);
                 changed |= state.set_piece(piece, Piece::Curve);
                 ui.close();
             }

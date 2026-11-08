@@ -1272,3 +1272,19 @@ fn cut_handle_is_the_face_top_point() {
     let rc = rear_radius_at(&model, 30.0);
     assert!(close(model.cut_handle().unwrap(), [30.0, rc]));
 }
+
+#[test]
+fn the_cut_control_point_resolves_to_the_cut_handle_only_when_there_is_a_cut() {
+    use hm_design::meridian::CUT_CONTROL;
+    assert_eq!(
+        CUT_CONTROL,
+        ControlPoint {
+            wall: Wall::Hub,
+            index: 8
+        }
+    );
+    let model = edited(&far_edge(closed_at(30.0)));
+    assert_eq!(model.control_position(CUT_CONTROL), model.cut_handle());
+    let (_, plain) = self::model();
+    assert_eq!(plain.control_position(CUT_CONTROL), None);
+}

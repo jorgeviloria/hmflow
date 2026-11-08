@@ -317,15 +317,23 @@ pub struct MeridionalModel {
 }
 
 /// Un punto de control movible: P1, P2 o P3 de una tapa, el extremo del borde
-/// de ataque sobre ella o P1, P2 o P3 del propio borde.
+/// de ataque sobre ella, P1, P2 o P3 del propio borde o el punto del recorte
+/// del cubo ([`CUT_CONTROL`]).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct ControlPoint {
     pub wall: Wall,
     /// 1, 2 o 3 para P1, P2 y P3; 0 para el extremo del borde de ataque; 5, 6
     /// y 7 para P1, P2 y P3 de la Bézier del borde (con la tapa delantera, que
-    /// no cuenta).
+    /// no cuenta); 8 con la tapa trasera es el recorte del cubo.
     pub index: usize,
 }
+
+/// El punto de control reservado del recorte del cubo: solo se mueve en z y
+/// no es una `Handle` de las tapas ni del borde.
+pub const CUT_CONTROL: ControlPoint = ControlPoint {
+    wall: Wall::Hub,
+    index: 8,
+};
 
 /// Lo que se escribe al mover un punto de control.
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -510,6 +518,9 @@ impl MeridionalModel {
     /// Dónde está un punto de control, sea de una Bézier o del borde.
     #[must_use]
     pub fn control_position(&self, control: ControlPoint) -> Option<[f64; 2]> {
+        if control == CUT_CONTROL {
+            return self.cut_handle();
+        }
         self.handles()
             .into_iter()
             .chain(self.edge_handles())

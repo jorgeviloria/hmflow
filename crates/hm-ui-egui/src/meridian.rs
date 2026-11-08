@@ -9,8 +9,8 @@ use egui_plot::{Legend, Plot, PlotPoint, Points};
 
 use crate::curves::line;
 use hm_design::meridian::{
-    AUTO_END_ANGLE, AUTO_START_ANGLE, CUT_NAME, ChannelStation, ControlPoint, MeridianEdits,
-    MeridionalModel, Moved, Wall, meridional_model, meridional_model_with,
+    AUTO_END_ANGLE, AUTO_START_ANGLE, CUT_CONTROL, CUT_NAME, ChannelStation, ControlPoint,
+    MeridianEdits, MeridionalModel, Moved, Wall, meridional_model, meridional_model_with,
 };
 use hm_project::{Meridian, MeridianWall};
 
@@ -19,7 +19,7 @@ use crate::model::Outcome;
 /// Color de cada curva del corte, los de CFturbo: tapa delantera en verde,
 /// cubo en azul y los bordes en negro y gris oscuro. Una curva sin color
 /// asignado se dibuja igual, en gris: no desaparece.
-fn meridian_color(name: &str) -> Color32 {
+pub(super) fn meridian_color(name: &str) -> Color32 {
     match name {
         "Tapa delantera" => Color32::from_rgb(40, 130, 30),
         "Tapa trasera" => Color32::from_rgb(25, 25, 235),
@@ -85,10 +85,8 @@ fn dimensioning(model: &MeridionalModel, at: [f64; 2]) -> Dimensioning {
     let mut out = Dimensioning::default();
     // Con dH = 0 el cubo va sobre el eje y las dos referencias coinciden: un solo rótulo.
     let hub_on_axis = ri < 1e-6;
-    out.references.push((
-        0.0,
-        if hub_on_axis { "eje, dH" } else { "eje" }.to_string(),
-    ));
+    out.references
+        .push((0.0, if hub_on_axis { "eje, dH" } else { "eje" }.to_string()));
     out.references.push((r1, "dS".to_string()));
     out.references.push((r2, "d2".to_string()));
     if !hub_on_axis {
@@ -207,7 +205,7 @@ pub(super) struct History {
 
 impl History {
     /// Lo editado cambió por otra vía que no es esta pestaña: se olvida lo anterior.
-    fn follow(&mut self, now: &Meridian) {
+    pub(super) fn follow(&mut self, now: &Meridian) {
         if *now != self.last {
             self.last = now.clone();
             self.undo.clear();
@@ -216,7 +214,7 @@ impl History {
     }
 
     /// Anota un cambio hecho en la pestaña, en el instante `time`.
-    fn record(&mut self, now: &Meridian, time: f64) {
+    pub(super) fn record(&mut self, now: &Meridian, time: f64) {
         if time - self.last_change > HISTORY_GAP || self.undo.is_empty() {
             self.undo.push(self.last.clone());
             if self.undo.len() > HISTORY_STEPS {
@@ -228,7 +226,7 @@ impl History {
         self.last = now.clone();
     }
 
-    fn can_undo(&self) -> bool {
+    pub(super) fn can_undo(&self) -> bool {
         !self.undo.is_empty()
     }
 
@@ -237,7 +235,7 @@ impl History {
     }
 
     /// Vuelve al paso anterior; `false` si no hay.
-    fn undo(&mut self, boxes: &mut Meridian) -> bool {
+    pub(super) fn undo(&mut self, boxes: &mut Meridian) -> bool {
         let Some(previous) = self.undo.pop() else {
             return false;
         };
@@ -692,6 +690,7 @@ fn draw_section(
                 .filled(false),
         );
     }
+    crate::meridian_cut::draw(plot_ui, model);
     drag_handles(plot_ui, model, boxes)
 }
 
@@ -1015,8 +1014,9 @@ fn drag_handles(
 ) -> bool {
     let id = egui::Id::unique("meridian_dragged_point");
     let response = plot_ui.response().clone();
+    let nudged = crate::meridian_cut::arrows(plot_ui, model, boxes);
     let Some(pointer) = plot_ui.pointer_coordinate() else {
-        return false;
+        return nudged;
     };
     if response.drag_started() || response.clicked() {
         let screen = plot_ui.screen_from_plot(pointer);
@@ -1024,9 +1024,11 @@ fn drag_handles(
             .handles()
             .iter()
             .chain(model.edge_handles().iter())
-            .map(|handle| {
-                let at = plot_ui.screen_from_plot(PlotPoint::new(handle.at[0], handle.at[1]));
-                (handle.control, [at.x, at.y])
+            .map(|handle| (handle.control, handle.at))
+            .chain(model.cut_handle().map(|at| (CUT_CONTROL, at)))
+            .map(|(control, at)| {
+                let at = plot_ui.screen_from_plot(PlotPoint::new(at[0], at[1]));
+                (control, [at.x, at.y])
             })
             .collect();
         let grabbed = nearest(&handles, [screen.x, screen.y], GRAB_PIXELS);
@@ -1036,6 +1038,9 @@ fn drag_handles(
                 .data_mut(|data| data.insert_temp(selected_id(), control));
         }
         if response.drag_started() {
+            if grabbed == Some(CUT_CONTROL) {
+                crate::meridian_cut::start_drag(plot_ui.ctx(), model);
+            }
             plot_ui.ctx().data_mut(|data| data.insert_temp(id, grabbed));
         }
     }
@@ -1046,8 +1051,12 @@ fn drag_handles(
             .data_mut(|data| data.remove::<Option<ControlPoint>>(id));
     }
     let (Some(control), true) = (grabbed, response.dragged()) else {
-        return false;
+        return nudged;
     };
+    // El corte solo se mueve en z: sin alineaciones con los demás puntos.
+    if control == CUT_CONTROL {
+        return crate::meridian_cut::drag(plot_ui, model, boxes, pointer.x) || nudged;
+    }
     // Alineación con los demás puntos de control y con el eje: si la z o la r
     // del puntero está a pocos píxeles de las de otro, se pega y sale una guía.
     let others: Vec<[f64; 2]> = model
@@ -1097,13 +1106,13 @@ fn snap_to_alignments(
     (target, guides)
 }
 
-fn selected_id() -> egui::Id {
+pub(super) fn selected_id() -> egui::Id {
     egui::Id::unique("meridian_selected_point")
 }
 
 /// El punto de control seleccionado: el último que se tocó; al principio, P2
 /// de la tapa delantera.
-fn selected_control(ctx: &egui::Context) -> ControlPoint {
+pub(super) fn selected_control(ctx: &egui::Context) -> ControlPoint {
     ctx.data(|data| data.get_temp(selected_id()))
         .unwrap_or(ControlPoint {
             wall: Wall::Shroud,
@@ -2027,7 +2036,10 @@ mod tests {
         // la tocan.
         for name in ["Tapa delantera", "Tapa trasera"] {
             let distance = nearest_on(&model.curve(name).unwrap().points, centre).1;
-            assert!((distance - radius).abs() < 1e-3 * radius, "{name} {distance} {radius}");
+            assert!(
+                (distance - radius).abs() < 1e-3 * radius,
+                "{name} {distance} {radius}"
+            );
         }
         // No es el del plano de entrada: el borde está más adentro.
         let family = area_circles(&model, AREA_CIRCLES);

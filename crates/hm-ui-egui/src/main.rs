@@ -9,6 +9,7 @@ mod diagnostics;
 mod inputs;
 mod inspector;
 mod meridian;
+mod meridian_cut;
 mod model;
 mod plan;
 mod session;
@@ -65,6 +66,7 @@ struct App {
     reselect_requested: bool,
     /// Deshacer y rehacer de la pestaña Meridiano.
     meridian_history: meridian::History,
+    select_cut: bool,
 }
 
 /// `HMF_SCREENSHOT=ruta.ppm` (y opcionalmente `HMF_TAB=curves|geometry|meridian`)
@@ -96,6 +98,7 @@ impl App {
             }),
             reselect_requested: false,
             meridian_history: meridian::History::default(),
+            select_cut: std::env::var("HMF_SELECT").as_deref() == Ok("cut"),
         };
         // Solo para las capturas: `HMF_MERIDIAN="hub_diameter=0 mm;edge_hub=0.4"`.
         if let Ok(text) = std::env::var("HMF_MERIDIAN") {
@@ -158,6 +161,10 @@ impl App {
 
 impl eframe::App for App {
     fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
+        // Solo para las capturas: `HMF_SELECT=cut` selecciona el punto de corte.
+        if std::mem::take(&mut self.select_cut) {
+            meridian_cut::select(ui.ctx());
+        }
         if let Some(capture) = &mut self.capture {
             capture_step(ui.ctx(), capture);
         }

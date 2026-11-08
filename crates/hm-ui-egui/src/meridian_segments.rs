@@ -419,34 +419,52 @@ impl WallSegments {
     }
 
     /// Por qué no se puede proponer el contorno cerrado (cubo al eje), o
-    /// `Ok`: sin prolongación ni cierre, con P0 y P4 sobre la curva, y con
-    /// algo que prolongar hasta el eje.
-    pub(super) fn can_propose_closed(&self, points: &[[f64; 2]; 5]) -> Result<(), &'static str> {
+    /// `Ok`: sin prolongación ni cierre, con P0 y P4 sobre la curva, con el
+    /// espesor de pared del diseño (mm) y con algo que prolongar hasta el eje.
+    pub(super) fn can_propose_closed(
+        &self,
+        points: &[[f64; 2]; 5],
+        thickness: Option<f64>,
+    ) -> Result<(), &'static str> {
         if self.head + self.tail > 0 || self.closed {
             return Err("ya tiene prolongación");
         }
         if self.free[self.p0()].is_some() || self.free[self.p4()].is_some() {
             return Err("P0 y P4 deben seguir sobre la curva");
         }
+        let Some(wall) = thickness.filter(|e| e.is_finite() && *e >= 0.0) else {
+            return Err("falta el espesor de pared del diseño");
+        };
         let (start, finish) = (points[0], points[4]);
         let (start_out, finish_out) = (start[1] > MIN_LENGTH_MM, finish[1] > MIN_LENGTH_MM);
-        let apart = distance([start[0], 0.0], [finish[0], 0.0]) >= MIN_LENGTH_MM;
+        // Si P4 está en el eje no hay cara trasera: la cadena trasera no se crea.
+        let back = finish[0] + if finish_out { wall } else { 0.0 };
+        let apart = distance([start[0], 0.0], [back, 0.0]) >= MIN_LENGTH_MM;
         if !(start_out || finish_out) || (start_out && finish_out && !apart) {
             return Err("no hay nada que cerrar");
         }
         Ok(())
     }
 
-    /// Cierra el cubo al eje con rectas: de P0 al eje, de P4 al eje y una recta
-    /// entre las dos puntas.
-    pub(super) fn propose_closed(&mut self, points: &[[f64; 2]; 5]) -> Result<(), &'static str> {
-        self.can_propose_closed(points)?;
+    /// Cierra el cubo al eje con rectas: de P0 al eje; de P4 hacia atrás el
+    /// espesor de pared `thickness` (mm) y luego al eje; y una recta entre las
+    /// dos puntas. Con espesor 0 baja en vertical desde P4.
+    pub(super) fn propose_closed(
+        &mut self,
+        points: &[[f64; 2]; 5],
+        thickness: Option<f64>,
+    ) -> Result<(), &'static str> {
+        self.can_propose_closed(points, thickness)?;
+        let wall = thickness.unwrap_or(0.0);
         let (start, finish) = (points[0], points[4]);
         if start[1] > MIN_LENGTH_MM {
             self.extend(points, End::Start, [start[0], 0.0]);
         }
         if finish[1] > MIN_LENGTH_MM {
-            self.extend(points, End::Finish, [finish[0], 0.0]);
+            if wall >= MIN_LENGTH_MM {
+                self.extend(points, End::Finish, [finish[0] + wall, finish[1]]);
+            }
+            self.extend(points, End::Finish, [finish[0] + wall, 0.0]);
         }
         self.closed = self.head + self.tail > 0;
         Ok(())
@@ -2487,12 +2505,14 @@ struct Target {
 }
 
 /// Clic sobre una tapa cortada: selecciona el tramo. Clic derecho: el menú
-/// con «Cortar aquí», «Convertir en recta» y lo demás. Arrastrar un punto lo
+/// con «Cortar aquí», «Convertir en recta» y lo demás. `wall_thickness` es el
+/// espesor de pared del diseño en mm, para «Proponer contorno». Arrastrar un punto lo
 /// mueve. Devuelve si cambió algo y si hay un punto agarrado.
 pub(super) fn interact(
     plot_ui: &mut egui_plot::PlotUi<'_>,
     model: &MeridionalModel,
     boxes: &mut Meridian,
+    wall_thickness: Option<f64>,
 ) -> (bool, bool) {
     let ctx = plot_ui.ctx().clone();
     let response = plot_ui.response().clone();
@@ -2751,11 +2771,15 @@ pub(super) fn interact(
             }
         }
         if hit.wall == Wall::Hub {
-            let proposal = state.can_propose_closed(&points);
-            let button = ui.add_enabled(proposal.is_ok(), egui::Button::new("Proponer contorno"));
+            let proposal = state.can_propose_closed(&points, wall_thickness);
+            let label = match wall_thickness {
+                Some(e) => format!("Proponer contorno (pared de {e:.1} mm)"),
+                None => "Proponer contorno".to_string(),
+            };
+            let button = ui.add_enabled(proposal.is_ok(), egui::Button::new(label));
             match proposal {
                 Ok(()) if button.clicked() => {
-                    if state.propose_closed(&points).is_ok() {
+                    if state.propose_closed(&points, wall_thickness).is_ok() {
                         if state.head > 0 {
                             constraints.node_inserted(hit.wall, 0);
                         }
@@ -2806,8 +2830,8 @@ pub(super) fn interact(
 /// la forma `i=R` (R con signo, en mm), y un octavo hace tangentes arcos con
 /// la forma `is` (al tramo anterior) o `ie` (al siguiente). Un noveno y un
 /// décimo campo prolongan la cadena antes de P0 y después de P4 con rectas
-/// a los puntos `z/r` en mm, en orden; un undécimo con `1` propone el contorno
-/// cerrado del cubo (el décimo campo tras la tapa). Cortes,
+/// a los puntos `z/r` en mm, en orden; un undécimo, con el espesor de pared en
+/// mm, propone el contorno cerrado del cubo. Cortes,
 /// tramos y nodos se separan con `,`; las tapas (`shroud`, `hub`), con `;`.
 fn seed_from_env(ctx: &egui::Context, model: &MeridionalModel, boxes: &mut Meridian) -> bool {
     let seeded = egui::Id::unique("meridian_segments_seeded");
@@ -2897,8 +2921,8 @@ fn seed_from_env(ctx: &egui::Context, model: &MeridionalModel, boxes: &mut Merid
                 }
             }
         }
-        if list().first().is_some_and(|value| value == "1") {
-            let _ = state.propose_closed(&points);
+        if let Some(wall) = list().first().and_then(|value| value.parse::<f64>().ok()) {
+            let _ = state.propose_closed(&points, Some(wall));
         }
         if let Some(index) = editor
             && index < state.node_count()
@@ -3679,27 +3703,37 @@ mod tests {
     }
 
     #[test]
-    fn proposing_closes_the_hub_to_the_axis() {
+    fn proposing_closes_the_hub_to_the_axis_with_a_wall() {
         let mut s = WallSegments::default();
-        assert_eq!(s.propose_closed(&POINTS), Ok(()));
+        assert_eq!(s.propose_closed(&POINTS, Some(5.0)), Ok(()));
         assert!(s.closed);
-        assert_eq!((s.head, s.tail), (1, 1));
-        assert_eq!(s.free[0], Some([POINTS[0][0], 0.0]));
-        assert_eq!(s.free[s.node_count() - 1], Some([POINTS[4][0], 0.0]));
-        let c = s.contour(&POINTS);
         let last = s.node_count() - 1;
+        assert_eq!((s.head, s.tail), (1, 2));
+        // La cara trasera queda a z4 + e, no encima de la curva.
+        assert_eq!(s.free[0], Some([POINTS[0][0], 0.0]));
+        assert_eq!(s.free[last - 1], Some([POINTS[4][0] + 5.0, POINTS[4][1]]));
+        assert_eq!(s.free[last], Some([POINTS[4][0] + 5.0, 0.0]));
+        let c = s.contour(&POINTS);
         assert_eq!(c.len(), s.pieces.len() + 1);
         assert_eq!(c.last().unwrap().first(), Some(&s.node_at(&POINTS, last)));
         assert_eq!(c.last().unwrap().last(), Some(&s.node_at(&POINTS, 0)));
     }
 
     #[test]
-    fn proposing_with_p0_on_the_axis_only_extends_the_tail() {
+    fn a_zero_wall_drops_straight_to_the_axis() {
+        let mut s = WallSegments::default();
+        assert_eq!(s.propose_closed(&POINTS, Some(0.0)), Ok(()));
+        assert_eq!((s.head, s.tail), (1, 1));
+        assert_eq!(s.free[s.node_count() - 1], Some([POINTS[4][0], 0.0]));
+    }
+
+    #[test]
+    fn proposing_with_p0_on_the_axis_has_no_head() {
         let mut points = POINTS;
         points[0][1] = 0.0;
         let mut s = WallSegments::default();
-        assert_eq!(s.propose_closed(&points), Ok(()));
-        assert_eq!((s.head, s.tail, s.closed), (0, 1, true));
+        assert_eq!(s.propose_closed(&points, Some(5.0)), Ok(()));
+        assert_eq!((s.head, s.tail, s.closed), (0, 2, true));
     }
 
     #[test]
@@ -3711,31 +3745,43 @@ mod tests {
         assert!(freed.move_node(&POINTS, 1, [40.0, 10.0]));
         let before = freed.clone();
         let why = "P0 y P4 deben seguir sobre la curva";
-        assert_eq!(freed.can_propose_closed(&POINTS), Err(why));
-        assert_eq!(freed.propose_closed(&POINTS), Err(why));
+        assert_eq!(freed.can_propose_closed(&POINTS, Some(5.0)), Err(why));
+        assert_eq!(freed.propose_closed(&POINTS, Some(5.0)), Err(why));
         assert_eq!(freed, before);
         // Con prolongación previa.
         let mut extended = extended(1, 0);
         let before = extended.clone();
         let why = "ya tiene prolongación";
-        assert_eq!(extended.propose_closed(&POINTS), Err(why));
+        assert_eq!(extended.propose_closed(&POINTS, Some(5.0)), Err(why));
         assert_eq!(extended, before);
         // Con P0 y P4 en el eje no hay nada que cerrar.
         let mut flat = POINTS;
         flat[0][1] = 0.0;
         flat[4][1] = 0.0;
         let mut s = WallSegments::default();
-        assert_eq!(s.propose_closed(&flat), Err("no hay nada que cerrar"));
+        assert_eq!(
+            s.propose_closed(&flat, Some(5.0)),
+            Err("no hay nada que cerrar")
+        );
+        assert_eq!(s, WallSegments::default());
+        // Sin espesor del diseño, o con uno que no vale.
+        let why = "falta el espesor de pared del diseño";
+        for bad in [None, Some(-1.0), Some(f64::NAN)] {
+            assert_eq!(s.propose_closed(&POINTS, bad), Err(why));
+        }
         assert_eq!(s, WallSegments::default());
     }
 
     #[test]
-    fn removing_both_tips_opens_the_loop() {
+    fn removing_all_the_extension_opens_the_loop() {
         let mut s = WallSegments::default();
-        s.propose_closed(&POINTS).unwrap();
+        s.propose_closed(&POINTS, Some(5.0)).unwrap();
         assert!(s.remove_node(0));
         assert!(s.closed);
-        assert!(s.remove_node(s.node_count() - 1));
+        while s.tail > 0 {
+            assert!(s.closed);
+            assert!(s.remove_node(s.node_count() - 1));
+        }
         assert!(!s.closed);
         assert_eq!(s.contour(&POINTS).len(), s.pieces.len());
     }
@@ -3743,7 +3789,7 @@ mod tests {
     #[test]
     fn closed_round_trips_through_texts() {
         let mut s = WallSegments::default();
-        s.propose_closed(&POINTS).unwrap();
+        s.propose_closed(&POINTS, Some(5.0)).unwrap();
         let back = WallSegments::from_texts(&s.to_texts()).unwrap();
         assert_eq!(back, s);
     }

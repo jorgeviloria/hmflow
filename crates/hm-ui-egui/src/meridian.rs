@@ -406,6 +406,13 @@ fn meridian_edit(ui: &mut egui::Ui, outcome: &Outcome, boxes: &mut Meridian) -> 
         .show(ui, |ui| {
             ui.label(RichText::new(header(&model, &edits)).small().weak());
         });
+    // El espesor de pared de las tapas del rodete cerrado (Gülich T14.3.4), en
+    // mm, para proponer el contorno del cubo. Sin mecánica no hay propuesta.
+    let wall_thickness = outcome
+        .mechanics
+        .as_ref()
+        .ok()
+        .map(|mech| mech.shroud_thickness * 1000.0);
     let engine = (edits != MeridianEdits::default())
         .then_some(auto.ok())
         .flatten();
@@ -441,7 +448,14 @@ fn meridian_edit(ui: &mut egui::Ui, outcome: &Outcome, boxes: &mut Meridian) -> 
                         .ctx()
                         .data_mut(|data| data.insert_temp(fit_id, true));
                 }
-                changed |= draw_section(plot_ui, &model, engine.as_ref(), boxes, &mut labels);
+                changed |= draw_section(
+                    plot_ui,
+                    &model,
+                    engine.as_ref(),
+                    boxes,
+                    &mut labels,
+                    wall_thickness,
+                );
             });
         paint_labels(ui, &plot.transform, &labels);
     });
@@ -508,6 +522,7 @@ fn draw_section(
     engine: Option<&MeridionalModel>,
     boxes: &mut Meridian,
     labels: &mut Vec<Label>,
+    wall_thickness: Option<f64>,
 ) -> bool {
     // La propuesta del motor, debajo de todo.
     if let Some(engine) = engine {
@@ -788,7 +803,8 @@ fn draw_section(
         );
     }
     // Un corte agarrado se lleva el arrastre: los puntos de control no se mueven.
-    let (cut, dragging_cut) = crate::meridian_segments::interact(plot_ui, model, boxes);
+    let (cut, dragging_cut) =
+        crate::meridian_segments::interact(plot_ui, model, boxes, wall_thickness);
     // Las cotas que mandan, tras cada edición: un padre arrastrado lleva a
     // sus hijos en directo.
     let cut = crate::meridian_constraints::enforce(model, boxes) || cut;

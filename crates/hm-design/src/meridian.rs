@@ -177,7 +177,7 @@ impl HubCutEdit {
 #[derive(Debug, Clone, Copy, Default, PartialEq)]
 pub struct MeridianEdits {
     /// Diámetro del cubo en el plano de entrada, dH, en mm: de 0 (el cubo
-    /// arranca en el eje) a menos que d1. `None` es 0.
+    /// arranca en el eje) a menos que d1. `None` es el que da el área del 1D.
     pub hub_diameter: Option<f64>,
     /// Posición del borde de ataque sobre la tapa delantera y sobre el cubo,
     /// como fracción de la longitud de cada curva desde el plano de entrada,
@@ -264,7 +264,8 @@ pub struct HubCutShape {
 /// Las cotas con que se construyó el corte, en mm.
 #[derive(Debug, Clone, PartialEq)]
 pub struct MeridianParams {
-    /// Diámetro del cubo en el plano de entrada, dH: el editado o, si no, 0.
+    /// Diámetro del cubo en el plano de entrada, dH: el editado o, si no, el que
+    /// da el área del 1D con el borde radial, π·(d1² − d1i²)/4 = π·d1·b1.
     pub d1i: f64,
     /// El d1i del 1D, π·(d1² − d1i²)/4 = π·d1·b1: referencia de b1g, z_e y r_ds.
     pub auto_d1i: f64,
@@ -664,9 +665,9 @@ pub fn meridional_model_with(
     }
     let auto_d1i = hub_squared.sqrt();
     let inlet_width = (d1 - auto_d1i) / 2.0;
-    // El cubo arranca en (0, 0) salvo que el usuario ponga dH; `auto_d1i` queda
-    // como referencia del 1D y es la que fija `inlet_width`, `z_e` y `r_ds`.
-    let d1i = edits.hub_diameter.unwrap_or(0.0);
+    // El perfil es el de las fórmulas: sin dH escrito, el del 1D. Llevar el
+    // cubo al eje es geometría mecánica y se hace encima, con los segmentos.
+    let d1i = edits.hub_diameter.unwrap_or(auto_d1i);
     if !(d1i.is_finite() && d1i >= 0.0 && d1i < d1) {
         return Err(DesignError::Input(format!(
             "meridiano: el diámetro del cubo dH vale {d1i} mm y tiene que estar entre 0 y d1 = {d1:.2} mm"

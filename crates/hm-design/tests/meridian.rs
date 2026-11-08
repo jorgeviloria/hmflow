@@ -428,33 +428,33 @@ fn an_inlet_wider_than_the_eye_is_refused() {
     assert!(error.to_string().contains("b1"), "{error}");
 }
 
-/// Por defecto el borde de ataque es la radial del plano de entrada; con dH = 0
-/// va del eje a la tapa y su área es π·r1·r1. Con el dH del 1D es el área del 1D.
+/// Por defecto el perfil es el de las fórmulas: dH es el del 1D, el borde de
+/// ataque es la radial del plano de entrada y su área es la del 1D. Con dH = 0
+/// escrito, el borde va del eje a la tapa y su área es π·r1·r1.
 #[test]
-fn by_default_the_leading_edge_is_the_radial_from_the_axis_and_with_the_1d_hub_it_has_the_1d_area()
-{
+fn by_default_the_hub_diameter_is_the_1d_one_and_the_leading_edge_has_the_1d_area() {
     let (result, auto) = model();
     let p = &auto.params;
     let r1 = mm(&result.d1) / 2.0;
-    let axis_area = PI * r1 * r1;
-    assert!((p.edge_area - axis_area).abs() < 1e-6 * axis_area);
+    let one_d = PI * mm(&result.d1) * mm(&result.b1);
+    assert!((p.edge_area - one_d).abs() < 1e-6 * one_d);
     assert_eq!((p.edge_shroud, p.edge_hub, p.edge_angle), (0.0, 0.0, 0.0));
-    assert_eq!(p.d1i, 0.0);
+    assert_eq!(p.d1i, p.auto_d1i);
+    assert!(p.d1i > 0.0);
     let edge = points(&auto, "Borde de ataque");
     assert_eq!(edge[0], [0.0, r1]);
-    assert_eq!(edge[1], [0.0, 0.0]);
+    assert_eq!(edge[1], [0.0, p.d1i / 2.0]);
     assert_eq!(points(&auto, "Tapa trasera")[0], edge[1]);
 
-    let old = edited(&MeridianEdits {
-        hub_diameter: Some(p.auto_d1i),
+    let axis = edited(&MeridianEdits {
+        hub_diameter: Some(0.0),
         ..MeridianEdits::default()
     });
-    let one_d = PI * mm(&result.d1) * mm(&result.b1);
-    assert!((old.params.edge_area - one_d).abs() < 1e-6 * one_d);
-    assert_eq!(old.params.d1i, old.params.auto_d1i);
-    let edge = points(&old, "Borde de ataque");
-    assert_eq!(edge[1], [0.0, old.params.d1i / 2.0]);
-    assert_eq!(points(&old, "Tapa trasera")[0], edge[1]);
+    let axis_area = PI * r1 * r1;
+    assert!((axis.params.edge_area - axis_area).abs() < 1e-6 * axis_area);
+    assert_eq!(points(&axis, "Borde de ataque")[1], [0.0, 0.0]);
+    // b1, z_e y r_ds siguen saliendo del dH del 1D.
+    assert_eq!(axis.params.inlet_width, p.inlet_width);
 }
 
 /// dH es editable, también 0: el cubo arranca en el eje con el brazo axial.
@@ -1149,7 +1149,10 @@ fn hub_cut_without_cut_adds_no_curve() {
 
 #[test]
 fn hub_cut_at_zero_with_dh_zero_is_valid() {
-    let model = edited(&far_edge(closed_at(0.0)));
+    let model = edited(&MeridianEdits {
+        hub_diameter: Some(0.0),
+        ..far_edge(closed_at(0.0))
+    });
     let cut = points(&model, CUT_NAME);
     assert!(close(cut[0], [0.0, 0.0]));
     assert_eq!(cut[1], [0.0, 0.0]);

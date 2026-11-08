@@ -782,10 +782,11 @@ fn wall_boxes(ui: &mut egui::Ui, boxes: &mut Meridian, auto: Option<&MeridionalM
                 "dH",
                 &mut boxes.hub_diameter,
                 parsed.hub_diameter.is_none(),
-                format!("{} (auto)", length_text(0.0)),
+                auto.map_or_else(String::new, |model| {
+                    format!("{} (auto)", length_text(model.params.auto_d1i))
+                }),
                 "Diámetro del cubo en el plano de entrada, con unidad: de 0 (el cubo arranca en el \
-                 eje) a menos que d1. Vacío: 0. El dH del 1D (el que da su área con el borde \
-                 radial) se lee en la cabecera, como referencia.",
+                 eje) a menos que d1. Vacío: el que da el área del 1D con el borde radial.",
             ),
             (
                 "Borde en tapa",
@@ -1904,7 +1905,9 @@ mod tests {
         let text = header(&model, &MeridianEdits::default());
         let reference = format!("dH del 1D: {:.2} mm", model.params.auto_d1i);
         assert!(text.contains(&reference), "{text}");
-        assert!(text.contains("dH = 0.0"), "{text}");
+        // Sin dH escrito, el cubo arranca en el del 1D.
+        let used = format!("dH = {:.1}", model.params.auto_d1i);
+        assert!(text.contains(&used), "{text}");
         let line = summary(&model, &MeridianEdits::default());
         assert!(line.contains(&reference), "{line}");
     }
@@ -1921,7 +1924,7 @@ mod tests {
             nu: None,
         })
         .unwrap();
-        // Con el dH del 1D: con el cubo en el eje (por defecto) dH y eje coinciden.
+        // Con el dH del 1D (el de por defecto, escrito aquí a propósito).
         let auto_hub = meridional_model(&result).unwrap().params.auto_d1i;
         let model = meridional_model_with(
             &result,

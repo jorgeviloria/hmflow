@@ -9,6 +9,10 @@
 //! nodo que toca una curva se desliza sobre ella, para que el contorno no se
 //! rompa.
 //!
+//! Una esquina con una recta al lado se puede redondear con un radio: el
+//! nodo sigue siendo el vértice teórico y el arco tangente recorta los dos
+//! tramos al dibujar.
+//!
 //! Se guarda en `[meridian.segments]` del `.hmf`, así que entra en deshacer
 //! como lo demás de la pestaña.
 
@@ -19,6 +23,7 @@ use hm_design::meridian::{MeridionalModel, Wall};
 use hm_project::{Meridian, MeridianWallSegments};
 
 use crate::curves::line;
+use crate::meridian_fillet::{self, Fillet, Side};
 
 /// Distancia en píxeles para tocar una tapa o un punto con el ratón.
 const TOUCH_PIXELS: f32 = 12.0;
@@ -32,6 +37,12 @@ const MIN_GAP: f64 = 0.005;
 
 /// Puntos con que se dibuja cada tramo curvo.
 const SEGMENT_POINTS: usize = 80;
+
+/// Puntos con que se dibuja el arco de un radio.
+const ARC_POINTS: usize = 40;
+
+/// Color de un radio que no cabe.
+const REFUSED: Color32 = Color32::from_rgb(210, 40, 40);
 
 /// Color del tramo seleccionado y de las guías de ajuste.
 const SELECTED: Color32 = Color32::from_rgb(230, 120, 0);
@@ -47,6 +58,19 @@ pub(super) struct WallSegments {
     straight: Vec<bool>,
     /// La posición (z, r) en mm de cada nodo libre; `None`, sobre la Bézier.
     free: Vec<Option<[f64; 2]>>,
+    /// El radio en mm de cada nodo; `None`, esquina viva.
+    radius: Vec<Option<f64>>,
+}
+
+/// Cómo queda la esquina de un nodo.
+#[derive(Clone, Copy, Debug, PartialEq)]
+enum Corner {
+    /// Sin radio, o un nodo que no es esquina.
+    Sharp,
+    /// Redondeada.
+    Round(Fillet),
+    /// Con un radio que no cabe: se dibuja viva.
+    TooBig(f64),
 }
 
 impl Default for WallSegments {
@@ -55,6 +79,7 @@ impl Default for WallSegments {
             cuts: Vec::new(),
             straight: vec![false],
             free: vec![None, None],
+            radius: vec![None, None],
         }
     }
 }
@@ -103,10 +128,28 @@ impl WallSegments {
         } else {
             return None;
         };
+        let radius = if texts.radii.is_empty() {
+            vec![None; cuts.len() + 2]
+        } else if texts.radii.len() == cuts.len() + 2 {
+            texts
+                .radii
+                .iter()
+                .map(|text| {
+                    if text.trim().is_empty() {
+                        Some(None)
+                    } else {
+                        length_mm(text).filter(|r| *r > 0.0).map(Some)
+                    }
+                })
+                .collect::<Option<Vec<_>>>()?
+        } else {
+            return None;
+        };
         let mut state = Self {
             cuts,
             straight,
             free,
+            radius,
         };
         state.settle();
         Some(state)
@@ -136,10 +179,19 @@ impl WallSegments {
         } else {
             Vec::new()
         };
+        let radii = if self.radius.iter().any(Option::is_some) {
+            self.radius
+                .iter()
+                .map(|radius| radius.map_or_else(String::new, |r| format!("{} mm", trimmed(r, 4))))
+                .collect()
+        } else {
+            Vec::new()
+        };
         MeridianWallSegments {
             cuts,
             pieces,
             nodes,
+            radii,
         }
     }
 
@@ -176,17 +228,39 @@ impl WallSegments {
         left && right
     }
 
+    /// Si el nodo es una esquina que se puede redondear: interior y con una
+    /// recta al menos a un lado. Entre dos curvas la Bézier es lisa.
+    fn can_round(&self, index: usize) -> bool {
+        (1..=self.cuts.len()).contains(&index)
+            && (self.straight[index - 1] || self.straight[index])
+    }
+
+    /// Pone el radio del nodo `index` (`None` lo quita). Devuelve si cambió.
+    fn set_radius(&mut self, index: usize, radius: Option<f64>) -> bool {
+        let radius = radius.filter(|r| *r > 0.0 && r.is_finite());
+        if !self.can_round(index) && radius.is_some() {
+            return false;
+        }
+        let before = self.radius[index];
+        self.radius[index] = radius;
+        before != radius
+    }
+
     /// Si el nodo se puede arrastrar: libre o deslizándose (un corte). Los
     /// extremos pegados a una curva son los de la Bézier y no se mueven aquí.
     fn draggable(&self, index: usize) -> bool {
         self.can_free(index) || (1..=self.cuts.len()).contains(&index)
     }
 
-    /// Devuelve a la Bézier los nodos libres que ya no pueden serlo.
+    /// Devuelve a la Bézier los nodos libres que ya no pueden serlo y quita
+    /// el radio a los que ya no son esquina.
     fn settle(&mut self) {
         for index in 0..self.node_count() {
             if !self.can_free(index) {
                 self.free[index] = None;
+            }
+            if !self.can_round(index) {
+                self.radius[index] = None;
             }
         }
     }
@@ -222,6 +296,7 @@ impl WallSegments {
         self.cuts.insert(piece, t);
         self.straight.insert(piece, straight);
         self.free.insert(piece + 1, free);
+        self.radius.insert(piece + 1, None);
         true
     }
 
@@ -348,6 +423,7 @@ impl WallSegments {
         }
         self.cuts.remove(index - 1);
         self.free.remove(index);
+        self.radius.remove(index);
         let merged = self.straight[index - 1] && self.straight[index];
         self.straight.remove(index);
         self.straight[index - 1] = merged;
@@ -355,21 +431,88 @@ impl WallSegments {
         true
     }
 
-    /// Cada tramo como polilínea.
+    /// La esquina de cada nodo. Un radio que se cruza con el del otro
+    /// extremo de un tramo no cabe en ninguno de los dos.
+    fn corners(&self, points: &[[f64; 2]; 5]) -> Vec<Corner> {
+        let mut corners: Vec<Corner> = (0..self.node_count())
+            .map(|index| match self.radius[index] {
+                Some(radius) if self.can_round(index) => self
+                    .corner_fillet(points, index, radius)
+                    .map_or(Corner::TooBig(radius), Corner::Round),
+                _ => Corner::Sharp,
+            })
+            .collect();
+        for piece in 0..self.straight.len() {
+            if let (Corner::Round(start), Corner::Round(end)) =
+                (corners[piece], corners[piece + 1])
+                && start.sb + end.sa > 1.0
+            {
+                corners[piece] = Corner::TooBig(start.radius);
+                corners[piece + 1] = Corner::TooBig(end.radius);
+            }
+        }
+        corners
+    }
+
+    /// El arco del nodo interior `index`, entre el tramo `index - 1` (de
+    /// entrada) y el `index` (de salida).
+    fn corner_fillet(&self, points: &[[f64; 2]; 5], index: usize, radius: f64) -> Option<Fillet> {
+        let vertex = self.node_at(points, index);
+        let t = self.node_t(index);
+        let (t_in, t_out) = (self.node_t(index - 1), self.node_t(index + 1));
+        let curve_in = |s: f64| point_at(points, t - (t - t_in) * s);
+        let curve_out = |s: f64| point_at(points, t + (t_out - t) * s);
+        let side_in = if self.straight[index - 1] {
+            Side::Line(self.node_at(points, index - 1))
+        } else {
+            Side::Curve(&curve_in)
+        };
+        let side_out = if self.straight[index] {
+            Side::Line(self.node_at(points, index + 1))
+        } else {
+            Side::Curve(&curve_out)
+        };
+        meridian_fillet::fillet(vertex, &side_in, &side_out, radius)
+    }
+
+    /// Cada tramo como polilínea, recortado por los radios de sus extremos;
+    /// el arco de un radio va al final del tramo que entra en la esquina.
     fn contour(&self, points: &[[f64; 2]; 5]) -> Vec<Vec<[f64; 2]>> {
+        let corners = self.corners(points);
+        let trim = |corner: Corner, out: bool| match corner {
+            Corner::Round(f) => {
+                if out {
+                    f.sb
+                } else {
+                    f.sa
+                }
+            }
+            _ => 0.0,
+        };
         (0..self.straight.len())
             .map(|piece| {
-                if self.straight[piece] {
-                    vec![self.node_at(points, piece), self.node_at(points, piece + 1)]
+                let (from, to) = (trim(corners[piece], true), 1.0 - trim(corners[piece + 1], false));
+                let mut polyline: Vec<[f64; 2]> = if self.straight[piece] {
+                    let (a, b) = (self.node_at(points, piece), self.node_at(points, piece + 1));
+                    let at = |f: f64| [a[0] + (b[0] - a[0]) * f, a[1] + (b[1] - a[1]) * f];
+                    vec![at(from), at(to)]
                 } else {
                     let (start, end) = (self.node_t(piece), self.node_t(piece + 1));
+                    let (start, end) = (
+                        start + (end - start) * from,
+                        start + (end - start) * to,
+                    );
                     (0..=SEGMENT_POINTS)
                         .map(|k| {
                             let t = start + (end - start) * k as f64 / SEGMENT_POINTS as f64;
                             point_at(points, t)
                         })
                         .collect()
+                };
+                if let Corner::Round(f) = corners[piece + 1] {
+                    polyline.extend(meridian_fillet::arc(&f, ARC_POINTS).into_iter().skip(1));
                 }
+                polyline
             })
             .collect()
     }
@@ -382,16 +525,18 @@ fn trimmed(value: f64, decimals: usize) -> String {
     if text == "-0" { "0" } else { text }.to_string()
 }
 
+/// Lee una longitud con unidad en mm.
+fn length_mm(text: &str) -> Option<f64> {
+    hm_units::parse_quantity(text.trim())
+        .ok()
+        .filter(|q| q.dim() == hm_units::Dimension::LENGTH && q.si.is_finite())
+        .map(|q| q.si * 1000.0)
+}
+
 /// Lee «z mm, r mm» (cualquier unidad de longitud) en mm.
 fn node_position(text: &str) -> Option<[f64; 2]> {
     let (z, r) = text.split_once(',')?;
-    let mm = |text: &str| {
-        hm_units::parse_quantity(text.trim())
-            .ok()
-            .filter(|q| q.dim() == hm_units::Dimension::LENGTH && q.si.is_finite())
-            .map(|q| q.si * 1000.0)
-    };
-    Some([mm(z)?, mm(r)?])
+    Some([length_mm(z)?, length_mm(r)?])
 }
 
 /// Los cortes de las dos tapas.
@@ -605,6 +750,8 @@ struct Editor {
     index: usize,
     z: String,
     r: String,
+    /// El radio de la esquina, en mm; vacío, viva.
+    radius: String,
 }
 
 fn editor_id() -> egui::Id {
@@ -618,14 +765,26 @@ fn mm_value(text: &str) -> Option<f64> {
 }
 
 /// Abre la ventana del punto `index` de `wall`.
-fn open_editor(ctx: &egui::Context, wall: Wall, index: usize, at: [f64; 2]) {
+fn open_editor(
+    ctx: &egui::Context,
+    wall: Wall,
+    index: usize,
+    at: [f64; 2],
+    radius: Option<f64>,
+) {
     let editor = Editor {
         wall,
         index,
         z: format!("{:.2}", at[0]),
         r: format!("{:.2}", at[1]),
+        radius: radius_text(radius),
     };
     ctx.data_mut(|data| data.insert_temp(editor_id(), Some(editor)));
+}
+
+/// El radio como se escribe en la ventana: vacío si no hay.
+fn radius_text(radius: Option<f64>) -> String {
+    radius.map_or_else(String::new, |r| trimmed(r, 3))
 }
 
 /// La ventana del punto abierto: z y r en mm. Un punto libre va a los dos
@@ -652,13 +811,23 @@ fn node_editor(
     let free = state.can_free(editor.index);
     let at = state.node_at(&points, editor.index);
     let screen = to_screen(plot_ui, at);
+    let roundable = state.can_round(editor.index);
+    let corner = if roundable {
+        state.corners(&points)[editor.index]
+    } else {
+        Corner::Sharp
+    };
     let z_id = editor_id().with("z");
     let r_id = editor_id().with("r");
+    let radius_id = editor_id().with("radius");
     // Sin escribir en las cajas, siguen al punto (arrastre, deshacer...).
-    let typing = ctx.memory(|memory| memory.has_focus(z_id) || memory.has_focus(r_id));
+    let typing = ctx.memory(|memory| {
+        memory.has_focus(z_id) || memory.has_focus(r_id) || memory.has_focus(radius_id)
+    });
     if !typing {
         editor.z = format!("{:.2}", at[0]);
         editor.r = format!("{:.2}", at[1]);
+        editor.radius = radius_text(state.radius[editor.index]);
     }
     let mut open = true;
     let mut apply = false;
@@ -687,7 +856,30 @@ fn node_editor(
                         ui.label("mm");
                         ui.end_row();
                     }
+                    if roundable {
+                        ui.label("R");
+                        let field = ui.add(
+                            egui::TextEdit::singleline(&mut editor.radius)
+                                .id(radius_id)
+                                .hint_text("viva")
+                                .desired_width(80.0),
+                        );
+                        if field.lost_focus()
+                            && ui.input(|input| input.key_pressed(egui::Key::Enter))
+                        {
+                            apply = true;
+                        }
+                        ui.label("mm");
+                        ui.end_row();
+                    }
                 });
+            if let Corner::TooBig(_) = corner {
+                ui.label(
+                    egui::RichText::new("El radio no cabe: la esquina se dibuja viva.")
+                        .small()
+                        .color(REFUSED),
+                );
+            }
             ui.label(
                 egui::RichText::new(if free {
                     "Punto libre: va a la z y la r escritas."
@@ -717,8 +909,22 @@ fn node_editor(
                 changed = state.slide_to(&points, editor.index, 1, r);
             }
         }
-        ctx.memory_mut(|memory| memory.surrender_focus(z_id));
-        ctx.memory_mut(|memory| memory.surrender_focus(r_id));
+        if roundable {
+            // Vacío o cero quita el radio; un texto que no se entiende no
+            // cambia nada.
+            let text = editor.radius.trim();
+            let radius = if text.is_empty() {
+                Some(None)
+            } else {
+                mm_value(text).filter(|r| *r >= 0.0).map(|r| (r > 0.0).then_some(r))
+            };
+            if let Some(radius) = radius {
+                changed |= state.set_radius(editor.index, radius);
+            }
+        }
+        for id in [z_id, r_id, radius_id] {
+            ctx.memory_mut(|memory| memory.surrender_focus(id));
+        }
     }
     ctx.data_mut(|data| data.insert_temp(editor_id(), open.then_some(editor)));
     changed
@@ -752,6 +958,34 @@ pub(super) fn draw(plot_ui: &mut egui_plot::PlotUi<'_>, model: &MeridionalModel,
                     if chosen { SELECTED } else { colour },
                 )
                 .width(if chosen { 4.0 } else { 2.5 }),
+            );
+        }
+        for (index, corner) in state.corners(points).into_iter().enumerate() {
+            let (text, at, colour) = match corner {
+                Corner::Sharp => continue,
+                Corner::Round(f) => {
+                    let middle = meridian_fillet::arc(&f, 2)[1];
+                    (format!("R{}", trimmed(f.radius, 2)), middle, Color32::from_gray(20))
+                }
+                Corner::TooBig(r) => (
+                    format!("R{} no cabe", trimmed(r, 2)),
+                    state.node_at(points, index),
+                    REFUSED,
+                ),
+            };
+            if let Corner::TooBig(_) = corner {
+                plot_ui.points(
+                    Points::new("Radio que no cabe", vec![at])
+                        .radius(7.0)
+                        .filled(false)
+                        .color(REFUSED),
+                );
+            }
+            plot_ui.text(
+                egui_plot::Text::new("Radio", PlotPoint::new(at[0], at[1]), {
+                    egui::RichText::new(format!("  {text}")).small().color(colour)
+                })
+                .anchor(egui::Align2::LEFT_BOTTOM),
             );
         }
         let (mut sliding, mut free) = (Vec::new(), Vec::new());
@@ -966,10 +1200,9 @@ pub(super) fn interact(
             if let Some((wall, index)) =
                 near_node(plot_ui, model, &segments, pointer, WallSegments::draggable)
             {
-                let at = segments
-                    .wall(wall)
-                    .node_at(&model.params.wall(wall).points, index);
-                open_editor(&ctx, wall, index, at);
+                let state = segments.wall(wall);
+                let at = state.node_at(&model.params.wall(wall).points, index);
+                open_editor(&ctx, wall, index, at, state.radius[index]);
             }
             match touched(plot_ui, model, &segments, pointer) {
                 Some(hit) if !segments.wall(hit.wall).is_plain() => {
@@ -1028,6 +1261,17 @@ pub(super) fn interact(
                 changed |= state.unfree(index);
                 ui.close();
             }
+            if state.can_round(index) && ui.button("Redondear con radio…").clicked() {
+                let at = state.node_at(&points, index);
+                open_editor(ui.ctx(), hit.wall, index, at, state.radius[index]);
+                ui.ctx()
+                    .memory_mut(|memory| memory.request_focus(editor_id().with("radius")));
+                ui.close();
+            }
+            if state.radius[index].is_some() && ui.button("Quitar radio").clicked() {
+                changed |= state.set_radius(index, None);
+                ui.close();
+            }
             if (1..=state.cuts.len()).contains(&index) && ui.button("Quitar este corte").clicked() {
                 changed |= state.remove_node(index);
                 ui.close();
@@ -1056,7 +1300,8 @@ pub(super) fn interact(
 
 /// Solo para las capturas: `HMF_SEGMENTS="hub:0.5:1:2=60/0"` corta el cubo
 /// en `t = 0,5`, pone en recta el tramo 1 y lleva el nodo 2 (el final) a
-/// z = 60 mm, r = 0. Un quinto campo abre la ventana de ese nodo. Cortes,
+/// z = 60 mm, r = 0. Un quinto campo abre la ventana de ese nodo y un sexto
+/// pone radios con la forma `i=R` en mm. Cortes,
 /// tramos y nodos se separan con `,`; las tapas (`shroud`, `hub`), con `;`.
 fn seed_from_env(ctx: &egui::Context, model: &MeridionalModel, boxes: &mut Meridian) -> bool {
     let seeded = egui::Id::unique("meridian_segments_seeded");
@@ -1110,10 +1355,25 @@ fn seed_from_env(ctx: &egui::Context, model: &MeridionalModel, boxes: &mut Merid
                 state.move_node(&points, index, at);
             }
         }
-        if let Some(index) = list().first().and_then(|i| i.parse::<usize>().ok())
+        let editor = list().first().and_then(|i| i.parse::<usize>().ok());
+        for item in list() {
+            if let Some((index, radius)) = item.split_once('=')
+                && let (Ok(index), Ok(radius)) = (index.parse::<usize>(), radius.parse::<f64>())
+                && index < state.node_count()
+            {
+                state.set_radius(index, Some(radius));
+            }
+        }
+        if let Some(index) = editor
             && index < state.node_count()
         {
-            open_editor(ctx, wall, index, state.node_at(&points, index));
+            open_editor(
+                ctx,
+                wall,
+                index,
+                state.node_at(&points, index),
+                state.radius[index],
+            );
         }
     }
     write(boxes, &segments)
@@ -1368,8 +1628,109 @@ mod tests {
             cuts: vec!["0.5".into()],
             pieces: vec!["curve".into(), "line".into()],
             nodes: vec![String::new(), "5 mm, 5 mm".into(), "60 mm, 0 mm".into()],
+            ..MeridianWallSegments::default()
         };
         let state = WallSegments::from_texts(&texts).unwrap();
         assert_eq!(state.free, vec![None, None, Some([60.0, 0.0])]);
+    }
+
+    /// Cortes en 0,3 y 0,6 con el tramo del medio en recta: los nodos 1 y 2
+    /// son esquinas de recta contra curva.
+    fn middle_line() -> WallSegments {
+        let mut state = cut_twice();
+        state.toggle(1);
+        state
+    }
+
+    fn same(a: [f64; 2], b: [f64; 2]) -> bool {
+        distance(a, b) < 1e-6
+    }
+
+    #[test]
+    fn only_corners_with_a_line_take_a_radius() {
+        let mut state = cut_twice();
+        assert!(!state.can_round(1), "entre dos curvas no hay esquina");
+        assert!(!state.set_radius(1, Some(2.0)));
+        state.toggle(1);
+        assert!(state.can_round(1) && state.can_round(2));
+        assert!(!state.can_round(0) && !state.can_round(3), "los extremos no");
+        assert!(state.set_radius(1, Some(2.0)));
+        assert!(!state.set_radius(1, Some(2.0)), "sin cambio");
+        // Volver la recta a curva quita el radio.
+        state.toggle(1);
+        assert_eq!(state.radius, vec![None; 4]);
+    }
+
+    #[test]
+    fn radii_survive_the_texts_and_the_node_edits() {
+        let mut state = middle_line();
+        state.set_radius(2, Some(1.5));
+        let texts = state.to_texts();
+        assert_eq!(texts.radii, vec!["", "", "1.5 mm", ""]);
+        assert_eq!(WallSegments::from_texts(&texts), Some(state.clone()));
+        // Cortar o quitar un nodo mueve los radios con sus nodos.
+        assert!(state.cut_at_t(&POINTS, 0.8));
+        assert_eq!(state.radius, vec![None, None, Some(1.5), None, None]);
+        assert!(state.remove_node(3));
+        assert_eq!(state.radius, vec![None, None, Some(1.5), None]);
+        // Sin radios, `radii` no se escribe.
+        assert!(cut_twice().to_texts().radii.is_empty());
+        // Un radio que no se entiende hace ilegible la tapa.
+        let mut bad = middle_line().to_texts();
+        bad.radii = vec![String::new(), "-1 mm".into(), String::new(), String::new()];
+        assert_eq!(WallSegments::from_texts(&bad), None);
+    }
+
+    #[test]
+    fn a_radius_trims_both_pieces_and_joins_them_with_the_arc() {
+        let mut state = middle_line();
+        state.set_radius(1, Some(1.0));
+        let Corner::Round(f) = state.corners(&POINTS)[1] else {
+            panic!("debería caber");
+        };
+        let pieces = state.contour(&POINTS);
+        // La curva de entrada acaba en el arco, que llega a la recta.
+        assert!(same(*pieces[0].last().unwrap(), f.b) || same(*pieces[0].last().unwrap(), f.a));
+        assert!(same(pieces[1][0], f.b), "{:?} {:?}", pieces[1][0], f);
+        // El arco es tangente: su centro queda a R de la recta.
+        let (a, b) = (state.node_at(&POINTS, 1), state.node_at(&POINTS, 2));
+        let d = ((b[0] - a[0]) * (f.center[1] - a[1]) - (b[1] - a[1]) * (f.center[0] - a[0])).abs()
+            / distance(a, b);
+        assert!((d - 1.0).abs() < 1e-6, "d = {d}");
+        // Y a R de la curva: el punto de tangencia está sobre ella.
+        let (t, gap) = nearest_t(&POINTS, f.a, 0.0, 0.3, distance);
+        assert!(gap < 1e-6 && t < 0.3, "t = {t}, gap = {gap}");
+        assert!((distance(f.center, f.a) - 1.0).abs() < 1e-9);
+    }
+
+    #[test]
+    fn a_radius_that_does_not_fit_draws_the_corner_sharp() {
+        let mut state = middle_line();
+        let sharp = state.contour(&POINTS);
+        state.set_radius(1, Some(500.0));
+        assert_eq!(state.corners(&POINTS)[1], Corner::TooBig(500.0));
+        assert_eq!(state.contour(&POINTS), sharp);
+        // Dos radios que se cruzan en la misma recta no caben ninguno. Un
+        // contorno en U de rectas: (0, 0), (0, 20), (20, 20), (20, 0).
+        let mut u = cut_twice();
+        for piece in 0..3 {
+            u.toggle(piece);
+        }
+        for (index, at) in [[0.0, 0.0], [0.0, 20.0], [20.0, 20.0], [20.0, 0.0]]
+            .into_iter()
+            .enumerate()
+        {
+            assert!(u.move_node(&POINTS, index, at));
+        }
+        u.set_radius(1, Some(8.0));
+        u.set_radius(2, Some(8.0));
+        assert!(matches!(u.corners(&POINTS)[1], Corner::Round(_)));
+        assert!(matches!(u.corners(&POINTS)[2], Corner::Round(_)));
+        u.set_radius(1, Some(15.0));
+        u.set_radius(2, Some(15.0));
+        assert_eq!(
+            u.corners(&POINTS)[1..3],
+            [Corner::TooBig(15.0), Corner::TooBig(15.0)]
+        );
     }
 }

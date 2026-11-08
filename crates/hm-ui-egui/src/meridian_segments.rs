@@ -105,6 +105,9 @@ pub(super) struct WallSegments {
     head: usize,
     /// Nodos de la prolongación después de P4.
     tail: usize,
+    /// Si una recta cierra la cadena, del último nodo al nodo 0. Se dibuja,
+    /// pero no es un tramo de `pieces`.
+    closed: bool,
     /// El `t` de cada corte sobre la Bézier, creciente.
     cuts: Vec<f64>,
     /// Qué es cada tramo.
@@ -151,6 +154,7 @@ impl Default for WallSegments {
         Self {
             head: 0,
             tail: 0,
+            closed: false,
             cuts: Vec::new(),
             pieces: vec![Piece::Curve],
             free: vec![None, None],
@@ -270,6 +274,7 @@ impl WallSegments {
         let mut state = Self {
             head,
             tail,
+            closed: texts.is_closed(),
             cuts,
             pieces,
             free,
@@ -365,6 +370,11 @@ impl WallSegments {
             } else {
                 String::new()
             },
+            closed: if self.closed {
+                "true".to_string()
+            } else {
+                String::new()
+            },
             cuts,
             pieces,
             nodes,
@@ -406,6 +416,42 @@ impl WallSegments {
     /// El lugar en `cuts` del nodo `index`, si es un corte sobre la Bézier.
     fn cut_slot(&self, index: usize) -> Option<usize> {
         (self.p0() < index && index < self.p4()).then(|| index - self.head - 1)
+    }
+
+    /// Por qué no se puede proponer el contorno cerrado (cubo al eje), o
+    /// `Ok`: sin prolongación ni cierre, con P0 y P4 sobre la curva, y con
+    /// algo que prolongar hasta el eje.
+    #[cfg_attr(not(test), expect(dead_code, reason = "lo usa el menú, en la tarea 3"))]
+    pub(super) fn can_propose_closed(&self, points: &[[f64; 2]; 5]) -> Result<(), &'static str> {
+        if self.head + self.tail > 0 || self.closed {
+            return Err("ya tiene prolongación");
+        }
+        if self.free[self.p0()].is_some() || self.free[self.p4()].is_some() {
+            return Err("P0 y P4 deben seguir sobre la curva");
+        }
+        let (start, finish) = (points[0], points[4]);
+        let (start_out, finish_out) = (start[1] > MIN_LENGTH_MM, finish[1] > MIN_LENGTH_MM);
+        let apart = distance([start[0], 0.0], [finish[0], 0.0]) >= MIN_LENGTH_MM;
+        if !(start_out || finish_out) || (start_out && finish_out && !apart) {
+            return Err("no hay nada que cerrar");
+        }
+        Ok(())
+    }
+
+    /// Cierra el cubo al eje con rectas: de P0 al eje, de P4 al eje y una recta
+    /// entre las dos puntas.
+    #[cfg_attr(not(test), expect(dead_code, reason = "lo usa el menú, en la tarea 3"))]
+    pub(super) fn propose_closed(&mut self, points: &[[f64; 2]; 5]) -> Result<(), &'static str> {
+        self.can_propose_closed(points)?;
+        let (start, finish) = (points[0], points[4]);
+        if start[1] > MIN_LENGTH_MM {
+            self.extend(points, End::Start, [start[0], 0.0]);
+        }
+        if finish[1] > MIN_LENGTH_MM {
+            self.extend(points, End::Finish, [finish[0], 0.0]);
+        }
+        self.closed = self.head + self.tail > 0;
+        Ok(())
     }
 
     /// Si el tramo `piece` es de la prolongación.
@@ -771,6 +817,7 @@ impl WallSegments {
     /// Devuelve a la Bézier los nodos libres que ya no pueden serlo y quita
     /// el radio a los que ya no son esquina.
     fn settle(&mut self) {
+        self.closed &= self.head + self.tail > 0;
         for piece in 0..self.pieces.len() {
             if self.extension_piece(piece) && self.pieces[piece] == Piece::Curve {
                 self.pieces[piece] = Piece::Line;
@@ -1212,6 +1259,18 @@ impl WallSegments {
     /// Cada tramo como polilínea, recortado por los radios de sus extremos;
     /// el arco de un radio va al final del tramo que entra en la esquina.
     fn contour(&self, points: &[[f64; 2]; 5]) -> Vec<Vec<[f64; 2]>> {
+        let mut polylines = self.piece_contours(points);
+        if self.closed {
+            polylines.push(vec![
+                self.node_at(points, self.node_count() - 1),
+                self.node_at(points, 0),
+            ]);
+        }
+        polylines
+    }
+
+    /// Los tramos de `pieces`, sin la recta de cierre.
+    fn piece_contours(&self, points: &[[f64; 2]; 5]) -> Vec<Vec<[f64; 2]>> {
         let corners = self.corners(points);
         let trim = |corner: Corner, out: bool| {
             let (sa, sb) = match corner {
@@ -3595,5 +3654,85 @@ mod tests {
         };
         let s = WallSegments::from_texts(&texts).unwrap();
         assert_eq!(s.pieces, vec![Piece::Line, Piece::Curve]);
+    }
+
+    #[test]
+    fn proposing_closes_the_hub_to_the_axis() {
+        let mut s = WallSegments::default();
+        assert_eq!(s.propose_closed(&POINTS), Ok(()));
+        assert!(s.closed);
+        assert_eq!((s.head, s.tail), (1, 1));
+        assert_eq!(s.free[0], Some([POINTS[0][0], 0.0]));
+        assert_eq!(s.free[s.node_count() - 1], Some([POINTS[4][0], 0.0]));
+        let c = s.contour(&POINTS);
+        let last = s.node_count() - 1;
+        assert_eq!(c.len(), s.pieces.len() + 1);
+        assert_eq!(c.last().unwrap().first(), Some(&s.node_at(&POINTS, last)));
+        assert_eq!(c.last().unwrap().last(), Some(&s.node_at(&POINTS, 0)));
+    }
+
+    #[test]
+    fn proposing_with_p0_on_the_axis_only_extends_the_tail() {
+        let mut points = POINTS;
+        points[0][1] = 0.0;
+        let mut s = WallSegments::default();
+        assert_eq!(s.propose_closed(&points), Ok(()));
+        assert_eq!((s.head, s.tail, s.closed), (0, 1, true));
+    }
+
+    #[test]
+    fn proposing_is_refused_with_a_reason() {
+        // P0 y P4 liberados: el cierre al eje hecho a mano.
+        let mut freed = WallSegments::default();
+        freed.toggle(0);
+        assert!(freed.move_node(&POINTS, 0, [0.0, 0.0]));
+        assert!(freed.move_node(&POINTS, 1, [40.0, 10.0]));
+        let before = freed.clone();
+        let why = "P0 y P4 deben seguir sobre la curva";
+        assert_eq!(freed.can_propose_closed(&POINTS), Err(why));
+        assert_eq!(freed.propose_closed(&POINTS), Err(why));
+        assert_eq!(freed, before);
+        // Con prolongación previa.
+        let mut extended = extended(1, 0);
+        let before = extended.clone();
+        let why = "ya tiene prolongación";
+        assert_eq!(extended.propose_closed(&POINTS), Err(why));
+        assert_eq!(extended, before);
+        // Con P0 y P4 en el eje no hay nada que cerrar.
+        let mut flat = POINTS;
+        flat[0][1] = 0.0;
+        flat[4][1] = 0.0;
+        let mut s = WallSegments::default();
+        assert_eq!(s.propose_closed(&flat), Err("no hay nada que cerrar"));
+        assert_eq!(s, WallSegments::default());
+    }
+
+    #[test]
+    fn removing_both_tips_opens_the_loop() {
+        let mut s = WallSegments::default();
+        s.propose_closed(&POINTS).unwrap();
+        assert!(s.remove_node(0));
+        assert!(s.closed);
+        assert!(s.remove_node(s.node_count() - 1));
+        assert!(!s.closed);
+        assert_eq!(s.contour(&POINTS).len(), s.pieces.len());
+    }
+
+    #[test]
+    fn closed_round_trips_through_texts() {
+        let mut s = WallSegments::default();
+        s.propose_closed(&POINTS).unwrap();
+        let back = WallSegments::from_texts(&s.to_texts()).unwrap();
+        assert_eq!(back, s);
+    }
+
+    #[test]
+    fn closed_without_extension_is_dropped_on_read() {
+        let texts = MeridianWallSegments {
+            closed: "true".into(),
+            ..MeridianWallSegments::default()
+        };
+        let s = WallSegments::from_texts(&texts).unwrap();
+        assert!(!s.closed);
     }
 }

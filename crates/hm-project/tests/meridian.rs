@@ -565,3 +565,56 @@ fn arcs_round_trip_and_validate() {
         );
     }
 }
+
+fn hub_tangents(pieces: &[&str], arcs: &[&str], tangents: &[&str]) -> Meridian {
+    Meridian {
+        segments: MeridianSegments {
+            hub: MeridianWallSegments {
+                cuts: texts(&["0.5"]),
+                pieces: texts(pieces),
+                arcs: texts(arcs),
+                tangents: texts(tangents),
+                ..MeridianWallSegments::default()
+            },
+            ..MeridianSegments::default()
+        },
+        ..Meridian::default()
+    }
+}
+
+#[test]
+fn tangents_round_trip_and_validate() {
+    let project = with(hub_tangents(
+        &["line", "arc"],
+        &["", "614 mm"],
+        &["", "start"],
+    ));
+    let text = project.to_toml().unwrap();
+    assert!(text.contains("tangents"), "{text}");
+    let back = Project::from_toml(&text).unwrap();
+    assert_eq!(back.meridian, project.meridian);
+    assert_eq!(problems(project.meridian.unwrap()), Vec::<String>::new());
+    assert_eq!(
+        problems(hub_tangents(&["arc", "line"], &["40 mm", ""], &["end", ""])),
+        Vec::<String>::new()
+    );
+    for (pieces, arcs, tangents) in [
+        // Uno por tramo.
+        (&["line", "arc"][..], &["", "40 mm"][..], &["start"][..]),
+        // Solo en arcos.
+        (&["line", "arc"][..], &["", "40 mm"][..], &["start", ""][..]),
+        // Sin vecino de ese lado.
+        (&["arc", "line"][..], &["40 mm", ""][..], &["start", ""][..]),
+        (&["line", "arc"][..], &["", "40 mm"][..], &["", "end"][..]),
+        // Palabra desconocida.
+        (&["line", "arc"][..], &["", "40 mm"][..], &["", "inicio"][..]),
+    ] {
+        let found = problems(hub_tangents(pieces, arcs, tangents));
+        assert!(
+            found
+                .iter()
+                .any(|message| message.contains("segments.hub.tangents")),
+            "{pieces:?} {tangents:?}: {found:?}"
+        );
+    }
+}

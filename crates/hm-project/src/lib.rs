@@ -128,6 +128,10 @@ impl MeridianSegments {
 /// unidad y vacío en los demás. El signo dice hacia dónde se curva: positivo
 /// a la izquierda de la cuerda recorrida del arranque al final (en el plano
 /// z, r), negativo a la derecha.
+/// `tangents` dice, uno por tramo como `pieces`, si un arco sale tangente a
+/// su vecino: `start` (al tramo anterior, en su nodo de arranque), `end` (al
+/// siguiente, en su nodo final) o vacío. Su R se mantiene y el nodo del otro
+/// extremo queda sobre su círculo.
 #[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct MeridianWallSegments {
@@ -141,6 +145,8 @@ pub struct MeridianWallSegments {
     pub radii: Vec<String>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub arcs: Vec<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub tangents: Vec<String>,
 }
 
 impl MeridianWallSegments {
@@ -151,6 +157,7 @@ impl MeridianWallSegments {
             && self.nodes.is_empty()
             && self.radii.is_empty()
             && self.arcs.is_empty()
+            && self.tangents.is_empty()
     }
 }
 
@@ -1054,6 +1061,39 @@ fn check_wall_segments(
         }
     }
     check_arcs(problem, table, wall);
+    check_tangents(problem, table, wall);
+}
+
+fn check_tangents(
+    problem: &mut impl FnMut(String, String),
+    table: &str,
+    wall: &MeridianWallSegments,
+) {
+    let pieces = wall.cuts.len() + 1;
+    if !wall.tangents.is_empty() && wall.tangents.len() != pieces {
+        problem(
+            format!("{table}.tangents"),
+            format!(
+                "debe tener un valor por tramo: {pieces} tramos y {} valores",
+                wall.tangents.len()
+            ),
+        );
+        return;
+    }
+    for (i, tangent) in wall.tangents.iter().map(|text| text.trim()).enumerate() {
+        if tangent.is_empty() {
+            continue;
+        }
+        let is_arc = wall.pieces.get(i).is_some_and(|piece| piece.trim() == "arc");
+        let message = match tangent {
+            _ if !is_arc => format!("el tramo {} no es arc y lleva tangente: {tangent}", i + 1),
+            "start" if i == 0 => "el primer tramo no tiene tramo anterior".to_string(),
+            "end" if i + 1 == pieces => "el último tramo no tiene tramo siguiente".to_string(),
+            "start" | "end" => continue,
+            _ => format!("debe ser start, end o vacío: {tangent}"),
+        };
+        problem(format!("{table}.tangents"), message);
+    }
 }
 
 fn check_arcs(problem: &mut impl FnMut(String, String), table: &str, wall: &MeridianWallSegments) {

@@ -11,7 +11,6 @@ mod inspector;
 mod meridian;
 mod meridian_arc;
 mod meridian_constraints;
-mod meridian_cut;
 mod meridian_fillet;
 mod meridian_segments;
 mod model;
@@ -70,7 +69,6 @@ struct App {
     reselect_requested: bool,
     /// Deshacer y rehacer de la pestaña Meridiano.
     meridian_history: meridian::History,
-    select_cut: bool,
 }
 
 /// `HMF_SCREENSHOT=ruta.ppm` (y opcionalmente `HMF_TAB=curves|geometry|meridian`)
@@ -102,7 +100,6 @@ impl App {
             }),
             reselect_requested: false,
             meridian_history: meridian::History::default(),
-            select_cut: std::env::var("HMF_SELECT").as_deref() == Ok("cut"),
         };
         // Solo para las capturas: `HMF_MERIDIAN="hub_diameter=0 mm;edge_hub=0.4"`.
         if let Ok(text) = std::env::var("HMF_MERIDIAN") {
@@ -124,18 +121,6 @@ impl App {
                         boxes.edge.end_angle_deg = value.trim().into()
                     }
                     Some(("edge_end_length", value)) => boxes.edge.end_length = value.trim().into(),
-                    Some(("hub_cut.z", value)) => boxes.hub_cut.z = value.trim().into(),
-                    Some(("hub_cut.mode", value)) => boxes.hub_cut.mode = value.trim().into(),
-                    Some(("hub_cut.shaft_diameter", value)) => {
-                        boxes.hub_cut.shaft_diameter = value.trim().into();
-                    }
-                    Some(("hub_cut.counterbore_diameter", value)) => {
-                        boxes.hub_cut.counterbore_diameter = value.trim().into();
-                    }
-                    Some(("hub_cut.counterbore_depth", value)) => {
-                        boxes.hub_cut.counterbore_depth = value.trim().into();
-                    }
-                    Some(("hub_cut.chamfer", value)) => boxes.hub_cut.chamfer = value.trim().into(),
                     _ => eprintln!("HMF_MERIDIAN: no entiendo `{pair}`"),
                 }
             }
@@ -183,10 +168,6 @@ impl App {
 
 impl eframe::App for App {
     fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
-        // Solo para las capturas: `HMF_SELECT=cut` selecciona el punto de corte.
-        if std::mem::take(&mut self.select_cut) {
-            meridian_cut::select(ui.ctx());
-        }
         if let Some(capture) = &mut self.capture {
             capture_step(ui.ctx(), capture);
         }

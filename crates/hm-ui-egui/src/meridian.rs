@@ -9,8 +9,8 @@ use egui_plot::{Legend, Plot, PlotPoint, Points};
 
 use crate::curves::line;
 use hm_design::meridian::{
-    AUTO_END_ANGLE, AUTO_START_ANGLE, ChannelStation, ControlPoint, MeridianEdits, MeridionalModel,
-    Moved, Wall, meridional_model, meridional_model_with,
+    AUTO_END_ANGLE, AUTO_START_ANGLE, CUT_NAME, ChannelStation, ControlPoint, MeridianEdits,
+    MeridionalModel, Moved, Wall, meridional_model, meridional_model_with,
 };
 use hm_project::{Meridian, MeridianWall};
 
@@ -25,6 +25,7 @@ fn meridian_color(name: &str) -> Color32 {
         "Tapa trasera" => Color32::from_rgb(25, 25, 235),
         "Borde de ataque" => Color32::from_rgb(20, 20, 20),
         "Borde de salida" => Color32::from_rgb(70, 70, 70),
+        CUT_NAME => Color32::from_rgb(200, 90, 0),
         _ => Color32::GRAY,
     }
 }
@@ -32,7 +33,7 @@ fn meridian_color(name: &str) -> Color32 {
 /// Grosor de cada curva del corte: las tapas más gruesas que los bordes.
 fn meridian_width(name: &str) -> f32 {
     match name {
-        "Tapa delantera" | "Tapa trasera" => 2.6,
+        "Tapa delantera" | "Tapa trasera" | CUT_NAME => 2.6,
         _ => 2.0,
     }
 }
@@ -332,6 +333,7 @@ fn draw_pin(plot_ui: &mut egui_plot::PlotUi<'_>, tip: [f64; 2]) {
 fn meridian_edit(ui: &mut egui::Ui, outcome: &Outcome, boxes: &mut Meridian) -> bool {
     let auto = meridional_model(&outcome.result);
     let mut changed = wall_boxes(ui, boxes, auto.as_ref().ok());
+    changed |= cut_boxes(ui, boxes, auto.as_ref().ok());
     let edits = hm_engine::meridian_edits_of(boxes);
     // El visor no calcula: dibuja el mismo modelo que se exporta.
     let model = match meridional_model_with(&outcome.result, &edits) {
@@ -890,6 +892,120 @@ fn wall_boxes(ui: &mut egui::Ui, boxes: &mut Meridian, auto: Option<&MeridionalM
     changed
 }
 
+/// Vacía el recorte del cubo: sin recorte.
+fn clear_cut(boxes: &mut Meridian) {
+    boxes.hub_cut = hm_project::MeridianHubCut::default();
+}
+
+/// Una caja de texto del recorte; en rojo si tiene texto que no se entiende.
+fn cut_field(
+    ui: &mut egui::Ui,
+    label: &str,
+    text: &mut String,
+    unread: bool,
+    hint: String,
+    help: &str,
+) -> bool {
+    let bad = unread && !text.trim().is_empty();
+    ui.label(RichText::new(label).small());
+    let mut field = egui::TextEdit::singleline(text)
+        .id_salt(("cut", label))
+        .hint_text(hint)
+        .desired_width(100.0);
+    if bad {
+        field = field.text_color(ui.visuals().error_fg_color);
+    }
+    ui.add(field).on_hover_text(help).changed()
+}
+
+/// Las cajas del recorte del cubo, geometría mecánica que no toca el perfil
+/// hidráulico. Con la z vacía no hay recorte. Devuelve si cambió algo.
+fn cut_boxes(ui: &mut egui::Ui, boxes: &mut Meridian, model: Option<&MeridionalModel>) -> bool {
+    let mut changed = false;
+    let parsed = hm_engine::meridian_edits_of(boxes).hub_cut;
+    let used = model.and_then(|model| model.params.hub_cut.as_ref());
+    let size_hint = |value: Option<f64>| value.map_or("sin valor".to_string(), length_text);
+    ui.horizontal_wrapped(|ui| {
+        ui.label(RichText::new("Recorte del cubo").strong());
+        changed |= cut_field(
+            ui,
+            "Corte z (mm)",
+            &mut boxes.hub_cut.z,
+            parsed.z.is_none(),
+            used.map_or("sin recorte".to_string(), |cut| {
+                format!("{} (usado)", length_text(cut.z))
+            }),
+            "z de la cara del recorte, con unidad, desde el plano de entrada: como mucho la z del \
+             borde de ataque sobre el cubo. Vacía: sin recorte.",
+        );
+        let through = boxes.hub_cut.mode.trim() == "through";
+        let mut selected = through;
+        egui::ComboBox::from_id_salt("cut_mode")
+            .selected_text(if through { "Pasante" } else { "Cerrado" })
+            .width(90.0)
+            .show_ui(ui, |ui| {
+                ui.selectable_value(&mut selected, false, "Cerrado");
+                ui.selectable_value(&mut selected, true, "Pasante");
+            })
+            .response
+            .on_hover_text(
+                "Cerrado: la cara baja hasta el eje. Pasante: agujero para el eje con avellanado \
+                 y chaflán opcionales.",
+            );
+        if selected != through {
+            boxes.hub_cut.mode = if selected { "through" } else { "" }.to_string();
+            changed = true;
+        }
+        if boxes.hub_cut.mode.trim() == "through" {
+            let help = "Con unidad, mayor que 0. Vacía: no se usa.";
+            changed |= cut_field(
+                ui,
+                "Ø agujero",
+                &mut boxes.hub_cut.shaft_diameter,
+                parsed.shaft_diameter.is_none(),
+                used.map_or_else(
+                    || size_hint(None),
+                    |cut| length_text(cut.shaft_radius * 2.0),
+                ),
+                help,
+            );
+            changed |= cut_field(
+                ui,
+                "Ø avellanado",
+                &mut boxes.hub_cut.counterbore_diameter,
+                parsed.counterbore_diameter.is_none(),
+                size_hint(None),
+                help,
+            );
+            changed |= cut_field(
+                ui,
+                "Fondo avellanado",
+                &mut boxes.hub_cut.counterbore_depth,
+                parsed.counterbore_depth.is_none(),
+                size_hint(None),
+                help,
+            );
+            changed |= cut_field(
+                ui,
+                "Chaflán",
+                &mut boxes.hub_cut.chamfer,
+                parsed.chamfer.is_none(),
+                size_hint(None),
+                help,
+            );
+        }
+        let any = !boxes.hub_cut.is_empty();
+        if ui
+            .add_enabled(any, egui::Button::new("Quitar recorte"))
+            .clicked()
+        {
+            clear_cut(boxes);
+            changed = true;
+        }
+    });
+    changed
+}
+
 /// Agarra el punto de control más cercano al empezar a arrastrar y, mientras
 /// dura, escribe en sus cajas lo que da el puntero.
 fn drag_handles(
@@ -1101,6 +1217,9 @@ fn edited_note(edits: &MeridianEdits) -> String {
     }
     if edits.edge_shroud.is_some() || edits.edge_hub.is_some() || !edits.edge.is_default() {
         names.push("borde de ataque".to_string());
+    }
+    if let Some(z) = edits.hub_cut.z {
+        names.push(format!("recorte en z = {z:.1} mm"));
     }
     for wall in Wall::ALL {
         let edit = edits.wall(wall);
@@ -1337,6 +1456,62 @@ mod tests {
             assert_ne!(*colour, Color32::GRAY, "{}", names[index]);
             assert!(!colours[..index].contains(colour), "{}", names[index]);
         }
+    }
+
+    #[test]
+    fn the_cut_curve_has_its_own_colour_and_width() {
+        let cut = meridian_color(CUT_NAME);
+        assert_ne!(cut, Color32::GRAY);
+        for name in [
+            "Tapa delantera",
+            "Tapa trasera",
+            "Borde de ataque",
+            "Borde de salida",
+        ] {
+            assert_ne!(cut, meridian_color(name), "{name}");
+        }
+        assert_eq!(meridian_width(CUT_NAME), meridian_width("Tapa trasera"));
+    }
+
+    #[test]
+    fn cut_boxes_fill_the_hub_cut_texts() {
+        // Una pasada sin entrada no cambia nada ni rompe con la sección vacía.
+        let ctx = egui::Context::default();
+        let mut boxes = Meridian::default();
+        let mut changed = true;
+        let mut output = ctx.run_ui(egui::RawInput::default(), |ui| {
+            changed = cut_boxes(ui, &mut boxes, None);
+        });
+        output.textures_delta.clear();
+        assert!(!changed);
+        // El cambio de texto de las cajas queda en la sección y se lee.
+        boxes.hub_cut.z = "37.5 mm".into();
+        boxes.hub_cut.mode = "through".into();
+        boxes.hub_cut.shaft_diameter = "41.275 mm".into();
+        let cut = hm_engine::meridian_edits_of(&boxes).hub_cut;
+        assert_eq!(boxes.hub_cut.z, "37.5 mm");
+        assert_eq!(cut.z, Some(37.5));
+        assert_eq!(cut.shaft_diameter, Some(41.275));
+    }
+
+    #[test]
+    fn quitar_recorte_empties_the_section() {
+        let mut boxes = Meridian::default();
+        boxes.hub_cut.z = "37.5 mm".into();
+        boxes.hub_cut.mode = "through".into();
+        boxes.hub_cut.chamfer = "1 mm".into();
+        boxes.shroud.start_angle_deg = "10".into();
+        clear_cut(&mut boxes);
+        assert!(boxes.hub_cut.is_empty());
+        assert_eq!(boxes.shroud.start_angle_deg, "10");
+    }
+
+    #[test]
+    fn the_note_names_the_cut_when_active() {
+        let mut edits = MeridianEdits::default();
+        assert_eq!(edited_note(&edits), "");
+        edits.hub_cut.z = Some(37.5);
+        assert_eq!(edited_note(&edits), " Editado: recorte en z = 37.5 mm.");
     }
 
     #[test]

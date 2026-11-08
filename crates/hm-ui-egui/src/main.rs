@@ -117,6 +117,18 @@ impl App {
                         boxes.edge.end_angle_deg = value.trim().into()
                     }
                     Some(("edge_end_length", value)) => boxes.edge.end_length = value.trim().into(),
+                    Some(("hub_cut.z", value)) => boxes.hub_cut.z = value.trim().into(),
+                    Some(("hub_cut.mode", value)) => boxes.hub_cut.mode = value.trim().into(),
+                    Some(("hub_cut.shaft_diameter", value)) => {
+                        boxes.hub_cut.shaft_diameter = value.trim().into();
+                    }
+                    Some(("hub_cut.counterbore_diameter", value)) => {
+                        boxes.hub_cut.counterbore_diameter = value.trim().into();
+                    }
+                    Some(("hub_cut.counterbore_depth", value)) => {
+                        boxes.hub_cut.counterbore_depth = value.trim().into();
+                    }
+                    Some(("hub_cut.chamfer", value)) => boxes.hub_cut.chamfer = value.trim().into(),
                     _ => eprintln!("HMF_MERIDIAN: no entiendo `{pair}`"),
                 }
             }

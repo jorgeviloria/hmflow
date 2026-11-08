@@ -795,3 +795,25 @@ fn over_determined_child_is_named_neutrally() {
         "{found:?}"
     );
 }
+
+#[test]
+fn constraint_text_tolerates_spaces_around_colons_and_case() {
+    let plain = Constraint::parse("dz hub:1 hub:2 = 40 mm").unwrap();
+    assert_eq!(
+        Constraint::parse("dz hub: 1 hub :2 = 40 mm").unwrap(),
+        plain
+    );
+    assert_eq!(Constraint::parse("DZ Hub:1 HUB:2 = 40 mm").unwrap(), plain);
+    assert_eq!(
+        Constraint::parse("Ang hub:1 hub:2 = 135 DEG").unwrap(),
+        Constraint::parse("ang hub:1 hub:2 = 135 deg").unwrap()
+    );
+}
+
+#[test]
+fn angles_out_of_range_or_not_numbers_are_rejected() {
+    for value in ["180.0000001 deg", "NaN deg", "inf deg", "-inf deg", "deg"] {
+        let text = format!("ang hub:1 hub:2 = {value}");
+        assert!(Constraint::parse(&text).is_err(), "{text}");
+    }
+}

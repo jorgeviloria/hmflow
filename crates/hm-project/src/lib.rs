@@ -192,6 +192,13 @@ impl Constraint {
         let (left, right) = text
             .split_once('=')
             .ok_or_else(|| format!("falta «=»: {text}"))?;
+        // Se edita a mano: sin distinguir mayúsculas y con espacios junto a «:».
+        let left = left
+            .to_lowercase()
+            .split(':')
+            .map(str::trim)
+            .collect::<Vec<_>>()
+            .join(":");
         let words: Vec<&str> = left.split_whitespace().collect();
         let [kind, parent, child] = words[..] else {
             return Err(format!(
@@ -211,7 +218,11 @@ impl Constraint {
             ConstraintKind::Dz | ConstraintKind::Dd => length_value(right)?,
             ConstraintKind::Ang => {
                 let number = right
-                    .strip_suffix("deg")
+                    .len()
+                    .checked_sub(3)
+                    .filter(|&end| right.is_char_boundary(end))
+                    .filter(|&end| right[end..].eq_ignore_ascii_case("deg"))
+                    .map(|end| &right[..end])
                     .ok_or_else(|| format!("el ángulo va en deg: {text}"))?;
                 match number.trim().parse::<f64>() {
                     Ok(value) if value > -180.0 && value <= 180.0 => value,

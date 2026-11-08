@@ -217,6 +217,24 @@ impl Constraints {
         self.all().any(|c| c.child == node)
     }
 
+    /// El padre que fija cada coordenada (z, Ø) del nodo `index` de `wall`,
+    /// si una cota Δz o ΔØ la manda. El ángulo aún no se aplica.
+    pub(super) fn fixing(&self, wall: Wall, index: usize) -> [Option<NodeRef>; 2] {
+        let node = NodeRef {
+            wall: id_of(wall),
+            index,
+        };
+        let mut fixed = [None; 2];
+        for constraint in self.all().filter(|c| c.child == node) {
+            match constraint.kind {
+                ConstraintKind::Dz => fixed[0] = Some(constraint.parent),
+                ConstraintKind::Dd => fixed[1] = Some(constraint.parent),
+                ConstraintKind::Ang => {}
+            }
+        }
+        fixed
+    }
+
     /// Las cotas Δz y ΔØ, con su índice en la lista.
     pub(super) fn iter(&self) -> impl Iterator<Item = (usize, &Constraint)> {
         self.items
@@ -229,6 +247,27 @@ impl Constraints {
                 _ => None,
             })
     }
+}
+
+/// `to` con las coordenadas que manda una cota en su valor de `at`: el
+/// arrastre de un hijo solo recorre la que queda libre.
+pub(super) fn lock_fixed(fixed: [Option<NodeRef>; 2], at: [f64; 2], mut to: [f64; 2]) -> [f64; 2] {
+    for axis in 0..2 {
+        if fixed[axis].is_some() {
+            to[axis] = at[axis];
+        }
+    }
+    to
+}
+
+/// Por qué una coordenada no se escribe: la fija una cota desde `parent`.
+pub(super) fn fixed_reason(axis: usize, parent: NodeRef) -> String {
+    let kind = if axis == 0 { "Δz" } else { "ΔØ" };
+    let wall = match parent.wall {
+        WallId::Hub => "hub",
+        WallId::Shroud => "shroud",
+    };
+    format!("la fija {kind} desde {wall}:{}", parent.index)
 }
 
 pub(super) fn wall_of(id: WallId) -> Wall {
@@ -467,6 +506,19 @@ pub(super) fn pick_parent(
                 Some((child, "el hijo tiene que ser un punto libre".to_string())),
             );
         }
+    });
+}
+
+/// Se intentó arrastrar un hijo con z y Ø fijadas: el aviso junto a su punto.
+pub(super) fn refuse_drag(ctx: &egui::Context, wall: Wall, index: usize) {
+    ctx.data_mut(|data| {
+        data.insert_temp(
+            notice_id(),
+            Some((
+                node_of(wall, index),
+                "z y Ø las fijan cotas: bórralas para moverlo".to_string(),
+            )),
+        );
     });
 }
 
@@ -852,6 +904,39 @@ mod tests {
 
     fn close(a: f64, b: f64) -> bool {
         (a - b).abs() < 1e-9
+    }
+
+    #[test]
+    fn fixing_tells_which_coordinates_a_child_has_fixed() {
+        let constraints = with(&["dz hub:1 hub:2 = 15 mm", "dd hub:0 hub:2 = 5 mm"]);
+        let parent = |index| {
+            Some(NodeRef {
+                wall: WallId::Hub,
+                index,
+            })
+        };
+        assert_eq!(constraints.fixing(Wall::Hub, 2), [parent(1), parent(0)]);
+        assert_eq!(constraints.fixing(Wall::Hub, 1), [None, None]);
+        assert_eq!(constraints.fixing(Wall::Shroud, 2), [None, None]);
+    }
+
+    #[test]
+    fn a_dragged_child_only_moves_along_the_free_coordinate() {
+        let constraints = with(&["dz hub:1 hub:2 = 15 mm"]);
+        let fixed = constraints.fixing(Wall::Hub, 2);
+        assert_eq!(lock_fixed(fixed, [10.0, 4.0], [20.0, 9.0]), [10.0, 9.0]);
+        let none = constraints.fixing(Wall::Hub, 1);
+        assert_eq!(lock_fixed(none, [10.0, 4.0], [20.0, 9.0]), [20.0, 9.0]);
+    }
+
+    #[test]
+    fn the_reason_names_the_kind_and_the_parent() {
+        let parent = NodeRef {
+            wall: WallId::Shroud,
+            index: 4,
+        };
+        assert_eq!(fixed_reason(0, parent), "la fija Δz desde shroud:4");
+        assert_eq!(fixed_reason(1, parent), "la fija ΔØ desde shroud:4");
     }
 
     #[test]

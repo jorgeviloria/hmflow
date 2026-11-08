@@ -1274,6 +1274,7 @@ fn node_editor(
         return false;
     };
     let points = model.params.wall(editor.wall).points;
+    let commanded = segments.constraints.fixing(editor.wall, editor.index);
     let state = segments.wall_mut(editor.wall);
     if editor.index >= state.node_count() || !state.draggable(editor.index) {
         ctx.data_mut(|data| data.remove::<Option<Editor>>(editor_id()));
@@ -1281,6 +1282,8 @@ fn node_editor(
     }
     let on_arc = state.driver(editor.index).is_some();
     let free = state.can_free(editor.index) && !on_arc;
+    // Las coordenadas que manda una cota no se escriben.
+    let fixed = if free { commanded } else { [None; 2] };
     let at = state.node_at(&points, editor.index);
     let screen = to_screen(plot_ui, at);
     let roundable = state.can_round(editor.index);
@@ -1314,13 +1317,18 @@ fn node_editor(
             egui::Grid::new(editor_id().with("grid"))
                 .num_columns(3)
                 .show(ui, |ui| {
-                    for (label, text, id) in [
+                    for (axis, (label, text, id)) in [
                         ("z", &mut editor.z, z_id),
                         ("Ø", &mut editor.diameter, r_id),
-                    ] {
+                    ]
+                    .into_iter()
+                    .enumerate()
+                    {
                         ui.label(label);
-                        let field =
-                            ui.add(egui::TextEdit::singleline(text).id(id).desired_width(80.0));
+                        let field = ui.add_enabled(
+                            fixed[axis].is_none(),
+                            egui::TextEdit::singleline(text).id(id).desired_width(80.0),
+                        );
                         if field.lost_focus()
                             && ui.input(|input| input.key_pressed(egui::Key::Enter))
                         {
@@ -1328,6 +1336,17 @@ fn node_editor(
                         }
                         ui.label("mm");
                         ui.end_row();
+                        if let Some(parent) = fixed[axis] {
+                            ui.label("");
+                            ui.label(
+                                egui::RichText::new(crate::meridian_constraints::fixed_reason(
+                                    axis, parent,
+                                ))
+                                .small()
+                                .weak(),
+                            );
+                            ui.end_row();
+                        }
                     }
                     if roundable {
                         ui.label("R");
@@ -1372,6 +1391,13 @@ fn node_editor(
     if apply {
         let (z, diameter) = (mm_value(&editor.z), mm_value(&editor.diameter));
         if free {
+            // Lo que manda una cota se queda donde está.
+            let z = if fixed[0].is_some() { Some(at[0]) } else { z };
+            let diameter = if fixed[1].is_some() {
+                Some(2.0 * at[1])
+            } else {
+                diameter
+            };
             if let (Some(z), Some(diameter)) = (z, diameter.filter(|d| *d >= 0.0)) {
                 changed = state.move_node(&points, editor.index, [z, diameter / 2.0]);
             }
@@ -1796,15 +1822,29 @@ fn drag_node(
         let origin = ctx
             .input(|input| input.pointer.press_origin())
             .map(|pos| plot_ui.plot_from_screen(pos));
-        let grabbed = origin
-            .and_then(|origin| near_node(plot_ui, model, segments, origin, WallSegments::draggable))
-            .map(|(wall, index)| Grab {
-                wall,
-                index,
-                from: segments
-                    .wall(wall)
-                    .node_at(&model.params.wall(wall).points, index),
-            });
+        let hit = origin.and_then(|origin| {
+            near_node(plot_ui, model, segments, origin, WallSegments::draggable)
+        });
+        // Un hijo con z y Ø fijadas no tiene por dónde moverse: su ventana
+        // explica quién lo fija.
+        let hit = hit.filter(|(wall, index)| {
+            let fixed = segments.constraints.fixing(*wall, *index);
+            if fixed.iter().all(Option::is_some) {
+                let state = segments.wall(*wall);
+                let at = state.node_at(&model.params.wall(*wall).points, *index);
+                open_editor(&ctx, *wall, *index, at, state.radius[*index]);
+                crate::meridian_constraints::refuse_drag(&ctx, *wall, *index);
+                return false;
+            }
+            true
+        });
+        let grabbed = hit.map(|(wall, index)| Grab {
+            wall,
+            index,
+            from: segments
+                .wall(wall)
+                .node_at(&model.params.wall(wall).points, index),
+        });
         ctx.data_mut(|data| data.insert_temp(dragged_id(), grabbed));
     }
     let grabbed: Option<Grab> = ctx.data(|data| data.get_temp(dragged_id())).flatten();
@@ -1825,6 +1865,8 @@ fn drag_node(
     if let Some(pointer) = plot_ui.pointer_coordinate() {
         let mut to = [pointer.x, pointer.y];
         let state = segments.wall(grab.wall);
+        let fixed = segments.constraints.fixing(grab.wall, grab.index);
+        let here = state.node_at(&points, grab.index);
         if state.can_free(grab.index) {
             if ctx.input(|input| input.modifiers.shift) {
                 let (dz, dr) = (to[0] - grab.from[0], to[1] - grab.from[1]);
@@ -1851,8 +1893,13 @@ fn drag_node(
                 f64::from(SNAP_PIXELS) / transform.dpos_dvalue_x().abs().max(f64::EPSILON),
                 f64::from(SNAP_PIXELS) / transform.dpos_dvalue_y().abs().max(f64::EPSILON),
             ];
-            let (snapped, guides) = snap(to, &others, tolerance);
-            to = snapped;
+            let (snapped, mut guides) = snap(to, &others, tolerance);
+            to = crate::meridian_constraints::lock_fixed(fixed, here, snapped);
+            for (guide, parent) in guides.iter_mut().zip(fixed) {
+                if parent.is_some() {
+                    *guide = None;
+                }
+            }
             if let Some(z) = guides[0] {
                 plot_ui.line(line("", vec![[z, -1.0e4], [z, 1.0e4]], SELECTED).width(1.0));
             }

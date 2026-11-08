@@ -262,6 +262,13 @@ fn enforce_with(points: [&[[f64; 2]; 5]; 2], boxes: &mut Meridian) -> bool {
     if boxes.segments.constraints.is_empty() {
         return false;
     }
+    // Una tapa que no se entiende se leería como entera y `write` la
+    // reescribiría: se deja como está.
+    if WallSegments::from_texts(&boxes.segments.shroud).is_none()
+        || WallSegments::from_texts(&boxes.segments.hub).is_none()
+    {
+        return false;
+    }
     let mut segments = read(boxes);
     let Segments {
         walls, constraints, ..
@@ -586,40 +593,76 @@ pub(super) fn writing(ctx: &egui::Context, segments: &mut Segments) -> bool {
     }
     writing.fresh = false;
     let mut changed = false;
-    if apply && let Some(value) = mm_value(&writing.text) {
-        match (writing.value, writing.pending) {
-            (Value::Existing(index), _) => {
-                segments.constraints.set_value(index, value / 1000.0);
-                changed = true;
-            }
-            (Value::New(kind), Some(pending)) => {
-                let new = Constraint {
-                    kind,
-                    parent: pending.parent,
-                    child: pending.child,
-                    value: value / 1000.0,
-                };
-                match segments.constraints.refusal(&segments.walls, &new) {
-                    None => {
-                        segments.constraints.add(new);
-                        ctx.data_mut(|data| {
-                            data.insert_temp::<Option<Pending>>(pending_id(), None)
-                        });
-                        changed = true;
-                    }
-                    Some(refusal) => {
-                        // Sigue abierta, con el motivo.
-                        writing.refusal = Some(refusal);
-                        writing.fresh = true;
-                        done = false;
-                    }
+    if apply {
+        match commit(segments, writing.value, writing.pending, &writing.text) {
+            Ok(done_changed) => {
+                changed = done_changed;
+                if matches!(writing.value, Value::New(_)) {
+                    ctx.data_mut(|data| data.insert_temp::<Option<Pending>>(pending_id(), None));
                 }
             }
-            (Value::New(_), None) => {}
+            Err(refusal) => {
+                // Sigue abierta, con el motivo.
+                writing.refusal = Some(refusal);
+                writing.fresh = true;
+                done = false;
+            }
         }
     }
     ctx.data_mut(|data| data.insert_temp(writing_id(), (!done).then_some(writing)));
     changed
+}
+
+/// Aplica lo escrito en la caja: cambia el valor de una cota que manda o crea
+/// la del par que se está acotando. Devuelve si cambió algo, o por qué no se
+/// pudo.
+fn commit(
+    segments: &mut Segments,
+    value: Value,
+    pending: Option<Pending>,
+    text: &str,
+) -> Result<bool, &'static str> {
+    let mm = mm_value(text).ok_or("no es un número")?;
+    match (value, pending) {
+        (Value::Existing(index), _) => {
+            let same = segments
+                .constraints
+                .iter()
+                .find(|(i, _)| *i == index)
+                .is_some_and(|(_, c)| (c.value * 1000.0 - mm).abs() < 1e-9);
+            if same {
+                return Ok(false);
+            }
+            segments.constraints.set_value(index, mm / 1000.0);
+            Ok(true)
+        }
+        (Value::New(kind), Some(pending)) => {
+            let new = Constraint {
+                kind,
+                parent: pending.parent,
+                child: pending.child,
+                value: mm / 1000.0,
+            };
+            match segments.constraints.refusal(&segments.walls, &new) {
+                None => {
+                    segments.constraints.add(new);
+                    Ok(true)
+                }
+                Some(refusal) => Err(refusal),
+            }
+        }
+        (Value::New(_), None) => Ok(false),
+    }
+}
+
+/// Se cortó o se quitó un punto: los números del par a medio acotar y de la
+/// caja abierta ya no valen, así que se olvidan.
+pub(super) fn forget_unfinished(ctx: &egui::Context) {
+    ctx.data_mut(|data| {
+        data.insert_temp::<Option<Pending>>(pending_id(), None);
+        data.insert_temp::<Option<Writing>>(writing_id(), None);
+        data.insert_temp::<Option<(NodeRef, String)>>(notice_id(), None);
+    });
 }
 
 /// Un par que se está acotando: el hijo (el punto de la ventana abierta) y el
@@ -1016,6 +1059,90 @@ mod tests {
         let problems = apply(&constraints, [&POINTS; 2], &mut walls);
         assert_eq!(problems.len(), 1);
         assert_eq!(problems[0].reason, "forma un ciclo");
+    }
+
+    #[test]
+    fn enforce_leaves_an_unreadable_wall_alone() {
+        let mut segments = Segments::default();
+        segments.walls[wall_index(Wall::Hub)] = three_lines();
+        let mut boxes = Meridian::default();
+        write(&mut boxes, &segments);
+        boxes.segments.constraints = vec!["dz hub:1 hub:2 = 40 mm".into()];
+        // Cortes que no crecen: la tapa no se entiende.
+        boxes.segments.shroud.cuts = vec!["0.6".into(), "0.3".into()];
+        let before = boxes.clone();
+        assert!(!enforce_with([&POINTS; 2], &mut boxes));
+        assert_eq!(boxes, before);
+    }
+
+    fn new_dz(value: f64) -> (Value, Option<Pending>) {
+        let node = |index| NodeRef {
+            wall: WallId::Hub,
+            index,
+        };
+        let pending = Pending {
+            child: node(2),
+            parent: node(1),
+        };
+        let _ = value;
+        (Value::New(ConstraintKind::Dz), Some(pending))
+    }
+
+    #[test]
+    fn typing_that_is_not_a_number_is_refused() {
+        let mut segments = Segments::default();
+        segments.walls[wall_index(Wall::Hub)] = three_lines();
+        let (value, pending) = new_dz(0.0);
+        assert_eq!(
+            commit(&mut segments, value, pending, "abc"),
+            Err("no es un número")
+        );
+        assert!(segments.constraints.to_texts().is_empty());
+        assert_eq!(commit(&mut segments, value, pending, "12,5"), Ok(true));
+        assert_eq!(segments.constraints.to_texts(), ["dz hub:1 hub:2 = 12.5 mm"]);
+    }
+
+    #[test]
+    fn writing_the_same_value_changes_nothing() {
+        let mut segments = Segments {
+            constraints: with(&["dz hub:1 hub:2 = 40 mm"]),
+            ..Segments::default()
+        };
+        let before = segments.constraints.clone();
+        assert_eq!(commit(&mut segments, Value::Existing(0), None, "40"), Ok(false));
+        assert_eq!(segments.constraints, before);
+        assert_eq!(commit(&mut segments, Value::Existing(0), None, "41"), Ok(true));
+        assert_eq!(segments.constraints.to_texts(), ["dz hub:1 hub:2 = 41 mm"]);
+    }
+
+    #[test]
+    fn cutting_forgets_the_unfinished_work() {
+        let ctx = egui::Context::default();
+        let (value, pending) = new_dz(0.0);
+        ctx.data_mut(|data| {
+            data.insert_temp(pending_id(), pending);
+            data.insert_temp(
+                writing_id(),
+                Some(Writing {
+                    value,
+                    pending,
+                    text: String::new(),
+                    screen: egui::Pos2::ZERO,
+                    fresh: false,
+                    refusal: None,
+                }),
+            );
+        });
+        forget_unfinished(&ctx);
+        assert_eq!(
+            ctx.data(|data| data.get_temp::<Option<Pending>>(pending_id())),
+            Some(None)
+        );
+        assert!(
+            ctx.data(|data| data.get_temp::<Option<Writing>>(writing_id()))
+                .flatten()
+                .is_none()
+        );
     }
 
     #[test]

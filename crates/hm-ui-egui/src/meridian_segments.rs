@@ -141,7 +141,7 @@ impl Default for WallSegments {
 impl WallSegments {
     /// Lee los textos del `.hmf`; `None` si no se entienden (la validación
     /// del proyecto ya lo avisa con HM-PROJ-031).
-    fn from_texts(texts: &MeridianWallSegments) -> Option<Self> {
+    pub(super) fn from_texts(texts: &MeridianWallSegments) -> Option<Self> {
         let mut cuts = Vec::with_capacity(texts.cuts.len());
         for text in &texts.cuts {
             let t: f64 = text.trim().parse().ok()?;
@@ -2020,6 +2020,7 @@ pub(super) fn interact(
                 if ui.button("Cortar aquí").clicked() {
                     if state.cut(&points, hit.piece, hit.s) {
                         constraints.node_inserted(hit.wall, hit.piece + 1);
+                        crate::meridian_constraints::forget_unfinished(ui.ctx());
                         changed = true;
                     }
                     ui.close();
@@ -2111,6 +2112,7 @@ pub(super) fn interact(
             if (1..=state.cuts.len()).contains(&index) && ui.button(label).clicked() {
                 if state.remove_node(index) {
                     constraints.node_removed(hit.wall, index);
+                    crate::meridian_constraints::forget_unfinished(ui.ctx());
                     changed = true;
                 }
                 ui.close();
@@ -2123,6 +2125,7 @@ pub(super) fn interact(
         if !state.is_plain() && ui.button(label).clicked() {
             *state = WallSegments::default();
             constraints.remove_wall(hit.wall);
+            crate::meridian_constraints::forget_unfinished(ui.ctx());
             changed = true;
             ui.close();
         }

@@ -2,7 +2,9 @@
 //! Bézier de 5 puntos: P2 y el ángulo y la longitud de los dos brazos.
 
 use hm_formula::Registry;
-use hm_project::{Meridian, MeridianEdge, MeridianWall, Project, PumpType, SCHEMA_VERSION};
+use hm_project::{
+    Meridian, MeridianEdge, MeridianHubCut, MeridianWall, Project, PumpType, SCHEMA_VERSION,
+};
 
 const CASING_V3: &str = include_str!("fixtures/casing_v3.hmf");
 
@@ -69,6 +71,7 @@ fn edits_round_trip_and_empty_fields_stay_out() {
             end_length: "4 mm".into(),
             ..MeridianWall::default()
         },
+        ..Meridian::default()
     });
     let text = project.to_toml().unwrap();
     assert!(text.contains("hub_diameter = \"0 mm\""), "{text}");
@@ -285,4 +288,84 @@ fn the_edge_fields_are_checked_like_the_walls() {
         assert_eq!(bad(length(text), "edge.start_length"), !ok, "{text}");
         assert_eq!(bad(length(text), "edge.end_length"), !ok, "{text}");
     }
+}
+
+fn full_cut() -> MeridianHubCut {
+    MeridianHubCut {
+        z: "12 mm".into(),
+        mode: "through".into(),
+        shaft_diameter: "25 mm".into(),
+        counterbore_diameter: "40 mm".into(),
+        counterbore_depth: "6 mm".into(),
+        chamfer: "1 mm".into(),
+    }
+}
+
+#[test]
+fn hub_cut_round_trips_through_the_hmf() {
+    let project = with(Meridian {
+        hub_cut: full_cut(),
+        ..Meridian::default()
+    });
+    let text = project.to_toml().unwrap();
+    assert!(text.contains("[meridian.hub_cut]"), "{text}");
+    let back = Project::from_toml(&text).unwrap();
+    assert_eq!(back.meridian, project.meridian);
+
+    let empty = with(Meridian {
+        hub_diameter: "20 mm".into(),
+        ..Meridian::default()
+    });
+    assert!(!empty.to_toml().unwrap().contains("hub_cut"));
+}
+
+#[test]
+fn hub_cut_bad_texts_are_hm_proj_031() {
+    let cases: [(&str, MeridianHubCut); 4] = [
+        (
+            "hub_cut.z",
+            MeridianHubCut {
+                z: "abc".into(),
+                ..full_cut()
+            },
+        ),
+        (
+            "hub_cut.shaft_diameter",
+            MeridianHubCut {
+                shaft_diameter: "-3 mm".into(),
+                ..full_cut()
+            },
+        ),
+        (
+            "hub_cut.mode",
+            MeridianHubCut {
+                mode: "otro".into(),
+                ..full_cut()
+            },
+        ),
+        (
+            "hub_cut.counterbore_depth",
+            MeridianHubCut {
+                counterbore_depth: "0 mm".into(),
+                ..full_cut()
+            },
+        ),
+    ];
+    for (name, cut) in cases {
+        let found = problems(Meridian {
+            hub_cut: cut,
+            ..Meridian::default()
+        });
+        assert!(
+            found.iter().any(|message| message.contains(name)),
+            "{name}: {found:?}"
+        );
+    }
+    assert_eq!(
+        problems(Meridian {
+            hub_cut: full_cut(),
+            ..Meridian::default()
+        }),
+        Vec::<String>::new()
+    );
 }

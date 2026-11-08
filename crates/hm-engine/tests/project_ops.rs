@@ -289,3 +289,42 @@ fn a_manual_margin_does_not_make_the_eye_look_stale() {
         .count();
     assert_eq!(stale, 0);
 }
+
+#[test]
+fn meridian_edits_of_reads_the_hub_cut() {
+    let section = hm_project::Meridian {
+        hub_cut: hm_project::MeridianHubCut {
+            z: "12 mm".into(),
+            mode: "through".into(),
+            shaft_diameter: "2.5 cm".into(),
+            counterbore_depth: "mucho".into(),
+            ..hm_project::MeridianHubCut::default()
+        },
+        ..hm_project::Meridian::default()
+    };
+    let cut = hm_engine::meridian_edits_of(&section).hub_cut;
+    assert!((cut.z.unwrap() - 12.0).abs() < 1e-9);
+    assert_eq!(cut.mode, hm_design::meridian::CutMode::Through);
+    assert!((cut.shaft_diameter.unwrap() - 25.0).abs() < 1e-9);
+    assert_eq!(cut.counterbore_depth, None);
+    assert_eq!(cut.chamfer, None);
+}
+
+#[test]
+fn meridian_with_a_hub_cut_draws_the_cut_curve() {
+    let mut project = designed_project();
+    project.meridian = Some(hm_project::Meridian {
+        hub_cut: hm_project::MeridianHubCut {
+            z: "0 mm".into(),
+            ..hm_project::MeridianHubCut::default()
+        },
+        ..hm_project::Meridian::default()
+    });
+    let model = hm_engine::meridian(&project).unwrap();
+    assert!(
+        model
+            .curves
+            .iter()
+            .any(|curve| curve.name == hm_design::meridian::CUT_NAME)
+    );
+}

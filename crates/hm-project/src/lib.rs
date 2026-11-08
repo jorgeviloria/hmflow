@@ -87,6 +87,49 @@ pub struct Meridian {
     /// Tapa trasera (cubo).
     #[serde(default, skip_serializing_if = "MeridianWall::is_empty")]
     pub hub: MeridianWall,
+    /// Recorte mecánico del cubo (geometría de fabricación, no hidráulica).
+    #[serde(default, skip_serializing_if = "MeridianHubCut::is_empty")]
+    pub hub_cut: MeridianHubCut,
+}
+
+/// Recorte del cubo, como texto. Con `z` vacío no hay recorte.
+#[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct MeridianHubCut {
+    /// z de la cara del recorte, con unidad, desde el plano de entrada.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub z: String,
+    /// Vacío o `closed`: cubo cerrado. `through`: agujero pasante.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub mode: String,
+    /// Diámetro del agujero del eje, con unidad, mayor que 0 (pasante).
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub shaft_diameter: String,
+    /// Diámetro del avellanado, con unidad, mayor que 0 (pasante).
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub counterbore_diameter: String,
+    /// Profundidad del avellanado, con unidad, mayor que 0 (pasante).
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub counterbore_depth: String,
+    /// Chaflán a 45° del agujero, con unidad, mayor que 0 (pasante).
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub chamfer: String,
+}
+
+impl MeridianHubCut {
+    #[must_use]
+    pub fn is_empty(&self) -> bool {
+        [
+            &self.z,
+            &self.mode,
+            &self.shaft_diameter,
+            &self.counterbore_diameter,
+            &self.counterbore_depth,
+            &self.chamfer,
+        ]
+        .iter()
+        .all(|text| text.trim().is_empty())
+    }
 }
 
 /// Lo editado del borde de ataque, como texto: una Bézier de 5 puntos de la
@@ -184,6 +227,7 @@ impl Meridian {
             && self.edge.is_empty()
             && self.shroud.is_empty()
             && self.hub.is_empty()
+            && self.hub_cut.is_empty()
     }
 }
 
@@ -851,6 +895,34 @@ fn check_meridian(diagnostics: &mut Diagnostics, meridian: &Meridian) {
             {
                 problem(format!("{table}.{name}"), error);
             }
+        }
+    }
+    check_hub_cut(&mut problem, &meridian.hub_cut);
+}
+
+fn check_hub_cut(problem: &mut impl FnMut(String, String), cut: &MeridianHubCut) {
+    if !cut.z.trim().is_empty()
+        && let Err(text) = non_negative_length(cut.z.trim())
+    {
+        problem("hub_cut.z".to_string(), text);
+    }
+    let mode = cut.mode.trim();
+    if !matches!(mode, "" | "closed" | "through") {
+        problem(
+            "hub_cut.mode".to_string(),
+            format!("debe ser closed o through: {mode}"),
+        );
+    }
+    for (name, text) in [
+        ("shaft_diameter", cut.shaft_diameter.trim()),
+        ("counterbore_diameter", cut.counterbore_diameter.trim()),
+        ("counterbore_depth", cut.counterbore_depth.trim()),
+        ("chamfer", cut.chamfer.trim()),
+    ] {
+        if !text.is_empty()
+            && let Err(error) = positive_value(text, "m")
+        {
+            problem(format!("hub_cut.{name}"), error);
         }
     }
 }

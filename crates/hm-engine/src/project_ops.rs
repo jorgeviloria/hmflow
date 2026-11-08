@@ -2,7 +2,7 @@
 
 use hm_core::PumpType;
 use hm_design::meridian::{
-    EdgeEdit, HubCutEdit, MeridianEdits, MeridionalModel, WallEdit, meridional_model_with,
+    CutMode, EdgeEdit, HubCutEdit, MeridianEdits, MeridionalModel, WallEdit, meridional_model_with,
 };
 use hm_design::plan::{PlanModel, plan_model};
 use hm_design::{DesignInput, DesignReport, LEGACY_METHODS, METHOD, design_with_options};
@@ -332,8 +332,7 @@ pub fn meridian_edits_of(section: &hm_project::Meridian) -> MeridianEdits {
         edge: edge_edit_of(&section.edge),
         shroud: wall_edit_of(&section.shroud),
         hub: wall_edit_of(&section.hub),
-        // El recorte del cubo aún no se lee del proyecto.
-        hub_cut: HubCutEdit::default(),
+        hub_cut: hub_cut_of(&section.hub_cut),
     }
 }
 
@@ -374,6 +373,23 @@ fn edge_edit_of(edge: &hm_project::MeridianEdge) -> EdgeEdit {
         start_length: arm(&edge.start_length),
         end_angle: angle(&edge.end_angle_deg),
         end_length: arm(&edge.end_length),
+    }
+}
+
+/// El recorte del cubo en mm; una cota que no se entiende queda en `None`.
+fn hub_cut_of(cut: &hm_project::MeridianHubCut) -> HubCutEdit {
+    let size = |text: &str| length_mm(text).filter(|value| *value > 0.0);
+    HubCutEdit {
+        z: length_mm(&cut.z).filter(|value| *value >= 0.0),
+        mode: if cut.mode.trim() == "through" {
+            CutMode::Through
+        } else {
+            CutMode::Closed
+        },
+        shaft_diameter: size(&cut.shaft_diameter),
+        counterbore_diameter: size(&cut.counterbore_diameter),
+        counterbore_depth: size(&cut.counterbore_depth),
+        chamfer: size(&cut.chamfer),
     }
 }
 

@@ -239,7 +239,8 @@ impl WallSegments {
     }
 
     /// Lleva el nodo `index` hacia `to`: libre si puede, si no deslizándose
-    /// sobre la Bézier sin pasar a sus vecinos. Devuelve si se movió.
+    /// sobre la Bézier sin pasar a sus vecinos, al punto más cercano.
+    /// Devuelve si se movió.
     fn move_node(&mut self, points: &[[f64; 2]; 5], index: usize, to: [f64; 2]) -> bool {
         if index >= self.node_count() {
             return false;
@@ -281,6 +282,25 @@ impl WallSegments {
         let before = self.cuts[index - 1];
         self.cuts[index - 1] = t;
         t != before
+    }
+
+    /// Arrastre del nodo `index` desde `from` (donde estaba al agarrarlo)
+    /// hasta el cursor `to`. Libre, va al cursor. Sobre la curva, sigue la z
+    /// del cursor si el arrastre es más horizontal que vertical, y su r si
+    /// no: el punto queda justo debajo o al lado del ratón. Ir al punto más
+    /// cercano lo dejaba atrás donde la curva se tuerce. Devuelve si se movió.
+    fn drag_to(
+        &mut self,
+        points: &[[f64; 2]; 5],
+        index: usize,
+        from: [f64; 2],
+        to: [f64; 2],
+    ) -> bool {
+        if self.can_free(index) {
+            return self.move_node(points, index, to);
+        }
+        let axis = usize::from((to[0] - from[0]).abs() < (to[1] - from[1]).abs());
+        self.slide_to(points, index, axis, to[axis])
     }
 
     /// Devuelve el nodo `index` a la Bézier, en su `t`.
@@ -854,7 +874,7 @@ fn drag_node(
         }
         changed = segments
             .wall_mut(grab.wall)
-            .move_node(&points, grab.index, to);
+            .drag_to(&points, grab.index, grab.from, to);
     }
     let at = segments.wall(grab.wall).node_at(&points, grab.index);
     plot_ui.text(
@@ -1179,6 +1199,39 @@ mod tests {
         assert!((state.cuts[0] - MIN_GAP).abs() < 1e-6);
         // Los extremos pegados a una curva no se mueven.
         assert!(!state.move_node(&POINTS, 0, [5.0, 5.0]));
+    }
+
+    /// El cubo por defecto: arranca en horizontal y acaba vertical en d2.
+    const HUB: [[f64; 2]; 5] = [
+        [0.0, 15.17],
+        [4.16, 15.17],
+        [41.65, 15.17],
+        [41.65, 54.62],
+        [41.65, 100.0],
+    ];
+
+    #[test]
+    fn dragging_along_z_carries_the_point_under_the_cursor() {
+        let mut state = WallSegments::default();
+        assert!(state.cut_at_t(&HUB, 0.3));
+        state.toggle(0);
+        state.move_node(&HUB, 0, [0.0, 0.0]);
+        // El ratón se mueve en horizontal, a la altura del corte: el punto
+        // sigue su z por la curva, no se queda atrás.
+        let from = state.node_at(&HUB, 1);
+        for z in [20.0, 30.0, 38.0] {
+            assert!(state.drag_to(&HUB, 1, from, [z, from[1]]));
+            let at = state.node_at(&HUB, 1);
+            assert!((at[0] - z).abs() < 1e-3, "pedí z = {z} y quedó en {at:?}");
+        }
+        // Un arrastre más vertical sigue la r del ratón, también donde la
+        // curva sube recta.
+        assert!(state.drag_to(&HUB, 1, from, [from[0] + 3.0, 70.0]));
+        let at = state.node_at(&HUB, 1);
+        assert!((at[1] - 70.0).abs() < 1e-3, "{at:?}");
+        // Y vuelve hacia atrás igual de bien.
+        assert!(state.drag_to(&HUB, 1, from, [5.0, from[1]]));
+        assert!((state.node_at(&HUB, 1)[0] - 5.0).abs() < 1e-3);
     }
 
     #[test]

@@ -432,9 +432,10 @@ const CURVATURE_SAMPLES: usize = 200;
 fn summary(model: &MeridionalModel, edits: &MeridianEdits) -> String {
     let p = &model.params;
     format!(
-        "zE {:.1} · dH {:.1} · radio mínimo tapa {:.1}, cubo {:.1} · borde {:.1}° · área de entrada {:.0} mm².{}",
+        "zE {:.1} · dH {:.1} (dH del 1D: {:.2} mm) · radio mínimo tapa {:.1}, cubo {:.1} · borde {:.1}° · área de entrada {:.0} mm².{}",
         p.z_e,
         p.d1i,
+        p.auto_d1i,
         p.shroud.min_radius,
         p.hub.min_radius,
         p.edge_angle,
@@ -710,12 +711,13 @@ fn header(model: &MeridionalModel, edits: &MeridianEdits) -> String {
     let one_d_area = std::f64::consts::PI * (r1 * r1 - (p.auto_d1i / 2.0).powi(2));
     format!(
         "Corte meridional, mm: z con el flujo (0 en el plano de entrada), r radial. zE = {:.1}, \
-         dH = {:.1}, anchura de entrada del 1D = {:.1}. Borde de ataque: {:.1}° con la radial, longitud {:.1}, \
+         dH = {:.1} (dH del 1D: {:.2} mm), anchura de entrada del 1D = {:.1}. Borde de ataque: {:.1}° con la radial, longitud {:.1}, \
          área {:.0} mm² (1D: {:.0}). Radio mínimo: tapa delantera {shroud:.1}{verdict}; \
          trasera {:.1}. Cada tapa es una Bézier de 5 puntos: P2 se mueve dentro del rectángulo de los \
          extremos y P1 y P3 salen de ellos con su ángulo (° desde +z hacia +r) y su longitud. Gülich §7.2.2.1.{} El álabe sigue siendo 2D hasta F4. Huella {}.",
         p.z_e,
         p.d1i,
+        p.auto_d1i,
         p.inlet_width,
         p.edge_angle,
         p.edge_length,
@@ -734,15 +736,15 @@ fn wall_boxes(ui: &mut egui::Ui, boxes: &mut Meridian, auto: Option<&MeridionalM
     let parsed = hm_engine::meridian_edits_of(boxes);
     ui.horizontal_wrapped(|ui| {
         ui.label(RichText::new("Entrada").strong());
-        let auto_hub = auto.map(|model| length_text(model.params.auto_d1i));
         let fields: [(&str, &mut String, bool, String, &str); 3] = [
             (
                 "dH",
                 &mut boxes.hub_diameter,
                 parsed.hub_diameter.is_none(),
-                auto_hub.map_or_else(String::new, |text| format!("{text} (auto)")),
+                format!("{} (auto)", length_text(0.0)),
                 "Diámetro del cubo en el plano de entrada, con unidad: de 0 (el cubo arranca en el \
-                 eje) a menos que d1. Vacío: el que da el área del 1D con el borde radial.",
+                 eje) a menos que d1. Vacío: 0. El dH del 1D (el que da su área con el borde \
+                 radial) se lee en la cabecera, como referencia.",
             ),
             (
                 "Borde en tapa",
@@ -1584,7 +1586,7 @@ mod tests {
     }
 
     #[test]
-    fn the_dimensioning_measures_the_selected_point_from_the_axes() {
+    fn the_header_shows_the_1d_hub_diameter_as_a_reference() {
         let result = hm_design::design(&hm_design::DesignInput {
             q: hm_units::parse_quantity("120 m3/h").unwrap(),
             h: hm_units::parse_quantity("45 m").unwrap(),
@@ -1596,6 +1598,36 @@ mod tests {
         })
         .unwrap();
         let model = meridional_model(&result).unwrap();
+        let text = header(&model, &MeridianEdits::default());
+        let reference = format!("dH del 1D: {:.2} mm", model.params.auto_d1i);
+        assert!(text.contains(&reference), "{text}");
+        assert!(text.contains("dH = 0.0"), "{text}");
+        let line = summary(&model, &MeridianEdits::default());
+        assert!(line.contains(&reference), "{line}");
+    }
+
+    #[test]
+    fn the_dimensioning_measures_the_selected_point_from_the_axes() {
+        let result = hm_design::design(&hm_design::DesignInput {
+            q: hm_units::parse_quantity("120 m3/h").unwrap(),
+            h: hm_units::parse_quantity("45 m").unwrap(),
+            n: hm_units::parse_quantity("2900 rpm").unwrap(),
+            rho: hm_units::parse_quantity("998.2 kg/m3").unwrap(),
+            eta_m: 0.95,
+            npsha: None,
+            nu: None,
+        })
+        .unwrap();
+        // Con el dH del 1D: con el cubo en el eje (por defecto) dH y eje coinciden.
+        let auto_hub = meridional_model(&result).unwrap().params.auto_d1i;
+        let model = meridional_model_with(
+            &result,
+            &MeridianEdits {
+                hub_diameter: Some(auto_hub),
+                ..MeridianEdits::default()
+            },
+        )
+        .unwrap();
         let p = &model.params;
         let at = [p.z_e * 0.8, p.shroud.points[4][1] * 0.5];
         let d = dimensioning(&model, at);

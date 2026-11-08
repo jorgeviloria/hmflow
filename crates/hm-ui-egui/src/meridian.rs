@@ -51,32 +51,22 @@ const GRAB_PIXELS: f32 = 12.0;
 const SNAP_PIXELS: f32 = 6.0;
 const SNAP_GUIDE: Color32 = Color32::from_rgb(230, 120, 30);
 
-/// Lo que se dibuja de las cotas: segmentos y textos `(posición, texto, ancla)`.
+/// Lo que se dibuja de las cotas.
 #[derive(Debug, Default, PartialEq)]
 struct Dimensioning {
-    /// Líneas de referencia nombradas (dS, dH, d2), más tenues.
-    references: Vec<Vec<[f64; 2]>>,
-    /// Líneas de extensión y de cota con sus flechas.
+    /// Líneas de referencia nombradas (dS, dH, d2 y el eje): su r y su nombre.
+    /// Cruzan todo el lienzo, así que no llevan extremos.
+    references: Vec<(f64, String)>,
+    /// Líneas de extensión y de cota.
     lines: Vec<Vec<[f64; 2]>>,
-    /// Puntas de flecha: triángulos cerrados, para rellenarlos.
-    arrows: Vec<[[f64; 2]; 3]>,
-    texts: Vec<([f64; 2], String, egui::Align2)>,
-}
-
-/// El triángulo de una flecha cerrada con la punta en `tip`, hacia `direction`
-/// (vector unitario), de largo `length`.
-fn arrow_head(tip: [f64; 2], direction: [f64; 2], length: f64) -> [[f64; 2]; 3] {
-    let normal = [-direction[1], direction[0]];
-    let base = [
-        tip[0] - direction[0] * length,
-        tip[1] - direction[1] * length,
-    ];
-    let half = length * 0.35;
-    [
-        [base[0] + normal[0] * half, base[1] + normal[1] * half],
-        tip,
-        [base[0] - normal[0] * half, base[1] - normal[1] * half],
-    ]
+    /// Flechas cerradas: la punta y la dirección (vector unitario). Su tamaño
+    /// es de pantalla, no del dibujo.
+    arrows: Vec<([f64; 2], [f64; 2])>,
+    /// De dónde nace cada cota, con un circulito hueco.
+    origins: Vec<[f64; 2]>,
+    /// Valores: el punto medio de su línea de cota, el texto y si va girado
+    /// (las cotas verticales se leen de abajo arriba).
+    texts: Vec<([f64; 2], String, bool)>,
 }
 
 /// Cotas al estilo de CFturbo (todas en mm). Las líneas de referencia llevan el
@@ -84,38 +74,24 @@ fn arrow_head(tip: [f64; 2], direction: [f64; 2], length: f64) -> [[f64; 2]; 3] 
 /// y d2 la de la salida, más el eje. Del punto seleccionado `at`, su z desde
 /// el borde de ataque, con la línea de cota bajo el eje, y su r desde el eje,
 /// con la línea de cota a la derecha de todo el dibujo; cada una con líneas de
-/// extensión, una flecha en el punto y el valor.
+/// extensión, un circulito donde nace, una flecha en el punto y el valor.
 fn dimensioning(model: &MeridionalModel, at: [f64; 2]) -> Dimensioning {
     let p = &model.params;
     let (r1, r2) = (p.shroud.points[0][1], p.shroud.points[4][1]);
     let ri = p.d1i / 2.0;
     let z_max = p.hub.points[4][0];
     let gap = 0.08 * r2;
-    // El círculo de la entrada sobresale hacia atrás su radio: los rótulos, fuera.
-    let pad = p.inlet_width / 2.0 + 0.05 * r2;
     let mut out = Dimensioning::default();
-    let span = |r: f64| vec![[-pad, r], [z_max + 3.0 * gap, r]];
     // Con dH = 0 el cubo va sobre el eje y las dos referencias coinciden: un solo rótulo.
     let hub_on_axis = ri < 1e-6;
-    let mut named = vec![
-        (
-            0.0,
-            if hub_on_axis {
-                "eje, dH = 0.0".to_string()
-            } else {
-                "eje".to_string()
-            },
-        ),
-        (r1, format!("dS = {:.1}", 2.0 * r1)),
-        (r2, format!("d2 = {:.1}", 2.0 * r2)),
-    ];
+    out.references.push((
+        0.0,
+        if hub_on_axis { "eje, dH" } else { "eje" }.to_string(),
+    ));
+    out.references.push((r1, "dS".to_string()));
+    out.references.push((r2, "d2".to_string()));
     if !hub_on_axis {
-        named.push((ri, format!("dH = {:.1}", 2.0 * ri)));
-    }
-    for (r, name) in named {
-        out.references.push(span(r));
-        out.texts
-            .push(([-pad, r], name, egui::Align2::RIGHT_BOTTOM));
+        out.references.push((ri, "dH".to_string()));
     }
     // z: línea de cota bajo el eje.
     let y = -gap;
@@ -123,25 +99,84 @@ fn dimensioning(model: &MeridionalModel, at: [f64; 2]) -> Dimensioning {
     out.lines.push(vec![[0.0, 0.0], [0.0, y - 0.3 * gap]]);
     out.lines.push(vec![[at[0], at[1]], [at[0], y - 0.3 * gap]]);
     out.lines.push(vec![[0.0, y], [at[0], y]]);
-    out.arrows
-        .push(arrow_head([at[0], y], [toward(at[0]), 0.0], 0.6 * gap));
-    out.texts.push((
-        [at[0] / 2.0, y],
-        format!("{:.3}", at[0]),
-        egui::Align2::CENTER_BOTTOM,
-    ));
+    out.origins.push([0.0, y]);
+    out.arrows.push(([at[0], y], [toward(at[0]), 0.0]));
+    out.texts
+        .push(([at[0] / 2.0, y], format!("{:.3}", at[0]), false));
     // r: línea de cota a la derecha de todo el dibujo.
     let x = z_max + 2.0 * gap;
     out.lines.push(vec![[at[0], at[1]], [x + 0.3 * gap, at[1]]]);
     out.lines.push(vec![[x, 0.0], [x, at[1]]]);
-    out.arrows
-        .push(arrow_head([x, at[1]], [0.0, toward(at[1])], 0.6 * gap));
-    out.texts.push((
-        [x + 0.4 * gap, at[1] / 2.0],
-        format!("{:.3}", at[1]),
-        egui::Align2::LEFT_CENTER,
-    ));
+    out.origins.push([x, 0.0]);
+    out.arrows.push(([x, at[1]], [0.0, toward(at[1])]));
+    out.texts
+        .push(([x, at[1] / 2.0], format!("{:.3}", at[1]), true));
     out
+}
+
+const DIMENSION_GREY: Color32 = Color32::from_gray(120);
+const DIMENSION_TEXT: Color32 = Color32::from_gray(45);
+/// Tamaño de pantalla (píxeles) de la flecha: largo y medio ancho.
+const ARROW_LENGTH: f32 = 11.0;
+const ARROW_HALF_WIDTH: f32 = 3.5;
+/// Tamaño de letra de las cotas y de los nombres de las referencias.
+const DIMENSION_FONT: f32 = 14.0;
+
+/// Un texto del dibujo: se pinta al final, cuando el lienzo ya terminó, para
+/// que no lo tape el fondo.
+struct Label {
+    /// Dónde, en coordenadas del dibujo, más `offset` píxeles.
+    position: [f64; 2],
+    offset: egui::Vec2,
+    text: String,
+    anchor: egui::Align2,
+    /// Radianes en el sentido del reloj.
+    angle: f32,
+    colour: Color32,
+}
+
+fn paint_labels(ui: &egui::Ui, transform: &egui_plot::PlotTransform, labels: &[Label]) {
+    let painter = ui.painter().with_clip_rect(*transform.frame());
+    for label in labels {
+        let screen = transform
+            .position_from_point(&PlotPoint::new(label.position[0], label.position[1]))
+            + label.offset;
+        let galley = painter.layout_no_wrap(
+            label.text.clone(),
+            egui::FontId::proportional(DIMENSION_FONT),
+            label.colour,
+        );
+        let origin = screen - label.anchor.pos_in_rect(&galley.rect).to_vec2();
+        painter.add(
+            egui::epaint::TextShape::new(origin, galley, label.colour)
+                .with_angle_and_anchor(label.angle, label.anchor),
+        );
+    }
+}
+
+/// Una flecha cerrada, estrecha, de tamaño de pantalla, con la punta en `tip`.
+fn draw_arrow(plot_ui: &mut egui_plot::PlotUi<'_>, tip: [f64; 2], direction: [f64; 2]) {
+    let transform = *plot_ui.transform();
+    let tip_px = transform.position_from_point(&PlotPoint::new(tip[0], tip[1]));
+    // Las y de pantalla crecen hacia abajo.
+    let forward = egui::vec2(direction[0] as f32, -direction[1] as f32);
+    let side = egui::vec2(-forward.y, forward.x);
+    let at = |back: f32, across: f32| -> [f64; 2] {
+        let value = transform.value_from_position(tip_px - forward * back + side * across);
+        [value.x, value.y]
+    };
+    plot_ui.polygon(
+        egui_plot::Polygon::new(
+            "Cotas",
+            vec![
+                at(ARROW_LENGTH, ARROW_HALF_WIDTH),
+                at(0.0, 0.0),
+                at(ARROW_LENGTH, -ARROW_HALF_WIDTH),
+            ],
+        )
+        .fill_color(DIMENSION_GREY)
+        .stroke(egui::Stroke::new(0.5, DIMENSION_GREY)),
+    );
 }
 
 /// Cuántos círculos de área se dibujan, repartidos por la línea media.
@@ -262,6 +297,36 @@ pub(super) fn meridian_view(
     changed
 }
 
+/// La chincheta de CFturbo: blanca con contorno gris, la punta de la aguja en
+/// `tip` y la cabeza arriba a la derecha. Se dibuja en píxeles, así que no
+/// cambia de tamaño al acercar o alejar el dibujo.
+fn draw_pin(plot_ui: &mut egui_plot::PlotUi<'_>, tip: [f64; 2]) {
+    let transform = *plot_ui.transform();
+    let origin = transform.position_from_point(&PlotPoint::new(tip[0], tip[1]));
+    // `along` va de la punta a la cabeza y `across` es perpendicular.
+    let along = egui::vec2(0.7, -0.7);
+    let across = egui::vec2(0.7, 0.7);
+    let at = |forward: f32, side: f32| -> [f64; 2] {
+        let value = transform.value_from_position(origin + along * forward + across * side);
+        [value.x, value.y]
+    };
+    let grey = Color32::from_gray(110);
+    plot_ui.line(line("Chincheta", vec![at(0.0, 0.0), at(10.0, 0.0)], grey).width(1.2));
+    // El collar, el cuerpo que se ensancha y la tapa.
+    let parts = [
+        vec![at(9.0, -5.0), at(11.0, -5.0), at(11.0, 5.0), at(9.0, 5.0)],
+        vec![at(11.0, -2.5), at(18.0, -4.0), at(18.0, 4.0), at(11.0, 2.5)],
+        vec![at(18.0, -5.5), at(21.0, -5.5), at(21.0, 5.5), at(18.0, 5.5)],
+    ];
+    for part in parts {
+        plot_ui.polygon(
+            egui_plot::Polygon::new("Chincheta", part)
+                .fill_color(Color32::WHITE)
+                .stroke(egui::Stroke::new(1.0, grey)),
+        );
+    }
+}
+
 /// Edita `[meridian]` en `boxes` con texto o arrastrando los puntos de
 /// control. Devuelve si cambió algo.
 fn meridian_edit(ui: &mut egui::Ui, outcome: &Outcome, boxes: &mut Meridian) -> bool {
@@ -309,7 +374,8 @@ fn meridian_edit(ui: &mut egui::Ui, outcome: &Outcome, boxes: &mut Meridian) -> 
     };
     ui.scope(|ui| {
         ui.visuals_mut().extreme_bg_color = PAPER;
-        Plot::new("meridian")
+        let mut labels = Vec::new();
+        let plot = Plot::new("meridian")
             .data_aspect(1.0)
             .grid_color(GRID)
             .allow_drag(false)
@@ -325,8 +391,9 @@ fn meridian_edit(ui: &mut egui::Ui, outcome: &Outcome, boxes: &mut Meridian) -> 
                         .ctx()
                         .data_mut(|data| data.insert_temp(fit_id, true));
                 }
-                changed |= draw_section(plot_ui, &model, engine.as_ref(), boxes);
+                changed |= draw_section(plot_ui, &model, engine.as_ref(), boxes, &mut labels);
             });
+        paint_labels(ui, &plot.transform, &labels);
     });
     graphs
         .show_header(ui, |ui| {
@@ -383,6 +450,7 @@ fn draw_section(
     model: &MeridionalModel,
     engine: Option<&MeridionalModel>,
     boxes: &mut Meridian,
+    labels: &mut Vec<Label>,
 ) -> bool {
     // La propuesta del motor, debajo de todo.
     if let Some(engine) = engine {
@@ -400,9 +468,26 @@ fn draw_section(
     let selected = selected_control(plot_ui.ctx());
     let at = model.control_position(selected).unwrap_or([0.0, 0.0]);
     let dimensioning = dimensioning(model, at);
-    let grey = Color32::from_gray(110);
-    for reference in dimensioning.references {
-        plot_ui.line(line("Referencias", reference, Color32::from_gray(205)).width(3.5));
+    // Las referencias cruzan todo el lienzo, con el nombre bajo la línea, pegado a la izquierda.
+    let bounds = plot_ui.plot_bounds();
+    let (x_min, x_max) = (bounds.min()[0], bounds.max()[0]);
+    for (r, name) in &dimensioning.references {
+        plot_ui.line(
+            line(
+                "Referencias",
+                vec![[x_min, *r], [x_max, *r]],
+                Color32::from_gray(205),
+            )
+            .width(3.5),
+        );
+        labels.push(Label {
+            position: [x_min, *r],
+            offset: egui::vec2(8.0, 5.0),
+            text: name.clone(),
+            anchor: egui::Align2::LEFT_TOP,
+            angle: 0.0,
+            colour: Color32::from_gray(140),
+        });
     }
     // Los círculos de área: la familia entera, de la entrada a la salida, en gris
     // claro; en rojo el de la salida y el del borde de ataque (el perfil del
@@ -431,6 +516,11 @@ fn draw_section(
         .width(1.0)
         .style(egui_plot::LineStyle::dashed_dense()),
     );
+    // La chincheta: el arranque de la línea de centros, en el punto medio de la
+    // recta de entrada.
+    if let Some((start, _)) = circles.first() {
+        draw_pin(plot_ui, *start);
+    }
     // El polígono de control de cada tapa, P0 a P4, con el color de su tapa.
     for wall in Wall::ALL {
         plot_ui.line(
@@ -485,26 +575,34 @@ fn draw_section(
         );
     }
     // Las cotas del punto seleccionado.
-    for arrow in dimensioning.arrows {
-        plot_ui.polygon(
-            egui_plot::Polygon::new("Cotas", arrow.to_vec())
-                .fill_color(grey)
-                .stroke(egui::Stroke::new(0.8, grey)),
-        );
-    }
     for dimension_line in dimensioning.lines {
-        plot_ui.line(line("Cotas", dimension_line, grey).width(0.8));
+        plot_ui.line(line("Cotas", dimension_line, DIMENSION_GREY).width(1.0));
     }
-    for (position, text, anchor) in dimensioning.texts {
-        plot_ui.text(
-            egui_plot::Text::new(
-                "Cotas",
-                PlotPoint::new(position[0], position[1]),
-                RichText::new(text).small(),
-            )
-            .anchor(anchor)
-            .color(grey),
-        );
+    for (tip, direction) in dimensioning.arrows {
+        draw_arrow(plot_ui, tip, direction);
+    }
+    plot_ui.points(
+        Points::new("Cotas", dimensioning.origins)
+            .radius(4.0)
+            .filled(false)
+            .color(DIMENSION_GREY),
+    );
+    for (position, text, vertical) in dimensioning.texts {
+        // Las horizontales se leen sobre su línea; las verticales, de abajo
+        // arriba, a su izquierda.
+        let (offset, angle) = if vertical {
+            (egui::vec2(-4.0, 0.0), -std::f32::consts::FRAC_PI_2)
+        } else {
+            (egui::vec2(0.0, -4.0), 0.0)
+        };
+        labels.push(Label {
+            position,
+            offset,
+            text,
+            anchor: egui::Align2::CENTER_BOTTOM,
+            angle,
+            colour: DIMENSION_TEXT,
+        });
     }
     // Los puntos de control: extremos P0 y P4 en cuadrados grises con borde,
     // los interiores y los del borde de ataque en círculos con borde.
@@ -1503,11 +1601,17 @@ mod tests {
         let d = dimensioning(&model, at);
         let texts: Vec<String> = d.texts.iter().map(|t| t.1.clone()).collect();
         let has = |text: String| texts.contains(&text);
-        // Las tres referencias con su diámetro y el eje.
-        assert!(has(format!("d2 = {:.1}", 2.0 * p.shroud.points[4][1])));
-        assert!(has(format!("dS = {:.1}", 2.0 * p.shroud.points[0][1])));
-        assert!(has(format!("dH = {:.1}", p.d1i)));
-        assert!(has("eje".to_string()));
+        // Las tres referencias con su nombre, a su r, y el eje.
+        let reference = |name: &str| {
+            d.references
+                .iter()
+                .find(|(_, n)| n == name)
+                .map(|(r, _)| *r)
+        };
+        assert_eq!(reference("d2"), Some(p.shroud.points[4][1]));
+        assert_eq!(reference("dS"), Some(p.shroud.points[0][1]));
+        assert_eq!(reference("dH"), Some(p.d1i / 2.0));
+        assert_eq!(reference("eje"), Some(0.0));
         assert_eq!(d.references.len(), 4);
         // Los dos valores del punto, con tres decimales.
         assert!(has(format!("{:.3}", at[0])));
@@ -1526,10 +1630,14 @@ mod tests {
             .unwrap();
         assert!(r_line[0][0] > p.hub.points[4][0]);
         // Las flechas tienen la punta en el extremo de la cota.
-        let tips: Vec<[f64; 2]> = d.arrows.iter().map(|triangle| triangle[1]).collect();
+        let tips: Vec<[f64; 2]> = d.arrows.iter().map(|(tip, _)| *tip).collect();
         assert_eq!(tips.len(), 2);
         assert!(tips.contains(&[at[0], z_line[0][1]]));
         assert!(tips.contains(&[r_line[0][0], at[1]]));
+        // Cada cota nace en un circulito, y solo la de r va girada.
+        assert!(d.origins.contains(&[0.0, z_line[0][1]]));
+        assert!(d.origins.contains(&[r_line[0][0], 0.0]));
+        assert_eq!(d.texts.iter().filter(|t| t.2).count(), 1);
     }
 
     #[test]
@@ -1550,9 +1658,9 @@ mod tests {
         };
         let model = meridional_model_with(&result, &edits).unwrap();
         let d = dimensioning(&model, [10.0, 20.0]);
-        let texts: Vec<&str> = d.texts.iter().map(|t| t.1.as_str()).collect();
-        assert!(texts.contains(&"eje, dH = 0.0"), "{texts:?}");
-        assert!(!texts.iter().any(|t| t.starts_with("dH")), "{texts:?}");
+        let names: Vec<&str> = d.references.iter().map(|(_, n)| n.as_str()).collect();
+        assert!(names.contains(&"eje, dH"), "{names:?}");
+        assert!(!names.contains(&"dH"), "{names:?}");
         assert_eq!(d.references.len(), 3);
     }
 

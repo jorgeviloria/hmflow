@@ -263,6 +263,26 @@ impl WallSegments {
         t != before
     }
 
+    /// Desliza el nodo `index` sobre la Bézier hasta donde su z (`axis` 0) o
+    /// su r (`axis` 1) vale `value`, o lo más cerca que deje la curva entre
+    /// sus vecinos. Devuelve si se movió.
+    fn slide_to(&mut self, points: &[[f64; 2]; 5], index: usize, axis: usize, value: f64) -> bool {
+        if !(1..=self.cuts.len()).contains(&index) || self.can_free(index) {
+            return false;
+        }
+        let low = self.node_t(index - 1) + MIN_GAP;
+        let high = self.node_t(index + 1) - MIN_GAP;
+        if low > high {
+            return false;
+        }
+        let mut at = [0.0; 2];
+        at[axis] = value;
+        let (t, _) = nearest_t(points, at, low, high, |p, q| (p[axis] - q[axis]).abs());
+        let before = self.cuts[index - 1];
+        self.cuts[index - 1] = t;
+        t != before
+    }
+
     /// Devuelve el nodo `index` a la Bézier, en su `t`.
     fn unfree(&mut self, index: usize) -> bool {
         self.free.get_mut(index).and_then(Option::take).is_some()
@@ -519,6 +539,139 @@ fn near_node(
         .map(|(node, _)| node)
 }
 
+/// El arranque del contorno mecánico de `wall`: P0, o donde se llevó.
+pub(super) fn start_of(boxes: &Meridian, model: &MeridionalModel, wall: Wall) -> [f64; 2] {
+    read(boxes)
+        .wall(wall)
+        .node_at(&model.params.wall(wall).points, 0)
+}
+
+/// La ventana de un punto: z y r escritos a mano.
+#[derive(Clone, Debug)]
+struct Editor {
+    wall: Wall,
+    index: usize,
+    z: String,
+    r: String,
+}
+
+fn editor_id() -> egui::Id {
+    egui::Id::unique("meridian_segments_editor")
+}
+
+/// Un número en mm escrito con punto o con coma.
+fn mm_value(text: &str) -> Option<f64> {
+    let text = text.trim().trim_end_matches("mm").trim().replace(',', ".");
+    text.parse::<f64>().ok().filter(|value| value.is_finite())
+}
+
+/// Abre la ventana del punto `index` de `wall`.
+fn open_editor(ctx: &egui::Context, wall: Wall, index: usize, at: [f64; 2]) {
+    let editor = Editor {
+        wall,
+        index,
+        z: format!("{:.2}", at[0]),
+        r: format!("{:.2}", at[1]),
+    };
+    ctx.data_mut(|data| data.insert_temp(editor_id(), Some(editor)));
+}
+
+/// La ventana del punto abierto: z y r en mm. Un punto libre va a los dos
+/// valores; uno que se desliza por la curva va a la z o la r que cambió, y
+/// la curva da la otra. Devuelve si cambió algo.
+fn node_editor(
+    plot_ui: &egui_plot::PlotUi<'_>,
+    model: &MeridionalModel,
+    segments: &mut Segments,
+) -> bool {
+    let ctx = plot_ui.ctx().clone();
+    let Some(mut editor) = ctx
+        .data(|data| data.get_temp::<Option<Editor>>(editor_id()))
+        .flatten()
+    else {
+        return false;
+    };
+    let points = model.params.wall(editor.wall).points;
+    let state = segments.wall_mut(editor.wall);
+    if editor.index >= state.node_count() || !state.draggable(editor.index) {
+        ctx.data_mut(|data| data.remove::<Option<Editor>>(editor_id()));
+        return false;
+    }
+    let free = state.can_free(editor.index);
+    let at = state.node_at(&points, editor.index);
+    let screen = to_screen(plot_ui, at);
+    let z_id = editor_id().with("z");
+    let r_id = editor_id().with("r");
+    // Sin escribir en las cajas, siguen al punto (arrastre, deshacer...).
+    let typing = ctx.memory(|memory| memory.has_focus(z_id) || memory.has_focus(r_id));
+    if !typing {
+        editor.z = format!("{:.2}", at[0]);
+        editor.r = format!("{:.2}", at[1]);
+    }
+    let mut open = true;
+    let mut apply = false;
+    let title = format!("Punto {} · {}", editor.index, editor.wall.name());
+    egui::Window::new(title)
+        .id(editor_id().with((wall_index(editor.wall), editor.index)))
+        .open(&mut open)
+        .collapsible(false)
+        .resizable(false)
+        .default_pos(screen + egui::vec2(18.0, 18.0))
+        .show(&ctx, |ui| {
+            egui::Grid::new(editor_id().with("grid"))
+                .num_columns(3)
+                .show(ui, |ui| {
+                    for (label, text, id) in
+                        [("z", &mut editor.z, z_id), ("r", &mut editor.r, r_id)]
+                    {
+                        ui.label(label);
+                        let field =
+                            ui.add(egui::TextEdit::singleline(text).id(id).desired_width(80.0));
+                        if field.lost_focus()
+                            && ui.input(|input| input.key_pressed(egui::Key::Enter))
+                        {
+                            apply = true;
+                        }
+                        ui.label("mm");
+                        ui.end_row();
+                    }
+                });
+            ui.label(
+                egui::RichText::new(if free {
+                    "Punto libre: va a la z y la r escritas."
+                } else {
+                    "Sobre la curva: cambia z o r y la curva da la otra."
+                })
+                .small()
+                .weak(),
+            );
+            if ui.button("Aplicar").clicked() {
+                apply = true;
+            }
+        });
+    let mut changed = false;
+    if apply {
+        let (z, r) = (mm_value(&editor.z), mm_value(&editor.r));
+        if free {
+            if let (Some(z), Some(r)) = (z, r) {
+                changed = state.move_node(&points, editor.index, [z, r]);
+            }
+        } else {
+            // El valor que cambió respecto del punto, con la precisión mostrada.
+            let moved = |value: Option<f64>, now: f64| value.filter(|v| (v - now).abs() >= 0.005);
+            if let Some(z) = moved(z, at[0]) {
+                changed = state.slide_to(&points, editor.index, 0, z);
+            } else if let Some(r) = moved(r, at[1]) {
+                changed = state.slide_to(&points, editor.index, 1, r);
+            }
+        }
+        ctx.memory_mut(|memory| memory.surrender_focus(z_id));
+        ctx.memory_mut(|memory| memory.surrender_focus(r_id));
+    }
+    ctx.data_mut(|data| data.insert_temp(editor_id(), open.then_some(editor)));
+    changed
+}
+
 /// Si la tapa tiene algún tramo en recta: entonces la Bézier hidráulica se
 /// dibuja de referencia, en gris, y el contorno mecánico encima.
 pub(super) fn reference_only(boxes: &Meridian, wall: Wall) -> bool {
@@ -738,6 +891,7 @@ pub(super) fn interact(
     let mut segments = read(boxes);
     let (moved, dragging) = drag_node(plot_ui, model, &mut segments);
     if dragging {
+        node_editor(plot_ui, model, &mut segments);
         return ((moved && write(boxes, &segments)) || seeded, true);
     }
     if let Some(pointer) = plot_ui.pointer_coordinate() {
@@ -756,6 +910,15 @@ pub(super) fn interact(
             ctx.data_mut(|data| data.insert_temp(target_id(), target));
         }
         if response.clicked() {
+            // Clic en un punto: su ventana con z y r.
+            if let Some((wall, index)) =
+                near_node(plot_ui, model, &segments, pointer, WallSegments::draggable)
+            {
+                let at = segments
+                    .wall(wall)
+                    .node_at(&model.params.wall(wall).points, index);
+                open_editor(&ctx, wall, index, at);
+            }
             match touched(plot_ui, model, &segments, pointer) {
                 Some(hit) if !segments.wall(hit.wall).is_plain() => {
                     ctx.data_mut(|data| data.insert_temp(selected_id(), (hit.wall, hit.piece)));
@@ -825,8 +988,15 @@ pub(super) fn interact(
         }
     });
     if changed {
-        // Los índices de los tramos cambian: se olvida la selección.
-        ctx.data_mut(|data| data.remove::<(Wall, usize)>(selected_id()));
+        // Los índices de los tramos y de los puntos cambian: se olvidan la
+        // selección y la ventana del punto.
+        ctx.data_mut(|data| {
+            data.remove::<(Wall, usize)>(selected_id());
+            data.remove::<Option<Editor>>(editor_id());
+        });
+    }
+    changed |= node_editor(plot_ui, model, &mut segments);
+    if changed {
         return (write(boxes, &segments) || seeded, false);
     }
     (seeded, false)
@@ -834,8 +1004,8 @@ pub(super) fn interact(
 
 /// Solo para las capturas: `HMF_SEGMENTS="hub:0.5:1:2=60/0"` corta el cubo
 /// en `t = 0,5`, pone en recta el tramo 1 y lleva el nodo 2 (el final) a
-/// z = 60 mm, r = 0. Cortes, tramos y nodos se separan con `,`; las tapas
-/// (`shroud`, `hub`), con `;`.
+/// z = 60 mm, r = 0. Un quinto campo abre la ventana de ese nodo. Cortes,
+/// tramos y nodos se separan con `,`; las tapas (`shroud`, `hub`), con `;`.
 fn seed_from_env(ctx: &egui::Context, model: &MeridionalModel, boxes: &mut Meridian) -> bool {
     let seeded = egui::Id::unique("meridian_segments_seeded");
     if ctx.data(|data| data.get_temp::<bool>(seeded)).is_some() {
@@ -887,6 +1057,11 @@ fn seed_from_env(ctx: &egui::Context, model: &MeridionalModel, boxes: &mut Merid
             if let Some((index, at)) = parsed {
                 state.move_node(&points, index, at);
             }
+        }
+        if let Some(index) = list().first().and_then(|i| i.parse::<usize>().ok())
+            && index < state.node_count()
+        {
+            open_editor(ctx, wall, index, state.node_at(&points, index));
         }
     }
     write(boxes, &segments)
@@ -1004,6 +1179,32 @@ mod tests {
         assert!((state.cuts[0] - MIN_GAP).abs() < 1e-6);
         // Los extremos pegados a una curva no se mueven.
         assert!(!state.move_node(&POINTS, 0, [5.0, 5.0]));
+    }
+
+    #[test]
+    fn a_point_on_the_curve_slides_to_a_written_z_or_r() {
+        let mut state = cut_twice();
+        let z = point_at(&POINTS, 0.45)[0];
+        assert!(state.slide_to(&POINTS, 1, 0, z));
+        assert!((state.node_at(&POINTS, 1)[0] - z).abs() < 1e-6);
+        let r = point_at(&POINTS, 0.2)[1];
+        assert!(state.slide_to(&POINTS, 1, 1, r));
+        assert!((state.node_at(&POINTS, 1)[1] - r).abs() < 1e-6);
+        // Más allá del vecino, se queda junto a él.
+        state.slide_to(&POINTS, 1, 0, 1000.0);
+        assert!((state.cuts[0] - (0.6 - MIN_GAP)).abs() < 1e-6);
+        // Un punto libre no se desliza.
+        state.toggle(1);
+        state.toggle(0);
+        assert!(!state.slide_to(&POINTS, 1, 0, z));
+    }
+
+    #[test]
+    fn written_millimetres_take_comma_or_point() {
+        assert_eq!(mm_value("12,5"), Some(12.5));
+        assert_eq!(mm_value(" 0.25 mm"), Some(0.25));
+        assert_eq!(mm_value("-3"), Some(-3.0));
+        assert_eq!(mm_value("abc"), None);
     }
 
     #[test]

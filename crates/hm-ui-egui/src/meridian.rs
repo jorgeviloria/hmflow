@@ -586,11 +586,15 @@ fn draw_section(
     }
     // La entrada: la recta del arranque del cubo al de la tapa delantera, en el
     // plano de entrada. Va aparte del borde de ataque, que se apoya sobre las
-    // dos tapas más adelante.
+    // dos tapas más adelante. Va de un arranque al otro del contorno mecánico:
+    // si el cubo se lleva al eje con rectas, la entrada lo sigue.
     plot_ui.line(
         line(
             "Entrada",
-            vec![model.params.hub.points[0], model.params.shroud.points[0]],
+            vec![
+                crate::meridian_segments::start_of(boxes, model, Wall::Hub),
+                crate::meridian_segments::start_of(boxes, model, Wall::Shroud),
+            ],
             meridian_color("Borde de ataque"),
         )
         .width(1.2),

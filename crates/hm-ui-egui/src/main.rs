@@ -178,6 +178,7 @@ impl eframe::App for App {
         inputs_panel(ui, self);
         inspector_panel(ui, self);
         diagnostics_panel(ui, self);
+        let mut meridian_edited = false;
         egui::CentralPanel::default().show(ui, |ui| {
             ui.horizontal(|ui| {
                 ui.selectable_value(&mut self.tab, Tab::Summary, "Resumen");
@@ -205,11 +206,17 @@ impl eframe::App for App {
                         &mut self.session.inputs.meridian,
                         &mut self.meridian_history,
                     ) {
-                        self.session.edited();
+                        meridian_edited = true;
                     }
                 }
             }
         });
+        // Fuera del panel, que tiene prestado el resultado: sin recalcular,
+        // la barra diría «entradas inválidas» tras cada edición del meridiano.
+        if meridian_edited {
+            self.session.edited();
+            self.recompute();
+        }
     }
 }
 

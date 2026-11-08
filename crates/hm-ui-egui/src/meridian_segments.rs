@@ -40,10 +40,6 @@ const SNAP_PIXELS: f32 = 6.0;
 /// Hueco mínimo, en `t`, entre dos nodos.
 const MIN_GAP: f64 = 0.005;
 /// Largo mínimo, en mm, de una recta que prolonga la cadena.
-#[cfg_attr(
-    not(test),
-    expect(dead_code, reason = "lo usa el gesto de prolongar, en la tarea 3")
-)]
 const MIN_LENGTH_MM: f64 = 0.01;
 
 /// Puntos con que se dibuja cada tramo curvo.
@@ -431,19 +427,11 @@ impl WallSegments {
 
     /// Si la punta de la prolongación `end` admite una recta nueva: la de
     /// una prolongación sí; P0 o P4, solo si siguen sobre la Bézier.
-    #[cfg_attr(
-        not(test),
-        expect(dead_code, reason = "lo usa el gesto de prolongar, en la tarea 3")
-    )]
     pub(super) fn can_extend(&self, end: End) -> bool {
         self.free[self.tip(end)].is_none() || self.is_extension(self.tip(end))
     }
 
     /// El nodo de la punta de la cadena.
-    #[cfg_attr(
-        not(test),
-        expect(dead_code, reason = "lo usa el gesto de prolongar, en la tarea 3")
-    )]
     pub(super) fn tip(&self, end: End) -> usize {
         match end {
             End::Start => 0,
@@ -465,10 +453,6 @@ impl WallSegments {
     /// Añade en la punta `end` un nodo libre en `at` (la r no baja de 0) y una
     /// recta hasta la punta de antes. Devuelve el índice del nodo nuevo, o
     /// `None` si la punta no admite recta o el tramo sería demasiado corto.
-    #[cfg_attr(
-        not(test),
-        expect(dead_code, reason = "lo usa el gesto de prolongar, en la tarea 3")
-    )]
     pub(super) fn extend(
         &mut self,
         points: &[[f64; 2]; 5],
@@ -1100,6 +1084,9 @@ impl WallSegments {
 
     /// Devuelve el nodo `index` a la Bézier, en su `t`.
     fn unfree(&mut self, index: usize) -> bool {
+        if self.is_extension(index) {
+            return false;
+        }
         self.free.get_mut(index).and_then(Option::take).is_some()
     }
 
@@ -2198,6 +2185,136 @@ fn snap(to: [f64; 2], others: &[[f64; 2]], tolerance: [f64; 2]) -> ([f64; 2], [O
     (target, guides)
 }
 
+/// Los puntos a los que se pega un nodo: todos los de ambas tapas (salvo
+/// `skip`) y los de control.
+fn snap_targets(
+    model: &MeridionalModel,
+    segments: &Segments,
+    skip: Option<(Wall, usize)>,
+) -> Vec<[f64; 2]> {
+    Wall::ALL
+        .into_iter()
+        .flat_map(|wall| {
+            let state = segments.wall(wall);
+            let points = &model.params.wall(wall).points;
+            (0..state.node_count())
+                .filter(move |index| Some((wall, *index)) != skip)
+                .map(move |index| state.node_at(points, index))
+                .chain(points.iter().copied())
+                .collect::<Vec<_>>()
+        })
+        .collect()
+}
+
+/// Cuánto vale `SNAP_PIXELS` en mm, por eje.
+fn snap_tolerance(plot_ui: &egui_plot::PlotUi<'_>) -> [f64; 2] {
+    let transform = plot_ui.transform();
+    [
+        f64::from(SNAP_PIXELS) / transform.dpos_dvalue_x().abs().max(f64::EPSILON),
+        f64::from(SNAP_PIXELS) / transform.dpos_dvalue_y().abs().max(f64::EPSILON),
+    ]
+}
+
+fn drawing_id() -> egui::Id {
+    egui::Id::unique("meridian_segments_drawing")
+}
+
+/// Una prolongación en curso: el nodo nuevo sigue al ratón desde la punta
+/// `end` de `wall` hasta el clic.
+#[derive(Clone, Copy, Debug)]
+struct Drawing {
+    wall: Wall,
+    end: End,
+}
+
+/// Olvida la selección y las ventanas, que dependen de los índices.
+fn forget_indices(ctx: &egui::Context) {
+    ctx.data_mut(|data| {
+        data.remove::<(Wall, usize)>(selected_id());
+        data.remove::<Option<Editor>>(editor_id());
+        data.remove::<Option<Typing>>(typing_id());
+    });
+}
+
+/// Una prolongación en curso: la recta elástica desde la punta hasta el
+/// ratón, con los imanes de siempre y Mayús para horizontal o vertical. Clic:
+/// fija el nodo; Esc o clic derecho: cancela. Devuelve si cambió algo.
+fn draw_extension(
+    plot_ui: &mut egui_plot::PlotUi<'_>,
+    model: &MeridionalModel,
+    segments: &mut Segments,
+    drawing: Drawing,
+) -> bool {
+    let ctx = plot_ui.ctx().clone();
+    let response = plot_ui.response().clone();
+    let points = model.params.wall(drawing.wall).points;
+    let state = segments.wall(drawing.wall);
+    if !state.can_extend(drawing.end) {
+        ctx.data_mut(|data| data.remove::<Option<Drawing>>(drawing_id()));
+        return false;
+    }
+    let tip = state.node_at(&points, state.tip(drawing.end));
+    ctx.set_cursor_icon(egui::CursorIcon::Crosshair);
+    if ctx.input(|input| input.key_pressed(egui::Key::Escape)) || response.secondary_clicked() {
+        ctx.data_mut(|data| data.remove::<Option<Drawing>>(drawing_id()));
+        return false;
+    }
+    let Some(pointer) = plot_ui.pointer_coordinate() else {
+        return false;
+    };
+    let mut to = [pointer.x, pointer.y];
+    if ctx.input(|input| input.modifiers.shift) {
+        if (to[0] - tip[0]).abs() >= (to[1] - tip[1]).abs() {
+            to[1] = tip[1];
+        } else {
+            to[0] = tip[0];
+        }
+    }
+    let (mut to, guides) = snap(
+        to,
+        &snap_targets(model, segments, None),
+        snap_tolerance(plot_ui),
+    );
+    to[1] = to[1].max(0.0);
+    if let Some(z) = guides[0] {
+        plot_ui.line(line("", vec![[z, -1.0e4], [z, 1.0e4]], SELECTED).width(1.0));
+    }
+    if let Some(r) = guides[1] {
+        plot_ui.line(line("", vec![[-1.0e4, r], [1.0e4, r]], SELECTED).width(1.0));
+    }
+    plot_ui.line(line("", vec![tip, to], SELECTED).width(2.5));
+    plot_ui.text(
+        egui_plot::Text::new(
+            "Prolongación",
+            PlotPoint::new(to[0], to[1]),
+            egui::RichText::new(format!(
+                "  z = {:.2} mm\n  Ø = {:.2} mm\n  clic fija · Esc cancela",
+                to[0],
+                2.0 * to[1]
+            ))
+            .color(Color32::from_gray(20)),
+        )
+        .anchor(egui::Align2::LEFT_BOTTOM),
+    );
+    if !response.clicked() {
+        return false;
+    }
+    if segments
+        .wall_mut(drawing.wall)
+        .extend(&points, drawing.end, to)
+        .is_none()
+    {
+        return false;
+    }
+    if drawing.end == End::Start {
+        segments.constraints.node_inserted(drawing.wall, 0);
+    }
+    crate::meridian_constraints::forget_unfinished(&ctx);
+    forget_indices(&ctx);
+    ctx.data_mut(|data| data.remove::<Option<Drawing>>(drawing_id()));
+    true
+}
+
 /// Arrastre de un nodo. Un nodo libre sigue al ratón, se pega al eje y a la
 /// z o la r de los demás puntos y, con Mayús, solo se mueve en horizontal o
 /// en vertical; uno que toca una curva se desliza sobre ella. Devuelve si
@@ -2268,24 +2385,8 @@ fn drag_node(
                     to[0] = grab.from[0];
                 }
             }
-            let others: Vec<[f64; 2]> = Wall::ALL
-                .into_iter()
-                .flat_map(|wall| {
-                    let state = segments.wall(wall);
-                    let points = &model.params.wall(wall).points;
-                    (0..state.node_count())
-                        .filter(move |index| (wall, *index) != (grab.wall, grab.index))
-                        .map(move |index| state.node_at(points, index))
-                        .chain(points.iter().copied())
-                        .collect::<Vec<_>>()
-                })
-                .collect();
-            let transform = plot_ui.transform();
-            let tolerance = [
-                f64::from(SNAP_PIXELS) / transform.dpos_dvalue_x().abs().max(f64::EPSILON),
-                f64::from(SNAP_PIXELS) / transform.dpos_dvalue_y().abs().max(f64::EPSILON),
-            ];
-            let (snapped, mut guides) = snap(to, &others, tolerance);
+            let others = snap_targets(model, segments, Some((grab.wall, grab.index)));
+            let (snapped, mut guides) = snap(to, &others, snap_tolerance(plot_ui));
             to = crate::meridian_constraints::lock_fixed(fixed, here, snapped);
             for (guide, parent) in guides.iter_mut().zip(fixed) {
                 if parent.is_some() {
@@ -2341,6 +2442,11 @@ pub(super) fn interact(
     let seeded =
         seed_from_env(&ctx, model, boxes) | crate::meridian_constraints::seed_from_env(&ctx, boxes);
     let mut segments = read(boxes);
+    let drawing: Option<Drawing> = ctx.data(|data| data.get_temp(drawing_id())).flatten();
+    if let Some(drawing) = drawing {
+        let changed = draw_extension(plot_ui, model, &mut segments, drawing);
+        return ((changed && write(boxes, &segments)) || seeded, true);
+    }
     let (moved, dragging) = drag_node(plot_ui, model, &mut segments);
     if dragging {
         node_editor(plot_ui, model, &mut segments);
@@ -2528,7 +2634,19 @@ pub(super) fn interact(
             }
         }
         if let Some(index) = node {
-            if state.free[index].is_some() {
+            if let Some(end) = state.tip_end(index)
+                && state.can_extend(end)
+                && ui.button("Prolongar con recta").clicked()
+            {
+                let drawing = Some(Drawing {
+                    wall: hit.wall,
+                    end,
+                });
+                ui.ctx()
+                    .data_mut(|data| data.insert_temp(drawing_id(), drawing));
+                ui.close();
+            }
+            if state.free[index].is_some() && !state.is_extension(index) {
                 let led = constraints.has_child(hit.wall, index);
                 let button = ui
                     .add_enabled(!led, egui::Button::new("Devolver el punto a la curva"))
@@ -2562,9 +2680,9 @@ pub(super) fn interact(
             }
             let touching = constraints.touching(hit.wall, index);
             let label = match touching {
-                0 => "Quitar este corte".to_string(),
-                1 => "Quitar este corte (borra su cota)".to_string(),
-                n => format!("Quitar este corte (borra sus {n} cotas)"),
+                0 => "Quitar este punto".to_string(),
+                1 => "Quitar este punto (borra su cota)".to_string(),
+                n => format!("Quitar este punto (borra sus {n} cotas)"),
             };
             if state.can_remove(index) && ui.button(label).clicked() {
                 if state.remove_node(index) {
@@ -2590,11 +2708,7 @@ pub(super) fn interact(
     if changed {
         // Los índices de los tramos y de los puntos cambian: se olvidan la
         // selección y la ventana del punto.
-        ctx.data_mut(|data| {
-            data.remove::<(Wall, usize)>(selected_id());
-            data.remove::<Option<Editor>>(editor_id());
-            data.remove::<Option<Typing>>(typing_id());
-        });
+        forget_indices(&ctx);
     }
     if let Some((wall, piece)) = arc_typing {
         open_arc_typing(plot_ui, model, &segments, wall, piece);
@@ -2613,7 +2727,9 @@ pub(super) fn interact(
 /// z = 60 mm, r = 0. Un quinto campo abre la ventana de ese nodo y un sexto
 /// pone radios con la forma `i=R` en mm; un séptimo pasa tramos a arco con
 /// la forma `i=R` (R con signo, en mm), y un octavo hace tangentes arcos con
-/// la forma `is` (al tramo anterior) o `ie` (al siguiente). Cortes,
+/// la forma `is` (al tramo anterior) o `ie` (al siguiente). Un noveno y un
+/// décimo campo prolongan la cadena antes de P0 y después de P4 con rectas
+/// a los puntos `z/r` en mm, en orden. Cortes,
 /// tramos y nodos se separan con `,`; las tapas (`shroud`, `hub`), con `;`.
 fn seed_from_env(ctx: &egui::Context, model: &MeridionalModel, boxes: &mut Meridian) -> bool {
     let seeded = egui::Id::unique("meridian_segments_seeded");
@@ -2692,6 +2808,15 @@ fn seed_from_env(ctx: &egui::Context, model: &MeridionalModel, boxes: &mut Merid
             };
             if let Ok(piece) = item[..item.len() - 1].parse::<usize>() {
                 state.set_tangent(&points, piece, Some(tangency));
+            }
+        }
+        for (end, items) in [(End::Start, list()), (End::Finish, list())] {
+            for item in items {
+                if let Some((z, r)) = item.split_once('/')
+                    && let (Ok(z), Ok(r)) = (z.parse::<f64>(), r.parse::<f64>())
+                {
+                    state.extend(&points, end, [z, r]);
+                }
             }
         }
         if let Some(index) = editor

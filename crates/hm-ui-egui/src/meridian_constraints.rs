@@ -1435,6 +1435,16 @@ mod tests {
     }
 
     #[test]
+    fn extending_at_the_start_keeps_constraints_on_their_nodes() {
+        let mut constraints = with(&["dz hub:1 hub:2 = 4 mm", "dd shroud:1 shroud:2 = 3 mm"]);
+        constraints.node_inserted(Wall::Hub, 0);
+        assert_eq!(
+            texts(&constraints),
+            ["dz hub:2 hub:3 = 4 mm", "dd shroud:1 shroud:2 = 3 mm"]
+        );
+    }
+
+    #[test]
     fn removing_a_node_drops_its_constraints() {
         let mut constraints = with(&["dz hub:1 hub:2 = 4 mm", "dd hub:3 hub:4 = 3 mm"]);
         assert_eq!(constraints.node_removed(Wall::Hub, 2), 1);

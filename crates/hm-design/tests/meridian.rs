@@ -66,7 +66,8 @@ fn the_section_has_both_shrouds_and_both_edges() {
 fn the_values_come_from_equation_7_2() {
     let (result, model) = model();
     let p = &model.params;
-    let b1g = (mm(&result.d1) - p.d1i) / 2.0;
+    // b1g sale del dH del 1D, no del dH editado (0 por defecto).
+    let b1g = (mm(&result.d1) - p.auto_d1i) / 2.0;
     assert!((p.inlet_width - b1g).abs() < 1e-12);
     assert!((p.z_e - 0.75 * b1g * result.nq.powf(-0.05)).abs() < 1e-12);
     assert!((p.r_ds - 0.7 * b1g).abs() < 1e-12);
@@ -91,7 +92,12 @@ fn the_ends_are_fixed_by_the_1d_design() {
 
 #[test]
 fn the_inlet_area_is_the_one_of_the_1d_design() {
-    let (result, model) = model();
+    let (result, base) = model();
+    // Con el dH del 1D (el cubo ya no arranca ahí por defecto).
+    let model = edited(&MeridianEdits {
+        hub_diameter: Some(base.params.auto_d1i),
+        ..MeridianEdits::default()
+    });
     let leading = points(&model, "Borde de ataque");
     let (outer, inner) = (leading[0][1], leading[1][1]);
     let annulus = PI * (outer * outer - inner * inner);
@@ -162,7 +168,12 @@ fn the_engine_arm_lengths_give_the_smoothest_curve() {
 
 #[test]
 fn the_channel_narrows_from_the_inlet_to_b2_without_jumps() {
-    let (result, model) = model();
+    let (result, base) = model();
+    // Con el dH del 1D, el área de entrada es la del 1D.
+    let model = edited(&MeridianEdits {
+        hub_diameter: Some(base.params.auto_d1i),
+        ..MeridianEdits::default()
+    });
     let channel = model.channel();
     let inlet = PI * mm(&result.d1) * mm(&result.b1);
     let outlet = PI * mm(&result.d2) * mm(&result.b2);
@@ -376,7 +387,11 @@ fn bad_edits_are_refused_by_name() {
 #[test]
 fn shrouds_that_cross_are_refused() {
     let (_, auto) = model();
-    let mut edits = MeridianEdits::default();
+    // Con el dH del 1D: con el cubo en el eje, este P2 ya no llega a cortarla.
+    let mut edits = MeridianEdits {
+        hub_diameter: Some(auto.params.auto_d1i),
+        ..MeridianEdits::default()
+    };
     // P2 de la trasera arriba y atrás, dentro de su rectángulo: la trasera sube
     // por encima de la delantera y la corta.
     let r2 = auto.params.hub.p2_range.1[1];
@@ -412,20 +427,32 @@ fn an_inlet_wider_than_the_eye_is_refused() {
     assert!(error.to_string().contains("b1"), "{error}");
 }
 
-/// Por defecto el borde de ataque es la radial del plano de entrada y su área
-/// es la del 1D; con los dos extremos en 0 el cubo arranca en (0, dH/2).
+/// Por defecto el borde de ataque es la radial del plano de entrada; con dH = 0
+/// va del eje a la tapa y su área es π·r1·r1. Con el dH del 1D es el área del 1D.
 #[test]
-fn by_default_the_leading_edge_is_the_radial_with_the_inlet_area_of_the_1d() {
+fn by_default_the_leading_edge_is_the_radial_from_the_axis_and_with_the_1d_hub_it_has_the_1d_area() {
     let (result, auto) = model();
     let p = &auto.params;
-    let one_d = PI * mm(&result.d1) * mm(&result.b1);
-    assert!((p.edge_area - one_d).abs() < 1e-6 * one_d);
+    let r1 = mm(&result.d1) / 2.0;
+    let axis_area = PI * r1 * r1;
+    assert!((p.edge_area - axis_area).abs() < 1e-6 * axis_area);
     assert_eq!((p.edge_shroud, p.edge_hub, p.edge_angle), (0.0, 0.0, 0.0));
-    assert_eq!(p.d1i, p.auto_d1i);
+    assert_eq!(p.d1i, 0.0);
     let edge = points(&auto, "Borde de ataque");
-    assert_eq!(edge[0][0], 0.0);
-    assert_eq!(edge[1], [0.0, p.d1i / 2.0]);
+    assert_eq!(edge[0], [0.0, r1]);
+    assert_eq!(edge[1], [0.0, 0.0]);
     assert_eq!(points(&auto, "Tapa trasera")[0], edge[1]);
+
+    let old = edited(&MeridianEdits {
+        hub_diameter: Some(p.auto_d1i),
+        ..MeridianEdits::default()
+    });
+    let one_d = PI * mm(&result.d1) * mm(&result.b1);
+    assert!((old.params.edge_area - one_d).abs() < 1e-6 * one_d);
+    assert_eq!(old.params.d1i, old.params.auto_d1i);
+    let edge = points(&old, "Borde de ataque");
+    assert_eq!(edge[1], [0.0, old.params.d1i / 2.0]);
+    assert_eq!(points(&old, "Tapa trasera")[0], edge[1]);
 }
 
 /// dH es editable, también 0: el cubo arranca en el eje con el brazo axial.
@@ -539,15 +566,30 @@ fn the_maximum_curvature_mark_is_on_the_wall_at_the_minimum_radius() {
             .map(|p| (p.x - z).hypot(p.y - r))
             .fold(f64::MAX, f64::min);
         assert!(nearest < 1e-6, "{wall:?}: {nearest}");
-        let t = (0..=2000)
+        // El mínimo puede estar repetido (el ajuste suave iguala dos picos de
+        // curvatura, como en el cubo sobre el eje): se comprueba que la marca
+        // da el radio mínimo y que ningún punto de la curva lo baja.
+        let radius = |t: f64| 1.0 / curve.curvature_at(t).unwrap().abs();
+        let at_mark = (0..=2000)
             .map(|k| f64::from(k) / 2000.0)
             .min_by(|a, b| {
-                let radius = |t: f64| 1.0 / curve.curvature_at(t).unwrap().abs();
-                radius(*a).total_cmp(&radius(*b))
+                let d = |t: f64| {
+                    let p = curve.point_at(t).unwrap();
+                    (p.x - z).hypot(p.y - r)
+                };
+                d(*a).total_cmp(&d(*b))
             })
             .unwrap();
-        let there = curve.point_at(t).unwrap();
-        assert!((there.x - z).hypot(there.y - r) < 0.05, "{wall:?}");
+        assert!(
+            (radius(at_mark) - shape.min_radius).abs() < 1e-3 * shape.min_radius,
+            "{wall:?}: radio en la marca {} frente a {}",
+            radius(at_mark),
+            shape.min_radius
+        );
+        let smallest = (0..=2000)
+            .map(|k| radius(f64::from(k) / 2000.0))
+            .fold(f64::MAX, f64::min);
+        assert!(smallest >= shape.min_radius * (1.0 - 1e-3), "{wall:?}");
     }
 }
 

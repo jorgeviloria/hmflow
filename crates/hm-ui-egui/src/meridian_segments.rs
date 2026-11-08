@@ -39,6 +39,12 @@ const SNAP_PIXELS: f32 = 6.0;
 
 /// Hueco mínimo, en `t`, entre dos nodos.
 const MIN_GAP: f64 = 0.005;
+/// Largo mínimo, en mm, de una recta que prolonga la cadena.
+#[cfg_attr(
+    not(test),
+    expect(dead_code, reason = "lo usa el gesto de prolongar, en la tarea 3")
+)]
+const MIN_LENGTH_MM: f64 = 0.01;
 
 /// Puntos con que se dibuja cada tramo curvo.
 const SEGMENT_POINTS: usize = 80;
@@ -54,6 +60,15 @@ const DIMENSION: Color32 = Color32::from_rgb(20, 90, 200);
 
 /// Color del tramo seleccionado y de las guías de ajuste.
 const SELECTED: Color32 = Color32::from_rgb(230, 120, 0);
+
+/// Una punta de la cadena de nodos de una tapa.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) enum End {
+    /// La del nodo 0, antes de P0.
+    Start,
+    /// La del último nodo, después de P4.
+    Finish,
+}
 
 /// Qué es un tramo.
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -90,6 +105,10 @@ pub(super) enum Tangency {
 /// del nodo `i` al `i + 1`.
 #[derive(Clone, Debug, PartialEq)]
 pub(super) struct WallSegments {
+    /// Nodos de la prolongación antes de P0: rectas o arcos, siempre libres.
+    head: usize,
+    /// Nodos de la prolongación después de P4.
+    tail: usize,
     /// El `t` de cada corte sobre la Bézier, creciente.
     cuts: Vec<f64>,
     /// Qué es cada tramo.
@@ -134,6 +153,8 @@ enum Corner {
 impl Default for WallSegments {
     fn default() -> Self {
         Self {
+            head: 0,
+            tail: 0,
             cuts: Vec::new(),
             pieces: vec![Piece::Curve],
             free: vec![None, None],
@@ -156,7 +177,8 @@ impl WallSegments {
             }
             cuts.push(t);
         }
-        let count = cuts.len() + 1;
+        let nodes = texts.node_count();
+        let count = nodes - 1;
         if !(texts.pieces.is_empty() || texts.pieces.len() == count)
             || !(texts.arcs.is_empty() || texts.arcs.len() == count)
             || !(texts.tangents.is_empty() || texts.tangents.len() == count)
@@ -187,9 +209,16 @@ impl WallSegments {
                 }
             })
             .collect::<Option<Vec<Piece>>>()?;
+        for (name, text) in [("head", &texts.head), ("tail", &texts.tail)] {
+            if !text.trim().is_empty() && text.trim().parse::<usize>().is_err() {
+                eprintln!("segmentos: {name} no es un entero: {text}");
+                return None;
+            }
+        }
+        let (head, tail) = (texts.head_count(), texts.tail_count());
         let free = if texts.nodes.is_empty() {
-            vec![None; cuts.len() + 2]
-        } else if texts.nodes.len() == cuts.len() + 2 {
+            vec![None; nodes]
+        } else if texts.nodes.len() == nodes {
             texts
                 .nodes
                 .iter()
@@ -205,8 +234,8 @@ impl WallSegments {
             return None;
         };
         let radius = if texts.radii.is_empty() {
-            vec![None; cuts.len() + 2]
-        } else if texts.radii.len() == cuts.len() + 2 {
+            vec![None; nodes]
+        } else if texts.radii.len() == nodes {
             texts
                 .radii
                 .iter()
@@ -222,8 +251,8 @@ impl WallSegments {
             return None;
         };
         let chamfer = if texts.chamfers.is_empty() {
-            vec![None; cuts.len() + 2]
-        } else if texts.chamfers.len() == cuts.len() + 2 {
+            vec![None; nodes]
+        } else if texts.chamfers.len() == nodes {
             texts
                 .chamfers
                 .iter()
@@ -238,7 +267,13 @@ impl WallSegments {
         } else {
             return None;
         };
+        // Un nodo de la prolongación necesita su posición.
+        if (0..nodes).any(|i| (i < head || i >= nodes - tail) && free[i].is_none()) {
+            return None;
+        }
         let mut state = Self {
+            head,
+            tail,
             cuts,
             pieces,
             free,
@@ -324,6 +359,16 @@ impl WallSegments {
             Vec::new()
         };
         MeridianWallSegments {
+            head: if self.head > 0 {
+                self.head.to_string()
+            } else {
+                String::new()
+            },
+            tail: if self.tail > 0 {
+                self.tail.to_string()
+            } else {
+                String::new()
+            },
             cuts,
             pieces,
             nodes,
@@ -335,7 +380,7 @@ impl WallSegments {
     }
 
     fn is_plain(&self) -> bool {
-        self.cuts.is_empty()
+        self.cuts.is_empty() && self.head == 0 && self.tail == 0
     }
 
     /// Si algún tramo es recta o arco.
@@ -344,16 +389,121 @@ impl WallSegments {
     }
 
     pub(super) fn node_count(&self) -> usize {
-        self.cuts.len() + 2
+        self.head + self.cuts.len() + 2 + self.tail
     }
 
-    /// El `t` del nodo `index`.
+    /// El nodo P0, donde empieza la Bézier.
+    fn p0(&self) -> usize {
+        self.head
+    }
+
+    /// El nodo P4, donde acaba la Bézier.
+    fn p4(&self) -> usize {
+        self.head + self.cuts.len() + 1
+    }
+
+    /// Si el nodo es de la prolongación, fuera de la Bézier.
+    pub(super) fn is_extension(&self, index: usize) -> bool {
+        index < self.p0() || index > self.p4()
+    }
+
+    /// El lugar en `cuts` del nodo `index`, si es un corte sobre la Bézier.
+    fn cut_slot(&self, index: usize) -> Option<usize> {
+        (self.p0() < index && index < self.p4()).then(|| index - self.head - 1)
+    }
+
+    /// Si el tramo `piece` es de la prolongación.
+    fn extension_piece(&self, piece: usize) -> bool {
+        piece < self.head || piece >= self.pieces.len() - self.tail
+    }
+
+    /// El `t` del nodo `index`; los de la prolongación valen lo que su
+    /// extremo de la Bézier.
     fn node_t(&self, index: usize) -> f64 {
-        match index {
-            0 => 0.0,
-            i if i <= self.cuts.len() => self.cuts[i - 1],
-            _ => 1.0,
+        if index <= self.p0() {
+            0.0
+        } else if index < self.p4() {
+            self.cuts[index - self.head - 1]
+        } else {
+            1.0
         }
+    }
+
+    /// Si la punta de la prolongación `end` admite una recta nueva: la de
+    /// una prolongación sí; P0 o P4, solo si siguen sobre la Bézier.
+    #[cfg_attr(
+        not(test),
+        expect(dead_code, reason = "lo usa el gesto de prolongar, en la tarea 3")
+    )]
+    pub(super) fn can_extend(&self, end: End) -> bool {
+        self.free[self.tip(end)].is_none() || self.is_extension(self.tip(end))
+    }
+
+    /// El nodo de la punta de la cadena.
+    #[cfg_attr(
+        not(test),
+        expect(dead_code, reason = "lo usa el gesto de prolongar, en la tarea 3")
+    )]
+    pub(super) fn tip(&self, end: End) -> usize {
+        match end {
+            End::Start => 0,
+            End::Finish => self.node_count() - 1,
+        }
+    }
+
+    /// De qué punta es el nodo `index`, si es una.
+    pub(super) fn tip_end(&self, index: usize) -> Option<End> {
+        if index == 0 {
+            Some(End::Start)
+        } else if index + 1 == self.node_count() {
+            Some(End::Finish)
+        } else {
+            None
+        }
+    }
+
+    /// Añade en la punta `end` un nodo libre en `at` (la r no baja de 0) y una
+    /// recta hasta la punta de antes. Devuelve el índice del nodo nuevo, o
+    /// `None` si la punta no admite recta o el tramo sería demasiado corto.
+    #[cfg_attr(
+        not(test),
+        expect(dead_code, reason = "lo usa el gesto de prolongar, en la tarea 3")
+    )]
+    pub(super) fn extend(
+        &mut self,
+        points: &[[f64; 2]; 5],
+        end: End,
+        at: [f64; 2],
+    ) -> Option<usize> {
+        if !self.can_extend(end) {
+            return None;
+        }
+        let at = [at[0], at[1].max(0.0)];
+        if distance(at, self.node_at(points, self.tip(end))) < MIN_LENGTH_MM {
+            return None;
+        }
+        let index = match end {
+            End::Start => {
+                self.free.insert(0, Some(at));
+                self.radius.insert(0, None);
+                self.chamfer.insert(0, None);
+                self.pieces.insert(0, Piece::Line);
+                self.tangent.insert(0, None);
+                self.head += 1;
+                0
+            }
+            End::Finish => {
+                self.free.push(Some(at));
+                self.radius.push(None);
+                self.chamfer.push(None);
+                self.pieces.push(Piece::Line);
+                self.tangent.push(None);
+                self.tail += 1;
+                self.node_count() - 1
+            }
+        };
+        self.settle();
+        Some(index)
     }
 
     /// Dónde está el nodo `index`: libre, o sobre la Bézier en su `t`. El
@@ -537,6 +687,12 @@ impl WallSegments {
     /// Si el nodo puede quedar libre: todos sus tramos vecinos son rectas o
     /// arcos.
     pub(super) fn can_free(&self, index: usize) -> bool {
+        if self.is_extension(index) {
+            return true;
+        }
+        if (index == self.p0() && self.head > 0) || (index == self.p4() && self.tail > 0) {
+            return false;
+        }
         let left = index == 0 || self.pieces[index - 1].rigid();
         let right = index >= self.pieces.len() || self.pieces[index].rigid();
         left && right
@@ -575,7 +731,7 @@ impl WallSegments {
     /// Si el nodo es una esquina que se puede redondear: interior y con una
     /// recta al menos a un lado. Entre dos curvas la Bézier es lisa.
     fn can_round(&self, index: usize) -> bool {
-        (1..=self.cuts.len()).contains(&index)
+        self.interior(index)
             && (self.pieces[index - 1] == Piece::Line || self.pieces[index] == Piece::Line)
             && !self.is_anchor(index)
     }
@@ -596,7 +752,7 @@ impl WallSegments {
 
     /// Si el nodo es una esquina entre dos rectas, que se puede achaflanar.
     fn can_chamfer(&self, index: usize) -> bool {
-        (1..=self.cuts.len()).contains(&index)
+        self.interior(index)
             && self.pieces[index - 1] == Piece::Line
             && self.pieces[index] == Piece::Line
             && !self.is_anchor(index)
@@ -620,12 +776,22 @@ impl WallSegments {
     /// Si el nodo se puede arrastrar: libre o deslizándose (un corte). Los
     /// extremos pegados a una curva son los de la Bézier y no se mueven aquí.
     fn draggable(&self, index: usize) -> bool {
-        self.can_free(index) || (1..=self.cuts.len()).contains(&index)
+        self.can_free(index) || self.interior(index)
+    }
+
+    /// Si el nodo tiene un tramo a cada lado (no es una punta de la cadena).
+    fn interior(&self, index: usize) -> bool {
+        (1..self.node_count().saturating_sub(1)).contains(&index)
     }
 
     /// Devuelve a la Bézier los nodos libres que ya no pueden serlo y quita
     /// el radio a los que ya no son esquina.
     fn settle(&mut self) {
+        for piece in 0..self.pieces.len() {
+            if self.extension_piece(piece) && self.pieces[piece] == Piece::Curve {
+                self.pieces[piece] = Piece::Line;
+            }
+        }
         // Las tangencias se vuelven a poner del arranque al final, y solo
         // las que caben con las anteriores.
         let tangents = std::mem::replace(&mut self.tangent, vec![None; self.pieces.len()]);
@@ -651,6 +817,10 @@ impl WallSegments {
     /// Bézier si es curva, la fracción de su largo si es recta o arco), o
     /// `None`.
     fn cut_refusal(&self, piece: usize, s: f64) -> Option<&'static str> {
+        if self.extension_piece(piece) {
+            return (s < MIN_GAP || 1.0 - s < MIN_GAP)
+                .then_some("demasiado cerca de otro punto: aleja el cursor");
+        }
         let (start, end) = (self.node_t(piece), self.node_t(piece + 1));
         let t = if self.pieces[piece].rigid() {
             start + (end - start) * s
@@ -669,7 +839,10 @@ impl WallSegments {
             return false;
         }
         let kind = self.pieces[piece];
-        let (t, free) = if kind.rigid() {
+        let extension = self.extension_piece(piece);
+        let (t, free) = if extension {
+            (0.0, Some(self.rigid_at(points, piece, s)))
+        } else if kind.rigid() {
             let (start, end) = (self.node_t(piece), self.node_t(piece + 1));
             (
                 start + (end - start) * s,
@@ -678,7 +851,13 @@ impl WallSegments {
         } else {
             (s, None)
         };
-        self.cuts.insert(piece, t);
+        if !extension {
+            self.cuts.insert(piece - self.head, t);
+        } else if piece < self.head {
+            self.head += 1;
+        } else {
+            self.tail += 1;
+        }
         self.pieces.insert(piece, kind);
         self.free.insert(piece + 1, free);
         self.radius.insert(piece + 1, None);
@@ -694,7 +873,7 @@ impl WallSegments {
 
     /// Corta en `t` sobre la Bézier, si cae en un tramo curvo.
     pub(super) fn cut_at_t(&mut self, points: &[[f64; 2]; 5], t: f64) -> bool {
-        let piece = self.cuts.iter().take_while(|cut| **cut < t).count();
+        let piece = self.head + self.cuts.iter().take_while(|cut| **cut < t).count();
         self.pieces[piece] == Piece::Curve && self.cut(points, piece, t)
     }
 
@@ -808,7 +987,7 @@ impl WallSegments {
     /// están sobre la curva, dejando sitio a los libres de en medio, cuyo `t`
     /// solo ordena. `None` si no se desliza.
     fn slide_range(&self, index: usize) -> Option<(f64, f64)> {
-        if !(1..=self.cuts.len()).contains(&index) || self.can_free(index) {
+        if self.cut_slot(index).is_none() || self.can_free(index) {
             return None;
         }
         let (before, after) = self.bounding_nodes(index);
@@ -835,17 +1014,18 @@ impl WallSegments {
     /// en medio entre sus vecinos sobre la curva, para que sigan en orden. Los
     /// libres no se mueven: su `t` solo ordena. Devuelve si cambió.
     fn set_sliding_t(&mut self, index: usize, t: f64) -> bool {
-        let before = self.cuts[index - 1];
+        let slot = |k: usize| k - self.head - 1;
+        let before = self.cuts[slot(index)];
         let (low_node, high_node) = self.bounding_nodes(index);
         let (low_t, high_t) = (self.node_t(low_node), self.node_t(high_node));
-        self.cuts[index - 1] = t;
+        self.cuts[slot(index)] = t;
         for k in low_node + 1..index {
             let f = (k - low_node) as f64 / (index - low_node) as f64;
-            self.cuts[k - 1] = low_t + (t - low_t) * f;
+            self.cuts[slot(k)] = low_t + (t - low_t) * f;
         }
         for k in index + 1..high_node {
             let f = (k - index) as f64 / (high_node - index) as f64;
-            self.cuts[k - 1] = t + (high_t - t) * f;
+            self.cuts[slot(k)] = t + (high_t - t) * f;
         }
         t != before
     }
@@ -927,10 +1107,32 @@ impl WallSegments {
     /// lo eran, arco (con el radio del primero que lo sea) si los dos son
     /// rectas o arcos, y curva si no.
     fn remove_node(&mut self, index: usize) -> bool {
-        if !(1..=self.cuts.len()).contains(&index) {
+        if !self.can_remove(index) {
             return false;
         }
-        self.cuts.remove(index - 1);
+        if let Some(end) = self.tip_end(index) {
+            // La punta de la prolongación: se va con su recta.
+            let piece = if end == End::Start { 0 } else { index - 1 };
+            self.free.remove(index);
+            self.radius.remove(index);
+            self.chamfer.remove(index);
+            self.pieces.remove(piece);
+            self.tangent.remove(piece);
+            if end == End::Start {
+                self.head -= 1;
+            } else {
+                self.tail -= 1;
+            }
+            self.settle();
+            return true;
+        }
+        if let Some(slot) = self.cut_slot(index) {
+            self.cuts.remove(slot);
+        } else if index < self.head {
+            self.head -= 1;
+        } else {
+            self.tail -= 1;
+        }
         self.free.remove(index);
         self.radius.remove(index);
         self.chamfer.remove(index);
@@ -947,6 +1149,12 @@ impl WallSegments {
         self.tangent[index - 1] = start.or(end);
         self.settle();
         true
+    }
+
+    /// Si el nodo se puede quitar: un corte, un nodo de la prolongación o su
+    /// punta; nunca P0 ni P4.
+    pub(super) fn can_remove(&self, index: usize) -> bool {
+        index < self.node_count() && index != self.p0() && index != self.p4()
     }
 
     /// La esquina de cada nodo. Un radio que se cruza con el del otro
@@ -2358,7 +2566,7 @@ pub(super) fn interact(
                 1 => "Quitar este corte (borra su cota)".to_string(),
                 n => format!("Quitar este corte (borra sus {n} cotas)"),
             };
-            if (1..=state.cuts.len()).contains(&index) && ui.button(label).clicked() {
+            if state.can_remove(index) && ui.button(label).clicked() {
                 if state.remove_node(index) {
                     constraints.node_removed(hit.wall, index);
                     crate::meridian_constraints::forget_unfinished(ui.ctx());
@@ -3148,5 +3356,119 @@ mod tests {
         assert!(state.remove_node(2));
         assert_eq!(state.tangent[1], Some(Tangency::Start));
         assert!(smooth_at(&state, 1));
+    }
+
+    /// Una prolongación de `head` y `tail` nodos, de rectas, para las pruebas.
+    fn extended(head: usize, tail: usize) -> WallSegments {
+        let mut state = WallSegments::default();
+        for k in 0..head {
+            let at = [POINTS[0][0] - 5.0 * (k + 1) as f64, POINTS[0][1]];
+            assert!(state.extend(&POINTS, End::Start, at).is_some());
+        }
+        for k in 0..tail {
+            let at = [POINTS[4][0] + 5.0 * (k + 1) as f64, POINTS[4][1]];
+            assert!(state.extend(&POINTS, End::Finish, at).is_some());
+        }
+        state
+    }
+
+    #[test]
+    fn extending_keeps_the_curve_whole() {
+        let mut s = WallSegments::default();
+        assert_eq!(s.extend(&POINTS, End::Start, [POINTS[0][0], 0.0]), Some(0));
+        let at = [POINTS[4][0] + 10.0, POINTS[4][1]];
+        assert_eq!(s.extend(&POINTS, End::Finish, at), Some(3));
+        assert_eq!((s.head, s.tail, s.node_count()), (1, 1, 4));
+        assert_eq!(s.node_at(&POINTS, s.p0()), POINTS[0]);
+        assert_eq!(s.node_at(&POINTS, s.p4()), POINTS[4]);
+        let c = s.contour(&POINTS);
+        assert_eq!(c.len(), 3);
+        assert_eq!(c[1].first(), Some(&POINTS[0]));
+        assert_eq!(c[1].last(), Some(&POINTS[4]));
+    }
+
+    #[test]
+    fn p0_stays_on_the_curve_with_an_extension() {
+        let mut s = extended(1, 0);
+        s.pieces[1] = Piece::Line;
+        s.settle();
+        assert!(!s.can_free(s.p0()));
+        assert_eq!(s.free[s.p0()], None);
+    }
+
+    #[test]
+    fn freed_p0_cannot_be_extended() {
+        let mut s = WallSegments::default();
+        s.toggle(0);
+        assert!(s.move_node(&POINTS, 0, [0.0, 0.0]));
+        assert!(!s.can_extend(End::Start));
+        assert_eq!(s.extend(&POINTS, End::Start, [-5.0, 0.0]), None);
+        assert!(s.can_extend(End::Finish));
+    }
+
+    #[test]
+    fn too_short_extension_is_refused() {
+        let mut s = WallSegments::default();
+        assert_eq!(s.extend(&POINTS, End::Start, POINTS[0]), None);
+        let near = [POINTS[0][0] - 0.005, POINTS[0][1]];
+        assert_eq!(s.extend(&POINTS, End::Start, near), None);
+        assert_eq!((s.head, s.node_count()), (0, 2));
+    }
+
+    #[test]
+    fn extension_never_goes_below_the_axis() {
+        let mut s = WallSegments::default();
+        assert_eq!(s.extend(&POINTS, End::Start, [-5.0, -5.0]), Some(0));
+        assert_eq!(s.free[0], Some([-5.0, 0.0]));
+    }
+
+    #[test]
+    fn cutting_an_extension_line_grows_head() {
+        let mut s = extended(1, 0);
+        let cuts = s.cuts.clone();
+        assert!(s.cut(&POINTS, 0, 0.5));
+        assert_eq!((s.head, s.cuts.clone()), (2, cuts));
+        assert!(s.free[1].is_some());
+        assert_eq!(s.pieces.len(), s.node_count() - 1);
+    }
+
+    #[test]
+    fn removing_the_tip_drops_its_line() {
+        let mut s = extended(2, 0);
+        assert!(s.remove_node(0));
+        assert_eq!(s.head, 1);
+        assert_eq!(s.pieces.len(), s.node_count() - 1);
+        assert!(!s.remove_node(s.p0()));
+        assert!(!s.remove_node(s.p4()));
+    }
+
+    #[test]
+    fn p0_rounds_between_extension_and_curve() {
+        let s = extended(1, 0);
+        assert!(s.can_round(s.p0()));
+        assert!(!s.can_chamfer(s.p0()));
+        let two = extended(2, 0);
+        assert!(two.can_chamfer(1));
+    }
+
+    #[test]
+    fn extension_round_trips_through_texts() {
+        let s = extended(2, 1);
+        let back = WallSegments::from_texts(&s.to_texts()).unwrap();
+        assert_eq!((back.head, back.tail), (2, 1));
+        assert_eq!(back.pieces, s.pieces);
+        assert_eq!(back.free, s.free);
+    }
+
+    #[test]
+    fn curve_in_an_extension_becomes_a_line() {
+        let texts = MeridianWallSegments {
+            head: "1".into(),
+            pieces: vec!["curve".into(), "curve".into()],
+            nodes: vec!["-5 mm, 50 mm".into(), String::new(), String::new()],
+            ..MeridianWallSegments::default()
+        };
+        let s = WallSegments::from_texts(&texts).unwrap();
+        assert_eq!(s.pieces, vec![Piece::Line, Piece::Curve]);
     }
 }

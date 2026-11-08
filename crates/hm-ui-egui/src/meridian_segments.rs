@@ -421,7 +421,6 @@ impl WallSegments {
     /// Por qué no se puede proponer el contorno cerrado (cubo al eje), o
     /// `Ok`: sin prolongación ni cierre, con P0 y P4 sobre la curva, y con
     /// algo que prolongar hasta el eje.
-    #[cfg_attr(not(test), expect(dead_code, reason = "lo usa el menú, en la tarea 3"))]
     pub(super) fn can_propose_closed(&self, points: &[[f64; 2]; 5]) -> Result<(), &'static str> {
         if self.head + self.tail > 0 || self.closed {
             return Err("ya tiene prolongación");
@@ -440,7 +439,6 @@ impl WallSegments {
 
     /// Cierra el cubo al eje con rectas: de P0 al eje, de P4 al eje y una recta
     /// entre las dos puntas.
-    #[cfg_attr(not(test), expect(dead_code, reason = "lo usa el menú, en la tarea 3"))]
     pub(super) fn propose_closed(&mut self, points: &[[f64; 2]; 5]) -> Result<(), &'static str> {
         self.can_propose_closed(points)?;
         let (start, finish) = (points[0], points[4]);
@@ -2752,6 +2750,26 @@ pub(super) fn interact(
                 ui.close();
             }
         }
+        if hit.wall == Wall::Hub {
+            let proposal = state.can_propose_closed(&points);
+            let button = ui.add_enabled(proposal.is_ok(), egui::Button::new("Proponer contorno"));
+            match proposal {
+                Ok(()) if button.clicked() => {
+                    if state.propose_closed(&points).is_ok() {
+                        if state.head > 0 {
+                            constraints.node_inserted(hit.wall, 0);
+                        }
+                        crate::meridian_constraints::forget_unfinished(ui.ctx());
+                        changed = true;
+                    }
+                    ui.close();
+                }
+                Err(reason) => {
+                    button.on_disabled_hover_text(reason);
+                }
+                Ok(()) => {}
+            }
+        }
         let label = match constraints.touching_wall(hit.wall) {
             0 => "Quitar todos los cortes de esta tapa".to_string(),
             n => format!("Quitar todos los cortes de esta tapa (borra {n} cotas)"),
@@ -2788,7 +2806,8 @@ pub(super) fn interact(
 /// la forma `i=R` (R con signo, en mm), y un octavo hace tangentes arcos con
 /// la forma `is` (al tramo anterior) o `ie` (al siguiente). Un noveno y un
 /// décimo campo prolongan la cadena antes de P0 y después de P4 con rectas
-/// a los puntos `z/r` en mm, en orden. Cortes,
+/// a los puntos `z/r` en mm, en orden; un undécimo con `1` propone el contorno
+/// cerrado del cubo (el décimo campo tras la tapa). Cortes,
 /// tramos y nodos se separan con `,`; las tapas (`shroud`, `hub`), con `;`.
 fn seed_from_env(ctx: &egui::Context, model: &MeridionalModel, boxes: &mut Meridian) -> bool {
     let seeded = egui::Id::unique("meridian_segments_seeded");
@@ -2877,6 +2896,9 @@ fn seed_from_env(ctx: &egui::Context, model: &MeridionalModel, boxes: &mut Merid
                     state.extend(&points, end, [z, r]);
                 }
             }
+        }
+        if list().first().is_some_and(|value| value == "1") {
+            let _ = state.propose_closed(&points);
         }
         if let Some(index) = editor
             && index < state.node_count()

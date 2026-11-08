@@ -817,3 +817,113 @@ fn angles_out_of_range_or_not_numbers_are_rejected() {
         assert!(Constraint::parse(&text).is_err(), "{text}");
     }
 }
+
+fn extended_segments(
+    head: &str,
+    cuts: &[&str],
+    pieces: &[&str],
+    nodes: &[&str],
+    tail: &str,
+) -> Meridian {
+    Meridian {
+        segments: MeridianSegments {
+            shroud: MeridianWallSegments {
+                head: head.to_string(),
+                tail: tail.to_string(),
+                cuts: texts(cuts),
+                pieces: texts(pieces),
+                nodes: texts(nodes),
+                ..MeridianWallSegments::default()
+            },
+            ..MeridianSegments::default()
+        },
+        ..Meridian::default()
+    }
+}
+
+#[test]
+fn extension_round_trips_through_the_hmf() {
+    // head = 2, sin cortes: 4 nodos y 3 tramos.
+    let meridian = extended_segments(
+        "2",
+        &[],
+        &["line", "line", "curve"],
+        &["10 mm, 0 mm", "10 mm, 20 mm", "", ""],
+        "",
+    );
+    let project = with(meridian);
+    let text = project.to_toml().unwrap();
+    assert!(text.contains("head = \"2\""), "{text}");
+    assert!(!text.contains("tail"), "{text}");
+    assert_eq!(
+        Project::from_toml(&text).unwrap().meridian,
+        project.meridian
+    );
+    assert_eq!(problems(project.meridian.unwrap()), Vec::<String>::new());
+}
+
+#[test]
+fn old_segments_without_extension_still_load() {
+    let project = with(shroud_segments(&["0.3"], &["curve", "line"]));
+    let text = project.to_toml().unwrap();
+    assert!(!text.contains("head") && !text.contains("tail"), "{text}");
+    let back = Project::from_toml(&text).unwrap();
+    let wall = &back.meridian.as_ref().unwrap().segments.shroud;
+    assert_eq!((wall.head.as_str(), wall.tail.as_str()), ("", ""));
+    assert_eq!(wall.node_count(), 3);
+    assert_eq!(problems(back.meridian.unwrap()), Vec::<String>::new());
+}
+
+#[test]
+fn bad_extensions_are_hm_proj_031() {
+    let cases = [
+        (
+            "segments.shroud.head",
+            extended_segments("-1", &[], &[], &[], ""),
+        ),
+        (
+            "segments.shroud.head",
+            extended_segments("dos", &[], &[], &[], ""),
+        ),
+        (
+            "segments.shroud.pieces",
+            extended_segments("1", &[], &["curve", "curve"], &["1 mm, 1 mm", "", ""], ""),
+        ),
+        (
+            "segments.shroud.pieces",
+            extended_segments("1", &[], &[], &[], ""),
+        ),
+        (
+            "segments.shroud.nodes",
+            extended_segments("1", &[], &["line", "curve"], &["", "", ""], ""),
+        ),
+        (
+            "segments.shroud.nodes",
+            extended_segments("1", &[], &["line", "curve"], &["1 mm, 1 mm", ""], ""),
+        ),
+        (
+            "segments.shroud.tail",
+            extended_segments("", &[], &["curve", "curve"], &["", "", "1 mm, 1 mm"], "x"),
+        ),
+    ];
+    for (name, meridian) in cases {
+        let found = problems(meridian);
+        assert!(
+            found.iter().any(|message| message.contains(name)),
+            "{name}: {found:?}"
+        );
+    }
+}
+
+#[test]
+fn constraint_on_an_extension_node_exists() {
+    let mut meridian = extended_segments("1", &[], &["line", "curve"], &["1 mm, 1 mm", "", ""], "");
+    // Con head = 1 hay 3 nodos (0..=2): el 2 existe, el 3 no.
+    meridian.segments.constraints = texts(&["dz shroud:0 shroud:1 = 5 mm"]);
+    assert_eq!(
+        problems_with("HM-PROJ-032", meridian.clone()),
+        Vec::<String>::new()
+    );
+    meridian.segments.constraints = texts(&["dz shroud:0 shroud:3 = 5 mm"]);
+    assert!(!problems_with("HM-PROJ-032", meridian).is_empty());
+}

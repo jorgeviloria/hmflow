@@ -281,6 +281,12 @@ impl Constraint {
 #[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct MeridianWallSegments {
+    /// Nodos de la prolongación antes de P0: un entero; vacío, ninguno.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub head: String,
+    /// Nodos de la prolongación después de P4: un entero; vacío, ninguno.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub tail: String,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub cuts: Vec<String>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
@@ -300,13 +306,34 @@ pub struct MeridianWallSegments {
 impl MeridianWallSegments {
     #[must_use]
     pub fn is_empty(&self) -> bool {
-        self.cuts.is_empty()
+        self.head.is_empty()
+            && self.tail.is_empty()
+            && self.cuts.is_empty()
             && self.pieces.is_empty()
             && self.nodes.is_empty()
             && self.radii.is_empty()
             && self.chamfers.is_empty()
             && self.arcs.is_empty()
             && self.tangents.is_empty()
+    }
+
+    /// Los nodos de la prolongación antes de P0; un texto roto cuenta 0 (la
+    /// validación lo señala).
+    #[must_use]
+    pub fn head_count(&self) -> usize {
+        self.head.trim().parse().unwrap_or(0)
+    }
+
+    /// Los nodos de la prolongación después de P4.
+    #[must_use]
+    pub fn tail_count(&self) -> usize {
+        self.tail.trim().parse().unwrap_or(0)
+    }
+
+    /// Cuántos nodos tiene la cadena: la prolongación, P0, los cortes y P4.
+    #[must_use]
+    pub fn node_count(&self) -> usize {
+        self.head_count() + self.cuts.len() + 2 + self.tail_count()
     }
 }
 
@@ -1142,7 +1169,7 @@ fn check_constraints(diagnostics: &mut Diagnostics, segments: &MeridianSegments)
         WallId::Shroud => &segments.shroud,
         WallId::Hub => &segments.hub,
     };
-    let exists = |node: NodeRef| node.index < wall(node.wall).cuts.len() + 2;
+    let exists = |node: NodeRef| node.index < wall(node.wall).node_count();
     let mut valid: Vec<(Constraint, &str)> = Vec::new();
     for text in &segments.constraints {
         let constraint = match Constraint::parse(text) {
@@ -1250,7 +1277,23 @@ fn check_wall_segments(
             }
         }
     }
-    if !wall.pieces.is_empty() && wall.pieces.len() != wall.cuts.len() + 1 {
+    for (name, text) in [("head", &wall.head), ("tail", &wall.tail)] {
+        if !text.trim().is_empty() && text.trim().parse::<usize>().is_err() {
+            problem(
+                format!("{table}.{name}"),
+                format!("debe ser un entero de cero en adelante: {text}"),
+            );
+            return;
+        }
+    }
+    let (head, nodes) = (wall.head_count(), wall.node_count());
+    if head + wall.tail_count() > 0 && wall.pieces.is_empty() {
+        problem(
+            format!("{table}.pieces"),
+            "con prolongación hay que dar los tramos".to_string(),
+        );
+    }
+    if !wall.pieces.is_empty() && wall.pieces.len() != nodes - 1 {
         problem(
             format!("{table}.pieces"),
             format!(
@@ -1260,6 +1303,19 @@ fn check_wall_segments(
             ),
         );
     }
+    let first_tail = wall.pieces.len().saturating_sub(wall.tail_count());
+    for (i, piece) in wall.pieces.iter().enumerate() {
+        let in_extension = i < head || i >= first_tail;
+        if in_extension && piece.trim() == "curve" {
+            problem(
+                format!("{table}.pieces"),
+                format!(
+                    "un tramo de la prolongación no puede ser curve (tramo {})",
+                    i + 1
+                ),
+            );
+        }
+    }
     for piece in &wall.pieces {
         if !matches!(piece.trim(), "curve" | "line" | "arc") {
             problem(
@@ -1268,7 +1324,7 @@ fn check_wall_segments(
             );
         }
     }
-    if !wall.nodes.is_empty() && wall.nodes.len() != wall.cuts.len() + 2 {
+    if !wall.nodes.is_empty() && wall.nodes.len() != nodes {
         problem(
             format!("{table}.nodes"),
             format!(
@@ -1278,8 +1334,15 @@ fn check_wall_segments(
             ),
         );
     }
-    for node in wall.nodes.iter().map(|node| node.trim()) {
+    let first_tail = wall.nodes.len().saturating_sub(wall.tail_count());
+    for (i, node) in wall.nodes.iter().map(|node| node.trim()).enumerate() {
         if node.is_empty() {
+            if !wall.nodes.is_empty() && (i < head || i >= first_tail) {
+                problem(
+                    format!("{table}.nodes"),
+                    format!("un nodo de la prolongación necesita posición (nodo {i})"),
+                );
+            }
             continue;
         }
         let parsed = node
@@ -1294,12 +1357,12 @@ fn check_wall_segments(
             problem(format!("{table}.nodes"), text);
         }
     }
-    if !wall.radii.is_empty() && wall.radii.len() != wall.cuts.len() + 2 {
+    if !wall.radii.is_empty() && wall.radii.len() != nodes {
         problem(
             format!("{table}.radii"),
             format!(
                 "debe tener un radio por nodo: {} nodos y {} radios",
-                wall.cuts.len() + 2,
+                nodes,
                 wall.radii.len()
             ),
         );
@@ -1317,12 +1380,12 @@ fn check_wall_segments(
             Err(text) => problem(format!("{table}.radii"), text),
         }
     }
-    if !wall.chamfers.is_empty() && wall.chamfers.len() != wall.cuts.len() + 2 {
+    if !wall.chamfers.is_empty() && wall.chamfers.len() != nodes {
         problem(
             format!("{table}.chamfers"),
             format!(
                 "debe tener un chaflán por nodo: {} nodos y {} chaflanes",
-                wall.cuts.len() + 2,
+                nodes,
                 wall.chamfers.len()
             ),
         );
@@ -1349,7 +1412,7 @@ fn check_tangents(
     table: &str,
     wall: &MeridianWallSegments,
 ) {
-    let pieces = wall.cuts.len() + 1;
+    let pieces = wall.node_count() - 1;
     if !wall.tangents.is_empty() && wall.tangents.len() != pieces {
         problem(
             format!("{table}.tangents"),
@@ -1380,7 +1443,7 @@ fn check_tangents(
 }
 
 fn check_arcs(problem: &mut impl FnMut(String, String), table: &str, wall: &MeridianWallSegments) {
-    let pieces = wall.cuts.len() + 1;
+    let pieces = wall.node_count() - 1;
     if !wall.arcs.is_empty() && wall.arcs.len() != pieces {
         problem(
             format!("{table}.arcs"),

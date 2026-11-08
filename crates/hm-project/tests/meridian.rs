@@ -381,6 +381,7 @@ fn shroud_segments(cuts: &[&str], pieces: &[&str]) -> Meridian {
             shroud: MeridianWallSegments {
                 cuts: texts(cuts),
                 pieces: texts(pieces),
+                nodes: Vec::new(),
             },
             ..MeridianSegments::default()
         },
@@ -438,4 +439,42 @@ fn segments_bad_texts_are_hm_proj_031() {
         problems(shroud_segments(&["0.5"], &[])),
         Vec::<String>::new()
     );
+}
+
+fn hub_nodes(nodes: &[&str]) -> Meridian {
+    Meridian {
+        segments: MeridianSegments {
+            hub: MeridianWallSegments {
+                cuts: texts(&["0.5"]),
+                pieces: texts(&["curve", "line"]),
+                nodes: texts(nodes),
+            },
+            ..MeridianSegments::default()
+        },
+        ..Meridian::default()
+    }
+}
+
+#[test]
+fn free_nodes_round_trip_and_validate() {
+    let project = with(hub_nodes(&["", "", "60 mm, 0 mm"]));
+    let text = project.to_toml().unwrap();
+    assert!(text.contains("60 mm, 0 mm"), "{text}");
+    let back = Project::from_toml(&text).unwrap();
+    assert_eq!(back.meridian, project.meridian);
+    assert_eq!(problems(project.meridian.unwrap()), Vec::<String>::new());
+    for nodes in [
+        &["", "60 mm, 0 mm"][..],
+        &["", "", "60 mm"][..],
+        &["", "", "60 mm, -1 mm"][..],
+        &["", "", "abc, 0 mm"][..],
+    ] {
+        let found = problems(hub_nodes(nodes));
+        assert!(
+            found
+                .iter()
+                .any(|message| message.contains("segments.hub.nodes")),
+            "{nodes:?}: {found:?}"
+        );
+    }
 }

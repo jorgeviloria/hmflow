@@ -117,7 +117,10 @@ impl MeridianSegments {
 /// Bézier hidráulica, de 0 a 1 sin incluirlos y en orden creciente. `pieces`
 /// dice qué es cada tramo, del arranque al final: `curve` (la Bézier entre
 /// sus cortes) o `line` (la recta entre ellos). Tiene un elemento más que
-/// `cuts`; vacío, todos son `curve`.
+/// `cuts`; vacío, todos son `curve`. `nodes` da la posición de cada nodo
+/// (el arranque, los cortes y el final, uno más que `pieces`) como
+/// «z, r» con unidad, por ejemplo `"60 mm, 0 mm"`; vacío, el nodo está
+/// sobre la Bézier. Solo un nodo entre dos rectas puede ir fuera de ella.
 #[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct MeridianWallSegments {
@@ -125,12 +128,14 @@ pub struct MeridianWallSegments {
     pub cuts: Vec<String>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub pieces: Vec<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub nodes: Vec<String>,
 }
 
 impl MeridianWallSegments {
     #[must_use]
     pub fn is_empty(&self) -> bool {
-        self.cuts.is_empty() && self.pieces.is_empty()
+        self.cuts.is_empty() && self.pieces.is_empty() && self.nodes.is_empty()
     }
 }
 
@@ -982,6 +987,32 @@ fn check_wall_segments(
                 format!("{table}.pieces"),
                 format!("cada tramo es curve o line: {piece}"),
             );
+        }
+    }
+    if !wall.nodes.is_empty() && wall.nodes.len() != wall.cuts.len() + 2 {
+        problem(
+            format!("{table}.nodes"),
+            format!(
+                "debe tener dos nodos más que cortes: {} cortes y {} nodos",
+                wall.cuts.len(),
+                wall.nodes.len()
+            ),
+        );
+    }
+    for node in wall.nodes.iter().map(|node| node.trim()) {
+        if node.is_empty() {
+            continue;
+        }
+        let parsed = node
+            .split_once(',')
+            .ok_or_else(|| format!("cada nodo es «z, r» con unidad: {node}"))
+            .and_then(|(z, r)| {
+                length_value(z.trim())?;
+                non_negative_length(r.trim())?;
+                Ok(())
+            });
+        if let Err(text) = parsed {
+            problem(format!("{table}.nodes"), text);
         }
     }
 }

@@ -927,3 +927,52 @@ fn constraint_on_an_extension_node_exists() {
     meridian.segments.constraints = texts(&["dz shroud:0 shroud:3 = 5 mm"]);
     assert!(!problems_with("HM-PROJ-032", meridian).is_empty());
 }
+
+fn closed_segments(head: &str, tail: &str, closed: &str) -> Meridian {
+    // head/tail de un nodo cada uno: nodos 0 y 3 libres, 3 tramos (rectas y curva).
+    let (pieces, nodes): (&[&str], &[&str]) = match (head, tail) {
+        ("1", "1") => (
+            &["line", "curve", "line"],
+            &["1 mm, 0 mm", "", "", "9 mm, 0 mm"],
+        ),
+        _ => (&[], &[]),
+    };
+    let mut meridian = extended_segments(head, &[], pieces, nodes, tail);
+    meridian.segments.shroud.closed = closed.to_string();
+    meridian
+}
+
+#[test]
+fn closed_round_trips_through_the_hmf() {
+    let project = with(closed_segments("1", "1", "true"));
+    let text = project.to_toml().unwrap();
+    assert!(text.contains("closed = \"true\""), "{text}");
+    let back = Project::from_toml(&text).unwrap();
+    assert_eq!(back.meridian, project.meridian);
+    assert!(back.meridian.as_ref().unwrap().segments.shroud.is_closed());
+    assert_eq!(problems(project.meridian.unwrap()), Vec::<String>::new());
+}
+
+#[test]
+fn segments_without_closed_still_load() {
+    let project = with(shroud_segments(&["0.3"], &["curve", "line"]));
+    let text = project.to_toml().unwrap();
+    assert!(!text.contains("closed"), "{text}");
+    let back = Project::from_toml(&text).unwrap();
+    assert!(!back.meridian.as_ref().unwrap().segments.shroud.is_closed());
+}
+
+#[test]
+fn bad_closed_is_hm_proj_031() {
+    let cases = [
+        ("segments.shroud.closed", closed_segments("1", "1", "si")),
+        ("segments.shroud.closed", closed_segments("", "", "true")),
+    ];
+    for (name, meridian) in cases {
+        let found = problems(meridian);
+        assert!(
+            found.iter().any(|message| message.contains(name)),
+            "{name}: {found:?}"
+        );
+    }
+}

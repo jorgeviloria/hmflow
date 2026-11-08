@@ -287,6 +287,10 @@ pub struct MeridianWallSegments {
     /// Nodos de la prolongación después de P4: un entero; vacío, ninguno.
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub tail: String,
+    /// `true`: una recta cierra la cadena, del último nodo al primero. Vacío,
+    /// no. Exige alguna prolongación.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub closed: String,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub cuts: Vec<String>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
@@ -308,6 +312,7 @@ impl MeridianWallSegments {
     pub fn is_empty(&self) -> bool {
         self.head.is_empty()
             && self.tail.is_empty()
+            && self.closed.is_empty()
             && self.cuts.is_empty()
             && self.pieces.is_empty()
             && self.nodes.is_empty()
@@ -315,6 +320,12 @@ impl MeridianWallSegments {
             && self.chamfers.is_empty()
             && self.arcs.is_empty()
             && self.tangents.is_empty()
+    }
+
+    /// Si una recta cierra la cadena.
+    #[must_use]
+    pub fn is_closed(&self) -> bool {
+        self.closed.trim() == "true"
     }
 
     /// Los nodos de la prolongación antes de P0; un texto roto cuenta 0 (la
@@ -1285,6 +1296,18 @@ fn check_wall_segments(
             );
             return;
         }
+    }
+    match wall.closed.trim() {
+        "" => {}
+        "true" if wall.head_count() + wall.tail_count() > 0 => {}
+        "true" => problem(
+            format!("{table}.closed"),
+            "una cadena cerrada necesita prolongación (head o tail)".to_string(),
+        ),
+        other => problem(
+            format!("{table}.closed"),
+            format!("debe ser true o vacío: {other}"),
+        ),
     }
     let (head, nodes) = (wall.head_count(), wall.node_count());
     if head + wall.tail_count() > 0 && wall.pieces.is_empty() {

@@ -194,7 +194,9 @@ impl Constraint {
             .ok_or_else(|| format!("falta «=»: {text}"))?;
         let words: Vec<&str> = left.split_whitespace().collect();
         let [kind, parent, child] = words[..] else {
-            return Err(format!("antes de «=» van el tipo, el padre y el hijo: {text}"));
+            return Err(format!(
+                "antes de «=» van el tipo, el padre y el hijo: {text}"
+            ));
         };
         let kind = match kind {
             "dz" => ConstraintKind::Dz,
@@ -1165,9 +1167,13 @@ fn check_constraints(diagnostics: &mut Diagnostics, segments: &MeridianSegments)
         };
         count[slot] += 1;
         if count[slot] > 1 {
-            problem(format!("esa coordenada del hijo ya tiene otra cota: {text}"));
+            problem(format!(
+                "esa coordenada del hijo ya tiene otra cota: {text}"
+            ));
         } else if count.iter().all(|&n| n > 0) {
-            problem(format!("el hijo ya está fijado por dz y dd; el ángulo sobra: {text}"));
+            problem(format!(
+                "el hijo tendría dz, dd y ang a la vez; sobra uno: {text}"
+            ));
         }
     }
     // Ciclos: recorrido en profundidad del grafo padre → hijo, las dos tapas juntas.
@@ -1317,7 +1323,10 @@ fn check_tangents(
         if tangent.is_empty() {
             continue;
         }
-        let is_arc = wall.pieces.get(i).is_some_and(|piece| piece.trim() == "arc");
+        let is_arc = wall
+            .pieces
+            .get(i)
+            .is_some_and(|piece| piece.trim() == "arc");
         let message = match tangent {
             _ if !is_arc => format!("el tramo {} no es arc y lleva tangente: {tangent}", i + 1),
             "start" if i == 0 => "el primer tramo no tiene tramo anterior".to_string(),
@@ -1342,7 +1351,10 @@ fn check_arcs(problem: &mut impl FnMut(String, String), table: &str, wall: &Meri
         return;
     }
     for i in 0..pieces {
-        let is_arc = wall.pieces.get(i).is_some_and(|piece| piece.trim() == "arc");
+        let is_arc = wall
+            .pieces
+            .get(i)
+            .is_some_and(|piece| piece.trim() == "arc");
         let radius = wall.arcs.get(i).map_or("", |radius| radius.trim());
         match (is_arc, radius.is_empty()) {
             (true, true) => problem(

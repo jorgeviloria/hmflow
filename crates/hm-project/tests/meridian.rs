@@ -611,7 +611,11 @@ fn tangents_round_trip_and_validate() {
         (&["arc", "line"][..], &["40 mm", ""][..], &["start", ""][..]),
         (&["line", "arc"][..], &["", "40 mm"][..], &["", "end"][..]),
         // Palabra desconocida.
-        (&["line", "arc"][..], &["", "40 mm"][..], &["", "inicio"][..]),
+        (
+            &["line", "arc"][..],
+            &["", "40 mm"][..],
+            &["", "inicio"][..],
+        ),
     ] {
         let found = problems(hub_tangents(pieces, arcs, tangents));
         assert!(
@@ -673,7 +677,9 @@ fn constraint_text_parses_and_formats() {
     assert!((a.value - 135.0).abs() < 1e-12);
     assert_eq!(a.to_text(), "ang hub:2 hub:3 = 135 deg");
     assert_eq!(
-        Constraint::parse("dd hub:1 hub:2 = -3 cm").unwrap().to_text(),
+        Constraint::parse("dd hub:1 hub:2 = -3 cm")
+            .unwrap()
+            .to_text(),
         "dd hub:1 hub:2 = -30 mm"
     );
 }
@@ -694,7 +700,10 @@ fn constraints_round_trip_through_the_hmf() {
     ]));
     let text = project.to_toml().unwrap();
     assert!(text.contains("constraints"), "{text}");
-    assert_eq!(Project::from_toml(&text).unwrap().meridian, project.meridian);
+    assert_eq!(
+        Project::from_toml(&text).unwrap().meridian,
+        project.meridian
+    );
 }
 
 #[test]
@@ -764,4 +773,25 @@ fn constraints_bad_texts_are_hm_proj_032() {
     let mut meridian = with_constraints(&["dz hub:0 hub:2 = 1 mm"]);
     meridian.segments.hub = MeridianWallSegments::default();
     assert!(!problems_032(meridian).is_empty());
+}
+
+#[test]
+fn over_determined_child_is_named_neutrally() {
+    let found = problems_032(with_constraints(&[
+        "ang hub:1 hub:2 = 45 deg",
+        "dz hub:1 hub:2 = 1 mm",
+        "dd hub:1 hub:2 = 1 mm",
+    ]));
+    assert!(
+        found
+            .iter()
+            .any(|message| message.contains("dz, dd y ang a la vez")),
+        "{found:?}"
+    );
+    assert!(
+        !found
+            .iter()
+            .any(|message| message.contains("el ángulo sobra")),
+        "{found:?}"
+    );
 }

@@ -62,6 +62,17 @@ pub(super) struct WallSegments {
     radius: Vec<Option<f64>>,
 }
 
+/// Una cota de un punto.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub(super) enum Dimension {
+    /// La z, desde el plano de entrada (z = 0).
+    Z,
+    /// El diámetro, desde el eje.
+    Diameter,
+    /// El largo de la recta hasta el nodo vecino que se indica.
+    Length(usize),
+}
+
 /// Cómo queda la esquina de un nodo.
 #[derive(Clone, Copy, Debug, PartialEq)]
 enum Corner {
@@ -410,6 +421,65 @@ impl WallSegments {
         self.slide_to(points, index, axis, to[axis])
     }
 
+    /// Las rectas vecinas del nodo `index`: el nodo del otro extremo y el
+    /// largo de vértice a vértice (sin descontar los radios, como en un plano).
+    fn line_lengths(&self, points: &[[f64; 2]; 5], index: usize) -> Vec<(usize, f64)> {
+        let at = self.node_at(points, index);
+        let mut lengths = Vec::new();
+        if index > 0 && self.straight[index - 1] {
+            lengths.push((index - 1, distance(at, self.node_at(points, index - 1))));
+        }
+        if index < self.straight.len() && self.straight[index] {
+            lengths.push((index + 1, distance(at, self.node_at(points, index + 1))));
+        }
+        lengths
+    }
+
+    /// Pone la cota `kind` del nodo `index` en `value` mm. Un nodo libre va a
+    /// la z o al Ø escritos sin tocar la otra coordenada; uno sobre la curva
+    /// se desliza hasta ellos. El largo de una recta mueve el nodo libre por
+    /// la propia recta, con el otro extremo quieto. Devuelve si se movió.
+    fn set_dimension(
+        &mut self,
+        points: &[[f64; 2]; 5],
+        index: usize,
+        kind: Dimension,
+        value: f64,
+    ) -> bool {
+        if index >= self.node_count() || !value.is_finite() {
+            return false;
+        }
+        let at = self.node_at(points, index);
+        let free = self.can_free(index);
+        match kind {
+            Dimension::Z if free => self.move_node(points, index, [value, at[1]]),
+            Dimension::Z => self.slide_to(points, index, 0, value),
+            Dimension::Diameter if value < 0.0 => false,
+            Dimension::Diameter if free => self.move_node(points, index, [at[0], value / 2.0]),
+            Dimension::Diameter => self.slide_to(points, index, 1, value / 2.0),
+            Dimension::Length(other) => {
+                let neighbour = self
+                    .line_lengths(points, index)
+                    .into_iter()
+                    .any(|(k, _)| k == other);
+                if !free || !neighbour || value <= 0.0 {
+                    return false;
+                }
+                let from = self.node_at(points, other);
+                let length = distance(at, from);
+                if length < 1.0e-9 {
+                    return false;
+                }
+                let scale = value / length;
+                let to = [
+                    from[0] + (at[0] - from[0]) * scale,
+                    from[1] + (at[1] - from[1]) * scale,
+                ];
+                self.move_node(points, index, to)
+            }
+        }
+    }
+
     /// Devuelve el nodo `index` a la Bézier, en su `t`.
     fn unfree(&mut self, index: usize) -> bool {
         self.free.get_mut(index).and_then(Option::take).is_some()
@@ -743,13 +813,14 @@ pub(super) fn start_of(boxes: &Meridian, model: &MeridionalModel, wall: Wall) ->
         .node_at(&model.params.wall(wall).points, 0)
 }
 
-/// La ventana de un punto: z y r escritos a mano.
+/// La ventana de un punto: z y Ø escritos a mano.
 #[derive(Clone, Debug)]
 struct Editor {
     wall: Wall,
     index: usize,
     z: String,
-    r: String,
+    /// El diámetro, Ø = 2·r, como en el plano.
+    diameter: String,
     /// El radio de la esquina, en mm; vacío, viva.
     radius: String,
 }
@@ -776,7 +847,7 @@ fn open_editor(
         wall,
         index,
         z: format!("{:.2}", at[0]),
-        r: format!("{:.2}", at[1]),
+        diameter: format!("{:.2}", 2.0 * at[1]),
         radius: radius_text(radius),
     };
     ctx.data_mut(|data| data.insert_temp(editor_id(), Some(editor)));
@@ -787,7 +858,7 @@ fn radius_text(radius: Option<f64>) -> String {
     radius.map_or_else(String::new, |r| trimmed(r, 3))
 }
 
-/// La ventana del punto abierto: z y r en mm. Un punto libre va a los dos
+/// La ventana del punto abierto: z y Ø en mm. Un punto libre va a los dos
 /// valores; uno que se desliza por la curva va a la z o la r que cambió, y
 /// la curva da la otra. Devuelve si cambió algo.
 fn node_editor(
@@ -826,7 +897,7 @@ fn node_editor(
     });
     if !typing {
         editor.z = format!("{:.2}", at[0]);
-        editor.r = format!("{:.2}", at[1]);
+        editor.diameter = format!("{:.2}", 2.0 * at[1]);
         editor.radius = radius_text(state.radius[editor.index]);
     }
     let mut open = true;
@@ -843,7 +914,7 @@ fn node_editor(
                 .num_columns(3)
                 .show(ui, |ui| {
                     for (label, text, id) in
-                        [("z", &mut editor.z, z_id), ("r", &mut editor.r, r_id)]
+                        [("z", &mut editor.z, z_id), ("Ø", &mut editor.diameter, r_id)]
                     {
                         ui.label(label);
                         let field =
@@ -882,9 +953,9 @@ fn node_editor(
             }
             ui.label(
                 egui::RichText::new(if free {
-                    "Punto libre: va a la z y la r escritas."
+                    "Punto libre: va a la z y el Ø escritos."
                 } else {
-                    "Sobre la curva: cambia z o r y la curva da la otra."
+                    "Sobre la curva: cambia z o Ø y la curva da el otro."
                 })
                 .small()
                 .weak(),
@@ -895,18 +966,18 @@ fn node_editor(
         });
     let mut changed = false;
     if apply {
-        let (z, r) = (mm_value(&editor.z), mm_value(&editor.r));
+        let (z, diameter) = (mm_value(&editor.z), mm_value(&editor.diameter));
         if free {
-            if let (Some(z), Some(r)) = (z, r) {
-                changed = state.move_node(&points, editor.index, [z, r]);
+            if let (Some(z), Some(diameter)) = (z, diameter.filter(|d| *d >= 0.0)) {
+                changed = state.move_node(&points, editor.index, [z, diameter / 2.0]);
             }
         } else {
             // El valor que cambió respecto del punto, con la precisión mostrada.
             let moved = |value: Option<f64>, now: f64| value.filter(|v| (v - now).abs() >= 0.005);
             if let Some(z) = moved(z, at[0]) {
-                changed = state.slide_to(&points, editor.index, 0, z);
-            } else if let Some(r) = moved(r, at[1]) {
-                changed = state.slide_to(&points, editor.index, 1, r);
+                changed = state.set_dimension(&points, editor.index, Dimension::Z, z);
+            } else if let Some(diameter) = moved(diameter, 2.0 * at[1]) {
+                changed = state.set_dimension(&points, editor.index, Dimension::Diameter, diameter);
             }
         }
         if roundable {
@@ -927,6 +998,159 @@ fn node_editor(
         }
     }
     ctx.data_mut(|data| data.insert_temp(editor_id(), open.then_some(editor)));
+    changed
+}
+
+/// El punto con la ventana abierta, para acotarlo: dónde está y sus rectas
+/// vecinas (el otro extremo y la cota que se puede escribir; `None` si el
+/// punto se desliza por la curva y su largo solo se lee).
+pub(super) struct NodeDimensions {
+    pub(super) at: [f64; 2],
+    pub(super) lines: Vec<([f64; 2], Option<Dimension>)>,
+}
+
+/// El punto que se acota: el de la ventana abierta, si la hay.
+pub(super) fn selected_node(
+    ctx: &egui::Context,
+    model: &MeridionalModel,
+    boxes: &Meridian,
+) -> Option<NodeDimensions> {
+    let editor = ctx
+        .data(|data| data.get_temp::<Option<Editor>>(editor_id()))
+        .flatten()?;
+    let segments = read(boxes);
+    let state = segments.wall(editor.wall);
+    if editor.index >= state.node_count() || !state.draggable(editor.index) {
+        return None;
+    }
+    let points = &model.params.wall(editor.wall).points;
+    let free = state.can_free(editor.index);
+    let lines = state
+        .line_lengths(points, editor.index)
+        .into_iter()
+        .map(|(other, _)| {
+            (
+                state.node_at(points, other),
+                free.then_some(Dimension::Length(other)),
+            )
+        })
+        .collect();
+    Some(NodeDimensions {
+        at: state.node_at(points, editor.index),
+        lines,
+    })
+}
+
+/// Una cota que se está escribiendo sobre el dibujo.
+#[derive(Clone, Debug)]
+struct Typing {
+    wall: Wall,
+    index: usize,
+    kind: Dimension,
+    text: String,
+    /// El centro del valor en pantalla: ahí va la caja.
+    screen: egui::Pos2,
+    /// Recién abierta: toma el foco y selecciona el texto.
+    fresh: bool,
+}
+
+fn typing_id() -> egui::Id {
+    egui::Id::unique("meridian_segments_typing")
+}
+
+/// Clic sobre el valor de una cota del punto acotado: se abre ahí mismo para
+/// escribirlo. `values` lleva, por cada valor que se puede escribir, dónde
+/// está en pantalla, su cota y el texto. Devuelve si el clic cayó en uno.
+pub(super) fn dimension_click(
+    plot_ui: &egui_plot::PlotUi<'_>,
+    values: &[(egui::Rect, Dimension, String)],
+) -> bool {
+    if !plot_ui.response().clicked() {
+        return false;
+    }
+    let ctx = plot_ui.ctx().clone();
+    let Some(pointer) = ctx.input(|input| input.pointer.interact_pos()) else {
+        return false;
+    };
+    let Some(editor) = ctx
+        .data(|data| data.get_temp::<Option<Editor>>(editor_id()))
+        .flatten()
+    else {
+        return false;
+    };
+    let Some((rect, kind, text)) = values.iter().find(|(rect, ..)| rect.contains(pointer)) else {
+        return false;
+    };
+    let typing = Typing {
+        wall: editor.wall,
+        index: editor.index,
+        kind: *kind,
+        text: text.trim_start_matches('Ø').to_string(),
+        screen: rect.center(),
+        fresh: true,
+    };
+    ctx.data_mut(|data| data.insert_temp(typing_id(), Some(typing)));
+    true
+}
+
+/// La caja de la cota que se escribe, encima de su valor. Intro la aplica;
+/// Esc o un clic fuera la cierran sin cambiar nada. Devuelve si cambió algo.
+fn dimension_typing(ctx: &egui::Context, model: &MeridionalModel, segments: &mut Segments) -> bool {
+    let Some(mut typing) = ctx
+        .data(|data| data.get_temp::<Option<Typing>>(typing_id()))
+        .flatten()
+    else {
+        return false;
+    };
+    let field_id = typing_id().with("field");
+    let (mut done, mut apply) = (false, false);
+    egui::Area::new(typing_id().with("area"))
+        .order(egui::Order::Foreground)
+        .fixed_pos(typing.screen - egui::vec2(50.0, 14.0))
+        .show(ctx, |ui| {
+            egui::Frame::popup(ui.style()).show(ui, |ui| {
+                ui.horizontal(|ui| {
+                    if typing.kind == Dimension::Diameter {
+                        ui.label("Ø");
+                    }
+                    let field = ui.add(
+                        egui::TextEdit::singleline(&mut typing.text)
+                            .id(field_id)
+                            .desired_width(72.0),
+                    );
+                    ui.label("mm");
+                    if typing.fresh {
+                        field.request_focus();
+                        let mut state =
+                            egui::text_edit::TextEditState::load(ctx, field_id).unwrap_or_default();
+                        state
+                            .cursor
+                            .set_char_range(Some(egui::text::CCursorRange::two(
+                                egui::text::CCursor::new(0),
+                                egui::text::CCursor::new(typing.text.chars().count()),
+                            )));
+                        state.store(ctx, field_id);
+                    } else if field.lost_focus() {
+                        apply = ui.input(|input| input.key_pressed(egui::Key::Enter));
+                        done = true;
+                    }
+                });
+            });
+        });
+    if ctx.input(|input| input.key_pressed(egui::Key::Escape)) {
+        done = true;
+        apply = false;
+    }
+    typing.fresh = false;
+    let mut changed = false;
+    if apply && let Some(value) = mm_value(&typing.text) {
+        let points = model.params.wall(typing.wall).points;
+        let state = segments.wall_mut(typing.wall);
+        if typing.index < state.node_count() {
+            changed = state.set_dimension(&points, typing.index, typing.kind, value);
+        }
+    }
+    ctx.data_mut(|data| data.insert_temp(typing_id(), (!done).then_some(typing)));
     changed
 }
 
@@ -1147,7 +1371,7 @@ fn drag_node(
         egui_plot::Text::new(
             "Punto",
             PlotPoint::new(at[0], at[1]),
-            egui::RichText::new(format!("  z = {:.2} mm\n  r = {:.2} mm", at[0], at[1]))
+            egui::RichText::new(format!("  z = {:.2} mm\n  Ø = {:.2} mm", at[0], 2.0 * at[1]))
                 .color(Color32::from_gray(20)),
         )
         .anchor(egui::Align2::LEFT_BOTTOM),
@@ -1223,10 +1447,10 @@ pub(super) fn interact(
         let state = segments.wall_mut(hit.wall);
         ui.label(
             egui::RichText::new(format!(
-                "{} · z = {:.2} mm, r = {:.2} mm",
+                "{} · z = {:.2} mm, Ø = {:.2} mm",
                 hit.wall.name(),
                 hit.at[0],
-                hit.at[1]
+                2.0 * hit.at[1]
             ))
             .small()
             .weak(),
@@ -1289,9 +1513,11 @@ pub(super) fn interact(
         ctx.data_mut(|data| {
             data.remove::<(Wall, usize)>(selected_id());
             data.remove::<Option<Editor>>(editor_id());
+            data.remove::<Option<Typing>>(typing_id());
         });
     }
     changed |= node_editor(plot_ui, model, &mut segments);
+    changed |= dimension_typing(&ctx, model, &mut segments);
     if changed {
         return (write(boxes, &segments) || seeded, false);
     }
@@ -1636,6 +1862,54 @@ mod tests {
 
     /// Cortes en 0,3 y 0,6 con el tramo del medio en recta: los nodos 1 y 2
     /// son esquinas de recta contra curva.
+    #[test]
+    fn dimensions_move_a_point_on_the_curve() {
+        let mut state = cut_twice();
+        let z = point_at(&POINTS, 0.45)[0];
+        assert!(state.set_dimension(&POINTS, 1, Dimension::Z, z));
+        assert!((state.node_at(&POINTS, 1)[0] - z).abs() < 1e-6);
+        // El Ø es el doble de la r.
+        let r = point_at(&POINTS, 0.2)[1];
+        assert!(state.set_dimension(&POINTS, 1, Dimension::Diameter, 2.0 * r));
+        assert!((state.node_at(&POINTS, 1)[1] - r).abs() < 1e-6);
+        assert!(!state.set_dimension(&POINTS, 1, Dimension::Diameter, -1.0));
+        // Sin recta al lado no hay largo.
+        assert!(state.line_lengths(&POINTS, 1).is_empty());
+        assert!(!state.set_dimension(&POINTS, 1, Dimension::Length(0), 10.0));
+    }
+
+    #[test]
+    fn dimensions_move_a_free_point() {
+        let mut state = cut_twice();
+        state.toggle(0);
+        state.toggle(1);
+        assert!(state.move_node(&POINTS, 1, [30.0, 40.0]));
+        assert!(state.set_dimension(&POINTS, 1, Dimension::Z, 35.0));
+        assert!(same(state.node_at(&POINTS, 1), [35.0, 40.0]));
+        assert!(state.set_dimension(&POINTS, 1, Dimension::Diameter, 100.0));
+        assert!(same(state.node_at(&POINTS, 1), [35.0, 50.0]));
+    }
+
+    #[test]
+    fn a_line_length_moves_the_free_end_along_the_line() {
+        let mut state = cut_twice();
+        state.toggle(0);
+        state.toggle(1);
+        let start = state.node_at(&POINTS, 0);
+        assert!(state.move_node(&POINTS, 1, [start[0] + 30.0, start[1] + 40.0]));
+        let lengths = state.line_lengths(&POINTS, 1);
+        assert_eq!(lengths.len(), 2);
+        assert_eq!(lengths[0].0, 0);
+        assert!((lengths[0].1 - 50.0).abs() < 1e-9);
+        assert!(state.set_dimension(&POINTS, 1, Dimension::Length(0), 25.0));
+        // Misma dirección, la mitad de largo; el arranque no se mueve.
+        assert!(same(state.node_at(&POINTS, 1), [start[0] + 15.0, start[1] + 20.0]));
+        assert!(same(state.node_at(&POINTS, 0), start));
+        assert!(!state.set_dimension(&POINTS, 1, Dimension::Length(0), 0.0));
+        // Solo a un vecino por recta.
+        assert!(!state.set_dimension(&POINTS, 1, Dimension::Length(3), 10.0));
+    }
+
     fn middle_line() -> WallSegments {
         let mut state = cut_twice();
         state.toggle(1);

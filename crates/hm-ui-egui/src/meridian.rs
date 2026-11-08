@@ -16,6 +16,7 @@ use hm_design::meridian::{
 use hm_design::{DesignError, DesignResult};
 use hm_project::{Meridian, MeridianWall};
 
+use crate::meridian_segments::{Dimension, NodeDimensions};
 use crate::model::Outcome;
 
 /// Color de cada curva del corte, los de CFturbo: tapa delantera en verde,
@@ -67,9 +68,10 @@ struct Dimensioning {
     arrows: Vec<([f64; 2], [f64; 2])>,
     /// De dónde nace cada cota, con un circulito hueco.
     origins: Vec<[f64; 2]>,
-    /// Valores: el punto medio de su línea de cota, el texto y si va girado
-    /// (las cotas verticales se leen de abajo arriba).
-    texts: Vec<([f64; 2], String, bool)>,
+    /// Valores: el punto medio de su línea de cota, el texto, si va girado
+    /// (las cotas verticales se leen de abajo arriba) y, si se puede escribir
+    /// encima, qué cota del punto del contorno cambia.
+    texts: Vec<([f64; 2], String, bool, Option<Dimension>)>,
 }
 
 /// Cotas al estilo de CFturbo (todas en mm). Las líneas de referencia llevan el
@@ -78,7 +80,12 @@ struct Dimensioning {
 /// el borde de ataque, con la línea de cota bajo el eje, y su r desde el eje,
 /// con la línea de cota a la derecha de todo el dibujo; cada una con líneas de
 /// extensión, un circulito donde nace, una flecha en el punto y el valor.
-fn dimensioning(model: &MeridionalModel, at: [f64; 2]) -> Dimensioning {
+/// La cota radial es el diámetro, Ø = 2·r, como en el plano de fabricación.
+///
+/// Si se acota un punto del contorno mecánico (`node`), sus valores se
+/// pueden escribir encima y se añade el largo de cada recta vecina, paralelo
+/// a ella.
+fn dimensioning(model: &MeridionalModel, at: [f64; 2], node: Option<&NodeDimensions>) -> Dimensioning {
     let p = &model.params;
     let (r1, r2) = (p.shroud.points[0][1], p.shroud.points[4][1]);
     let ri = p.d1i / 2.0;
@@ -102,21 +109,59 @@ fn dimensioning(model: &MeridionalModel, at: [f64; 2]) -> Dimensioning {
     out.lines.push(vec![[0.0, y], [at[0], y]]);
     out.origins.push([0.0, y]);
     out.arrows.push(([at[0], y], [toward(at[0]), 0.0]));
-    out.texts
-        .push(([at[0] / 2.0, y], format!("{:.3}", at[0]), false));
+    let writable = |kind: Dimension| node.is_some().then_some(kind);
+    out.texts.push((
+        [at[0] / 2.0, y],
+        format!("{:.3}", at[0]),
+        false,
+        writable(Dimension::Z),
+    ));
     // r: línea de cota a la derecha de todo el dibujo.
     let x = z_max + 2.0 * gap;
     out.lines.push(vec![[at[0], at[1]], [x + 0.3 * gap, at[1]]]);
     out.lines.push(vec![[x, 0.0], [x, at[1]]]);
     out.origins.push([x, 0.0]);
     out.arrows.push(([x, at[1]], [0.0, toward(at[1])]));
-    out.texts
-        .push(([x, at[1] / 2.0], format!("{:.3}", at[1]), true));
+    out.texts.push((
+        [x, at[1] / 2.0],
+        format!("Ø{:.3}", 2.0 * at[1]),
+        true,
+        writable(Dimension::Diameter),
+    ));
+    // El largo de las rectas vecinas, en una línea paralela por encima.
+    for (other, kind) in node.map_or(&[][..], |node| &node.lines[..]) {
+        let (dz, dr) = (at[0] - other[0], at[1] - other[1]);
+        let length = dz.hypot(dr);
+        if length < 1e-9 {
+            continue;
+        }
+        let along = [dz / length, dr / length];
+        // La normal que sube (o, en una recta vertical, la que va a la izquierda).
+        let mut normal = [-along[1], along[0]];
+        if normal[1] < 0.0 || (normal[1] == 0.0 && normal[0] > 0.0) {
+            normal = [-normal[0], -normal[1]];
+        }
+        let shift = |p: [f64; 2], k: f64| [p[0] + normal[0] * gap * k, p[1] + normal[1] * gap * k];
+        let (a, b) = (shift(at, 0.6), shift(*other, 0.6));
+        out.lines.push(vec![at, shift(at, 0.9)]);
+        out.lines.push(vec![*other, shift(*other, 0.9)]);
+        out.lines.push(vec![b, a]);
+        out.arrows.push((a, along));
+        out.arrows.push((b, [-along[0], -along[1]]));
+        out.texts.push((
+            [(a[0] + b[0]) / 2.0, (a[1] + b[1]) / 2.0],
+            format!("{length:.3}"),
+            false,
+            *kind,
+        ));
+    }
     out
 }
 
 const DIMENSION_GREY: Color32 = Color32::from_gray(120);
 const DIMENSION_TEXT: Color32 = Color32::from_gray(45);
+/// Valor de una cota que se escribe con un clic encima.
+const WRITABLE_TEXT: Color32 = Color32::from_rgb(20, 90, 200);
 /// Tamaño de pantalla (píxeles) de la flecha: largo y medio ancho.
 const ARROW_LENGTH: f32 = 11.0;
 const ARROW_HALF_WIDTH: f32 = 3.5;
@@ -497,9 +542,16 @@ fn draw_section(
         }
     }
     // Las referencias dS, dH, d2 y el eje, gruesas y claras, y las cotas.
+    // Se acota el punto del contorno con la ventana abierta o, si no hay, el
+    // punto de control seleccionado.
+    let node = crate::meridian_segments::selected_node(plot_ui.ctx(), model, boxes);
     let selected = selected_control(plot_ui.ctx());
-    let at = model.control_position(selected).unwrap_or([0.0, 0.0]);
-    let dimensioning = dimensioning(model, at);
+    let at = node
+        .as_ref()
+        .map(|node| node.at)
+        .or_else(|| model.control_position(selected))
+        .unwrap_or([0.0, 0.0]);
+    let dimensioning = dimensioning(model, at, node.as_ref());
     // Las referencias cruzan todo el lienzo, con el nombre bajo la línea, pegado a la izquierda.
     let bounds = plot_ui.plot_bounds();
     let (x_min, x_max) = (bounds.min()[0], bounds.max()[0]);
@@ -627,7 +679,9 @@ fn draw_section(
             .filled(false)
             .color(DIMENSION_GREY),
     );
-    for (position, text, vertical) in dimensioning.texts {
+    // Los valores que se pueden escribir: dónde quedan en pantalla.
+    let mut writable = Vec::new();
+    for (position, text, vertical, kind) in dimensioning.texts {
         // Las horizontales se leen sobre su línea; las verticales, de abajo
         // arriba, a su izquierda.
         let (offset, angle) = if vertical {
@@ -635,15 +689,28 @@ fn draw_section(
         } else {
             (egui::vec2(0.0, -4.0), 0.0)
         };
+        if let Some(kind) = kind {
+            let base = plot_ui.screen_from_plot(PlotPoint::new(position[0], position[1])) + offset;
+            let long = 0.62 * DIMENSION_FONT * text.chars().count() as f32 + 12.0;
+            let tall = DIMENSION_FONT + 8.0;
+            let rect = if vertical {
+                egui::Rect::from_center_size(base - egui::vec2(tall / 2.0, 0.0), egui::vec2(tall, long))
+            } else {
+                egui::Rect::from_center_size(base - egui::vec2(0.0, tall / 2.0), egui::vec2(long, tall))
+            };
+            writable.push((rect, kind, text.clone()));
+        }
         labels.push(Label {
             position,
             offset,
             text,
             anchor: egui::Align2::CENTER_BOTTOM,
             angle,
-            colour: DIMENSION_TEXT,
+            // Las que se pueden escribir, en el color de la selección.
+            colour: if kind.is_some() { WRITABLE_TEXT } else { DIMENSION_TEXT },
         });
     }
+    crate::meridian_segments::dimension_click(plot_ui, &writable);
     // Los puntos de control: extremos P0 y P4 en cuadrados grises con borde,
     // los interiores y los del borde de ataque en círculos con borde.
     for wall in Wall::ALL {
@@ -1940,7 +2007,7 @@ mod tests {
         .unwrap();
         let p = &model.params;
         let at = [p.z_e * 0.8, p.shroud.points[4][1] * 0.5];
-        let d = dimensioning(&model, at);
+        let d = dimensioning(&model, at, None);
         let texts: Vec<String> = d.texts.iter().map(|t| t.1.clone()).collect();
         let has = |text: String| texts.contains(&text);
         // Las tres referencias con su nombre, a su r, y el eje.
@@ -1957,7 +2024,7 @@ mod tests {
         assert_eq!(d.references.len(), 4);
         // Los dos valores del punto, con tres decimales.
         assert!(has(format!("{:.3}", at[0])));
-        assert!(has(format!("{:.3}", at[1])));
+        assert!(has(format!("Ø{:.3}", 2.0 * at[1])));
         // La cota de z va bajo el eje y la de r a la derecha de todo.
         let z_line = d
             .lines
@@ -1983,6 +2050,36 @@ mod tests {
     }
 
     #[test]
+    fn a_contour_point_takes_writable_values_and_the_length_of_its_lines() {
+        let result = hm_design::design(&hm_design::DesignInput {
+            q: hm_units::parse_quantity("120 m3/h").unwrap(),
+            h: hm_units::parse_quantity("45 m").unwrap(),
+            n: hm_units::parse_quantity("2900 rpm").unwrap(),
+            rho: hm_units::parse_quantity("998.2 kg/m3").unwrap(),
+            eta_m: 0.95,
+            npsha: None,
+            nu: None,
+        })
+        .unwrap();
+        let model = meridional_model(&result).unwrap();
+        let node = NodeDimensions {
+            at: [30.0, 40.0],
+            lines: vec![([0.0, 0.0], Some(Dimension::Length(0)))],
+        };
+        let d = dimensioning(&model, node.at, Some(&node));
+        let kinds: Vec<_> = d.texts.iter().map(|t| (t.1.clone(), t.3)).collect();
+        assert!(kinds.contains(&("30.000".to_string(), Some(Dimension::Z))));
+        assert!(kinds.contains(&("Ø80.000".to_string(), Some(Dimension::Diameter))));
+        assert!(kinds.contains(&("50.000".to_string(), Some(Dimension::Length(0)))));
+        // Una flecha en cada extremo de la cota del largo, más las de z y Ø.
+        assert_eq!(d.arrows.len(), 4);
+        // Un punto de control no se escribe desde sus cotas.
+        let d = dimensioning(&model, node.at, None);
+        assert!(d.texts.iter().all(|t| t.3.is_none()));
+        assert_eq!(d.texts.len(), 2);
+    }
+
+    #[test]
     fn with_the_hub_on_the_axis_the_axis_and_dh_share_one_label() {
         let result = hm_design::design(&hm_design::DesignInput {
             q: hm_units::parse_quantity("120 m3/h").unwrap(),
@@ -1999,7 +2096,7 @@ mod tests {
             ..MeridianEdits::default()
         };
         let model = meridional_model_with(&result, &edits).unwrap();
-        let d = dimensioning(&model, [10.0, 20.0]);
+        let d = dimensioning(&model, [10.0, 20.0], None);
         let names: Vec<&str> = d.references.iter().map(|(_, n)| n.as_str()).collect();
         assert!(names.contains(&"eje, dH"), "{names:?}");
         assert!(!names.contains(&"dH"), "{names:?}");

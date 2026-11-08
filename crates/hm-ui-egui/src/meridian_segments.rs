@@ -250,17 +250,56 @@ impl WallSegments {
             self.free[index] = Some(to);
             return before != self.free[index];
         }
-        if !(1..=self.cuts.len()).contains(&index) {
+        let Some((low, high)) = self.slide_range(index) else {
             return false;
-        }
-        let low = self.node_t(index - 1) + MIN_GAP;
-        let high = self.node_t(index + 1) - MIN_GAP;
-        if low > high {
-            return false;
-        }
+        };
         let (t, _) = nearest_t(points, to, low, high, distance);
+        self.set_sliding_t(index, t)
+    }
+
+    /// Entre qué `t` se puede deslizar el nodo `index`: hasta los vecinos que
+    /// están sobre la curva, dejando sitio a los libres de en medio, cuyo `t`
+    /// solo ordena. `None` si no se desliza.
+    fn slide_range(&self, index: usize) -> Option<(f64, f64)> {
+        if !(1..=self.cuts.len()).contains(&index) || self.can_free(index) {
+            return None;
+        }
+        let (before, after) = self.bounding_nodes(index);
+        let low = self.node_t(before) + MIN_GAP * (index - before) as f64;
+        let high = self.node_t(after) - MIN_GAP * (after - index) as f64;
+        (low <= high).then_some((low, high))
+    }
+
+    /// Los nodos más próximos a `index`, por cada lado, que están sobre la
+    /// curva (o son los extremos).
+    fn bounding_nodes(&self, index: usize) -> (usize, usize) {
+        let last = self.node_count() - 1;
+        let before = (0..index)
+            .rev()
+            .find(|k| *k == 0 || self.free[*k].is_none())
+            .unwrap_or(0);
+        let after = (index + 1..=last)
+            .find(|k| *k == last || self.free[*k].is_none())
+            .unwrap_or(last);
+        (before, after)
+    }
+
+    /// Pone el nodo `index` en `t` y reparte los `t` de los nodos libres de
+    /// en medio entre sus vecinos sobre la curva, para que sigan en orden. Los
+    /// libres no se mueven: su `t` solo ordena. Devuelve si cambió.
+    fn set_sliding_t(&mut self, index: usize, t: f64) -> bool {
         let before = self.cuts[index - 1];
+        let (low_node, high_node) = self.bounding_nodes(index);
+        let (low_t, high_t) = (self.node_t(low_node), self.node_t(high_node));
         self.cuts[index - 1] = t;
+        for k in low_node + 1..index {
+            let f = (k - low_node) as f64 / (index - low_node) as f64;
+            self.cuts[k - 1] = low_t + (t - low_t) * f;
+        }
+        for k in index + 1..high_node {
+            let f = (k - index) as f64 / (high_node - index) as f64;
+            self.cuts[k - 1] = t + (high_t - t) * f;
+        }
         t != before
     }
 
@@ -268,20 +307,13 @@ impl WallSegments {
     /// su r (`axis` 1) vale `value`, o lo más cerca que deje la curva entre
     /// sus vecinos. Devuelve si se movió.
     fn slide_to(&mut self, points: &[[f64; 2]; 5], index: usize, axis: usize, value: f64) -> bool {
-        if !(1..=self.cuts.len()).contains(&index) || self.can_free(index) {
+        let Some((low, high)) = self.slide_range(index) else {
             return false;
-        }
-        let low = self.node_t(index - 1) + MIN_GAP;
-        let high = self.node_t(index + 1) - MIN_GAP;
-        if low > high {
-            return false;
-        }
+        };
         let mut at = [0.0; 2];
         at[axis] = value;
         let (t, _) = nearest_t(points, at, low, high, |p, q| (p[axis] - q[axis]).abs());
-        let before = self.cuts[index - 1];
-        self.cuts[index - 1] = t;
-        t != before
+        self.set_sliding_t(index, t)
     }
 
     /// Arrastre del nodo `index` desde `from` (donde estaba al agarrarlo)
@@ -1232,6 +1264,36 @@ mod tests {
         // Y vuelve hacia atrás igual de bien.
         assert!(state.drag_to(&HUB, 1, from, [5.0, from[1]]));
         assert!((state.node_at(&HUB, 1)[0] - 5.0).abs() < 1e-3);
+    }
+
+    #[test]
+    fn free_points_do_not_block_sliding_along_the_curve() {
+        // Como en la captura de Jorge: el cubo llevado al eje con dos rectas
+        // y un punto libre entre ellas, y luego la curva.
+        let mut state = WallSegments::default();
+        assert!(state.cut_at_t(&HUB, 0.4));
+        state.toggle(0);
+        state.move_node(&HUB, 0, [0.0, 0.0]);
+        assert!(state.cut(&HUB, 0, 0.5));
+        state.move_node(&HUB, 1, [20.0, 0.0]);
+        let from = state.node_at(&HUB, 2);
+        // El punto de la curva baja hacia z = 0 más allá del `t` del punto libre.
+        assert!(state.drag_to(&HUB, 2, from, [3.0, from[1]]));
+        let at = state.node_at(&HUB, 2);
+        assert!((at[0] - 3.0).abs() < 1e-3, "quedó en {at:?}");
+        // El punto libre no se movió y el orden sigue siendo creciente.
+        assert_eq!(state.node_at(&HUB, 1), [20.0, 0.0]);
+        assert!(
+            state.cuts.windows(2).all(|w| w[0] < w[1]),
+            "{:?}",
+            state.cuts
+        );
+        assert!(state.slide_to(&HUB, 2, 0, 1.0));
+        assert!(
+            state.cuts.windows(2).all(|w| w[0] < w[1]),
+            "{:?}",
+            state.cuts
+        );
     }
 
     #[test]

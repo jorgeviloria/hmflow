@@ -25,6 +25,19 @@ pub(super) struct Fillet {
     pub sb: f64,
 }
 
+/// El chaflán: la recta que corta la esquina a `distance` del vértice por
+/// cada lado, y la fracción (`sa`, `sb`) que recorta de cada tramo.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub(super) struct Chamfer {
+    pub distance: f64,
+    /// Sobre el tramo de entrada.
+    pub a: [f64; 2],
+    /// Sobre el tramo de salida.
+    pub b: [f64; 2],
+    pub sa: f64,
+    pub sb: f64,
+}
+
 /// Pasos con que se busca la primera tangencia sobre una curva.
 const SCAN: usize = 400;
 
@@ -176,6 +189,32 @@ fn line_curve(
     })
 }
 
+/// El chaflán de `distance` en la esquina `vertex` entre dos rectas, que van
+/// del vértice a `far_a` y a `far_b`; `None` si no hay esquina (alineadas) o
+/// si la distancia no cabe en alguna de las dos.
+pub(super) fn chamfer(
+    vertex: [f64; 2],
+    far_a: [f64; 2],
+    far_b: [f64; 2],
+    distance: f64,
+) -> Option<Chamfer> {
+    if !(distance > 0.0 && distance.is_finite()) {
+        return None;
+    }
+    let (la, lb) = (norm(sub(far_a, vertex)), norm(sub(far_b, vertex)));
+    let (da, db) = (unit(sub(far_a, vertex))?, unit(sub(far_b, vertex))?);
+    if cross(da, db).abs() < 1e-6 || distance > la || distance > lb {
+        return None;
+    }
+    Some(Chamfer {
+        distance,
+        a: add(vertex, da, distance),
+        b: add(vertex, db, distance),
+        sa: distance / la,
+        sb: distance / lb,
+    })
+}
+
 /// El arco de `a` a `b`, por el lado corto, con `count + 1` puntos.
 pub(super) fn arc(fillet: &Fillet, count: usize) -> Vec<[f64; 2]> {
     let angle = |p: [f64; 2]| (p[1] - fillet.center[1]).atan2(p[0] - fillet.center[0]);
@@ -278,6 +317,21 @@ mod tests {
         // Y la curva al revés da lo mismo con los lados cambiados.
         let g = fillet(v, &Side::Curve(&quarter), &Side::Line([-30.0, 0.0]), 5.0).unwrap();
         assert_eq!((g.a, g.b, g.sa, g.sb), (f.b, f.a, f.sb, f.sa));
+    }
+
+    #[test]
+    fn a_chamfer_cuts_the_corner_at_equal_distance() {
+        let c = chamfer([0.0, 0.0], [0.0, 20.0], [30.0, 0.0], 2.0).unwrap();
+        assert!(close(c.a[0], 0.0) && close(c.a[1], 2.0), "{c:?}");
+        assert!(close(c.b[0], 2.0) && close(c.b[1], 0.0));
+        assert!(close(c.sa, 0.1) && close(c.sb, 2.0 / 30.0));
+    }
+
+    #[test]
+    fn a_chamfer_that_does_not_fit_or_has_no_corner_is_refused() {
+        assert_eq!(chamfer([0.0, 0.0], [0.0, 1.0], [30.0, 0.0], 2.0), None);
+        assert_eq!(chamfer([0.0, 0.0], [-10.0, 0.0], [10.0, 0.0], 1.0), None);
+        assert_eq!(chamfer([0.0, 0.0], [0.0, 5.0], [5.0, 0.0], 0.0), None);
     }
 
     #[test]

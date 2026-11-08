@@ -28,7 +28,7 @@ use hm_project::{Meridian, MeridianWallSegments};
 use crate::curves::line;
 use crate::meridian_arc::{self, Arc, Tangent};
 use crate::meridian_constraints::Constraints;
-use crate::meridian_fillet::{self, Fillet, Side};
+use crate::meridian_fillet::{self, Chamfer, Fillet, Side};
 
 /// Distancia en píxeles para tocar una tapa o un punto con el ratón.
 const TOUCH_PIXELS: f32 = 12.0;
@@ -98,6 +98,9 @@ pub(super) struct WallSegments {
     free: Vec<Option<[f64; 2]>>,
     /// El radio en mm de cada nodo; `None`, esquina viva.
     radius: Vec<Option<f64>>,
+    /// El chaflán en mm de cada nodo entre dos rectas; `None`, sin chaflán.
+    /// Un nodo lleva radio o chaflán.
+    chamfer: Vec<Option<f64>>,
     /// Si cada tramo (un arco) sale tangente a un vecino.
     tangent: Vec<Option<Tangency>>,
 }
@@ -120,6 +123,10 @@ enum Corner {
     Sharp,
     /// Redondeada.
     Round(Fillet),
+    /// Cortada por un chaflán.
+    Chamfer(Chamfer),
+    /// Con un chaflán que no cabe: se dibuja viva.
+    TooBigChamfer(f64),
     /// Con un radio que no cabe: se dibuja viva.
     TooBig(f64),
 }
@@ -131,6 +138,7 @@ impl Default for WallSegments {
             pieces: vec![Piece::Curve],
             free: vec![None, None],
             radius: vec![None, None],
+            chamfer: vec![None, None],
             tangent: vec![None],
         }
     }
@@ -213,11 +221,29 @@ impl WallSegments {
         } else {
             return None;
         };
+        let chamfer = if texts.chamfers.is_empty() {
+            vec![None; cuts.len() + 2]
+        } else if texts.chamfers.len() == cuts.len() + 2 {
+            texts
+                .chamfers
+                .iter()
+                .map(|text| {
+                    if text.trim().is_empty() {
+                        Some(None)
+                    } else {
+                        length_mm(text).filter(|d| *d > 0.0).map(Some)
+                    }
+                })
+                .collect::<Option<Vec<_>>>()?
+        } else {
+            return None;
+        };
         let mut state = Self {
             cuts,
             pieces,
             free,
             radius,
+            chamfer,
             tangent,
         };
         state.settle();
@@ -276,6 +302,14 @@ impl WallSegments {
         } else {
             Vec::new()
         };
+        let chamfers = if self.chamfer.iter().any(Option::is_some) {
+            self.chamfer
+                .iter()
+                .map(|d| d.map_or_else(String::new, |d| format!("{} mm", trimmed(d, 4))))
+                .collect()
+        } else {
+            Vec::new()
+        };
         let tangents = if self.tangent.iter().any(Option::is_some) {
             self.tangent
                 .iter()
@@ -294,6 +328,7 @@ impl WallSegments {
             pieces,
             nodes,
             radii,
+            chamfers,
             arcs,
             tangents,
         }
@@ -553,7 +588,33 @@ impl WallSegments {
         }
         let before = self.radius[index];
         self.radius[index] = radius;
+        if radius.is_some() {
+            self.chamfer[index] = None;
+        }
         before != radius
+    }
+
+    /// Si el nodo es una esquina entre dos rectas, que se puede achaflanar.
+    fn can_chamfer(&self, index: usize) -> bool {
+        (1..=self.cuts.len()).contains(&index)
+            && self.pieces[index - 1] == Piece::Line
+            && self.pieces[index] == Piece::Line
+            && !self.is_anchor(index)
+    }
+
+    /// Pone el chaflán del nodo `index` (`None` lo quita) y le quita el
+    /// radio. Devuelve si cambió.
+    fn set_chamfer(&mut self, index: usize, chamfer: Option<f64>) -> bool {
+        let chamfer = chamfer.filter(|d| *d > 0.0 && d.is_finite());
+        if !self.can_chamfer(index) && chamfer.is_some() {
+            return false;
+        }
+        let (before, radius) = (self.chamfer[index], self.radius[index]);
+        self.chamfer[index] = chamfer;
+        if chamfer.is_some() {
+            self.radius[index] = None;
+        }
+        before != chamfer || (chamfer.is_some() && radius.is_some())
     }
 
     /// Si el nodo se puede arrastrar: libre o deslizándose (un corte). Los
@@ -579,6 +640,9 @@ impl WallSegments {
             }
             if !self.can_round(index) {
                 self.radius[index] = None;
+            }
+            if !self.can_chamfer(index) {
+                self.chamfer[index] = None;
             }
         }
     }
@@ -618,6 +682,7 @@ impl WallSegments {
         self.pieces.insert(piece, kind);
         self.free.insert(piece + 1, free);
         self.radius.insert(piece + 1, None);
+        self.chamfer.insert(piece + 1, None);
         // Cada mitad conserva la tangencia del lado que tenía.
         let tangent = self.tangent[piece];
         self.tangent[piece] = tangent.filter(|t| *t == Tangency::Start);
@@ -868,6 +933,7 @@ impl WallSegments {
         self.cuts.remove(index - 1);
         self.free.remove(index);
         self.radius.remove(index);
+        self.chamfer.remove(index);
         let merged = match (self.pieces[index - 1], self.pieces[index]) {
             (Piece::Line, Piece::Line) => Piece::Line,
             (Piece::Arc(r), other) | (other, Piece::Arc(r)) if other.rigid() => Piece::Arc(r),
@@ -887,19 +953,37 @@ impl WallSegments {
     /// extremo de un tramo no cabe en ninguno de los dos.
     fn corners(&self, points: &[[f64; 2]; 5]) -> Vec<Corner> {
         let mut corners: Vec<Corner> = (0..self.node_count())
-            .map(|index| match self.radius[index] {
-                Some(radius) if self.can_round(index) => self
+            .map(|index| match (self.radius[index], self.chamfer[index]) {
+                (Some(radius), _) if self.can_round(index) => self
                     .corner_fillet(points, index, radius)
                     .map_or(Corner::TooBig(radius), Corner::Round),
+                (None, Some(distance)) if self.can_chamfer(index) => meridian_fillet::chamfer(
+                    self.node_at(points, index),
+                    self.node_at(points, index - 1),
+                    self.node_at(points, index + 1),
+                    distance,
+                )
+                .map_or(Corner::TooBigChamfer(distance), Corner::Chamfer),
                 _ => Corner::Sharp,
             })
             .collect();
+        // Lo que recorta cada esquina del tramo: (en su arranque, en su final).
+        let trims = |corner: Corner| match corner {
+            Corner::Round(f) => Some((f.sa, f.sb)),
+            Corner::Chamfer(c) => Some((c.sa, c.sb)),
+            _ => None,
+        };
+        let too_big = |corner: Corner| match corner {
+            Corner::Round(f) => Corner::TooBig(f.radius),
+            Corner::Chamfer(c) => Corner::TooBigChamfer(c.distance),
+            other => other,
+        };
         for piece in 0..self.pieces.len() {
-            if let (Corner::Round(start), Corner::Round(end)) = (corners[piece], corners[piece + 1])
-                && start.sb + end.sa > 1.0
+            if let (Some(start), Some(end)) = (trims(corners[piece]), trims(corners[piece + 1]))
+                && start.1 + end.0 > 1.0
             {
-                corners[piece] = Corner::TooBig(start.radius);
-                corners[piece + 1] = Corner::TooBig(end.radius);
+                corners[piece] = too_big(corners[piece]);
+                corners[piece + 1] = too_big(corners[piece + 1]);
             }
         }
         corners
@@ -934,15 +1018,13 @@ impl WallSegments {
     /// el arco de un radio va al final del tramo que entra en la esquina.
     fn contour(&self, points: &[[f64; 2]; 5]) -> Vec<Vec<[f64; 2]>> {
         let corners = self.corners(points);
-        let trim = |corner: Corner, out: bool| match corner {
-            Corner::Round(f) => {
-                if out {
-                    f.sb
-                } else {
-                    f.sa
-                }
-            }
-            _ => 0.0,
+        let trim = |corner: Corner, out: bool| {
+            let (sa, sb) = match corner {
+                Corner::Round(f) => (f.sa, f.sb),
+                Corner::Chamfer(c) => (c.sa, c.sb),
+                _ => (0.0, 0.0),
+            };
+            if out { sb } else { sa }
         };
         (0..self.pieces.len())
             .map(|piece| {
@@ -972,8 +1054,12 @@ impl WallSegments {
                         })
                         .collect()
                 };
-                if let Corner::Round(f) = corners[piece + 1] {
-                    polyline.extend(meridian_fillet::arc(&f, ARC_POINTS).into_iter().skip(1));
+                match corners[piece + 1] {
+                    Corner::Round(f) => {
+                        polyline.extend(meridian_fillet::arc(&f, ARC_POINTS).into_iter().skip(1));
+                    }
+                    Corner::Chamfer(c) => polyline.push(c.b),
+                    _ => {}
                 }
                 polyline
             })
@@ -1227,6 +1313,8 @@ struct Editor {
     diameter: String,
     /// El radio de la esquina, en mm; vacío, viva.
     radius: String,
+    /// El chaflán de la esquina, en mm; vacío, sin chaflán.
+    chamfer: String,
 }
 
 fn editor_id() -> egui::Id {
@@ -1254,6 +1342,7 @@ fn open_editor(ctx: &egui::Context, wall: Wall, index: usize, at: [f64; 2], radi
         z: format!("{:.2}", at[0]),
         diameter: format!("{:.2}", 2.0 * at[1]),
         radius: radius_text(radius),
+        chamfer: String::new(),
     };
     ctx.data_mut(|data| data.insert_temp(editor_id(), Some(editor)));
 }
@@ -1292,7 +1381,8 @@ fn node_editor(
     let at = state.node_at(&points, editor.index);
     let screen = to_screen(plot_ui, at);
     let roundable = state.can_round(editor.index);
-    let corner = if roundable {
+    let chamferable = state.can_chamfer(editor.index);
+    let corner = if roundable || chamferable {
         state.corners(&points)[editor.index]
     } else {
         Corner::Sharp
@@ -1300,14 +1390,19 @@ fn node_editor(
     let z_id = editor_id().with("z");
     let r_id = editor_id().with("r");
     let radius_id = editor_id().with("radius");
+    let chamfer_id = editor_id().with("chamfer");
     // Sin escribir en las cajas, siguen al punto (arrastre, deshacer...).
     let typing = ctx.memory(|memory| {
-        memory.has_focus(z_id) || memory.has_focus(r_id) || memory.has_focus(radius_id)
+        memory.has_focus(z_id)
+            || memory.has_focus(r_id)
+            || memory.has_focus(radius_id)
+            || memory.has_focus(chamfer_id)
     });
     if !typing {
         editor.z = format!("{:.2}", at[0]);
         editor.diameter = format!("{:.2}", 2.0 * at[1]);
         editor.radius = radius_text(state.radius[editor.index]);
+        editor.chamfer = radius_text(state.chamfer[editor.index]);
     }
     let mut open = true;
     let mut apply = false;
@@ -1372,7 +1467,30 @@ fn node_editor(
                         ui.label("mm");
                         ui.end_row();
                     }
+                    if chamferable {
+                        ui.label("Chaflán");
+                        let field = ui.add(
+                            egui::TextEdit::singleline(&mut editor.chamfer)
+                                .id(chamfer_id)
+                                .hint_text("sin chaflán")
+                                .desired_width(80.0),
+                        );
+                        if field.lost_focus()
+                            && ui.input(|input| input.key_pressed(egui::Key::Enter))
+                        {
+                            apply = true;
+                        }
+                        ui.label("mm");
+                        ui.end_row();
+                    }
                 });
+            if let Corner::TooBigChamfer(_) = corner {
+                ui.label(
+                    egui::RichText::new("El chaflán no cabe: la esquina se dibuja viva.")
+                        .small()
+                        .color(REFUSED),
+                );
+            }
             if let Corner::TooBig(_) = corner {
                 ui.label(
                     egui::RichText::new("El radio no cabe: la esquina se dibuja viva.")
@@ -1418,7 +1536,25 @@ fn node_editor(
                 changed = state.set_dimension(&points, editor.index, Dimension::Diameter, diameter);
             }
         }
-        if roundable {
+        // Solo se aplica la caja que se tocó: si no, la otra, aún con el
+        // valor de antes, desharía el cambio.
+        let radius_touched = editor.radius.trim() != radius_text(state.radius[editor.index]);
+        let chamfer_touched = editor.chamfer.trim() != radius_text(state.chamfer[editor.index]);
+        if chamferable && chamfer_touched {
+            // Vacío o cero quita el chaflán; un texto que no se entiende no
+            // cambia nada.
+            let text = editor.chamfer.trim();
+            let chamfer = if text.is_empty() {
+                Some(None)
+            } else {
+                mm_value(text)
+                    .filter(|d| *d >= 0.0)
+                    .map(|d| (d > 0.0).then_some(d))
+            };
+            if let Some(chamfer) = chamfer {
+                changed |= state.set_chamfer(editor.index, chamfer);
+            }
+        } else if roundable && (radius_touched || !chamferable) {
             // Vacío o cero quita el radio; un texto que no se entiende no
             // cambia nada.
             let text = editor.radius.trim();
@@ -1433,7 +1569,7 @@ fn node_editor(
                 changed |= state.set_radius(editor.index, radius);
             }
         }
-        for id in [z_id, r_id, radius_id] {
+        for id in [z_id, r_id, radius_id, chamfer_id] {
             ctx.memory_mut(|memory| memory.surrender_focus(id));
         }
     }
@@ -1641,13 +1777,23 @@ pub(super) fn draw(plot_ui: &mut egui_plot::PlotUi<'_>, model: &MeridionalModel,
                         Color32::from_gray(20),
                     )
                 }
+                Corner::Chamfer(c) => (
+                    format!("C{}", trimmed(c.distance, 2)),
+                    [(c.a[0] + c.b[0]) / 2.0, (c.a[1] + c.b[1]) / 2.0],
+                    Color32::from_gray(20),
+                ),
                 Corner::TooBig(r) => (
                     format!("R{} no cabe", trimmed(r, 2)),
                     state.node_at(points, index),
                     REFUSED,
                 ),
+                Corner::TooBigChamfer(d) => (
+                    format!("C{} no cabe", trimmed(d, 2)),
+                    state.node_at(points, index),
+                    REFUSED,
+                ),
             };
-            if let Corner::TooBig(_) = corner {
+            if matches!(corner, Corner::TooBig(_) | Corner::TooBigChamfer(_)) {
                 plot_ui.points(
                     Points::new("Radio que no cabe", vec![at])
                         .radius(7.0)
@@ -2191,6 +2337,17 @@ pub(super) fn interact(
                     .memory_mut(|memory| memory.request_focus(editor_id().with("radius")));
                 ui.close();
             }
+            if state.can_chamfer(index) && ui.button("Achaflanar…").clicked() {
+                let at = state.node_at(&points, index);
+                open_editor(ui.ctx(), hit.wall, index, at, state.radius[index]);
+                ui.ctx()
+                    .memory_mut(|memory| memory.request_focus(editor_id().with("chamfer")));
+                ui.close();
+            }
+            if state.chamfer[index].is_some() && ui.button("Quitar chaflán").clicked() {
+                changed |= state.set_chamfer(index, None);
+                ui.close();
+            }
             if state.radius[index].is_some() && ui.button("Quitar radio").clicked() {
                 changed |= state.set_radius(index, None);
                 ui.close();
@@ -2637,6 +2794,40 @@ mod tests {
 
     fn same(a: [f64; 2], b: [f64; 2]) -> bool {
         distance(a, b) < 1e-6
+    }
+
+    #[test]
+    fn only_corners_between_two_lines_take_a_chamfer() {
+        let mut state = WallSegments::default();
+        state.cut_at_t(&POINTS, 0.5);
+        assert!(!state.set_chamfer(1, Some(1.0)), "curva a ambos lados");
+        state.set_piece(0, Piece::Line);
+        assert!(!state.set_chamfer(1, Some(1.0)), "recta y curva");
+        state.set_piece(1, Piece::Line);
+        assert!(state.set_chamfer(1, Some(1.0)));
+        assert!(!state.set_chamfer(1, Some(1.0)), "sin cambio");
+        assert_eq!(state.chamfer, vec![None, Some(1.0), None]);
+        // Un radio y un chaflán se excluyen.
+        assert!(state.set_radius(1, Some(2.0)));
+        assert_eq!(state.chamfer[1], None);
+        assert!(state.set_chamfer(1, Some(1.5)));
+        assert_eq!(state.radius[1], None);
+    }
+
+    #[test]
+    fn chamfers_survive_the_texts_and_leave_with_the_corner() {
+        let mut state = WallSegments::default();
+        state.cut_at_t(&POINTS, 0.5);
+        state.set_piece(0, Piece::Line);
+        state.set_piece(1, Piece::Line);
+        state.set_chamfer(1, Some(1.5));
+        let texts = state.to_texts();
+        assert_eq!(texts.chamfers, vec!["", "1.5 mm", ""]);
+        assert_eq!(WallSegments::from_texts(&texts), Some(state.clone()));
+        // Si el tramo deja de ser recta, la esquina deja de serlo.
+        state.set_piece(1, Piece::Curve);
+        assert_eq!(state.chamfer, vec![None; 3]);
+        assert!(state.to_texts().chamfers.is_empty());
     }
 
     #[test]

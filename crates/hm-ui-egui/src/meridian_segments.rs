@@ -156,17 +156,22 @@ impl WallSegments {
             return None;
         }
         let tangent = (0..count)
-            .map(|i| match texts.tangents.get(i).map_or("", |text| text.trim()) {
-                "" => Some(None),
-                "start" => Some(Some(Tangency::Start)),
-                "end" => Some(Some(Tangency::End)),
-                _ => None,
-            })
+            .map(
+                |i| match texts.tangents.get(i).map_or("", |text| text.trim()) {
+                    "" => Some(None),
+                    "start" => Some(Some(Tangency::Start)),
+                    "end" => Some(Some(Tangency::End)),
+                    _ => None,
+                },
+            )
             .collect::<Option<Vec<_>>>()?;
         let pieces = (0..count)
             .map(|i| {
                 let arc = texts.arcs.get(i).map_or("", |text| text.trim());
-                match (texts.pieces.get(i).map_or("curve", |piece| piece.trim()), arc) {
+                match (
+                    texts.pieces.get(i).map_or("curve", |piece| piece.trim()),
+                    arc,
+                ) {
                     ("curve", "") => Some(Piece::Curve),
                     ("line", "") => Some(Piece::Line),
                     ("arc", text) => length_mm(text).filter(|r| *r != 0.0).map(Piece::Arc),
@@ -236,7 +241,11 @@ impl WallSegments {
         } else {
             Vec::new()
         };
-        let arcs = if self.pieces.iter().any(|piece| matches!(piece, Piece::Arc(_))) {
+        let arcs = if self
+            .pieces
+            .iter()
+            .any(|piece| matches!(piece, Piece::Arc(_)))
+        {
             self.pieces
                 .iter()
                 .map(|piece| match piece {
@@ -316,7 +325,8 @@ impl WallSegments {
     /// nodo lejano de un arco tangente va a su círculo.
     pub(super) fn node_at(&self, points: &[[f64; 2]; 5], index: usize) -> [f64; 2] {
         let at = self.free[index].unwrap_or_else(|| point_at(points, self.node_t(index)));
-        self.tangent_circle(points, index).map_or(at, |circle| circle.project(at))
+        self.tangent_circle(points, index)
+            .map_or(at, |circle| circle.project(at))
     }
 
     /// El nodo donde el arco `piece` es tangente a su vecino.
@@ -337,9 +347,14 @@ impl WallSegments {
 
     /// El arco tangente que lleva el nodo `index` sobre su círculo.
     fn driver(&self, index: usize) -> Option<(usize, Tangency)> {
-        self.tangent.iter().enumerate().find_map(|(piece, tangent)| {
-            tangent.filter(|t| Self::far_of(piece, *t) == index).map(|t| (piece, t))
-        })
+        self.tangent
+            .iter()
+            .enumerate()
+            .find_map(|(piece, tangent)| {
+                tangent
+                    .filter(|t| Self::far_of(piece, *t) == index)
+                    .map(|t| (piece, t))
+            })
     }
 
     /// Los nodos de los que sale el círculo que lleva el nodo `index`; vacío
@@ -587,7 +602,10 @@ impl WallSegments {
         let kind = self.pieces[piece];
         let (t, free) = if kind.rigid() {
             let (start, end) = (self.node_t(piece), self.node_t(piece + 1));
-            (start + (end - start) * s, Some(self.rigid_at(points, piece, s)))
+            (
+                start + (end - start) * s,
+                Some(self.rigid_at(points, piece, s)),
+            )
         } else {
             (s, None)
         };
@@ -598,7 +616,8 @@ impl WallSegments {
         // Cada mitad conserva la tangencia del lado que tenía.
         let tangent = self.tangent[piece];
         self.tangent[piece] = tangent.filter(|t| *t == Tangency::Start);
-        self.tangent.insert(piece + 1, tangent.filter(|t| *t == Tangency::End));
+        self.tangent
+            .insert(piece + 1, tangent.filter(|t| *t == Tangency::End));
         self.settle();
         true
     }
@@ -633,9 +652,11 @@ impl WallSegments {
     /// El arco del tramo `piece`, si lo es y su radio cabe.
     fn arc(&self, points: &[[f64; 2]; 5], piece: usize) -> Option<Arc> {
         match self.pieces.get(piece) {
-            Some(Piece::Arc(r)) => {
-                Arc::new(self.node_at(points, piece), self.node_at(points, piece + 1), *r)
-            }
+            Some(Piece::Arc(r)) => Arc::new(
+                self.node_at(points, piece),
+                self.node_at(points, piece + 1),
+                *r,
+            ),
             _ => None,
         }
     }
@@ -869,8 +890,7 @@ impl WallSegments {
             })
             .collect();
         for piece in 0..self.pieces.len() {
-            if let (Corner::Round(start), Corner::Round(end)) =
-                (corners[piece], corners[piece + 1])
+            if let (Corner::Round(start), Corner::Round(end)) = (corners[piece], corners[piece + 1])
                 && start.sb + end.sa > 1.0
             {
                 corners[piece] = Corner::TooBig(start.radius);
@@ -921,7 +941,10 @@ impl WallSegments {
         };
         (0..self.pieces.len())
             .map(|piece| {
-                let (from, to) = (trim(corners[piece], true), 1.0 - trim(corners[piece + 1], false));
+                let (from, to) = (
+                    trim(corners[piece], true),
+                    1.0 - trim(corners[piece + 1], false),
+                );
                 let mut polyline: Vec<[f64; 2]> = if self.arc(points, piece).is_some() {
                     (0..=SEGMENT_POINTS)
                         .map(|k| {
@@ -936,10 +959,7 @@ impl WallSegments {
                     ]
                 } else {
                     let (start, end) = (self.node_t(piece), self.node_t(piece + 1));
-                    let (start, end) = (
-                        start + (end - start) * from,
-                        start + (end - start) * to,
-                    );
+                    let (start, end) = (start + (end - start) * from, start + (end - start) * to);
                     (0..=SEGMENT_POINTS)
                         .map(|k| {
                             let t = start + (end - start) * k as f64 / SEGMENT_POINTS as f64;
@@ -1133,15 +1153,7 @@ fn touched(
                         ));
                         let s = fa + (fb - fa) * f;
                         let at = state.rigid_at(points, piece, s);
-                        (
-                            Hit {
-                                wall,
-                                piece,
-                                s,
-                                at,
-                            },
-                            metric(at, at),
-                        )
+                        (Hit { wall, piece, s, at }, metric(at, at))
                     })
                     .min_by(|a, b| a.1.total_cmp(&b.1))
                     .expect("al menos un trozo")
@@ -1230,13 +1242,7 @@ pub(super) fn open_node(ctx: &egui::Context) -> Option<(Wall, usize)> {
 }
 
 /// Abre la ventana del punto `index` de `wall`.
-fn open_editor(
-    ctx: &egui::Context,
-    wall: Wall,
-    index: usize,
-    at: [f64; 2],
-    radius: Option<f64>,
-) {
+fn open_editor(ctx: &egui::Context, wall: Wall, index: usize, at: [f64; 2], radius: Option<f64>) {
     let editor = Editor {
         wall,
         index,
@@ -1308,9 +1314,10 @@ fn node_editor(
             egui::Grid::new(editor_id().with("grid"))
                 .num_columns(3)
                 .show(ui, |ui| {
-                    for (label, text, id) in
-                        [("z", &mut editor.z, z_id), ("Ø", &mut editor.diameter, r_id)]
-                    {
+                    for (label, text, id) in [
+                        ("z", &mut editor.z, z_id),
+                        ("Ø", &mut editor.diameter, r_id),
+                    ] {
                         ui.label(label);
                         let field =
                             ui.add(egui::TextEdit::singleline(text).id(id).desired_width(80.0));
@@ -1384,7 +1391,9 @@ fn node_editor(
             let radius = if text.is_empty() {
                 Some(None)
             } else {
-                mm_value(text).filter(|r| *r >= 0.0).map(|r| (r > 0.0).then_some(r))
+                mm_value(text)
+                    .filter(|r| *r >= 0.0)
+                    .map(|r| (r > 0.0).then_some(r))
             };
             if let Some(radius) = radius {
                 changed |= state.set_radius(editor.index, radius);
@@ -1579,7 +1588,11 @@ pub(super) fn draw(plot_ui: &mut egui_plot::PlotUi<'_>, model: &MeridionalModel,
                 Corner::Sharp => continue,
                 Corner::Round(f) => {
                     let middle = meridian_fillet::arc(&f, 2)[1];
-                    (format!("R{}", trimmed(f.radius, 2)), middle, Color32::from_gray(20))
+                    (
+                        format!("R{}", trimmed(f.radius, 2)),
+                        middle,
+                        Color32::from_gray(20),
+                    )
                 }
                 Corner::TooBig(r) => (
                     format!("R{} no cabe", trimmed(r, 2)),
@@ -1597,7 +1610,9 @@ pub(super) fn draw(plot_ui: &mut egui_plot::PlotUi<'_>, model: &MeridionalModel,
             }
             plot_ui.text(
                 egui_plot::Text::new("Radio", PlotPoint::new(at[0], at[1]), {
-                    egui::RichText::new(format!("  {text}")).small().color(colour)
+                    egui::RichText::new(format!("  {text}"))
+                        .small()
+                        .color(colour)
                 })
                 .anchor(egui::Align2::LEFT_BOTTOM),
             );
@@ -1674,7 +1689,10 @@ fn arc_label_at(state: &WallSegments, points: &[[f64; 2]; 5], piece: usize) -> [
 /// derecha de `at` con «  R…».
 fn arc_label_rect(plot_ui: &egui_plot::PlotUi<'_>, at: [f64; 2]) -> egui::Rect {
     let corner = to_screen(plot_ui, at);
-    egui::Rect::from_min_max(corner + egui::vec2(4.0, -16.0), corner + egui::vec2(70.0, 2.0))
+    egui::Rect::from_min_max(
+        corner + egui::vec2(4.0, -16.0),
+        corner + egui::vec2(70.0, 2.0),
+    )
 }
 
 /// El arco cuya cota está bajo el ratón.
@@ -1851,8 +1869,12 @@ fn drag_node(
         egui_plot::Text::new(
             "Punto",
             PlotPoint::new(at[0], at[1]),
-            egui::RichText::new(format!("  z = {:.2} mm\n  Ø = {:.2} mm", at[0], 2.0 * at[1]))
-                .color(Color32::from_gray(20)),
+            egui::RichText::new(format!(
+                "  z = {:.2} mm\n  Ø = {:.2} mm",
+                at[0],
+                2.0 * at[1]
+            ))
+            .color(Color32::from_gray(20)),
         )
         .anchor(egui::Align2::LEFT_BOTTOM),
     );
@@ -1877,8 +1899,8 @@ pub(super) fn interact(
 ) -> (bool, bool) {
     let ctx = plot_ui.ctx().clone();
     let response = plot_ui.response().clone();
-    let seeded = seed_from_env(&ctx, model, boxes)
-        | crate::meridian_constraints::seed_from_env(&ctx, boxes);
+    let seeded =
+        seed_from_env(&ctx, model, boxes) | crate::meridian_constraints::seed_from_env(&ctx, boxes);
     let mut segments = read(boxes);
     let (moved, dragging) = drag_node(plot_ui, model, &mut segments);
     if dragging {
@@ -1997,7 +2019,11 @@ pub(super) fn interact(
                 }
                 for (tangency, label, neighbour) in [
                     (Tangency::Start, "Tangente al tramo anterior", piece > 0),
-                    (Tangency::End, "Tangente al tramo siguiente", piece + 1 < state.pieces.len()),
+                    (
+                        Tangency::End,
+                        "Tangente al tramo siguiente",
+                        piece + 1 < state.pieces.len(),
+                    ),
                 ] {
                     if !neighbour {
                         continue;
@@ -2005,8 +2031,8 @@ pub(super) fn interact(
                     let mut on = state.tangent[piece] == Some(tangency);
                     let far = WallSegments::far_of(piece, tangency);
                     let led = constraints.has_child(hit.wall, far);
-                    let possible = on
-                        || (!led && state.clone().set_tangent(&points, piece, Some(tangency)));
+                    let possible =
+                        on || (!led && state.clone().set_tangent(&points, piece, Some(tangency)));
                     let response = ui.add_enabled(possible, egui::Checkbox::new(&mut on, label));
                     if response.changed() {
                         changed |= state.set_tangent(&points, piece, on.then_some(tangency));
@@ -2502,7 +2528,10 @@ mod tests {
         assert!(!state.set_radius(1, Some(2.0)));
         state.toggle(1);
         assert!(state.can_round(1) && state.can_round(2));
-        assert!(!state.can_round(0) && !state.can_round(3), "los extremos no");
+        assert!(
+            !state.can_round(0) && !state.can_round(3),
+            "los extremos no"
+        );
         assert!(state.set_radius(1, Some(2.0)));
         assert!(!state.set_radius(1, Some(2.0)), "sin cambio");
         // Volver la recta a curva quita el radio.
@@ -2618,7 +2647,10 @@ mod tests {
         state.toggle(2);
         assert!(state.can_free(2));
         assert!(state.move_node(&POINTS, 2, [45.0, 80.0]));
-        assert!(same(*state.contour(&POINTS)[1].last().unwrap(), [45.0, 80.0]));
+        assert!(same(
+            *state.contour(&POINTS)[1].last().unwrap(),
+            [45.0, 80.0]
+        ));
     }
 
     #[test]
@@ -2630,7 +2662,10 @@ mod tests {
         assert_eq!(state.pieces[1..3], [Piece::Arc(40.0), Piece::Arc(40.0)]);
         assert!(same(state.node_at(&POINTS, 2), at));
         for piece in [1, 2] {
-            assert!(same(state.arc(&POINTS, piece).unwrap().center, circle.center));
+            assert!(same(
+                state.arc(&POINTS, piece).unwrap().center,
+                circle.center
+            ));
         }
         // Al quitar el corte vuelve un solo arco.
         assert!(state.remove_node(2));
@@ -2681,7 +2716,10 @@ mod tests {
         // sobre el arco.
         let arc = state.arc(&POINTS, 1).unwrap();
         let gap = distance(f.center, arc.center);
-        assert!((gap - 38.0).abs() < 1e-3 || (gap - 42.0).abs() < 1e-3, "{gap} {f:?}");
+        assert!(
+            (gap - 38.0).abs() < 1e-3 || (gap - 42.0).abs() < 1e-3,
+            "{gap} {f:?}"
+        );
         assert!((distance(f.a, arc.center) - 40.0).abs() < 1e-3, "{f:?}");
         // Entre dos arcos no hay redondeo.
         let mut both = middle_arc(40.0);
@@ -2710,7 +2748,10 @@ mod tests {
 
     fn radius_kept(state: &WallSegments, piece: usize, radius: f64) -> bool {
         let arc = state.arc(&POINTS, piece).unwrap();
-        let (a, b) = (state.node_at(&POINTS, piece), state.node_at(&POINTS, piece + 1));
+        let (a, b) = (
+            state.node_at(&POINTS, piece),
+            state.node_at(&POINTS, piece + 1),
+        );
         (distance(a, arc.center) - radius).abs() < 1e-6
             && (distance(b, arc.center) - radius).abs() < 1e-6
     }
@@ -2799,5 +2840,4 @@ mod tests {
         assert_eq!(state.tangent[1], Some(Tangency::Start));
         assert!(smooth_at(&state, 1));
     }
-
 }

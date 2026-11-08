@@ -83,9 +83,12 @@ struct Dimensioning {
 /// La cota radial es el diámetro, Ø = 2·r, como en el plano de fabricación.
 ///
 /// Si se acota un punto del contorno mecánico (`node`), sus valores se
-/// pueden escribir encima y se añade el largo de cada recta vecina, paralelo
-/// a ella.
-fn dimensioning(model: &MeridionalModel, at: [f64; 2], node: Option<&NodeDimensions>) -> Dimensioning {
+/// pueden escribir encima.
+fn dimensioning(
+    model: &MeridionalModel,
+    at: [f64; 2],
+    node: Option<&NodeDimensions>,
+) -> Dimensioning {
     let p = &model.params;
     let (r1, r2) = (p.shroud.points[0][1], p.shroud.points[4][1]);
     let ri = p.d1i / 2.0;
@@ -675,9 +678,15 @@ fn draw_section(
             let long = 0.62 * DIMENSION_FONT * text.chars().count() as f32 + 12.0;
             let tall = DIMENSION_FONT + 8.0;
             let rect = if vertical {
-                egui::Rect::from_center_size(base - egui::vec2(tall / 2.0, 0.0), egui::vec2(tall, long))
+                egui::Rect::from_center_size(
+                    base - egui::vec2(tall / 2.0, 0.0),
+                    egui::vec2(tall, long),
+                )
             } else {
-                egui::Rect::from_center_size(base - egui::vec2(0.0, tall / 2.0), egui::vec2(long, tall))
+                egui::Rect::from_center_size(
+                    base - egui::vec2(0.0, tall / 2.0),
+                    egui::vec2(long, tall),
+                )
             };
             writable.push((rect, kind, text.clone()));
         }
@@ -688,7 +697,11 @@ fn draw_section(
             anchor: egui::Align2::CENTER_BOTTOM,
             angle,
             // Las que se pueden escribir, en el color de la selección.
-            colour: if kind.is_some() { WRITABLE_TEXT } else { DIMENSION_TEXT },
+            colour: if kind.is_some() {
+                WRITABLE_TEXT
+            } else {
+                DIMENSION_TEXT
+            },
         });
     }
     crate::meridian_segments::dimension_click(plot_ui, &writable);
@@ -2073,9 +2086,7 @@ mod tests {
         })
         .unwrap();
         let model = meridional_model(&result).unwrap();
-        let node = NodeDimensions {
-            at: [30.0, 40.0],
-        };
+        let node = NodeDimensions { at: [30.0, 40.0] };
         let d = dimensioning(&model, node.at, Some(&node));
         let kinds: Vec<_> = d.texts.iter().map(|t| (t.1.clone(), t.3)).collect();
         assert!(kinds.contains(&("30.000".to_string(), Some(Dimension::Z))));

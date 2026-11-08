@@ -1099,7 +1099,10 @@ mod tests {
         );
         assert!(segments.constraints.to_texts().is_empty());
         assert_eq!(commit(&mut segments, value, pending, "12,5"), Ok(true));
-        assert_eq!(segments.constraints.to_texts(), ["dz hub:1 hub:2 = 12.5 mm"]);
+        assert_eq!(
+            segments.constraints.to_texts(),
+            ["dz hub:1 hub:2 = 12.5 mm"]
+        );
     }
 
     #[test]
@@ -1109,9 +1112,15 @@ mod tests {
             ..Segments::default()
         };
         let before = segments.constraints.clone();
-        assert_eq!(commit(&mut segments, Value::Existing(0), None, "40"), Ok(false));
+        assert_eq!(
+            commit(&mut segments, Value::Existing(0), None, "40"),
+            Ok(false)
+        );
         assert_eq!(segments.constraints, before);
-        assert_eq!(commit(&mut segments, Value::Existing(0), None, "41"), Ok(true));
+        assert_eq!(
+            commit(&mut segments, Value::Existing(0), None, "41"),
+            Ok(true)
+        );
         assert_eq!(segments.constraints.to_texts(), ["dz hub:1 hub:2 = 41 mm"]);
     }
 

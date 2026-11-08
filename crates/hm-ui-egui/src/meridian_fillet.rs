@@ -283,7 +283,10 @@ mod tests {
     #[test]
     fn two_curves_make_no_corner() {
         let c = |s: f64| [s, s * s];
-        assert_eq!(fillet([0.0, 0.0], &Side::Curve(&c), &Side::Curve(&c), 1.0), None);
+        assert_eq!(
+            fillet([0.0, 0.0], &Side::Curve(&c), &Side::Curve(&c), 1.0),
+            None
+        );
     }
 
     #[test]

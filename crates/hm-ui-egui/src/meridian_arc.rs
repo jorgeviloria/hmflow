@@ -31,7 +31,10 @@ impl Arc {
         // El arco menor se curva hacia un lado: el centro queda al otro.
         let side = radius.signum();
         let middle = [a[0] + chord[0] / 2.0, a[1] + chord[1] / 2.0];
-        let center = [middle[0] - side * rise * left[0], middle[1] - side * rise * left[1]];
+        let center = [
+            middle[0] - side * rise * left[0],
+            middle[1] - side * rise * left[1],
+        ];
         let sweep = -side * 2.0 * (half / r).min(1.0).asin();
         Some(Self { center, a, sweep })
     }
@@ -84,13 +87,20 @@ impl Tangent {
         }
         let left = [-dir[1] / n, dir[0] / n];
         let center = [anchor[0] - radius * left[0], anchor[1] - radius * left[1]];
-        Some(Self { center, anchor, turn: -radius.signum() })
+        Some(Self {
+            center,
+            anchor,
+            turn: -radius.signum(),
+        })
     }
 
     /// Lo que gira desde `anchor` hasta el punto del círculo en la dirección
     /// de `p`, en el sentido del arco, entre 0 y una vuelta.
     fn angle_of(&self, p: [f64; 2]) -> f64 {
-        let a = [self.anchor[0] - self.center[0], self.anchor[1] - self.center[1]];
+        let a = [
+            self.anchor[0] - self.center[0],
+            self.anchor[1] - self.center[1],
+        ];
         let b = [p[0] - self.center[0], p[1] - self.center[1]];
         let cross = a[0] * b[1] - a[1] * b[0];
         let dot = a[0] * b[0] + a[1] * b[1];
@@ -100,7 +110,10 @@ impl Tangent {
     /// El punto del círculo tras girar `angle` desde `anchor`.
     fn at_angle(&self, angle: f64) -> [f64; 2] {
         let (sin, cos) = (self.turn * angle).sin_cos();
-        let d = [self.anchor[0] - self.center[0], self.anchor[1] - self.center[1]];
+        let d = [
+            self.anchor[0] - self.center[0],
+            self.anchor[1] - self.center[1],
+        ];
         [
             self.center[0] + d[0] * cos - d[1] * sin,
             self.center[1] + d[0] * sin + d[1] * cos,

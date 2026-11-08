@@ -726,7 +726,11 @@ fn draw_section(
         );
     }
     crate::meridian_cut::draw(plot_ui, model);
-    let cut = crate::meridian_segments::interact(plot_ui, model, boxes);
+    // Un corte agarrado se lleva el arrastre: los puntos de control no se mueven.
+    let (cut, dragging_cut) = crate::meridian_segments::interact(plot_ui, model, boxes);
+    if dragging_cut {
+        return cut;
+    }
     drag_handles(plot_ui, model, boxes) || cut
 }
 

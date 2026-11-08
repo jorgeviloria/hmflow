@@ -47,6 +47,114 @@ impl Arc {
     }
 }
 
+impl Arc {
+    /// La dirección unitaria de avance en la fracción `f`, de `a` hacia `b`.
+    pub(super) fn direction(&self, f: f64) -> [f64; 2] {
+        let p = self.at(f);
+        let d = [p[0] - self.center[0], p[1] - self.center[1]];
+        let n = d[0].hypot(d[1]);
+        let s = self.sweep.signum();
+        [-s * d[1] / n, s * d[0] / n]
+    }
+}
+
+/// Lo menos que gira un arco tangente, en radianes: su nodo lejano no se
+/// junta con el de la tangencia.
+const MIN_SWEEP: f64 = 0.01;
+
+/// El círculo de un arco que sale de `anchor` en la dirección `dir`
+/// (tangente al tramo vecino) con radio `radius`, con el signo de [`Arc`]
+/// visto desde `anchor`: positivo, se curva a la derecha de `dir` (el arco
+/// queda a la izquierda de su cuerda). El nodo del otro extremo solo puede
+/// estar sobre él, entre un giro mínimo y media vuelta.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub(super) struct Tangent {
+    pub center: [f64; 2],
+    anchor: [f64; 2],
+    /// +1 si gira en sentido antihorario, -1 si en el horario.
+    turn: f64,
+}
+
+impl Tangent {
+    /// `None` si la dirección es nula o el radio no vale.
+    pub(super) fn new(anchor: [f64; 2], dir: [f64; 2], radius: f64) -> Option<Self> {
+        let n = dir[0].hypot(dir[1]);
+        if !(radius.is_finite() && radius != 0.0 && n > 1.0e-12) {
+            return None;
+        }
+        let left = [-dir[1] / n, dir[0] / n];
+        let center = [anchor[0] - radius * left[0], anchor[1] - radius * left[1]];
+        Some(Self { center, anchor, turn: -radius.signum() })
+    }
+
+    /// Lo que gira desde `anchor` hasta el punto del círculo en la dirección
+    /// de `p`, en el sentido del arco, entre 0 y una vuelta.
+    fn angle_of(&self, p: [f64; 2]) -> f64 {
+        let a = [self.anchor[0] - self.center[0], self.anchor[1] - self.center[1]];
+        let b = [p[0] - self.center[0], p[1] - self.center[1]];
+        let cross = a[0] * b[1] - a[1] * b[0];
+        let dot = a[0] * b[0] + a[1] * b[1];
+        (self.turn * cross.atan2(dot)).rem_euclid(std::f64::consts::TAU)
+    }
+
+    /// El punto del círculo tras girar `angle` desde `anchor`.
+    fn at_angle(&self, angle: f64) -> [f64; 2] {
+        let (sin, cos) = (self.turn * angle).sin_cos();
+        let d = [self.anchor[0] - self.center[0], self.anchor[1] - self.center[1]];
+        [
+            self.center[0] + d[0] * cos - d[1] * sin,
+            self.center[1] + d[0] * sin + d[1] * cos,
+        ]
+    }
+
+    /// Un giro llevado al tramo que vale: lo que pasa de media vuelta va al
+    /// extremo más cercano.
+    fn clamp(angle: f64) -> f64 {
+        use std::f64::consts::PI;
+        if angle <= PI {
+            angle.max(MIN_SWEEP)
+        } else if angle < 1.5 * PI {
+            PI
+        } else {
+            MIN_SWEEP
+        }
+    }
+
+    /// El punto del arco más próximo a la dirección de `p`.
+    pub(super) fn project(&self, p: [f64; 2]) -> [f64; 2] {
+        self.at_angle(Self::clamp(self.angle_of(p)))
+    }
+
+    /// El punto del arco donde la z (`axis` 0) o la r (`axis` 1) vale
+    /// `value`; de los dos que puede haber, el más cercano a `near`. `None`
+    /// si el arco no llega.
+    pub(super) fn crossing(&self, axis: usize, value: f64, near: [f64; 2]) -> Option<[f64; 2]> {
+        let radius = (self.anchor[0] - self.center[0]).hypot(self.anchor[1] - self.center[1]);
+        let d = value - self.center[axis];
+        if d.abs() > radius {
+            return None;
+        }
+        let other = (radius * radius - d * d).sqrt();
+        [-1.0, 1.0]
+            .into_iter()
+            .map(|side| {
+                let mut p = [0.0; 2];
+                p[axis] = value;
+                p[1 - axis] = self.center[1 - axis] + side * other;
+                p
+            })
+            .filter(|p| {
+                let angle = self.angle_of(*p);
+                (MIN_SWEEP * 0.999..=std::f64::consts::PI + 1.0e-9).contains(&angle)
+            })
+            .min_by(|p, q| {
+                let dp = (p[0] - near[0]).hypot(p[1] - near[1]);
+                let dq = (q[0] - near[0]).hypot(q[1] - near[1]);
+                dp.total_cmp(&dq)
+            })
+    }
+}
+
 /// El radio, con signo, del círculo que pasa por `a`, `p` y `b`; `None` si
 /// están alineados. Sirve para proponer el arco que más se parece a la curva.
 pub(super) fn through(a: [f64; 2], p: [f64; 2], b: [f64; 2]) -> Option<f64> {
@@ -125,5 +233,59 @@ mod tests {
         let below = Arc::new(a, b, -5.0).unwrap();
         assert!((through(a, below.at(0.5), b).unwrap() + 5.0).abs() < 1.0e-9);
         assert!(through(a, [3.0, 0.0], b).is_none());
+    }
+
+    #[test]
+    fn the_direction_follows_the_arc_from_a_to_b() {
+        let arc = Arc::new([0.0, 0.0], [6.0, 0.0], 3.0).unwrap();
+        // Media vuelta por arriba: sale hacia +r y llega hacia -r.
+        assert!(same(arc.direction(0.0), [0.0, 1.0]));
+        assert!(same(arc.direction(1.0), [0.0, -1.0]));
+        let below = Arc::new([0.0, 0.0], [6.0, 0.0], -3.0).unwrap();
+        assert!(same(below.direction(0.0), [0.0, -1.0]));
+    }
+
+    #[test]
+    fn a_tangent_arc_leaves_along_the_direction_and_keeps_its_radius() {
+        // Sale de (0, 0) hacia +z con R 5: el centro queda debajo (a la
+        // derecha de la dirección) y gira en el sentido horario.
+        let tangent = Tangent::new([0.0, 0.0], [1.0, 0.0], 5.0).unwrap();
+        assert!(same(tangent.center, [0.0, -5.0]));
+        let far = tangent.project([10.0, -5.0]);
+        assert!(same(far, [5.0, -5.0]));
+        // El arco de ese radio entre los dos nodos es el mismo círculo y
+        // sale en la dirección dada.
+        let arc = Arc::new([0.0, 0.0], far, 5.0).unwrap();
+        assert!(same(arc.center, tangent.center));
+        assert!(same(arc.direction(0.0), [1.0, 0.0]));
+        // Con R negativa se curva hacia el otro lado.
+        let up = Tangent::new([0.0, 0.0], [1.0, 0.0], -5.0).unwrap();
+        assert!(same(up.center, [0.0, 5.0]));
+    }
+
+    #[test]
+    fn the_far_node_stays_between_a_small_turn_and_half_a_turn() {
+        let tangent = Tangent::new([0.0, 0.0], [1.0, 0.0], 5.0).unwrap();
+        // Más allá de media vuelta se queda en media vuelta.
+        assert!(same(tangent.project([-3.0, -9.0]), [0.0, -10.0]));
+        // Detrás de la tangencia se queda junto a ella, sin tocarla.
+        let near = tangent.project([-3.0, -1.0]);
+        assert!(near[0] > 0.0 && near[0] < 0.1, "{near:?}");
+    }
+
+    #[test]
+    fn a_written_z_or_r_lands_on_the_arc() {
+        let tangent = Tangent::new([0.0, 0.0], [1.0, 0.0], 5.0).unwrap();
+        let p = tangent.crossing(0, 3.0, [3.0, -1.0]).unwrap();
+        assert!(same(p, [3.0, -1.0]));
+        // Con z = 3 hay dos puntos del arco: va al más cercano.
+        let q = tangent.crossing(0, 3.0, [3.0, -9.0]).unwrap();
+        assert!(same(q, [3.0, -9.0]));
+        // Con z = -3 los dos pasan de media vuelta.
+        assert!(tangent.crossing(0, -3.0, [0.0, 0.0]).is_none());
+        let r = tangent.crossing(1, -5.0, [0.0, 0.0]).unwrap();
+        assert!(same(r, [5.0, -5.0]));
+        assert!(tangent.crossing(0, 6.0, [0.0, 0.0]).is_none());
+        assert!(tangent.crossing(0, -1.0, [0.0, 0.0]).is_none());
     }
 }

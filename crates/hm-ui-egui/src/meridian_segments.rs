@@ -26,7 +26,7 @@ use hm_design::meridian::{MeridionalModel, Wall};
 use hm_project::{Meridian, MeridianWallSegments};
 
 use crate::curves::line;
-use crate::meridian_arc::{self, Arc};
+use crate::meridian_arc::{self, Arc, Tangent};
 use crate::meridian_fillet::{self, Fillet, Side};
 
 /// Distancia en píxeles para tocar una tapa o un punto con el ratón.
@@ -73,6 +73,17 @@ impl Piece {
     }
 }
 
+/// De qué lado sale tangente un arco a su vecino.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) enum Tangency {
+    /// Al tramo anterior, en su nodo de arranque; el final queda sobre el
+    /// círculo.
+    Start,
+    /// Al tramo siguiente, en su nodo final; el arranque queda sobre el
+    /// círculo.
+    End,
+}
+
 /// Los nodos y los tramos de una tapa. Hay `cuts.len() + 2` nodos (el 0 es el
 /// arranque y el último el final) y `cuts.len() + 1` tramos; el tramo `i` va
 /// del nodo `i` al `i + 1`.
@@ -86,6 +97,8 @@ pub(super) struct WallSegments {
     free: Vec<Option<[f64; 2]>>,
     /// El radio en mm de cada nodo; `None`, esquina viva.
     radius: Vec<Option<f64>>,
+    /// Si cada tramo (un arco) sale tangente a un vecino.
+    tangent: Vec<Option<Tangency>>,
 }
 
 /// Una cota de un punto.
@@ -119,6 +132,7 @@ impl Default for WallSegments {
             pieces: vec![Piece::Curve],
             free: vec![None, None],
             radius: vec![None, None],
+            tangent: vec![None],
         }
     }
 }
@@ -138,9 +152,18 @@ impl WallSegments {
         let count = cuts.len() + 1;
         if !(texts.pieces.is_empty() || texts.pieces.len() == count)
             || !(texts.arcs.is_empty() || texts.arcs.len() == count)
+            || !(texts.tangents.is_empty() || texts.tangents.len() == count)
         {
             return None;
         }
+        let tangent = (0..count)
+            .map(|i| match texts.tangents.get(i).map_or("", |text| text.trim()) {
+                "" => Some(None),
+                "start" => Some(Some(Tangency::Start)),
+                "end" => Some(Some(Tangency::End)),
+                _ => None,
+            })
+            .collect::<Option<Vec<_>>>()?;
         let pieces = (0..count)
             .map(|i| {
                 let arc = texts.arcs.get(i).map_or("", |text| text.trim());
@@ -191,6 +214,7 @@ impl WallSegments {
             pieces,
             free,
             radius,
+            tangent,
         };
         state.settle();
         Some(state)
@@ -244,12 +268,26 @@ impl WallSegments {
         } else {
             Vec::new()
         };
+        let tangents = if self.tangent.iter().any(Option::is_some) {
+            self.tangent
+                .iter()
+                .map(|tangent| match tangent {
+                    Some(Tangency::Start) => "start",
+                    Some(Tangency::End) => "end",
+                    None => "",
+                })
+                .map(str::to_string)
+                .collect()
+        } else {
+            Vec::new()
+        };
         MeridianWallSegments {
             cuts,
             pieces,
             nodes,
             radii,
             arcs,
+            tangents,
         }
     }
 
@@ -275,9 +313,168 @@ impl WallSegments {
         }
     }
 
-    /// Dónde está el nodo `index`: libre, o sobre la Bézier en su `t`.
+    /// Dónde está el nodo `index`: libre, o sobre la Bézier en su `t`. El
+    /// nodo lejano de un arco tangente va a su círculo.
     fn node_at(&self, points: &[[f64; 2]; 5], index: usize) -> [f64; 2] {
-        self.free[index].unwrap_or_else(|| point_at(points, self.node_t(index)))
+        let at = self.free[index].unwrap_or_else(|| point_at(points, self.node_t(index)));
+        self.tangent_circle(points, index).map_or(at, |circle| circle.project(at))
+    }
+
+    /// El nodo donde el arco `piece` es tangente a su vecino.
+    fn anchor_of(piece: usize, tangency: Tangency) -> usize {
+        match tangency {
+            Tangency::Start => piece,
+            Tangency::End => piece + 1,
+        }
+    }
+
+    /// El nodo del otro extremo del arco `piece`, que queda sobre su círculo.
+    fn far_of(piece: usize, tangency: Tangency) -> usize {
+        match tangency {
+            Tangency::Start => piece + 1,
+            Tangency::End => piece,
+        }
+    }
+
+    /// El arco tangente que lleva el nodo `index` sobre su círculo.
+    fn driver(&self, index: usize) -> Option<(usize, Tangency)> {
+        self.tangent.iter().enumerate().find_map(|(piece, tangent)| {
+            tangent.filter(|t| Self::far_of(piece, *t) == index).map(|t| (piece, t))
+        })
+    }
+
+    /// Si el nodo `index` es donde un arco sale tangente a su vecino.
+    fn is_anchor(&self, index: usize) -> bool {
+        self.tangent
+            .iter()
+            .enumerate()
+            .any(|(piece, tangent)| tangent.is_some_and(|t| Self::anchor_of(piece, t) == index))
+    }
+
+    /// Los nodos de los que depende el círculo del arco tangente `piece`: el
+    /// de la tangencia y el otro extremo del vecino si es recta o arco.
+    fn tangent_inputs(&self, piece: usize, tangency: Tangency) -> Vec<usize> {
+        match tangency {
+            Tangency::Start if self.pieces[piece - 1].rigid() => vec![piece - 1, piece],
+            Tangency::Start => vec![piece],
+            Tangency::End if self.pieces[piece + 1].rigid() => vec![piece + 1, piece + 2],
+            Tangency::End => vec![piece + 1],
+        }
+    }
+
+    /// Si el nodo `target` decide, directa o indirectamente, dónde está el
+    /// nodo `index`.
+    fn depends_on(&self, index: usize, target: usize, depth: usize) -> bool {
+        if index == target {
+            return true;
+        }
+        if depth > self.node_count() {
+            return true;
+        }
+        self.driver(index).is_some_and(|(piece, tangency)| {
+            self.tangent_inputs(piece, tangency)
+                .into_iter()
+                .any(|k| self.depends_on(k, target, depth + 1))
+        })
+    }
+
+    /// Si el arco `piece` puede salir tangente por ese lado: es un arco, hay
+    /// vecino y su nodo lejano puede ir libre.
+    fn can_tangent(&self, piece: usize, tangency: Tangency) -> bool {
+        let neighbour = match tangency {
+            Tangency::Start => piece > 0,
+            Tangency::End => piece + 1 < self.pieces.len(),
+        };
+        matches!(self.pieces.get(piece), Some(Piece::Arc(_)))
+            && neighbour
+            && self.can_free(Self::far_of(piece, tangency))
+    }
+
+    /// Si el arco `piece` puede salir tangente por ese lado con las
+    /// tangencias que ya hay: su nodo lejano no lo lleva otro arco y su
+    /// círculo no depende de ese mismo nodo (se morderían la cola).
+    fn fits(&self, piece: usize, tangency: Tangency) -> bool {
+        let far = Self::far_of(piece, tangency);
+        self.can_tangent(piece, tangency)
+            && self.driver(far).is_none()
+            && !self
+                .tangent_inputs(piece, tangency)
+                .into_iter()
+                .any(|k| self.depends_on(k, far, 0))
+    }
+
+    /// La dirección de avance del tramo `piece` (del arranque al final) en
+    /// su arranque o, con `at_end`, en su final.
+    fn direction(&self, points: &[[f64; 2]; 5], piece: usize, at_end: bool) -> Option<[f64; 2]> {
+        let unit = |d: [f64; 2]| {
+            let n = d[0].hypot(d[1]);
+            (n > 1.0e-12).then(|| [d[0] / n, d[1] / n])
+        };
+        match self.pieces[piece] {
+            Piece::Curve => {
+                let (start, end) = (self.node_t(piece), self.node_t(piece + 1));
+                let t = if at_end { end } else { start };
+                let h = ((end - start) * 1.0e-4).max(1.0e-9);
+                let (low, high) = ((t - h).max(start), (t + h).min(end));
+                let (a, b) = (point_at(points, low), point_at(points, high));
+                unit([b[0] - a[0], b[1] - a[1]])
+            }
+            _ => {
+                if let Some(arc) = self.arc(points, piece) {
+                    return Some(arc.direction(if at_end { 1.0 } else { 0.0 }));
+                }
+                let (a, b) = (self.node_at(points, piece), self.node_at(points, piece + 1));
+                unit([b[0] - a[0], b[1] - a[1]])
+            }
+        }
+    }
+
+    /// El círculo sobre el que va el nodo `index`, si es el lejano de un arco
+    /// tangente.
+    fn tangent_circle(&self, points: &[[f64; 2]; 5], index: usize) -> Option<Tangent> {
+        let (piece, tangency) = self.driver(index)?;
+        let Piece::Arc(radius) = self.pieces[piece] else {
+            return None;
+        };
+        // Visto desde el nodo de la tangencia: del final hacia atrás, el arco
+        // se recorre al revés y su R cambia de signo.
+        let (anchor, dir, radius) = match tangency {
+            Tangency::Start => (piece, self.direction(points, piece - 1, true)?, radius),
+            Tangency::End => {
+                let d = self.direction(points, piece + 1, false)?;
+                (piece + 1, [-d[0], -d[1]], -radius)
+            }
+        };
+        Tangent::new(self.node_at(points, anchor), dir, radius)
+    }
+
+    /// Hace el arco `piece` tangente a su vecino por ese lado, o le quita la
+    /// tangencia con `None`. Devuelve si cambió.
+    fn set_tangent(
+        &mut self,
+        points: &[[f64; 2]; 5],
+        piece: usize,
+        tangency: Option<Tangency>,
+    ) -> bool {
+        if piece >= self.pieces.len() || self.tangent[piece] == tangency {
+            return false;
+        }
+        // Primero se quita la que tuviera; la nueva tiene que caber con las
+        // que quedan, que no se mueven.
+        self.tangent[piece] = None;
+        if let Some(t) = tangency {
+            if !self.fits(piece, t) {
+                return false;
+            }
+            self.tangent[piece] = tangency;
+        }
+        self.settle();
+        // El nodo lejano se guarda ya sobre el círculo.
+        if let Some(t) = tangency {
+            let far = Self::far_of(piece, t);
+            self.free[far] = Some(self.node_at(points, far));
+        }
+        true
     }
 
     /// Si el nodo puede quedar libre: todos sus tramos vecinos son rectas o
@@ -293,6 +490,7 @@ impl WallSegments {
     fn can_round(&self, index: usize) -> bool {
         (1..=self.cuts.len()).contains(&index)
             && (self.pieces[index - 1] == Piece::Line || self.pieces[index] == Piece::Line)
+            && !self.is_anchor(index)
     }
 
     /// Pone el radio del nodo `index` (`None` lo quita). Devuelve si cambió.
@@ -315,6 +513,14 @@ impl WallSegments {
     /// Devuelve a la Bézier los nodos libres que ya no pueden serlo y quita
     /// el radio a los que ya no son esquina.
     fn settle(&mut self) {
+        // Las tangencias se vuelven a poner del arranque al final, y solo
+        // las que caben con las anteriores.
+        let tangents = std::mem::replace(&mut self.tangent, vec![None; self.pieces.len()]);
+        for (piece, tangency) in tangents.into_iter().enumerate() {
+            if let Some(tangency) = tangency.filter(|t| self.fits(piece, *t)) {
+                self.tangent[piece] = Some(tangency);
+            }
+        }
         for index in 0..self.node_count() {
             if !self.can_free(index) {
                 self.free[index] = None;
@@ -357,6 +563,11 @@ impl WallSegments {
         self.pieces.insert(piece, kind);
         self.free.insert(piece + 1, free);
         self.radius.insert(piece + 1, None);
+        // Cada mitad conserva la tangencia del lado que tenía.
+        let tangent = self.tangent[piece];
+        self.tangent[piece] = tangent.filter(|t| *t == Tangency::Start);
+        self.tangent.insert(piece + 1, tangent.filter(|t| *t == Tangency::End));
+        self.settle();
         true
     }
 
@@ -456,6 +667,9 @@ impl WallSegments {
             return false;
         }
         if self.can_free(index) {
+            let to = self
+                .tangent_circle(points, index)
+                .map_or(to, |circle| circle.project(to));
             let before = self.free[index];
             self.free[index] = Some(to);
             return before != self.free[index];
@@ -575,6 +789,17 @@ impl WallSegments {
         }
         let at = self.node_at(points, index);
         let free = self.can_free(index);
+        // El nodo lejano de un arco tangente va al punto de su círculo con
+        // esa z o ese Ø; el largo de una recta lo sacaría del círculo.
+        if let Some(circle) = self.tangent_circle(points, index) {
+            let to = match kind {
+                Dimension::Z => circle.crossing(0, value, at),
+                Dimension::Diameter if value >= 0.0 => circle.crossing(1, value / 2.0, at),
+                Dimension::Arc => return self.set_arc_radius(index, value),
+                _ => None,
+            };
+            return to.is_some_and(|to| self.move_node(points, index, to));
+        }
         match kind {
             Dimension::Z if free => self.move_node(points, index, [value, at[1]]),
             Dimension::Z => self.slide_to(points, index, 0, value),
@@ -627,6 +852,10 @@ impl WallSegments {
         };
         self.pieces.remove(index);
         self.pieces[index - 1] = merged;
+        let start = self.tangent[index - 1].filter(|t| *t == Tangency::Start);
+        let end = self.tangent[index].filter(|t| *t == Tangency::End);
+        self.tangent.remove(index);
+        self.tangent[index - 1] = start.or(end);
         self.settle();
         true
     }
@@ -1033,7 +1262,8 @@ fn node_editor(
         ctx.data_mut(|data| data.remove::<Option<Editor>>(editor_id()));
         return false;
     }
-    let free = state.can_free(editor.index);
+    let on_arc = state.driver(editor.index).is_some();
+    let free = state.can_free(editor.index) && !on_arc;
     let at = state.node_at(&points, editor.index);
     let screen = to_screen(plot_ui, at);
     let roundable = state.can_round(editor.index);
@@ -1108,6 +1338,8 @@ fn node_editor(
             ui.label(
                 egui::RichText::new(if free {
                     "Punto libre: va a la z y el Ø escritos."
+                } else if on_arc {
+                    "Sobre el arco tangente: cambia z o Ø y el arco da el otro."
                 } else {
                     "Sobre la curva: cambia z o Ø y la curva da el otro."
                 })
@@ -1406,7 +1638,8 @@ pub(super) fn draw(plot_ui: &mut egui_plot::PlotUi<'_>, model: &MeridionalModel,
         let (mut sliding, mut free) = (Vec::new(), Vec::new());
         for index in 0..state.node_count() {
             let at = state.node_at(points, index);
-            if state.can_free(index) {
+            // El nodo lejano de un arco tangente se desliza por su círculo.
+            if state.can_free(index) && state.driver(index).is_none() {
                 free.push(at);
             } else if state.draggable(index) {
                 sliding.push(at);
@@ -1739,6 +1972,24 @@ pub(super) fn interact(
                     changed |= state.flip_arc(piece);
                     ui.close();
                 }
+                for (tangency, label, neighbour) in [
+                    (Tangency::Start, "Tangente al tramo anterior", piece > 0),
+                    (Tangency::End, "Tangente al tramo siguiente", piece + 1 < state.pieces.len()),
+                ] {
+                    if !neighbour {
+                        continue;
+                    }
+                    let mut on = state.tangent[piece] == Some(tangency);
+                    let possible = on || state.clone().set_tangent(&points, piece, Some(tangency));
+                    let response = ui.add_enabled(possible, egui::Checkbox::new(&mut on, label));
+                    if response.changed() {
+                        changed |= state.set_tangent(&points, piece, on.then_some(tangency));
+                        ui.close();
+                    }
+                    response.on_disabled_hover_text(
+                        "el punto del otro extremo tiene una curva al lado, o ya lo lleva otro arco",
+                    );
+                }
             } else if ui.button("Convertir en arco…").clicked() {
                 let radius = state.proposed_arc(&points, piece);
                 changed |= state.set_piece(piece, Piece::Arc(radius));
@@ -1801,7 +2052,8 @@ pub(super) fn interact(
 /// en `t = 0,5`, pone en recta el tramo 1 y lleva el nodo 2 (el final) a
 /// z = 60 mm, r = 0. Un quinto campo abre la ventana de ese nodo y un sexto
 /// pone radios con la forma `i=R` en mm; un séptimo pasa tramos a arco con
-/// la forma `i=R` (R con signo, en mm). Cortes,
+/// la forma `i=R` (R con signo, en mm), y un octavo hace tangentes arcos con
+/// la forma `is` (al tramo anterior) o `ie` (al siguiente). Cortes,
 /// tramos y nodos se separan con `,`; las tapas (`shroud`, `hub`), con `;`.
 fn seed_from_env(ctx: &egui::Context, model: &MeridionalModel, boxes: &mut Meridian) -> bool {
     let seeded = egui::Id::unique("meridian_segments_seeded");
@@ -1870,6 +2122,16 @@ fn seed_from_env(ctx: &egui::Context, model: &MeridionalModel, boxes: &mut Merid
                 && radius != 0.0
             {
                 state.set_piece(piece, Piece::Arc(radius));
+            }
+        }
+        for item in list() {
+            let tangency = match item.chars().last() {
+                Some('s') => Tangency::Start,
+                Some('e') => Tangency::End,
+                _ => continue,
+            };
+            if let Ok(piece) = item[..item.len() - 1].parse::<usize>() {
+                state.set_tangent(&points, piece, Some(tangency));
             }
         }
         if let Some(index) = editor
@@ -2398,4 +2660,118 @@ mod tests {
         both.set_piece(2, Piece::Arc(40.0));
         assert!(!both.can_round(2));
     }
+
+    /// Recta, arco, arco y recta, como el cubo de B1 (recta, R614, R40).
+    fn line_two_arcs_line(first: f64, second: f64) -> WallSegments {
+        let mut state = WallSegments::default();
+        for t in [0.25, 0.5, 0.75] {
+            assert!(state.cut_at_t(&POINTS, t));
+        }
+        assert!(state.set_piece(0, Piece::Line));
+        assert!(state.set_piece(1, Piece::Arc(first)));
+        assert!(state.set_piece(2, Piece::Arc(second)));
+        assert!(state.set_piece(3, Piece::Line));
+        state
+    }
+
+    fn smooth_at(state: &WallSegments, index: usize) -> bool {
+        let into = state.direction(&POINTS, index - 1, true).unwrap();
+        let out = state.direction(&POINTS, index, false).unwrap();
+        same(into, out)
+    }
+
+    fn radius_kept(state: &WallSegments, piece: usize, radius: f64) -> bool {
+        let arc = state.arc(&POINTS, piece).unwrap();
+        let (a, b) = (state.node_at(&POINTS, piece), state.node_at(&POINTS, piece + 1));
+        (distance(a, arc.center) - radius).abs() < 1e-6
+            && (distance(b, arc.center) - radius).abs() < 1e-6
+    }
+
+    #[test]
+    fn a_chain_of_tangent_arcs_joins_smoothly_with_its_radii() {
+        let mut state = line_two_arcs_line(-60.0, -20.0);
+        assert!(!smooth_at(&state, 1));
+        assert!(state.set_tangent(&POINTS, 1, Some(Tangency::Start)));
+        assert!(state.set_tangent(&POINTS, 2, Some(Tangency::Start)));
+        assert!(smooth_at(&state, 1) && smooth_at(&state, 2));
+        assert!(radius_kept(&state, 1, 60.0) && radius_kept(&state, 2, 20.0));
+        // Sobrevive al `.hmf`.
+        let texts = state.to_texts();
+        assert_eq!(texts.tangents, vec!["", "start", "start", ""]);
+        let back = WallSegments::from_texts(&texts).unwrap();
+        assert!(smooth_at(&back, 1) && smooth_at(&back, 2));
+        // Cambiar la R mueve el nodo lejano y la cadena sigue lisa.
+        assert!(state.set_arc_radius(1, 70.0));
+        assert!(smooth_at(&state, 1) && smooth_at(&state, 2));
+        assert!(radius_kept(&state, 1, 70.0) && radius_kept(&state, 2, 20.0));
+        // Invertido, también sale tangente.
+        assert!(state.flip_arc(2));
+        assert!(smooth_at(&state, 2));
+    }
+
+    #[test]
+    fn an_arc_tangent_at_its_end_moves_its_start() {
+        let mut state = line_two_arcs_line(-60.0, -20.0);
+        assert!(state.set_tangent(&POINTS, 2, Some(Tangency::End)));
+        assert!(smooth_at(&state, 3));
+        assert!(radius_kept(&state, 2, 20.0));
+    }
+
+    #[test]
+    fn an_arc_can_leave_tangent_to_the_curve() {
+        let mut state = middle_arc(-40.0);
+        // Su nodo lejano tiene una curva al otro lado: no puede ir libre.
+        assert!(!state.set_tangent(&POINTS, 1, Some(Tangency::Start)));
+        state.toggle(2);
+        assert!(state.set_tangent(&POINTS, 1, Some(Tangency::Start)));
+        assert!(smooth_at(&state, 1));
+        assert!(radius_kept(&state, 1, 40.0));
+    }
+
+    #[test]
+    fn the_far_node_moves_only_on_the_circle() {
+        let mut state = line_two_arcs_line(-60.0, -20.0);
+        assert!(state.set_tangent(&POINTS, 1, Some(Tangency::Start)));
+        let center = state.arc(&POINTS, 1).unwrap().center;
+        assert!(state.move_node(&POINTS, 2, [5.0, 200.0]));
+        assert!((distance(state.node_at(&POINTS, 2), center) - 60.0).abs() < 1e-6);
+        // Una z escrita lo lleva al punto del círculo con esa z.
+        let z = state.node_at(&POINTS, 2)[0] + 2.0;
+        assert!(state.set_dimension(&POINTS, 2, Dimension::Z, z));
+        let at = state.node_at(&POINTS, 2);
+        assert!((at[0] - z).abs() < 1e-6, "{at:?}");
+        assert!((distance(at, center) - 60.0).abs() < 1e-6);
+        // El largo de la recta vecina lo sacaría del círculo.
+        assert!(!state.set_dimension(&POINTS, 2, Dimension::Length(3), 5.0));
+    }
+
+    #[test]
+    fn clashing_tangencies_and_radii_are_refused() {
+        let mut state = line_two_arcs_line(-60.0, -20.0);
+        // Los dos arcos tangentes entre sí por el mismo nodo se morderían
+        // la cola.
+        assert!(state.set_tangent(&POINTS, 1, Some(Tangency::End)));
+        assert!(!state.set_tangent(&POINTS, 2, Some(Tangency::Start)));
+        // Sin vecino no hay tangencia.
+        assert!(!line_two_arcs_line(-60.0, -20.0).set_tangent(&POINTS, 0, Some(Tangency::Start)));
+        // En el nodo de la tangencia no hay esquina que redondear.
+        let mut round = line_two_arcs_line(-60.0, -20.0);
+        assert!(round.set_tangent(&POINTS, 1, Some(Tangency::Start)));
+        assert!(!round.set_radius(1, Some(5.0)));
+        // Al dejar de ser arco pierde la tangencia.
+        assert!(round.set_piece(1, Piece::Line));
+        assert_eq!(round.tangent[1], None);
+    }
+
+    #[test]
+    fn cutting_or_joining_a_tangent_arc_keeps_its_side() {
+        let mut state = line_two_arcs_line(-60.0, -20.0);
+        assert!(state.set_tangent(&POINTS, 1, Some(Tangency::Start)));
+        assert!(state.cut(&POINTS, 1, 0.5));
+        assert_eq!(state.tangent[1..3], [Some(Tangency::Start), None]);
+        assert!(state.remove_node(2));
+        assert_eq!(state.tangent[1], Some(Tangency::Start));
+        assert!(smooth_at(&state, 1));
+    }
+
 }

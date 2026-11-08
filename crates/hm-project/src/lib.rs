@@ -266,6 +266,10 @@ impl Constraint {
 /// sobre la Bézier. Solo un nodo entre rectas o arcos puede ir fuera de ella.
 /// `radii` da el radio de redondeo de cada nodo, uno por nodo como `nodes`,
 /// con unidad, por ejemplo `"5 mm"`; vacío, la esquina es viva.
+/// `chamfers` da el chaflán de cada nodo, uno por nodo como `radii`, con
+/// unidad, por ejemplo `"1 mm"`: corta la esquina entre dos rectas a esa
+/// distancia de su vértice por cada lado (1x45° con ángulo recto). Un nodo
+/// lleva radio o chaflán, no los dos.
 /// `arcs` da el radio de cada tramo `arc`, uno por tramo como `pieces`, con
 /// unidad y vacío en los demás. El signo dice hacia dónde se curva: positivo
 /// a la izquierda de la cuerda recorrida del arranque al final (en el plano
@@ -286,6 +290,8 @@ pub struct MeridianWallSegments {
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub radii: Vec<String>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub chamfers: Vec<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub arcs: Vec<String>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub tangents: Vec<String>,
@@ -298,6 +304,7 @@ impl MeridianWallSegments {
             && self.pieces.is_empty()
             && self.nodes.is_empty()
             && self.radii.is_empty()
+            && self.chamfers.is_empty()
             && self.arcs.is_empty()
             && self.tangents.is_empty()
     }
@@ -1308,6 +1315,29 @@ fn check_wall_segments(
                 format!("debe ser positivo: {radius}"),
             ),
             Err(text) => problem(format!("{table}.radii"), text),
+        }
+    }
+    if !wall.chamfers.is_empty() && wall.chamfers.len() != wall.cuts.len() + 2 {
+        problem(
+            format!("{table}.chamfers"),
+            format!(
+                "debe tener un chaflán por nodo: {} nodos y {} chaflanes",
+                wall.cuts.len() + 2,
+                wall.chamfers.len()
+            ),
+        );
+    }
+    for chamfer in wall.chamfers.iter().map(|chamfer| chamfer.trim()) {
+        if chamfer.is_empty() {
+            continue;
+        }
+        match length_value(chamfer) {
+            Ok(value) if value > 0.0 => {}
+            Ok(_) => problem(
+                format!("{table}.chamfers"),
+                format!("debe ser positivo: {chamfer}"),
+            ),
+            Err(text) => problem(format!("{table}.chamfers"), text),
         }
     }
     check_arcs(problem, table, wall);

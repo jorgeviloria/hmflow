@@ -121,6 +121,8 @@ impl MeridianSegments {
 /// (el arranque, los cortes y el final, uno más que `pieces`) como
 /// «z, r» con unidad, por ejemplo `"60 mm, 0 mm"`; vacío, el nodo está
 /// sobre la Bézier. Solo un nodo entre dos rectas puede ir fuera de ella.
+/// `radii` da el radio de redondeo de cada nodo, uno por nodo como `nodes`,
+/// con unidad, por ejemplo `"5 mm"`; vacío, la esquina es viva.
 #[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct MeridianWallSegments {
@@ -130,12 +132,17 @@ pub struct MeridianWallSegments {
     pub pieces: Vec<String>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub nodes: Vec<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub radii: Vec<String>,
 }
 
 impl MeridianWallSegments {
     #[must_use]
     pub fn is_empty(&self) -> bool {
-        self.cuts.is_empty() && self.pieces.is_empty() && self.nodes.is_empty()
+        self.cuts.is_empty()
+            && self.pieces.is_empty()
+            && self.nodes.is_empty()
+            && self.radii.is_empty()
     }
 }
 
@@ -1013,6 +1020,29 @@ fn check_wall_segments(
             });
         if let Err(text) = parsed {
             problem(format!("{table}.nodes"), text);
+        }
+    }
+    if !wall.radii.is_empty() && wall.radii.len() != wall.cuts.len() + 2 {
+        problem(
+            format!("{table}.radii"),
+            format!(
+                "debe tener un radio por nodo: {} nodos y {} radios",
+                wall.cuts.len() + 2,
+                wall.radii.len()
+            ),
+        );
+    }
+    for radius in wall.radii.iter().map(|radius| radius.trim()) {
+        if radius.is_empty() {
+            continue;
+        }
+        match length_value(radius) {
+            Ok(value) if value > 0.0 => {}
+            Ok(_) => problem(
+                format!("{table}.radii"),
+                format!("debe ser positivo: {radius}"),
+            ),
+            Err(text) => problem(format!("{table}.radii"), text),
         }
     }
 }

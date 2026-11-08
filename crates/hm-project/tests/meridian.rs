@@ -381,7 +381,7 @@ fn shroud_segments(cuts: &[&str], pieces: &[&str]) -> Meridian {
             shroud: MeridianWallSegments {
                 cuts: texts(cuts),
                 pieces: texts(pieces),
-                nodes: Vec::new(),
+                ..MeridianWallSegments::default()
             },
             ..MeridianSegments::default()
         },
@@ -448,6 +448,7 @@ fn hub_nodes(nodes: &[&str]) -> Meridian {
                 cuts: texts(&["0.5"]),
                 pieces: texts(&["curve", "line"]),
                 nodes: texts(nodes),
+                ..MeridianWallSegments::default()
             },
             ..MeridianSegments::default()
         },
@@ -475,6 +476,46 @@ fn free_nodes_round_trip_and_validate() {
                 .iter()
                 .any(|message| message.contains("segments.hub.nodes")),
             "{nodes:?}: {found:?}"
+        );
+    }
+}
+
+fn hub_radii(radii: &[&str]) -> Meridian {
+    Meridian {
+        segments: MeridianSegments {
+            hub: MeridianWallSegments {
+                cuts: texts(&["0.5"]),
+                pieces: texts(&["curve", "line"]),
+                radii: texts(radii),
+                ..MeridianWallSegments::default()
+            },
+            ..MeridianSegments::default()
+        },
+        ..Meridian::default()
+    }
+}
+
+#[test]
+fn corner_radii_round_trip_and_validate() {
+    let project = with(hub_radii(&["", "5 mm", ""]));
+    let text = project.to_toml().unwrap();
+    assert!(text.contains("radii"), "{text}");
+    let back = Project::from_toml(&text).unwrap();
+    assert_eq!(back.meridian, project.meridian);
+    assert_eq!(problems(project.meridian.unwrap()), Vec::<String>::new());
+    for radii in [
+        &["", "5 mm"][..],
+        &["", "0 mm", ""][..],
+        &["", "-2 mm", ""][..],
+        &["", "5", ""][..],
+        &["", "abc", ""][..],
+    ] {
+        let found = problems(hub_radii(radii));
+        assert!(
+            found
+                .iter()
+                .any(|message| message.contains("segments.hub.radii")),
+            "{radii:?}: {found:?}"
         );
     }
 }

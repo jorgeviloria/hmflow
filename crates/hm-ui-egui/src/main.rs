@@ -10,9 +10,9 @@ mod inputs;
 mod inspector;
 mod meridian;
 mod meridian_arc;
+mod meridian_constraints;
 mod meridian_cut;
 mod meridian_fillet;
-mod meridian_constraints;
 mod meridian_segments;
 mod model;
 mod plan;
@@ -146,13 +146,25 @@ impl App {
 
     /// El diseño tarda milisegundos: se recalcula con cada cambio.
     fn recompute(&mut self) {
+        self.recompute_passes(3);
+    }
+
+    /// `passes`: cuántas veces más se puede recalcular porque las cotas que
+    /// mandan movieron algo. Lo normal es una; el tope evita dar vueltas.
+    fn recompute_passes(&mut self, passes: u8) {
         match compute(&self.session.inputs, &self.session.basis) {
             Ok(outcome) => {
                 // Las cotas que mandan siguen al perfil nuevo aunque la pestaña
                 // Meridiano esté cerrada. Los nodos libres no entran en el
                 // cálculo, pero `outcome.inputs` tiene que coincidir.
-                if meridian::enforce_constraints(&outcome, &mut self.session.inputs.meridian) {
-                    return self.recompute();
+                let before = self.session.inputs.meridian.clone();
+                if passes > 0
+                    && meridian::enforce_constraints(&outcome, &mut self.session.inputs.meridian)
+                {
+                    // Consecuencia del cambio que ya anotó el deshacer.
+                    self.meridian_history
+                        .amend(&before, &self.session.inputs.meridian);
+                    return self.recompute_passes(passes - 1);
                 }
                 self.outcome = Some(outcome);
                 self.errors.clear();

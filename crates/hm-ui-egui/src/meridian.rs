@@ -260,6 +260,14 @@ impl History {
         }
     }
 
+    /// Lo editado pasó de `before` a `after` por una consecuencia de un cambio
+    /// ya anotado (las cotas que mandan): si iba al día, sigue al día.
+    pub(super) fn amend(&mut self, before: &Meridian, after: &Meridian) {
+        if self.last == *before {
+            self.last = after.clone();
+        }
+    }
+
     /// Anota un cambio hecho en la pestaña, en el instante `time`.
     pub(super) fn record(&mut self, now: &Meridian, time: f64) {
         if time - self.last_change > HISTORY_GAP || self.undo.is_empty() {
@@ -1608,6 +1616,25 @@ fn area_against_length(channel: &[ChannelStation]) -> (Vec<[f64; 2]>, Vec<[f64; 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn amend_keeps_the_history_in_step() {
+        let mut history = History::default();
+        let mut boxes = Meridian::default();
+        boxes.segments.constraints = vec!["a".into()];
+        history.record(&boxes, 0.0);
+        let before = boxes.clone();
+        boxes.segments.constraints = vec!["b".into()];
+        history.amend(&before, &boxes);
+        history.follow(&boxes);
+        assert!(history.can_undo());
+        // Si ya iba descolgado (un archivo recién abierto), no se toca.
+        let mut opened = boxes.clone();
+        opened.segments.constraints = vec!["c".into()];
+        history.amend(&before, &opened);
+        history.follow(&opened);
+        assert!(!history.can_undo());
+    }
 
     #[test]
     fn each_part_of_the_section_has_its_own_colour() {

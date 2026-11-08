@@ -344,6 +344,14 @@ impl WallSegments {
         })
     }
 
+    /// Los nodos de los que sale el círculo que lleva el nodo `index`; vacío
+    /// si no va sobre ninguno.
+    pub(super) fn circle_inputs(&self, index: usize) -> Vec<usize> {
+        self.driver(index)
+            .map(|(piece, tangency)| self.tangent_inputs(piece, tangency))
+            .unwrap_or_default()
+    }
+
     /// Si el nodo `index` es donde un arco sale tangente a su vecino.
     fn is_anchor(&self, index: usize) -> bool {
         self.tangent
@@ -451,7 +459,7 @@ impl WallSegments {
 
     /// Hace el arco `piece` tangente a su vecino por ese lado, o le quita la
     /// tangencia con `None`. Devuelve si cambió.
-    fn set_tangent(
+    pub(super) fn set_tangent(
         &mut self,
         points: &[[f64; 2]; 5],
         piece: usize,
@@ -615,7 +623,7 @@ impl WallSegments {
     }
 
     /// Cambia el tramo `piece` a `kind`. Devuelve si cambió.
-    fn set_piece(&mut self, piece: usize, kind: Piece) -> bool {
+    pub(super) fn set_piece(&mut self, piece: usize, kind: Piece) -> bool {
         if piece >= self.pieces.len() || self.pieces[piece] == kind {
             return false;
         }

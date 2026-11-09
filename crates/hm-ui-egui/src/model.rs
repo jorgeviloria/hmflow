@@ -59,6 +59,8 @@ pub struct Inputs {
     /// Decisiones: vacío significa que decide el motor.
     pub phi: String,
     pub blade_count: String,
+    /// β2 fijado a mano, con unidad. Vacío: el de Euler.
+    pub beta2: String,
     /// Medidas: vacío significa el valor por defecto.
     pub roughness: String,
     pub incidence: String,
@@ -70,9 +72,10 @@ pub struct Inputs {
 }
 
 /// Cajas de selecciones y medidas: parámetro, etiqueta y ejemplo.
-pub const SELECTION_BOXES: [(&str, &str, &str); 6] = [
+pub const SELECTION_BOXES: [(&str, &str, &str); 7] = [
     ("phi", "φ (vacío: el motor)", "0.0785"),
     ("blade_count", "Z (vacío: el motor)", "7"),
+    ("beta2", "β2 (vacío: Euler)", "24 deg"),
     ("impeller_roughness", "Rugosidad (vacío: liso)", "0.05 mm"),
     ("incidence_deg", "Incidencia (vacío: 2°)", "4 deg"),
     (
@@ -93,6 +96,7 @@ impl Inputs {
         Some(match name {
             "phi" => &mut self.phi,
             "blade_count" => &mut self.blade_count,
+            "beta2" => &mut self.beta2,
             "impeller_roughness" => &mut self.roughness,
             "incidence_deg" => &mut self.incidence,
             "beta_bow1_deg" => &mut self.beta_bow1,
@@ -229,6 +233,7 @@ impl Default for Inputs {
             casing: None,
             phi: String::new(),
             blade_count: String::new(),
+            beta2: String::new(),
             roughness: String::new(),
             incidence: String::new(),
             beta_bow1: String::new(),
@@ -346,6 +351,7 @@ fn edits_from(inputs: &Inputs) -> Result<DesignEdits, (Field, String)> {
             .transpose()?,
         phi: inputs.phi.clone(),
         blade_count: inputs.blade_count.clone(),
+        beta2: inputs.beta2.clone(),
         roughness: inputs.roughness.clone(),
         incidence: inputs.incidence.clone(),
         beta_bow1: inputs.beta_bow1.clone(),
@@ -761,6 +767,7 @@ pub fn case_to_inputs(case: &Case) -> Inputs {
         casing: None,
         phi: String::new(),
         blade_count: String::new(),
+        beta2: String::new(),
         roughness: String::new(),
         incidence: String::new(),
         beta_bow1: String::new(),
@@ -816,6 +823,7 @@ pub fn open_loaded(project: Project) -> Result<OpenedFile, String> {
     inputs.casing = opened.edits.casing.as_ref().map(CasingBoxes::from_casing);
     inputs.phi.clone_from(&opened.edits.phi);
     inputs.blade_count.clone_from(&opened.edits.blade_count);
+    inputs.beta2.clone_from(&opened.edits.beta2);
     inputs.roughness.clone_from(&opened.edits.roughness);
     inputs.incidence.clone_from(&opened.edits.incidence);
     inputs.beta_bow1.clone_from(&opened.edits.beta_bow1);
@@ -1376,6 +1384,18 @@ mod tests {
         let (first, second) = outcome.result.selection.blade_bow_deg;
         assert!((first - 6.0).abs() < 1e-9);
         assert!((second + 4.0).abs() < 1e-9);
+    }
+
+    #[test]
+    fn beta2_text_is_a_locked_decision() {
+        let outcome = super::compute(
+            &free(|inputs| inputs.beta2 = "24 deg".to_string()),
+            &Basis::default(),
+        )
+        .unwrap();
+        assert!((outcome.result.selection.beta2_deg - 24.0).abs() < 1e-9);
+        let empty = super::compute(&Inputs::default(), &Basis::default()).unwrap();
+        assert!((empty.result.selection.beta2_deg - 24.0).abs() > 1e-3);
     }
 
     #[test]

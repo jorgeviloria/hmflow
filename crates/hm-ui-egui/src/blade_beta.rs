@@ -3,8 +3,8 @@
 use eframe::egui;
 use egui::Color32;
 use egui_plot::{Plot, PlotPoint, Points};
-use hm_design::BETA_BOW_RANGE_DEG;
 use hm_design::geometry::beta_profile;
+use hm_design::{BETA_BOW_RANGE_DEG, INCIDENCE_RANGE_DEG};
 
 use crate::curves::line;
 use crate::model::{Inputs, Outcome};
@@ -66,11 +66,54 @@ impl BetaGraph {
         [at(0, self.bow.0), at(1, self.bow.1)]
     }
 
+    /// Los dos extremos: β1 (entrada) y β2 (salida).
+    pub fn ends(&self) -> [[f64; 2]; 2] {
+        self.straight()
+    }
+
     /// La desviación, en grados, de arrastrar la manija `index` a `beta_deg`.
     pub fn bow_from_handle(&self, index: usize, beta_deg: f64) -> f64 {
         let bow = beta_deg - self.line_deg(HANDLE_FRACTIONS[index.min(1)]);
         bow.clamp(BETA_BOW_RANGE_DEG.0, BETA_BOW_RANGE_DEG.1)
     }
+}
+
+/// Un valor que pudo quedar en el límite de su rango.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub(super) struct Clamped {
+    pub value: f64,
+    /// `true` si el valor pedido se salía del rango y se recortó.
+    pub limited: bool,
+}
+
+/// Incidencia que da β1 = `target_deg`. β1 = β1B sin incidencia + incidencia,
+/// y la incidencia solo vale de 0 al máximo de `INCIDENCE_RANGE_DEG`.
+pub(super) fn incidence_for_beta1(
+    target_deg: f64,
+    beta1b_deg: f64,
+    applied_incidence_deg: f64,
+) -> Clamped {
+    let base = beta1b_deg - applied_incidence_deg;
+    let wanted = target_deg - base;
+    let value = wanted.clamp(INCIDENCE_RANGE_DEG.0, INCIDENCE_RANGE_DEG.1);
+    Clamped {
+        value,
+        limited: (wanted - value).abs() > 1.0e-9,
+    }
+}
+
+/// β2 que se fija al arrastrar el extremo de salida, entre 1° y 89°.
+pub(super) fn beta2_for_target(target_deg: f64) -> Clamped {
+    let value = target_deg.clamp(1.0, 89.0);
+    Clamped {
+        value,
+        limited: (target_deg - value).abs() > 1.0e-9,
+    }
+}
+
+/// El texto de la caja β2.
+pub(super) fn beta2_text(value_deg: f64) -> String {
+    format!("{value_deg:.2} deg")
 }
 
 /// La gráfica de β(r) de este diseño, si se puede construir.
@@ -93,13 +136,15 @@ pub(super) fn blade_beta_view(ui: &mut egui::Ui, outcome: &Outcome, inputs: &mut
     let graph = graph_of(outcome);
     ui.label(
         egui::RichText::new(
-            "β(r) del álabe, en grados. Gris: la recta del 1D. Arrastra los puntos \
-             naranjas para curvar la línea media; la vista en planta se redibuja en vivo.",
+            "β(r) del álabe, en grados. Gris: la recta del 1D. Naranjas: dan la forma. \
+             Azules: los extremos; β1 mueve la incidencia y β2 se fija a mano (vacía su \
+             caja para volver a Euler).",
         )
         .small()
         .weak(),
     );
     let mut edited = false;
+    let status_id = egui::Id::unique("blade_beta_status");
     Plot::new("blade_beta")
         .height(190.0)
         .allow_drag(false)
@@ -132,27 +177,50 @@ pub(super) fn blade_beta_view(ui: &mut egui::Ui, outcome: &Outcome, inputs: &mut
                     .color(Color32::from_rgb(240, 160, 50))
                     .radius(6.0),
             );
-            edited = drag_handles(plot_ui, &graph, inputs);
+            plot_ui.points(
+                Points::new("Extremos", graph.ends().to_vec())
+                    .color(Color32::from_rgb(70, 150, 240))
+                    .radius(6.0),
+            );
+            if let Some(status) = drag_handles(plot_ui, &graph, inputs) {
+                plot_ui
+                    .ctx()
+                    .data_mut(|data| data.insert_temp(status_id, status));
+                edited = true;
+            }
         });
+    if let Some(status) = ui.ctx().data(|data| data.get_temp::<String>(status_id)) {
+        ui.label(egui::RichText::new(status).small());
+    }
     edited
 }
 
-/// Agarra la manija más cercana al empezar a arrastrar y, mientras dura,
-/// escribe en su caja la desviación que da el puntero.
+/// La incidencia que lleva la caja, o la de por defecto si está vacía.
+fn applied_incidence_deg(inputs: &Inputs) -> f64 {
+    inputs
+        .incidence
+        .split_whitespace()
+        .next()
+        .and_then(|number| number.parse().ok())
+        .unwrap_or(hm_design::geometry::DEFAULT_INCIDENCE_DEG)
+}
+
+/// Agarra el punto más cercano al empezar a arrastrar y, mientras dura,
+/// escribe en su caja lo que da el puntero: la desviación (manijas 0 y 1), la
+/// incidencia (2, β1) o el β2 fijado (3). Devuelve lo que dice la lectura.
 fn drag_handles(
     plot_ui: &mut egui_plot::PlotUi<'_>,
     graph: &BetaGraph,
     inputs: &mut Inputs,
-) -> bool {
+) -> Option<String> {
     let id = egui::Id::unique("blade_beta_dragged");
     let response = plot_ui.response().clone();
-    let Some(pointer) = plot_ui.pointer_coordinate() else {
-        return false;
-    };
+    let pointer = plot_ui.pointer_coordinate()?;
     if response.drag_started() {
         let at = plot_ui.screen_from_plot(pointer);
-        let grabbed = graph
-            .handles()
+        let [interior_a, interior_b] = graph.handles();
+        let [end_a, end_b] = graph.ends();
+        let grabbed = [interior_a, interior_b, end_a, end_b]
             .iter()
             .enumerate()
             .map(|(index, handle)| {
@@ -171,17 +239,42 @@ fn drag_handles(
             .data_mut(|data| data.remove::<Option<usize>>(id));
     }
     let (Some(index), true) = (grabbed, response.dragged()) else {
-        return false;
+        return None;
     };
-    let text = bow_text(graph.bow_from_handle(index, pointer.y));
-    let target = if index == 0 {
-        &mut inputs.beta_bow1
-    } else {
-        &mut inputs.beta_bow2
+    let (target, text, status) = match index {
+        0 | 1 => {
+            let bow = graph.bow_from_handle(index, pointer.y);
+            let target = if index == 0 {
+                &mut inputs.beta_bow1
+            } else {
+                &mut inputs.beta_bow2
+            };
+            (target, bow_text(bow), format!("Desviación = {bow:.1}°"))
+        }
+        2 => {
+            let applied = applied_incidence_deg(inputs);
+            let clamped = incidence_for_beta1(pointer.y, graph.beta.0.to_degrees(), applied);
+            let mut status = format!("Incidencia = {:.1}°", clamped.value);
+            if clamped.limited {
+                status.push_str(&format!(
+                    " (límite: la incidencia va de {} a {}°)",
+                    INCIDENCE_RANGE_DEG.0, INCIDENCE_RANGE_DEG.1
+                ));
+            }
+            (&mut inputs.incidence, bow_text(clamped.value), status)
+        }
+        _ => {
+            let clamped = beta2_for_target(pointer.y);
+            let mut status = format!("β2 fijado = {:.1}°", clamped.value);
+            if clamped.limited {
+                status.push_str(" (límite: de 1 a 89°)");
+            }
+            (&mut inputs.beta2, beta2_text(clamped.value), status)
+        }
     };
     let changed = *target != text;
     *target = text;
-    changed
+    changed.then_some(status)
 }
 
 /// Solo para las capturas: `HMF_BLADE="8,-5"` pone la desviación de las dos
@@ -239,6 +332,47 @@ mod tests {
         let h = g.handles();
         assert!((g.bow_from_handle(0, h[0][1]) - 7.0).abs() < 1e-9);
         assert!((g.bow_from_handle(1, h[1][1]) + 3.0).abs() < 1e-9);
+    }
+
+    #[test]
+    fn dragging_beta1_to_a_reachable_value_sets_the_incidence() {
+        let c = incidence_for_beta1(21.0, 20.0, 2.0);
+        assert!((c.value - 3.0).abs() < 1e-9);
+        assert!(!c.limited);
+    }
+
+    #[test]
+    fn dragging_beta1_beyond_the_incidence_range_clamps() {
+        let high = incidence_for_beta1(60.0, 20.0, 2.0);
+        assert_eq!((high.value, high.limited), (INCIDENCE_RANGE_DEG.1, true));
+        let low = incidence_for_beta1(5.0, 20.0, 2.0);
+        assert_eq!((low.value, low.limited), (INCIDENCE_RANGE_DEG.0, true));
+    }
+
+    #[test]
+    fn beta2_target_is_kept_between_one_and_eighty_nine_degrees() {
+        assert_eq!(
+            beta2_for_target(24.0),
+            Clamped {
+                value: 24.0,
+                limited: false
+            }
+        );
+        assert_eq!(
+            beta2_for_target(-5.0),
+            Clamped {
+                value: 1.0,
+                limited: true
+            }
+        );
+        assert_eq!(
+            beta2_for_target(120.0),
+            Clamped {
+                value: 89.0,
+                limited: true
+            }
+        );
+        assert_eq!(beta2_text(24.0), "24.00 deg");
     }
 
     #[test]

@@ -1214,7 +1214,7 @@ const BLADE_LOADING_REF_NQ: f64 = 40.0;
 
 /// Margen sobre la carga admisible a partir del cual se avisa: la banda de
 /// 7.1.11 es ±15 %.
-const BLADE_LOADING_MARGIN: f64 = 0.15;
+pub const BLADE_LOADING_MARGIN: f64 = 0.15;
 
 /// Carga admisible del álabe ξal = (40/nq)^0,77 (Gülich 2020, ec. 7.1.11,
 /// p. 407; banda ±15 %).

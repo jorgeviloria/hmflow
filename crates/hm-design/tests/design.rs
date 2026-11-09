@@ -1941,6 +1941,13 @@ fn non_monotonic_beta_warns() {
     // β baja 1,5° de r1 a r2; +5° en la primera manija la hace subir al principio.
     let bowed = b1_with_bow((5.0, 0.0)).unwrap();
     assert!(has(&bowed, "HM-DES-050"));
+    // Es informativo: con β1 ≈ β2 salta con cualquier desviación mínima.
+    let note = bowed
+        .diagnostics
+        .iter()
+        .find(|diagnostic| diagnostic.code == "HM-DES-050")
+        .unwrap();
+    assert_eq!(format!("{:?}", note.severity), "Info");
     assert!(!has(&b1_with_bow((0.0, 0.0)).unwrap(), "HM-DES-050"));
 }
 

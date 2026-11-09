@@ -356,7 +356,7 @@ pub const CODES: &[CodeInfo] = &[
     ),
     active(
         "HM-DES-050",
-        Warning,
+        Info,
         "β(r) del álabe no es monótona entre r1 y r2 por la desviación de las manijas.",
     ),
     active(

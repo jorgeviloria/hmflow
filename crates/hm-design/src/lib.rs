@@ -1766,9 +1766,11 @@ pub const INCIDENCE_RANGE_DEG: (f64, f64) = (0.0, 10.0);
 /// Rango de la desviación de β(r) en cada manija, en grados.
 pub const BETA_BOW_RANGE_DEG: (f64, f64) = (-30.0, 30.0);
 
-/// β de la línea media en cada tramo, para comprobar que no sale de (0°, 90°)
-/// y si es monótona. Devuelve (mínimo, máximo, monótona).
-fn beta_profile_range(beta1: f64, beta2: f64, bow_deg: (f64, f64)) -> (f64, f64, bool) {
+/// β de la línea media en cada tramo, para comprobar que no baja de
+/// [`geometry::BLADE_BETA_MIN_DEG`] ni llega a 90° y si es monótona. Devuelve
+/// (mínimo, máximo, monótona), en rad. La interfaz usa esta misma función para
+/// no aceptar lo que el motor rechaza.
+pub fn beta_profile_range(beta1: f64, beta2: f64, bow_deg: (f64, f64)) -> (f64, f64, bool) {
     let steps = geometry::BLADE_STEPS_SHAPED;
     let betas: Vec<f64> = (0..=steps)
         .map(|index| geometry::beta_profile(beta1, beta2, bow_deg, index as f64 / steps as f64))
@@ -3854,11 +3856,11 @@ fn diagnostics_for(
         && !beta_profile_range(result.beta1b, result.selection.beta2_deg.to_radians(), bow).2
     {
         diagnostics.push(
-            Diagnostic::warning(
+            Diagnostic::info(
                 "HM-DES-050",
                 format!(
                     "β no es monótona entre r1 y r2 con `beta_bow1_deg` = {} y \
-                     `beta_bow2_deg` = {}: el álabe cambia de sentido su curvatura",
+                     `beta_bow2_deg` = {}: sube y luego baja, o al revés",
                     bow.0, bow.1
                 ),
             )

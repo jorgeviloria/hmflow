@@ -62,16 +62,29 @@ pub struct Inputs {
     /// Medidas: vacío significa el valor por defecto.
     pub roughness: String,
     pub incidence: String,
+    /// Desviación de β(r) en las dos manijas de la gráfica, en grados.
+    pub beta_bow1: String,
+    pub beta_bow2: String,
     /// Lo editado del meridiano (`[meridian]`); vacío es lo del motor.
     pub meridian: Meridian,
 }
 
 /// Cajas de selecciones y medidas: parámetro, etiqueta y ejemplo.
-pub const SELECTION_BOXES: [(&str, &str, &str); 4] = [
+pub const SELECTION_BOXES: [(&str, &str, &str); 6] = [
     ("phi", "φ (vacío: el motor)", "0.0785"),
     ("blade_count", "Z (vacío: el motor)", "7"),
     ("impeller_roughness", "Rugosidad (vacío: liso)", "0.05 mm"),
     ("incidence_deg", "Incidencia (vacío: 2°)", "4 deg"),
+    (
+        "beta_bow1_deg",
+        "Desviación de β, 1/3 (vacío: recta)",
+        "6 deg",
+    ),
+    (
+        "beta_bow2_deg",
+        "Desviación de β, 2/3 (vacío: recta)",
+        "-4 deg",
+    ),
 ];
 
 impl Inputs {
@@ -82,6 +95,8 @@ impl Inputs {
             "blade_count" => &mut self.blade_count,
             "impeller_roughness" => &mut self.roughness,
             "incidence_deg" => &mut self.incidence,
+            "beta_bow1_deg" => &mut self.beta_bow1,
+            "beta_bow2_deg" => &mut self.beta_bow2,
             _ => return None,
         })
     }
@@ -216,6 +231,8 @@ impl Default for Inputs {
             blade_count: String::new(),
             roughness: String::new(),
             incidence: String::new(),
+            beta_bow1: String::new(),
+            beta_bow2: String::new(),
             meridian: Meridian::default(),
         }
     }
@@ -331,6 +348,8 @@ fn edits_from(inputs: &Inputs) -> Result<DesignEdits, (Field, String)> {
         blade_count: inputs.blade_count.clone(),
         roughness: inputs.roughness.clone(),
         incidence: inputs.incidence.clone(),
+        beta_bow1: inputs.beta_bow1.clone(),
+        beta_bow2: inputs.beta_bow2.clone(),
     })
 }
 
@@ -744,6 +763,8 @@ pub fn case_to_inputs(case: &Case) -> Inputs {
         blade_count: String::new(),
         roughness: String::new(),
         incidence: String::new(),
+        beta_bow1: String::new(),
+        beta_bow2: String::new(),
         meridian: Meridian::default(),
     }
 }
@@ -797,6 +818,8 @@ pub fn open_loaded(project: Project) -> Result<OpenedFile, String> {
     inputs.blade_count.clone_from(&opened.edits.blade_count);
     inputs.roughness.clone_from(&opened.edits.roughness);
     inputs.incidence.clone_from(&opened.edits.incidence);
+    inputs.beta_bow1.clone_from(&opened.edits.beta_bow1);
+    inputs.beta_bow2.clone_from(&opened.edits.beta_bow2);
     inputs.meridian = project.meridian.clone().unwrap_or_default();
     let basis = Basis::from_opened(&project, &opened, &inputs);
     Ok(OpenedFile {
@@ -1338,6 +1361,27 @@ mod tests {
         .unwrap();
         assert_eq!(outcome.result.selection.phi, 0.09);
         assert_eq!(outcome.result.selection.blade_count, 5);
+    }
+
+    #[test]
+    fn bow_boxes_reach_the_design_options() {
+        let outcome = super::compute(
+            &free(|inputs| {
+                inputs.beta_bow1 = "6 deg".to_string();
+                inputs.beta_bow2 = "-4 deg".to_string();
+            }),
+            &Basis::default(),
+        )
+        .unwrap();
+        let (first, second) = outcome.result.selection.blade_bow_deg;
+        assert!((first - 6.0).abs() < 1e-9);
+        assert!((second + 4.0).abs() < 1e-9);
+    }
+
+    #[test]
+    fn empty_bow_boxes_mean_no_bow() {
+        let outcome = super::compute(&Inputs::default(), &Basis::default()).unwrap();
+        assert_eq!(outcome.result.selection.blade_bow_deg, (0.0, 0.0));
     }
 
     #[test]

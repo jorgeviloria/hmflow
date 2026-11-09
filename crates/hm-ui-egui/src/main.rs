@@ -4,6 +4,7 @@
 //! Ejecutar con `cargo run --manifest-path crates/hm-ui-egui/Cargo.toml`.
 
 mod bar;
+mod blade_beta;
 mod curves;
 mod diagnostics;
 mod inputs;
@@ -125,6 +126,7 @@ impl App {
                 }
             }
         }
+        blade_beta::seed_from_env(&mut app.session.inputs);
         app.recompute();
         app
     }
@@ -200,7 +202,12 @@ impl eframe::App for App {
                     });
                 }
                 Tab::Curves => curves(ui, outcome),
-                Tab::Geometry => plan_view(ui, outcome),
+                Tab::Geometry => {
+                    if blade_beta::blade_beta_view(ui, outcome, &mut self.session.inputs) {
+                        meridian_edited = true;
+                    }
+                    plan_view(ui, outcome);
+                }
                 Tab::Meridian => {
                     if meridian_view(
                         ui,

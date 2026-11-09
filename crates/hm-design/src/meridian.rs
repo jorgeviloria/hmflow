@@ -176,6 +176,17 @@ impl HubCutEdit {
     }
 }
 
+/// La forma del borde de ataque mientras no se edite su Bézier.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum EdgeMode {
+    /// Sigue el canal: cada línea de corriente lo corta en una fracción de
+    /// pared interpolada entre la del cubo y la de la tapa.
+    #[default]
+    Channel,
+    /// La recta entre sus dos extremos.
+    Line,
+}
+
 /// Lo editado del corte.
 #[derive(Debug, Clone, Copy, Default, PartialEq)]
 pub struct MeridianEdits {
@@ -189,6 +200,9 @@ pub struct MeridianEdits {
     /// dos paredes (criterio S).
     pub edge_shroud: Option<f64>,
     pub edge_hub: Option<f64>,
+    /// La forma automática del borde de ataque: la de los valores de `edge`
+    /// que no se escriben.
+    pub edge_mode: EdgeMode,
     /// El borde de ataque como Bézier de 5 puntos, de la tapa al cubo.
     pub edge: EdgeEdit,
     pub shroud: WallEdit,
@@ -320,6 +334,8 @@ pub struct MeridianParams {
     /// Los dos extremos del borde de ataque, `[z, r]`: el de la tapa y el del
     /// cubo.
     pub edge_points: [[f64; 2]; 2],
+    /// La forma automática del borde de ataque.
+    pub edge_mode: EdgeMode,
     /// La Bézier del borde de ataque con lo aplicado.
     pub edge: EdgeShape,
     /// Inclinación resultante del borde con la radial, en grados: positiva si
@@ -916,8 +932,19 @@ pub fn meridional_model_with(
     let edge_points = [on_curve(&front, edge_shroud), on_curve(&rear, edge_hub)];
     let (shroud_edge, hub_edge) = (edge_points[0], edge_points[1]);
     // Sin nada escrito, la Bézier es el ajuste al borde que sigue el canal.
-    let channel = channel_edge(&front, &rear, edge_shroud, edge_hub, CURVE_POINTS);
-    let fit = fit_edge(shroud_edge, hub_edge, &channel);
+    let automatic = match edits.edge_mode {
+        EdgeMode::Channel => channel_edge(&front, &rear, edge_shroud, edge_hub, CURVE_POINTS),
+        EdgeMode::Line => (0..CURVE_POINTS)
+            .map(|k| {
+                let t = k as f64 / (CURVE_POINTS - 1) as f64;
+                [
+                    shroud_edge[0] + t * (hub_edge[0] - shroud_edge[0]),
+                    shroud_edge[1] + t * (hub_edge[1] - shroud_edge[1]),
+                ]
+            })
+            .collect(),
+    };
+    let fit = fit_edge(shroud_edge, hub_edge, &automatic);
     let edge = edge_shape(shroud_edge, hub_edge, &edits.edge, &fit)?;
     let edge_angle = (hub_edge[0] - shroud_edge[0])
         .atan2(shroud_edge[1] - hub_edge[1])
@@ -976,6 +1003,7 @@ pub fn meridional_model_with(
             edge_hub,
             edge_auto,
             edge_points,
+            edge_mode: edits.edge_mode,
             edge,
             edge_angle,
             edge_length,

@@ -6,8 +6,8 @@ use std::f64::consts::PI;
 
 use hm_design::DesignError;
 use hm_design::meridian::{
-    CUT_NAME, ControlPoint, CutMode, EdgeClamp, EdgeEdit, HubCutEdit, MIN_ARM, MeridianEdits,
-    MeridionalModel, Moved, Wall, WallEdit, meridional_model, meridional_model_with,
+    CUT_NAME, ControlPoint, CutMode, EdgeClamp, EdgeEdit, EdgeMode, HubCutEdit, MIN_ARM,
+    MeridianEdits, MeridionalModel, Moved, Wall, WallEdit, meridional_model, meridional_model_with,
 };
 use hm_design::{DesignInput, DesignResult, design};
 use hm_geometry::{Bezier, Curve, Point};
@@ -1926,4 +1926,76 @@ fn a_written_angle_leaves_the_other_end_automatic() {
         ..MeridianEdits::default()
     });
     assert_eq!(model.params.edge.end_angle, auto.params.edge.end_angle);
+}
+
+// ---- La forma automática del borde: canal o recta ----
+
+fn line_edits() -> MeridianEdits {
+    MeridianEdits {
+        edge_mode: EdgeMode::Line,
+        ..MeridianEdits::default()
+    }
+}
+
+#[test]
+fn the_channel_is_the_default_edge_mode() {
+    assert_eq!(MeridianEdits::default().edge_mode, EdgeMode::Channel);
+    let (_, auto) = model();
+    assert_eq!(auto.params.edge_mode, EdgeMode::Channel);
+}
+
+#[test]
+fn the_line_mode_gives_a_straight_edge_between_the_same_ends() {
+    for result in [
+        design(&input()).unwrap(),
+        design(&big_input()).unwrap(),
+        b1_425(),
+    ] {
+        let channel = meridional_model(&result).unwrap();
+        let line = meridional_model_with(&result, &line_edits()).unwrap();
+        assert_eq!(line.params.edge_mode, EdgeMode::Line);
+        // Mismos extremos y mismas tapas: solo cambia la forma del borde.
+        assert_eq!(line.params.edge_points, channel.params.edge_points);
+        assert_eq!(line.params.edge_hub, channel.params.edge_hub);
+        let [from, to] = line.params.edge_points;
+        let edge = points(&line, "Borde de ataque");
+        assert!(edge.len() > 2);
+        assert_eq!((edge[0], edge[edge.len() - 1]), (from, to));
+        for point in edge {
+            let gap = distance_to_polyline(&[from, to], *point);
+            assert!(gap < 1e-6, "{point:?} a {gap} mm de la cuerda");
+        }
+        // Y la Bézier de 5 puntos con que se edita queda sobre la cuerda.
+        let shape = &line.params.edge;
+        assert!(shape.p2_offset.abs() < 1e-6, "{}", shape.p2_offset);
+        assert!(shape.start_angle.abs() < 1e-6 && shape.end_angle.abs() < 1e-6);
+        assert!((line.params.edge_length - shape.chord).abs() < 1e-6 * shape.chord);
+        assert!(line.edge_inside_channel(&shape.points));
+    }
+}
+
+#[test]
+fn the_channel_edge_is_not_straight_when_the_ends_differ() {
+    // El B1: tapa en el ojo y cubo por el criterio S; el canal curva el borde.
+    let result = b1_425();
+    let channel = meridional_model(&result).unwrap();
+    let line = meridional_model_with(&result, &line_edits()).unwrap();
+    assert!(channel.params.edge_length > line.params.edge_length + 0.5);
+}
+
+#[test]
+fn a_written_value_wins_over_the_line_and_the_rest_stays_straight() {
+    let model = edited(&MeridianEdits {
+        edge_mode: EdgeMode::Line,
+        edge: EdgeEdit {
+            p2_offset: Some(4.0),
+            ..EdgeEdit::default()
+        },
+        ..MeridianEdits::default()
+    });
+    let shape = &model.params.edge;
+    assert_eq!(shape.p2_offset, 4.0);
+    // Los ángulos que no se escribieron siguen siendo los de la recta.
+    assert!(shape.start_angle.abs() < 1e-6 && shape.end_angle.abs() < 1e-6);
+    assert!(model.params.edge_length > shape.chord);
 }

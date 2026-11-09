@@ -357,3 +357,21 @@ fn hub_cut_survives_save_reopen_and_csv() {
     assert_eq!(before, after);
     assert!(after.to_csv().contains(hm_design::meridian::CUT_NAME));
 }
+
+#[test]
+fn meridian_edits_of_reads_the_edge_shape() {
+    use hm_design::meridian::EdgeMode;
+    let mode = |text: &str| {
+        let section = hm_project::Meridian {
+            edge_shape: text.to_string(),
+            ..hm_project::Meridian::default()
+        };
+        hm_engine::meridian_edits_of(&section).edge_mode
+    };
+    assert_eq!(mode(""), EdgeMode::Channel);
+    assert_eq!(mode("channel"), EdgeMode::Channel);
+    assert_eq!(mode("line"), EdgeMode::Line);
+    assert_eq!(mode(" line "), EdgeMode::Line);
+    // Un texto que no se entiende no cambia la forma (la validación lo señala).
+    assert_eq!(mode("spline"), EdgeMode::Channel);
+}

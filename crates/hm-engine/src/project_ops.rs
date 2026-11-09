@@ -2,7 +2,8 @@
 
 use hm_core::PumpType;
 use hm_design::meridian::{
-    CutMode, EdgeEdit, HubCutEdit, MeridianEdits, MeridionalModel, WallEdit, meridional_model_with,
+    CutMode, EdgeEdit, EdgeMode, HubCutEdit, MeridianEdits, MeridionalModel, WallEdit,
+    meridional_model_with,
 };
 use hm_design::plan::{PlanModel, plan_model};
 use hm_design::{DesignInput, DesignReport, LEGACY_METHODS, METHOD, design_with_options};
@@ -329,6 +330,11 @@ pub fn meridian_edits_of(section: &hm_project::Meridian) -> MeridianEdits {
         hub_diameter: length_mm(&section.hub_diameter).filter(|value| *value >= 0.0),
         edge_shroud: fraction(&section.edge_shroud),
         edge_hub: fraction(&section.edge_hub),
+        edge_mode: if section.edge_shape.trim() == "line" {
+            EdgeMode::Line
+        } else {
+            EdgeMode::Channel
+        },
         edge: edge_edit_of(&section.edge),
         shroud: wall_edit_of(&section.shroud),
         hub: wall_edit_of(&section.hub),

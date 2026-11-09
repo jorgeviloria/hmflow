@@ -110,8 +110,9 @@ pub struct WallEdit {
 /// cubo (P4). Se mide en el marco de la cuerda, no en coordenadas del corte: el
 /// eje es la cuerda de P0 a P4 y la normal, perpendicular a ella, positiva hacia
 /// aguas arriba (en un borde radial, hacia −z). Así la curva sigue a los
-/// extremos cuando se arrastran. Todo `None` es la recta: brazos de la cuarta
-/// parte de la cuerda, P2 en su punto medio.
+/// extremos cuando se arrastran. Todo `None` es el borde automático: brazos
+/// de la cuarta parte de la cuerda, perpendiculares a su pared, y P2 en el
+/// punto medio de la cuerda.
 #[derive(Debug, Clone, Copy, Default, PartialEq)]
 pub struct EdgeEdit {
     /// P2 a lo largo de la cuerda, de 0 (en P0) a 1 (en P4). `None` es 0,5.
@@ -119,18 +120,20 @@ pub struct EdgeEdit {
     /// P2 separado de la cuerda, en mm, con signo. `None` es 0.
     pub p2_offset: Option<f64>,
     /// Ángulo del brazo de inicio (P0→P1) con la cuerda, en grados dentro de
-    /// [`ANGLE_RANGE`]; positivo gira hacia aguas arriba. `None` es 0.
+    /// [`ANGLE_RANGE`]; positivo gira hacia aguas arriba. `None` es el que lo
+    /// deja perpendicular a la tapa.
     pub start_angle: Option<f64>,
     /// Longitud del brazo de inicio, en mm, mayor que 0. `None` es la cuarta
     /// parte de la cuerda.
     pub start_length: Option<f64>,
-    /// Ángulo del brazo final (P4→P3) con la cuerda vista desde P4, igual.
+    /// Ángulo del brazo final (P4→P3) con la cuerda vista desde P4, igual;
+    /// `None` es el perpendicular al cubo.
     pub end_angle: Option<f64>,
     pub end_length: Option<f64>,
 }
 
 impl EdgeEdit {
-    /// Sin nada editado: el borde es la recta.
+    /// Sin nada editado: el borde automático, perpendicular a las dos paredes.
     #[must_use]
     pub fn is_default(&self) -> bool {
         *self == Self::default()
@@ -709,7 +712,8 @@ impl MeridionalModel {
             }
             _ => return true,
         }
-        edge_shape(edge.points[0], edge.points[4], &edit)
+        // Todo está escrito en `edit`: los ángulos automáticos no se usan.
+        edge_shape(edge.points[0], edge.points[4], &edit, (0.0, 0.0))
             .is_ok_and(|shape| self.edge_inside_channel(&shape.points))
     }
 
@@ -759,25 +763,12 @@ impl MeridionalModel {
     #[must_use]
     pub fn perpendicular_angle(&self, index: usize) -> Option<f64> {
         let edge = &self.params.edge;
-        let (u, n) = edge_frame(edge.points[0], edge.points[4])?;
-        let (wall, end, sign) = match index {
-            5 => (Wall::Shroud, edge.points[0], 1.0),
-            7 => (Wall::Hub, edge.points[4], -1.0),
+        let (wall, end, other, sign) = match index {
+            5 => (Wall::Shroud, edge.points[0], edge.points[4], 1.0),
+            7 => (Wall::Hub, edge.points[4], edge.points[0], -1.0),
             _ => return None,
         };
-        let tangent = wall_tangent(&self.curve(wall.name())?.points, end)?;
-        // De las dos perpendiculares, la que va hacia el otro extremo del borde.
-        let mut direction = [-tangent[1], tangent[0]];
-        if sign * (direction[0] * u[0] + direction[1] * u[1]) < 0.0 {
-            direction = [-direction[0], -direction[1]];
-        }
-        let along = direction[0] * u[0] + direction[1] * u[1];
-        let across = direction[0] * n[0] + direction[1] * n[1];
-        let angle = across
-            .atan2(sign * along)
-            .to_degrees()
-            .clamp(ANGLE_RANGE.0, ANGLE_RANGE.1);
-        Some((angle * 10.0).round() / 10.0)
+        perpendicular_arm_angle(&self.curve(wall.name())?.points, end, other, sign)
     }
 
     /// Avisos del corte: el borde de ataque automático que se queda en un
@@ -912,13 +903,18 @@ pub fn meridional_model_with(
     };
     let edge_points = [on_curve(&front, edge_shroud), on_curve(&rear, edge_hub)];
     let (shroud_edge, hub_edge) = (edge_points[0], edge_points[1]);
-    let edge = edge_shape(shroud_edge, hub_edge, &edits.edge)?;
+    // Sin ángulos escritos, los brazos salen perpendiculares a cada pared.
+    let auto_angles = (
+        perpendicular_arm_angle(&front, shroud_edge, hub_edge, 1.0).unwrap_or(0.0),
+        perpendicular_arm_angle(&rear, hub_edge, shroud_edge, -1.0).unwrap_or(0.0),
+    );
+    let edge = edge_shape(shroud_edge, hub_edge, &edits.edge, auto_angles)?;
     let edge_angle = (hub_edge[0] - shroud_edge[0])
         .atan2(shroud_edge[1] - hub_edge[1])
         .to_degrees();
-    // Sin editar (o sin cuerda): la recta de dos puntos, como siempre. Editado:
-    // la Bézier de 5 puntos muestreada.
-    let edge_line = if edits.edge.is_default() || edge.chord < RANGE_TOLERANCE {
+    // Sin cuerda (extremos coincidentes): los dos puntos. Si no, la Bézier de 5
+    // puntos muestreada, editada o automática.
+    let edge_line = if edge.chord < RANGE_TOLERANCE {
         edge_points.to_vec()
     } else {
         sample(&edge.points)?
@@ -1155,6 +1151,37 @@ fn wall_tangent(line: &[[f64; 2]], at: [f64; 2]) -> Option<[f64; 2]> {
     (length > 0.0).then(|| [dz / length, dr / length])
 }
 
+/// El ángulo del brazo del borde de ataque en el extremo `end` de la pared
+/// `wall_line`, con la cuerda hacia `other` y en grados con una décima, con que
+/// sale perpendicular a la pared, hacia el canal. `sign` es 1 si el extremo es
+/// el de la tapa (inicio del borde) y −1 si es el del cubo. `None` sin cuerda o
+/// sin tangente.
+fn perpendicular_arm_angle(
+    wall_line: &[[f64; 2]],
+    end: [f64; 2],
+    other: [f64; 2],
+    sign: f64,
+) -> Option<f64> {
+    let (u, n) = if sign > 0.0 {
+        edge_frame(end, other)?
+    } else {
+        edge_frame(other, end)?
+    };
+    let tangent = wall_tangent(wall_line, end)?;
+    // De las dos perpendiculares, la que va hacia el otro extremo del borde.
+    let mut direction = [-tangent[1], tangent[0]];
+    if sign * (direction[0] * u[0] + direction[1] * u[1]) < 0.0 {
+        direction = [-direction[0], -direction[1]];
+    }
+    let along = direction[0] * u[0] + direction[1] * u[1];
+    let across = direction[0] * n[0] + direction[1] * n[1];
+    let angle = across
+        .atan2(sign * along)
+        .to_degrees()
+        .clamp(ANGLE_RANGE.0, ANGLE_RANGE.1);
+    Some((angle * 10.0).round() / 10.0)
+}
+
 /// La mezcla de dos valores de un mismo punto del borde: `current` con `0`,
 /// `wanted` con `1`. Otro tipo de movimiento no se mezcla.
 fn blend(current: Moved, wanted: Moved, s: f64) -> Moved {
@@ -1217,7 +1244,12 @@ fn edge_frame(from: [f64; 2], to: [f64; 2]) -> Option<([f64; 2], [f64; 2])> {
 }
 
 /// Los 5 puntos del borde de ataque con lo editado, validado como las tapas.
-fn edge_shape(from: [f64; 2], to: [f64; 2], edit: &EdgeEdit) -> Result<EdgeShape, DesignError> {
+fn edge_shape(
+    from: [f64; 2],
+    to: [f64; 2],
+    edit: &EdgeEdit,
+    auto_angles: (f64, f64),
+) -> Result<EdgeShape, DesignError> {
     let chord = (to[0] - from[0]).hypot(to[1] - from[1]);
     let auto_arm_length = chord / 4.0;
     let number = |value: Option<f64>, auto: f64, what: &str, range: (f64, f64)| {
@@ -1235,11 +1267,16 @@ fn edge_shape(from: [f64; 2], to: [f64; 2], edit: &EdgeEdit) -> Result<EdgeShape
     let p2_offset = number(edit.p2_offset, 0.0, "el desvío de P2 (mm)", (-1.0e6, 1.0e6))?;
     let start_angle = number(
         edit.start_angle,
-        0.0,
+        auto_angles.0,
         "el ángulo de inicio (grados)",
         ANGLE_RANGE,
     )?;
-    let end_angle = number(edit.end_angle, 0.0, "el ángulo final (grados)", ANGLE_RANGE)?;
+    let end_angle = number(
+        edit.end_angle,
+        auto_angles.1,
+        "el ángulo final (grados)",
+        ANGLE_RANGE,
+    )?;
     let positive = |value: Option<f64>, what: &str| {
         let value = value.unwrap_or(auto_arm_length);
         if value.is_finite() && value > 0.0 || (chord < RANGE_TOLERANCE && value == 0.0) {

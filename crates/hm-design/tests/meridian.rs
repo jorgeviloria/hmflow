@@ -102,7 +102,7 @@ fn the_inlet_area_is_the_one_of_the_1d_design() {
         ..MeridianEdits::default()
     });
     let leading = points(&model, "Borde de ataque");
-    let (outer, inner) = (leading[0][1], leading[1][1]);
+    let (outer, inner) = (leading[0][1], leading[leading.len() - 1][1]);
     let annulus = PI * (outer * outer - inner * inner);
     let design = PI * mm(&result.d1) * mm(&result.b1);
     assert!((annulus - design).abs() / design < 1e-12);
@@ -452,9 +452,10 @@ fn by_default_the_hub_diameter_is_the_1d_one_and_the_leading_edge_has_the_1d_are
     assert_eq!(p.d1i, p.auto_d1i);
     assert!(p.d1i > 0.0);
     let edge = points(&auto, "Borde de ataque");
+    let last = edge[edge.len() - 1];
     assert_eq!(edge[0], [0.0, r1]);
-    assert_eq!(edge[1], [0.0, p.d1i / 2.0]);
-    assert_eq!(points(&auto, "Tapa trasera")[0], edge[1]);
+    assert_eq!(last, [0.0, p.d1i / 2.0]);
+    assert_eq!(points(&auto, "Tapa trasera")[0], last);
 
     let axis = edited(&MeridianEdits {
         hub_diameter: Some(0.0),
@@ -463,7 +464,8 @@ fn by_default_the_hub_diameter_is_the_1d_one_and_the_leading_edge_has_the_1d_are
     });
     let axis_area = PI * r1 * r1;
     assert!((axis.params.edge_area - axis_area).abs() < 1e-6 * axis_area);
-    assert_eq!(points(&axis, "Borde de ataque")[1], [0.0, 0.0]);
+    let axis_edge = points(&axis, "Borde de ataque");
+    assert_eq!(axis_edge[axis_edge.len() - 1], [0.0, 0.0]);
     // b1, z_e y r_ds siguen saliendo del dH del 1D.
     assert_eq!(axis.params.inlet_width, p.inlet_width);
 }
@@ -532,11 +534,24 @@ fn the_leading_edge_rests_on_both_curves_and_the_channel_starts_there() {
             .fold(f64::MAX, f64::min);
         assert!(near < 1e-9, "{name}: {near}");
     }
-    assert_eq!(points(&moved, "Borde de ataque"), p.edge_points);
-    let length = (p.edge_points[0][0] - p.edge_points[1][0])
-        .hypot(p.edge_points[0][1] - p.edge_points[1][1]);
+    // El borde es una curva que une los dos extremos.
+    let edge = points(&moved, "Borde de ataque");
+    assert_eq!(
+        (edge[0], edge[edge.len() - 1]),
+        (p.edge_points[0], p.edge_points[1])
+    );
+    let length: f64 = edge
+        .windows(2)
+        .map(|pair| (pair[1][0] - pair[0][0]).hypot(pair[1][1] - pair[0][1]))
+        .sum();
     assert!((p.edge_length - length).abs() < 1e-12);
-    let area = PI * (p.edge_points[0][1] + p.edge_points[1][1]) * length;
+    let area: f64 = edge
+        .windows(2)
+        .map(|pair| {
+            PI * (pair[0][1] + pair[1][1])
+                * (pair[1][0] - pair[0][0]).hypot(pair[1][1] - pair[0][1])
+        })
+        .sum();
     assert!((p.edge_area - area).abs() < 1e-9 * area);
     // El canal arranca en el borde y su primera área es la del borde.
     let channel = moved.channel();
@@ -712,30 +727,23 @@ fn a_dragged_p2_survives_rounding_to_hundredths_of_a_millimetre() {
     }
 }
 
-/// Sin editar, el borde es la recta de dos puntos y su Bézier de 5 puntos
-/// reparte los puntos a la cuarta parte de la cuerda.
+/// Sin editar, el borde es una Bézier de 5 puntos con brazos de la cuarta
+/// parte de la cuerda y P2 en su punto medio, sin desvío; solo los ángulos son
+/// los perpendiculares a las paredes (antes 0: la recta).
 #[test]
-fn an_unedited_edge_is_the_straight_line_with_uniform_points() {
+fn an_unedited_edge_keeps_quarter_arms_and_a_central_p2() {
     let (_, auto) = model();
-    assert_eq!(points(&auto, "Borde de ataque").len(), 2);
     let edge = &auto.params.edge;
     let [from, to] = auto.params.edge_points;
     assert_eq!((edge.points[0], edge.points[4]), (from, to));
-    for (k, point) in edge.points.iter().enumerate() {
-        let t = k as f64 / 4.0;
-        assert!(
-            (point[0] - (from[0] + t * (to[0] - from[0]))).abs() < 1e-9,
-            "P{k}"
-        );
-        assert!(
-            (point[1] - (from[1] + t * (to[1] - from[1]))).abs() < 1e-9,
-            "P{k}"
-        );
-    }
-    assert!((edge.chord - auto.params.edge_length).abs() < 1e-12);
+    let mid = [(from[0] + to[0]) / 2.0, (from[1] + to[1]) / 2.0];
+    assert!((edge.points[2][0] - mid[0]).abs() < 1e-9);
+    assert!((edge.points[2][1] - mid[1]).abs() < 1e-9);
+    assert!((edge.start_length - edge.chord / 4.0).abs() < 1e-12);
+    assert!((edge.end_length - edge.chord / 4.0).abs() < 1e-12);
     assert!((edge.auto_arm_length - edge.chord / 4.0).abs() < 1e-12);
     assert_eq!((edge.p2_along, edge.p2_offset), (0.5, 0.0));
-    assert_eq!((edge.start_angle, edge.end_angle), (0.0, 0.0));
+    assert!(edge.start_angle != 0.0 || edge.end_angle != 0.0);
 }
 
 /// Los brazos y P2 se miden en el marco de la cuerda. En un borde radial en
@@ -960,7 +968,10 @@ fn the_whole_channel_starts_at_the_inlet_plane_and_the_edge_channel_is_its_tail(
         edge_hub: Some(0.0),
         ..MeridianEdits::default()
     });
-    assert_eq!(auto.channel_from(0.0, 0.0), auto.channel());
+    let (whole_auto, tail_auto) = (auto.channel_from(0.0, 0.0), auto.channel());
+    assert_eq!(whole_auto.len(), tail_auto.len());
+    assert!((whole_auto[0].area - tail_auto[0].area).abs() < 1e-9 * tail_auto[0].area);
+    assert_eq!(whole_auto[1..], tail_auto[1..]);
     let moved = edited(&MeridianEdits {
         edge_shroud: Some(0.3),
         edge_hub: Some(0.5),
@@ -1717,4 +1728,81 @@ fn the_b1_hub_cut_still_fits_the_automatic_edge() {
         ..Default::default()
     };
     assert!(meridional_model_with(&result, &edits).is_ok());
+}
+
+// ---- El borde automático sale perpendicular a las dos paredes ----
+
+/// Grados entre el brazo de la Bézier del borde en un extremo (P0→P1 o
+/// P4→P3) y la tangente de la pared en ese punto.
+fn angle_with_wall(model: &MeridionalModel, wall: &str, at_start: bool) -> f64 {
+    let control = &model.params.edge.points;
+    let (end, next) = if at_start {
+        (control[0], control[1])
+    } else {
+        (control[4], control[3])
+    };
+    let arm = [next[0] - end[0], next[1] - end[1]];
+    let length = arm[0].hypot(arm[1]);
+    let wall_tangent = tangent_at(points(model, wall), end);
+    let cos = (arm[0] * wall_tangent[0] + arm[1] * wall_tangent[1]) / length;
+    cos.abs().acos().to_degrees()
+}
+
+fn default_models() -> Vec<MeridionalModel> {
+    vec![
+        model().1,
+        meridional_model(&design(&big_input()).unwrap()).unwrap(),
+        meridional_model(&design(&b1_input()).unwrap()).unwrap(),
+    ]
+}
+
+#[test]
+fn the_automatic_edge_is_perpendicular_to_both_walls() {
+    for model in default_models() {
+        for (wall, at_start) in [("Tapa delantera", true), ("Tapa trasera", false)] {
+            let angle = angle_with_wall(&model, wall, at_start);
+            assert!((angle - 90.0).abs() < 0.5, "{wall}: {angle}°");
+        }
+    }
+}
+
+#[test]
+fn the_automatic_edge_is_sampled_as_a_curve() {
+    for model in default_models() {
+        assert!(points(&model, "Borde de ataque").len() > 2);
+    }
+}
+
+#[test]
+fn the_automatic_edge_stays_inside_the_channel() {
+    for model in default_models() {
+        assert!(model.edge_inside_channel(&model.params.edge.points));
+    }
+}
+
+#[test]
+fn written_edge_angles_win() {
+    let model = edited(&MeridianEdits {
+        edge: EdgeEdit {
+            start_angle: Some(10.0),
+            end_angle: Some(-5.0),
+            ..EdgeEdit::default()
+        },
+        ..MeridianEdits::default()
+    });
+    assert_eq!(model.params.edge.start_angle, 10.0);
+    assert_eq!(model.params.edge.end_angle, -5.0);
+}
+
+#[test]
+fn a_written_angle_leaves_the_other_end_automatic() {
+    let (_, auto) = model();
+    let model = edited(&MeridianEdits {
+        edge: EdgeEdit {
+            start_angle: Some(10.0),
+            ..EdgeEdit::default()
+        },
+        ..MeridianEdits::default()
+    });
+    assert_eq!(model.params.edge.end_angle, auto.params.edge.end_angle);
 }

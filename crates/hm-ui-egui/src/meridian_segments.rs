@@ -470,6 +470,46 @@ impl WallSegments {
         Ok(())
     }
 
+    /// Por qué no se puede proponer el contorno cerrado de la tapa, o `Ok`:
+    /// sin prolongación ni cierre, con P0 y P4 sobre la curva y con un espesor
+    /// de pared del diseño (mm) que dé tramos de verdad.
+    pub(super) fn can_propose_shroud(&self, thickness: Option<f64>) -> Result<(), &'static str> {
+        if self.head + self.tail > 0 || self.closed {
+            return Err("ya tiene prolongación");
+        }
+        if self.free[self.p0()].is_some() || self.free[self.p4()].is_some() {
+            return Err("P0 y P4 deben seguir sobre la curva");
+        }
+        match thickness {
+            Some(e) if e.is_finite() && e >= MIN_LENGTH_MM => Ok(()),
+            Some(e) if e.is_finite() && e >= 0.0 => Err("el espesor de pared es demasiado fino"),
+            _ => Err("falta el espesor de pared del diseño"),
+        }
+    }
+
+    /// Cierra la tapa por fuera del hidráulico con un offset: desde P4, rectas
+    /// por [`SHROUD_OFFSET_STEPS`] puntos de la curva paralela a distancia
+    /// `thickness` (mm), hasta el de P0, y una recta de cierre hasta P0.
+    pub(super) fn propose_shroud(
+        &mut self,
+        points: &[[f64; 2]; 5],
+        thickness: Option<f64>,
+    ) -> Result<(), &'static str> {
+        self.can_propose_shroud(thickness)?;
+        let wall = thickness.unwrap_or(0.0);
+        let mut next = self.clone();
+        for k in 0..=SHROUD_OFFSET_STEPS {
+            let t = 1.0 - k as f64 / SHROUD_OFFSET_STEPS as f64;
+            let at = offset_point(points, t, wall);
+            if next.extend(points, End::Finish, at).is_none() {
+                return Err("el offset no cabe en la tapa");
+            }
+        }
+        next.closed = true;
+        *self = next;
+        Ok(())
+    }
+
     /// Si el tramo `piece` es de la prolongación.
     fn extension_piece(&self, piece: usize) -> bool {
         piece < self.head || piece >= self.pieces.len() - self.tail
@@ -1424,6 +1464,37 @@ pub(super) fn point_at(points: &[[f64; 2]; 5], t: f64) -> [f64; 2] {
         }
     }
     p[0]
+}
+
+/// En cuántos tramos rectos se aproxima el offset de la tapa.
+const SHROUD_OFFSET_STEPS: usize = 8;
+
+/// El punto a distancia `wall` de la Bézier en `t`, por fuera: hacia +r y −z,
+/// según la normal a la tangente.
+fn offset_point(points: &[[f64; 2]; 5], t: f64, wall: f64) -> [f64; 2] {
+    let at = point_at(points, t);
+    // La derivada de la cuártica es una cúbica de las diferencias de control.
+    let diff: [[f64; 2]; 4] = std::array::from_fn(|i| {
+        [
+            points[i + 1][0] - points[i][0],
+            points[i + 1][1] - points[i][1],
+        ]
+    });
+    let mut d = diff;
+    for level in (1..4).rev() {
+        for i in 0..level {
+            d[i] = [
+                d[i][0] + (d[i + 1][0] - d[i][0]) * t,
+                d[i][1] + (d[i + 1][1] - d[i][1]) * t,
+            ];
+        }
+    }
+    let [dz, dr] = d[0];
+    let norm = dz.hypot(dr);
+    if norm < 1e-9 {
+        return [at[0], at[1] + wall];
+    }
+    [at[0] - wall * dr / norm, at[1] + wall * dz / norm]
 }
 
 fn distance(a: [f64; 2], b: [f64; 2]) -> f64 {
@@ -2778,8 +2849,12 @@ pub(super) fn interact(
                 ui.close();
             }
         }
-        if hit.wall == Wall::Hub {
-            let proposal = state.can_propose_closed(&points, wall_thickness);
+        {
+            let proposal = if hit.wall == Wall::Hub {
+                state.can_propose_closed(&points, wall_thickness)
+            } else {
+                state.can_propose_shroud(wall_thickness)
+            };
             let label = match wall_thickness {
                 Some(e) => format!("Proponer contorno (pared de {e:.1} mm)"),
                 None => "Proponer contorno".to_string(),
@@ -2787,7 +2862,12 @@ pub(super) fn interact(
             let button = ui.add_enabled(proposal.is_ok(), egui::Button::new(label));
             match proposal {
                 Ok(()) if button.clicked() => {
-                    if state.propose_closed(&points, wall_thickness).is_ok() {
+                    let done = if hit.wall == Wall::Hub {
+                        state.propose_closed(&points, wall_thickness)
+                    } else {
+                        state.propose_shroud(&points, wall_thickness)
+                    };
+                    if done.is_ok() {
                         if state.head > 0 {
                             constraints.node_inserted(hit.wall, 0);
                         }
@@ -3778,6 +3858,59 @@ mod tests {
             assert_eq!(s.propose_closed(&POINTS, bad), Err(why));
         }
         assert_eq!(s, WallSegments::default());
+    }
+
+    #[test]
+    fn proposing_closes_the_shroud_with_an_offset_curve() {
+        let mut s = WallSegments::default();
+        assert_eq!(s.propose_shroud(&POINTS, Some(5.0)), Ok(()));
+        assert!(s.closed);
+        assert_eq!((s.head, s.tail), (0, SHROUD_OFFSET_STEPS + 1));
+        let first = s.p4() + 1;
+        let last = s.node_count() - 1;
+        // Cada punto está a la distancia del espesor de la curva, por fuera.
+        for index in first..=last {
+            let at = s.node_at(&POINTS, index);
+            let (_, gap) = nearest_t(&POINTS, at, 0.0, 1.0, distance);
+            assert!((gap - 5.0).abs() < 0.05, "nodo {index} a {gap}");
+        }
+        // Sale de P4 hacia −z y acaba encima de P0, hacia +r.
+        let start = s.node_at(&POINTS, first);
+        assert!(start[0] < POINTS[4][0] && (start[1] - POINTS[4][1]).abs() < 0.5);
+        let end = s.node_at(&POINTS, last);
+        assert!((end[0] - POINTS[0][0]).abs() < 1.5 && end[1] > POINTS[0][1]);
+        let c = s.contour(&POINTS);
+        assert_eq!(c.len(), s.pieces.len() + 1);
+        assert_eq!(c.last().unwrap().first(), Some(&end));
+        assert_eq!(c.last().unwrap().last(), Some(&POINTS[0]));
+    }
+
+    #[test]
+    fn the_shroud_proposal_is_refused_with_a_reason() {
+        let mut s = WallSegments::default();
+        for (bad, why) in [
+            (None, "falta el espesor de pared del diseño"),
+            (Some(-1.0), "falta el espesor de pared del diseño"),
+            (Some(f64::NAN), "falta el espesor de pared del diseño"),
+            (Some(0.0), "el espesor de pared es demasiado fino"),
+        ] {
+            assert_eq!(s.propose_shroud(&POINTS, bad), Err(why));
+        }
+        assert_eq!(s, WallSegments::default());
+        let mut extended = extended(1, 0);
+        let before = extended.clone();
+        assert_eq!(
+            extended.propose_shroud(&POINTS, Some(5.0)),
+            Err("ya tiene prolongación")
+        );
+        assert_eq!(extended, before);
+        let mut freed = WallSegments::default();
+        freed.toggle(0);
+        assert!(freed.move_node(&POINTS, 0, [0.0, 40.0]));
+        assert_eq!(
+            freed.can_propose_shroud(Some(5.0)),
+            Err("P0 y P4 deben seguir sobre la curva")
+        );
     }
 
     #[test]

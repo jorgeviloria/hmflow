@@ -9,7 +9,7 @@ use egui_plot::{Legend, Plot, PlotPoint, Points};
 
 use crate::curves::line;
 use hm_design::meridian::{
-    AUTO_END_ANGLE, AUTO_START_ANGLE, CUT_NAME, ChannelStation, ControlPoint, HubCutEdit,
+    AUTO_END_ANGLE, AUTO_START_ANGLE, CUT_NAME, ChannelStation, ControlPoint, EdgeMode, HubCutEdit,
     MeridianEdits, MeridionalModel, Moved, Wall, meridional_model, meridional_model_with,
 };
 use hm_design::{DesignError, DesignResult};
@@ -381,7 +381,11 @@ fn model_or_uncut(
 /// control. Devuelve si cambió algo.
 fn meridian_edit(ui: &mut egui::Ui, outcome: &Outcome, boxes: &mut Meridian) -> bool {
     let auto = meridional_model(&outcome.result);
-    let mut changed = wall_boxes(ui, boxes, auto.as_ref().ok());
+    // El modelo con lo escrito ahora, para que elegir la Bézier parta de él.
+    let current = model_or_uncut(&outcome.result, &hm_engine::meridian_edits_of(boxes))
+        .ok()
+        .map(|(model, _)| model);
+    let mut changed = wall_boxes(ui, boxes, auto.as_ref().ok(), current.as_ref());
     let edits = hm_engine::meridian_edits_of(boxes);
     // El visor no calcula: dibuja el mismo modelo que se exporta.
     let model = match model_or_uncut(&outcome.result, &edits) {
@@ -401,7 +405,7 @@ fn meridian_edit(ui: &mut egui::Ui, outcome: &Outcome, boxes: &mut Meridian) -> 
             ui.data_mut(|data| data.remove::<bool>(fit_id));
         }
     });
-    ui.label(RichText::new(edge_reading(&model)).small());
+    ui.label(RichText::new(edge_reading(&model, &edits)).small());
     for diagnostic in model.diagnostics() {
         let hint = diagnostic.hint.as_deref().unwrap_or_default();
         ui.label(
@@ -872,7 +876,12 @@ fn header(model: &MeridionalModel, edits: &MeridianEdits) -> String {
 
 /// Las cajas de las dos tapas, con lo del motor como pista. Vacía es el
 /// motor.
-fn wall_boxes(ui: &mut egui::Ui, boxes: &mut Meridian, auto: Option<&MeridionalModel>) -> bool {
+fn wall_boxes(
+    ui: &mut egui::Ui,
+    boxes: &mut Meridian,
+    auto: Option<&MeridionalModel>,
+    current: Option<&MeridionalModel>,
+) -> bool {
     let mut changed = false;
     let parsed = hm_engine::meridian_edits_of(boxes);
     ui.horizontal_wrapped(|ui| {
@@ -938,17 +947,37 @@ fn wall_boxes(ui: &mut egui::Ui, boxes: &mut Meridian, auto: Option<&MeridionalM
         .unwrap_or_default();
     ui.horizontal_wrapped(|ui| {
         ui.label(RichText::new("Borde de ataque").strong());
+        let shape = edge_shape_of(boxes);
+        ui.label(RichText::new("Forma").small());
+        egui::ComboBox::from_id_salt("edge_shape")
+            .selected_text(shape.name())
+            .show_ui(ui, |ui| {
+                for choice in EdgeChoice::ALL {
+                    if ui
+                        .selectable_label(shape == choice, choice.name())
+                        .on_hover_text(choice.help())
+                        .clicked()
+                    {
+                        changed |= set_edge_shape(boxes, choice, current);
+                    }
+                }
+            })
+            .response
+            .on_hover_text("La forma del borde de ataque entre sus dos extremos.");
         let automatic = edge_is_automatic(boxes);
         if ui
             .add_enabled(!automatic, egui::Button::new("Borde automático (criterio S)"))
             .on_hover_text(
                 "Coloca el borde para igualar el momento estático S = ∫ r ds del cubo y de la \
-                 tapa, perpendicular a las dos paredes.",
+                 tapa, y le devuelve la forma de canal.",
             )
             .clicked()
         {
             changed |= reset_edge(boxes);
         }
+        // Las cajas de la Bézier solo se escriben en modo Bézier: en los otros
+        // la forma sale de la posición de los extremos.
+        let bezier = edge_shape_of(boxes) == EdgeChoice::Bezier;
         let texts = &mut boxes.edge;
         let fields: [(&str, &mut String, bool); 6] = [
             ("P2 a lo largo", &mut texts.p2_along, edge_edit.p2_along.is_none()),
@@ -958,6 +987,7 @@ fn wall_boxes(ui: &mut egui::Ui, boxes: &mut Meridian, auto: Option<&MeridionalM
             ("Final °", &mut texts.end_angle_deg, edge_edit.end_angle.is_none()),
             ("Final L", &mut texts.end_length, edge_edit.end_length.is_none()),
         ];
+        ui.add_enabled_ui(bezier, |ui| {
         for (index, (label, text, unread)) in fields.into_iter().enumerate() {
             let bad = unread && !text.trim().is_empty();
             ui.label(RichText::new(label).small());
@@ -980,6 +1010,7 @@ fn wall_boxes(ui: &mut egui::Ui, boxes: &mut Meridian, auto: Option<&MeridionalM
                 )
                 .changed();
         }
+        });
     });
     for wall in Wall::ALL {
         let shape = auto.map(|model| model.params.wall(wall).clone());
@@ -1253,17 +1284,114 @@ fn wall_mut(boxes: &mut Meridian, wall: Wall) -> &mut MeridianWall {
 /// Si el borde de ataque no tiene nada escrito: fracciones, P2, ángulos ni
 /// longitudes. Entonces sale el automático (criterio S, perpendicular).
 fn edge_is_automatic(boxes: &Meridian) -> bool {
-    boxes.edge_shroud.trim().is_empty() && boxes.edge_hub.trim().is_empty() && boxes.edge.is_empty()
+    boxes.edge_shroud.trim().is_empty()
+        && boxes.edge_hub.trim().is_empty()
+        && boxes.edge_shape.trim().is_empty()
+        && boxes.edge.is_empty()
+}
+
+/// La forma del borde de ataque que se elige en la interfaz.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum EdgeChoice {
+    /// Sigue el canal (automático).
+    Channel,
+    /// La recta entre sus dos extremos.
+    Line,
+    /// La Bézier de 5 puntos, con sus valores escritos y editables.
+    Bezier,
+}
+
+impl EdgeChoice {
+    const ALL: [Self; 3] = [Self::Channel, Self::Line, Self::Bezier];
+
+    fn name(self) -> &'static str {
+        match self {
+            Self::Channel => "Canal (automático)",
+            Self::Line => "Recta",
+            Self::Bezier => "Bézier (editable)",
+        }
+    }
+
+    fn help(self) -> &'static str {
+        match self {
+            Self::Channel => {
+                "El borde sigue el canal: cada línea de corriente lo corta en una fracción de \
+                 pared interpolada entre la del cubo y la de la tapa."
+            }
+            Self::Line => "La recta entre el extremo de la tapa y el del cubo.",
+            Self::Bezier => {
+                "La Bézier de 5 puntos con sus valores escritos en las cajas (parte de la forma \
+                 de ahora): P2, y el ángulo y la longitud de cada brazo."
+            }
+        }
+    }
+}
+
+/// La forma del borde que dicen las cajas: lo escrito en las cajas de la
+/// Bézier manda, luego la recta, y vacío es el canal.
+fn edge_shape_of(boxes: &Meridian) -> EdgeChoice {
+    if !boxes.edge.is_empty() {
+        EdgeChoice::Bezier
+    } else if boxes.edge_shape.trim() == "line" {
+        EdgeChoice::Line
+    } else {
+        EdgeChoice::Channel
+    }
+}
+
+/// Elige la forma del borde. Canal y recta vacían las cajas de la Bézier; la
+/// Bézier escribe en ellas los valores de `current` (el modelo de ahora), para
+/// que editarla parta de lo que se ve. Devuelve si cambió algo. No toca la
+/// posición del borde (las fracciones).
+fn set_edge_shape(
+    boxes: &mut Meridian,
+    choice: EdgeChoice,
+    current: Option<&MeridionalModel>,
+) -> bool {
+    if edge_shape_of(boxes) == choice {
+        return false;
+    }
+    match choice {
+        EdgeChoice::Channel | EdgeChoice::Line => {
+            boxes.edge = hm_project::MeridianEdge::default();
+            boxes.edge_shape = if choice == EdgeChoice::Line {
+                "line".to_string()
+            } else {
+                String::new()
+            };
+            true
+        }
+        EdgeChoice::Bezier => {
+            let Some(model) = current else {
+                return false;
+            };
+            let edge = &model.params.edge;
+            boxes.edge = hm_project::MeridianEdge {
+                p2_along: format!("{:.3}", edge.p2_along),
+                p2_offset: length_text(if edge.p2_offset.abs() < 0.005 {
+                    0.0
+                } else {
+                    edge.p2_offset
+                }),
+                start_angle_deg: angle_text(edge.start_angle),
+                start_length: length_text(edge.start_length),
+                end_angle_deg: angle_text(edge.end_angle),
+                end_length: length_text(edge.end_length),
+            };
+            true
+        }
+    }
 }
 
 /// Vacía las cajas del borde de ataque: vuelve al borde automático. Devuelve si
 /// cambió algo; quien la llama lo anota para deshacer como cualquier edición.
 fn reset_edge(boxes: &mut Meridian) -> bool {
-    if boxes.edge_shroud.is_empty() && boxes.edge_hub.is_empty() && boxes.edge.is_empty() {
+    if edge_is_automatic(boxes) {
         return false;
     }
     boxes.edge_shroud.clear();
     boxes.edge_hub.clear();
+    boxes.edge_shape.clear();
     boxes.edge = hm_project::MeridianEdge::default();
     true
 }
@@ -1289,15 +1417,22 @@ fn edge_hints(model: &MeridionalModel) -> EdgeHints {
 
 /// La lectura del criterio S: los dos momentos estáticos y si el cubo es
 /// automático o está fijado.
-fn edge_reading(model: &MeridionalModel) -> String {
+fn edge_reading(model: &MeridionalModel, edits: &MeridianEdits) -> String {
     let p = &model.params;
+    let shape = if !edits.edge.is_default() {
+        "Bézier"
+    } else if p.edge_mode == EdgeMode::Line {
+        "recta"
+    } else {
+        "canal"
+    };
     let mode = if p.edge_auto.hub_auto {
         "automático"
     } else {
         "fijado"
     };
     format!(
-        "Borde de ataque, criterio S: S cubo = {:.0} mm² · S tapa = {:.0} mm² · cubo {mode} ({:.3})",
+        "Borde de ataque, criterio S: S cubo = {:.0} mm² · S tapa = {:.0} mm² · cubo {mode} ({:.3}) · forma {shape}",
         p.edge_auto.s_hub, p.edge_auto.s_shroud, p.edge_hub
     )
 }
@@ -1308,7 +1443,11 @@ fn edited_note(edits: &MeridianEdits) -> String {
     if edits.hub_diameter.is_some() {
         names.push("dH".to_string());
     }
-    if edits.edge_shroud.is_some() || edits.edge_hub.is_some() || !edits.edge.is_default() {
+    if edits.edge_shroud.is_some()
+        || edits.edge_hub.is_some()
+        || !edits.edge.is_default()
+        || edits.edge_mode != EdgeMode::Channel
+    {
         names.push("borde de ataque".to_string());
     }
     if let Some(z) = edits.hub_cut.z {
@@ -1535,6 +1674,7 @@ fn area_against_length(channel: &[ChannelStation]) -> (Vec<[f64; 2]>, Vec<[f64; 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use hm_design::meridian::EdgeEdit;
 
     #[test]
     fn amend_keeps_the_history_in_step() {
@@ -2255,7 +2395,7 @@ mod tests {
     fn the_edge_reading_gives_both_moments_and_whether_the_hub_is_automatic() {
         let result = edge_design();
         let auto = meridional_model(&result).unwrap();
-        let text = edge_reading(&auto);
+        let text = edge_reading(&auto, &MeridianEdits::default());
         let p = &auto.params.edge_auto;
         assert!(text.contains("S cubo"), "{text}");
         assert!(text.contains(&format!("{:.0}", p.s_hub)), "{text}");
@@ -2269,7 +2409,7 @@ mod tests {
             },
         )
         .unwrap();
-        assert!(edge_reading(&fixed).contains("fijado"));
+        assert!(edge_reading(&fixed, &MeridianEdits::default()).contains("fijado"));
     }
 
     #[test]
@@ -2287,5 +2427,128 @@ mod tests {
                 format!("{} (auto)", angle_text(auto.params.edge.auto.end_angle)),
             ]
         );
+    }
+
+    #[test]
+    fn the_edge_shape_is_read_from_the_boxes() {
+        let mut boxes = Meridian::default();
+        assert_eq!(edge_shape_of(&boxes), EdgeChoice::Channel);
+        boxes.edge_shape = "line".to_string();
+        assert_eq!(edge_shape_of(&boxes), EdgeChoice::Line);
+        // Lo escrito en las cajas del borde lo hace una Bézier editada.
+        boxes.edge.p2_offset = "2 mm".to_string();
+        assert_eq!(edge_shape_of(&boxes), EdgeChoice::Bezier);
+    }
+
+    #[test]
+    fn choosing_the_line_or_the_channel_clears_the_bezier_boxes() {
+        let mut boxes = fixed_edge_boxes();
+        assert!(set_edge_shape(&mut boxes, EdgeChoice::Line, None));
+        assert_eq!(boxes.edge_shape, "line");
+        assert!(boxes.edge.is_empty());
+        // La posición del borde no se toca: la forma es otra cosa.
+        assert_eq!(
+            (boxes.edge_shroud.as_str(), boxes.edge_hub.as_str()),
+            ("0.1", "0.5")
+        );
+        assert!(!set_edge_shape(&mut boxes, EdgeChoice::Line, None));
+        assert!(set_edge_shape(&mut boxes, EdgeChoice::Channel, None));
+        assert!(boxes.edge_shape.is_empty());
+        assert_eq!(edge_shape_of(&boxes), EdgeChoice::Channel);
+    }
+
+    #[test]
+    fn choosing_the_bezier_writes_the_current_shape_into_the_boxes() {
+        let result = edge_design();
+        for (shape, mode) in [("", EdgeMode::Channel), ("line", EdgeMode::Line)] {
+            let mut boxes = Meridian {
+                edge_shape: shape.to_string(),
+                ..Meridian::default()
+            };
+            let before = meridional_model_with(
+                &result,
+                &MeridianEdits {
+                    edge_mode: mode,
+                    ..MeridianEdits::default()
+                },
+            )
+            .unwrap();
+            assert!(set_edge_shape(
+                &mut boxes,
+                EdgeChoice::Bezier,
+                Some(&before)
+            ));
+            assert_eq!(edge_shape_of(&boxes), EdgeChoice::Bezier);
+            // Escrita la forma que había, el borde no se mueve (hasta el
+            // redondeo de las cajas).
+            let after =
+                meridional_model_with(&result, &hm_engine::meridian_edits_of(&boxes)).unwrap();
+            for (a, b) in before
+                .params
+                .edge
+                .points
+                .iter()
+                .zip(&after.params.edge.points)
+            {
+                assert!(
+                    (a[0] - b[0]).abs() < 0.02 && (a[1] - b[1]).abs() < 0.02,
+                    "{shape}: {a:?} {b:?}"
+                );
+            }
+            // Ya es Bézier: elegirla otra vez no cambia nada.
+            assert!(!set_edge_shape(
+                &mut boxes,
+                EdgeChoice::Bezier,
+                Some(&before)
+            ));
+        }
+    }
+
+    #[test]
+    fn the_automatic_edge_button_also_clears_the_shape() {
+        let mut boxes = Meridian {
+            edge_shape: "line".to_string(),
+            ..Meridian::default()
+        };
+        assert!(!edge_is_automatic(&boxes));
+        assert!(reset_edge(&mut boxes));
+        assert!(boxes.edge_shape.is_empty());
+        assert!(edge_is_automatic(&boxes));
+    }
+
+    #[test]
+    fn the_edited_note_lists_a_straight_edge() {
+        let line = hm_engine::meridian_edits_of(&Meridian {
+            edge_shape: "line".to_string(),
+            ..Meridian::default()
+        });
+        assert!(edited_note(&line).contains("borde de ataque"));
+    }
+
+    #[test]
+    fn the_edge_reading_names_the_shape() {
+        let result = edge_design();
+        let channel = meridional_model(&result).unwrap();
+        let none = MeridianEdits::default();
+        assert!(
+            edge_reading(&channel, &none).contains("forma canal"),
+            "{}",
+            edge_reading(&channel, &none)
+        );
+        let straight = MeridianEdits {
+            edge_mode: EdgeMode::Line,
+            ..MeridianEdits::default()
+        };
+        let line = meridional_model_with(&result, &straight).unwrap();
+        assert!(edge_reading(&line, &straight).contains("forma recta"));
+        let curved = MeridianEdits {
+            edge: EdgeEdit {
+                p2_offset: Some(2.0),
+                ..EdgeEdit::default()
+            },
+            ..MeridianEdits::default()
+        };
+        let bezier = meridional_model_with(&result, &curved).unwrap();
+        assert!(edge_reading(&bezier, &curved).contains("forma Bézier"));
     }
 }

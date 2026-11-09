@@ -1213,7 +1213,7 @@ fn length_text(value: f64) -> String {
 }
 
 /// Un ángulo en grados, sin unidad (así lo guarda `[meridian]`).
-fn angle_text(value: f64) -> String {
+pub(super) fn angle_text(value: f64) -> String {
     format!("{value:.1}")
 }
 

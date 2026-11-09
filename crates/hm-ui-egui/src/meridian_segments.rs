@@ -2300,6 +2300,34 @@ fn target_id() -> egui::Id {
     egui::Id::unique("meridian_segments_target")
 }
 
+/// El brazo del borde de ataque (P1 o P3) bajo el último clic derecho.
+fn edge_arm_id() -> egui::Id {
+    egui::Id::unique("meridian_segments_edge_arm")
+}
+
+/// El brazo del borde de ataque (índice 5 para P1, 7 para P3) más cercano al
+/// puntero, si está al alcance de un clic.
+fn near_edge_arm(
+    plot_ui: &egui_plot::PlotUi<'_>,
+    model: &MeridionalModel,
+    pointer: PlotPoint,
+) -> Option<usize> {
+    let screen = plot_ui.screen_from_plot(pointer);
+    model
+        .edge_handles()
+        .into_iter()
+        .filter(|handle| matches!(handle.control.index, 5 | 7))
+        .map(|handle| {
+            (
+                handle.control.index,
+                to_screen(plot_ui, handle.at).distance(screen),
+            )
+        })
+        .filter(|(_, distance)| *distance <= TOUCH_PIXELS)
+        .min_by(|a, b| a.1.total_cmp(&b.1))
+        .map(|(index, _)| index)
+}
+
 fn selected_id() -> egui::Id {
     egui::Id::unique("meridian_segments_selected")
 }
@@ -2608,6 +2636,8 @@ pub(super) fn interact(
     if let Some(pointer) = plot_ui.pointer_coordinate() {
         if response.secondary_clicked() {
             crate::meridian_constraints::remember_menu(&ctx);
+            let arm = near_edge_arm(plot_ui, model, pointer);
+            ctx.data_mut(|data| data.insert_temp(edge_arm_id(), arm));
             let target = touched(plot_ui, model, &segments, pointer).map(|hit| Target {
                 hit,
                 node: near_node(plot_ui, model, &segments, pointer, |_, _| true)
@@ -2656,12 +2686,43 @@ pub(super) fn interact(
     let mut changed = false;
     // El arco cuyo radio se va a escribir, al salir del menú.
     let mut arc_typing: Option<(Wall, usize)> = None;
+    // El brazo del borde bajo el clic derecho, y el ángulo que se eligió para él.
+    let edge_arm: Option<usize> = ctx.data(|data| data.get_temp(edge_arm_id())).flatten();
+    let mut perpendicular: Option<(usize, f64)> = None;
     response.context_menu(|ui| {
         if let Some(index) = crate::meridian_constraints::menu_constraint(ui.ctx()) {
             if ui.button("Borrar cota").clicked() {
                 segments.constraints.remove(index);
                 changed = true;
                 ui.close();
+            }
+            ui.separator();
+        }
+        if let Some(index) = edge_arm {
+            let name = if index == 5 { "P1" } else { "P3" };
+            ui.label(
+                egui::RichText::new(format!("Brazo {name} del borde de ataque"))
+                    .small()
+                    .weak(),
+            );
+            let angle = model.perpendicular_angle(index);
+            if ui
+                .add_enabled(
+                    angle.is_some(),
+                    egui::Button::new("Perpendicular a la pared"),
+                )
+                .on_hover_text(
+                    "Escribe el ángulo del brazo que lo hace perpendicular a la pared. \
+                     No es una restricción: si luego mueves la pared, el ángulo no la sigue.",
+                )
+                .clicked()
+                && let Some(angle) = angle
+            {
+                perpendicular = Some((index, angle));
+                ui.close();
+            }
+            if target.is_none() {
+                return;
             }
             ui.separator();
         }
@@ -2899,6 +2960,19 @@ pub(super) fn interact(
         // selección y la ventana del punto.
         forget_indices(&ctx);
     }
+    // El ángulo perpendicular va a la caja del brazo, que es lo que guarda el
+    // archivo; no cambia los segmentos, así que se escribe aparte.
+    let mut edge_written = false;
+    if let Some((index, angle)) = perpendicular {
+        let text = crate::meridian::angle_text(angle);
+        let target = if index == 5 {
+            &mut boxes.edge.start_angle_deg
+        } else {
+            &mut boxes.edge.end_angle_deg
+        };
+        edge_written = *target != text;
+        *target = text;
+    }
     if let Some((wall, piece)) = arc_typing {
         open_arc_typing(plot_ui, model, &segments, wall, piece);
     }
@@ -2906,9 +2980,9 @@ pub(super) fn interact(
     changed |= dimension_typing(&ctx, model, &mut segments);
     changed |= crate::meridian_constraints::writing(&ctx, &mut segments);
     if changed {
-        return (write(boxes, &segments) || seeded, false);
+        return (write(boxes, &segments) || seeded || edge_written, false);
     }
-    (seeded, false)
+    (seeded || edge_written, false)
 }
 
 /// Solo para las capturas: `HMF_SEGMENTS="hub:0.5:1:2=60/0"` corta el cubo

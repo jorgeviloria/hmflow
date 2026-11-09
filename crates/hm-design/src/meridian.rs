@@ -110,24 +110,24 @@ pub struct WallEdit {
 /// cubo (P4). Se mide en el marco de la cuerda, no en coordenadas del corte: el
 /// eje es la cuerda de P0 a P4 y la normal, perpendicular a ella, positiva hacia
 /// aguas arriba (en un borde radial, hacia −z). Así la curva sigue a los
-/// extremos cuando se arrastran. Todo `None` es el borde automático: brazos
-/// de la cuarta parte de la cuerda, perpendiculares a su pared, y P2 en el
-/// punto medio de la cuerda.
+/// extremos cuando se arrastran. Todo `None` es el borde automático: la Bézier
+/// ajustada al borde que sigue el canal (cada línea de corriente corta el borde
+/// a una fracción de pared interpolada entre la del cubo y la de la tapa).
 #[derive(Debug, Clone, Copy, Default, PartialEq)]
 pub struct EdgeEdit {
-    /// P2 a lo largo de la cuerda, de 0 (en P0) a 1 (en P4). `None` es 0,5.
+    /// P2 a lo largo de la cuerda, de 0 (en P0) a 1 (en P4). `None` es el del ajuste al borde que sigue el canal.
     pub p2_along: Option<f64>,
     /// P2 separado de la cuerda, en mm, con signo. `None` es 0.
     pub p2_offset: Option<f64>,
     /// Ángulo del brazo de inicio (P0→P1) con la cuerda, en grados dentro de
-    /// [`ANGLE_RANGE`]; positivo gira hacia aguas arriba. `None` es el que lo
-    /// deja perpendicular a la tapa.
+    /// [`ANGLE_RANGE`]; positivo gira hacia aguas arriba. `None` es el del
+    /// ajuste al borde que sigue el canal.
     pub start_angle: Option<f64>,
-    /// Longitud del brazo de inicio, en mm, mayor que 0. `None` es la cuarta
-    /// parte de la cuerda.
+    /// Longitud del brazo de inicio, en mm, mayor que 0. `None` es la del
+    /// ajuste al borde que sigue el canal.
     pub start_length: Option<f64>,
     /// Ángulo del brazo final (P4→P3) con la cuerda vista desde P4, igual;
-    /// `None` es el perpendicular al cubo.
+    /// `None` es el del ajuste al borde que sigue el canal.
     pub end_angle: Option<f64>,
     pub end_length: Option<f64>,
 }
@@ -250,8 +250,20 @@ pub struct EdgeShape {
     pub start_length: f64,
     pub end_angle: f64,
     pub end_length: f64,
-    /// Longitud de los brazos de la recta: la cuarta parte de la cuerda.
-    pub auto_arm_length: f64,
+    /// Los valores automáticos: los del ajuste al borde que sigue el canal.
+    pub auto: EdgeFit,
+}
+
+/// Los seis valores de la Bézier del borde en el marco de su cuerda (mm y
+/// grados): lo que sale de ajustarla al borde que sigue el canal.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct EdgeFit {
+    pub p2_along: f64,
+    pub p2_offset: f64,
+    pub start_angle: f64,
+    pub start_length: f64,
+    pub end_angle: f64,
+    pub end_length: f64,
 }
 
 /// El recorte del cubo usado: la cara en `z`, hasta `hub_radius` (el radio de
@@ -712,8 +724,8 @@ impl MeridionalModel {
             }
             _ => return true,
         }
-        // Todo está escrito en `edit`: los ángulos automáticos no se usan.
-        edge_shape(edge.points[0], edge.points[4], &edit, (0.0, 0.0))
+        // Todo está escrito en `edit`: los valores automáticos no se usan.
+        edge_shape(edge.points[0], edge.points[4], &edit, &edge.auto)
             .is_ok_and(|shape| self.edge_inside_channel(&shape.points))
     }
 
@@ -903,12 +915,10 @@ pub fn meridional_model_with(
     };
     let edge_points = [on_curve(&front, edge_shroud), on_curve(&rear, edge_hub)];
     let (shroud_edge, hub_edge) = (edge_points[0], edge_points[1]);
-    // Sin ángulos escritos, los brazos salen perpendiculares a cada pared.
-    let auto_angles = (
-        perpendicular_arm_angle(&front, shroud_edge, hub_edge, 1.0).unwrap_or(0.0),
-        perpendicular_arm_angle(&rear, hub_edge, shroud_edge, -1.0).unwrap_or(0.0),
-    );
-    let edge = edge_shape(shroud_edge, hub_edge, &edits.edge, auto_angles)?;
+    // Sin nada escrito, la Bézier es el ajuste al borde que sigue el canal.
+    let channel = channel_edge(&front, &rear, edge_shroud, edge_hub, CURVE_POINTS);
+    let fit = fit_edge(shroud_edge, hub_edge, &channel);
+    let edge = edge_shape(shroud_edge, hub_edge, &edits.edge, &fit)?;
     let edge_angle = (hub_edge[0] - shroud_edge[0])
         .atan2(shroud_edge[1] - hub_edge[1])
         .to_degrees();
@@ -1151,6 +1161,147 @@ fn wall_tangent(line: &[[f64; 2]], at: [f64; 2]) -> Option<[f64; 2]> {
     (length > 0.0).then(|| [dz / length, dr / length])
 }
 
+/// El borde de ataque que sigue el canal, de la tapa (primer punto) al cubo:
+/// cada línea de corriente, a una fracción `phi` del cubo (0) a la tapa (1) de
+/// la línea que une los puntos de las dos paredes a igual fracción de su
+/// longitud, corta el borde donde esa fracción de pared va linealmente de la del
+/// cubo (`hub`) a la de la tapa (`shroud`). Es la forma «canal» de la edición
+/// del borde de las bombas de turbopump: con las dos fracciones iguales es la
+/// recta que une los dos puntos y, si no, se curva con el canal. Con `count`
+/// puntos.
+fn channel_edge(
+    front: &[[f64; 2]],
+    rear: &[[f64; 2]],
+    shroud: f64,
+    hub: f64,
+    count: usize,
+) -> Vec<[f64; 2]> {
+    let (front_lengths, rear_lengths) = (cumulative(front), cumulative(rear));
+    let (front_total, rear_total) = (
+        front_lengths[front_lengths.len() - 1],
+        rear_lengths[rear_lengths.len() - 1],
+    );
+    (0..count)
+        .map(|k| {
+            // De la tapa (phi = 1) al cubo (phi = 0).
+            let phi = 1.0 - k as f64 / (count - 1) as f64;
+            let along = hub + phi * (shroud - hub);
+            let on_hub = at_length(rear, &rear_lengths, along * rear_total);
+            let on_shroud = at_length(front, &front_lengths, along * front_total);
+            [
+                on_hub[0] + phi * (on_shroud[0] - on_hub[0]),
+                on_hub[1] + phi * (on_shroud[1] - on_hub[1]),
+            ]
+        })
+        .collect()
+}
+
+/// Los seis valores de la Bézier de 5 puntos de `from` a `to` (P0 y P4) que más
+/// se acerca por mínimos cuadrados a los puntos `samples` (con la longitud de
+/// cuerda como parámetro), en el marco de la cuerda. Sin cuerda, o si el
+/// sistema es singular, los brazos de un cuarto de la cuerda sobre ella.
+fn fit_edge(from: [f64; 2], to: [f64; 2], samples: &[[f64; 2]]) -> EdgeFit {
+    let chord = (to[0] - from[0]).hypot(to[1] - from[1]);
+    let straight = EdgeFit {
+        p2_along: 0.5,
+        p2_offset: 0.0,
+        start_angle: 0.0,
+        start_length: (chord / 4.0).max(MIN_ARM),
+        end_angle: 0.0,
+        end_length: (chord / 4.0).max(MIN_ARM),
+    };
+    let Some((u, n)) = edge_frame(from, to) else {
+        return straight;
+    };
+    let lengths = cumulative(samples);
+    let total = lengths[lengths.len() - 1];
+    if total <= 0.0 {
+        return straight;
+    }
+    // Ecuaciones normales de P1, P2 y P3 con P0 y P4 fijos.
+    let mut a = [[0.0; 4]; 3];
+    let mut rhs = [[0.0; 2]; 3];
+    for (point, length) in samples.iter().zip(&lengths) {
+        let t = length / total;
+        let s = 1.0 - t;
+        let basis = [
+            s.powi(4),
+            4.0 * s.powi(3) * t,
+            6.0 * s * s * t * t,
+            4.0 * s * t.powi(3),
+            t.powi(4),
+        ];
+        let residual = [
+            point[0] - basis[0] * from[0] - basis[4] * to[0],
+            point[1] - basis[0] * from[1] - basis[4] * to[1],
+        ];
+        for j in 0..3 {
+            for k in 0..3 {
+                a[j][k] += basis[j + 1] * basis[k + 1];
+            }
+            rhs[j][0] += basis[j + 1] * residual[0];
+            rhs[j][1] += basis[j + 1] * residual[1];
+        }
+    }
+    let Some(controls) = solve_normal_equations(a, rhs) else {
+        return straight;
+    };
+    let along =
+        |p: [f64; 2], origin: [f64; 2]| (p[0] - origin[0]) * u[0] + (p[1] - origin[1]) * u[1];
+    let across =
+        |p: [f64; 2], origin: [f64; 2]| (p[0] - origin[0]) * n[0] + (p[1] - origin[1]) * n[1];
+    let (p1, p2, p3) = (controls[0], controls[1], controls[2]);
+    let arm = |p: [f64; 2], origin: [f64; 2], direction: f64| {
+        let (x, y) = (direction * along(p, origin), across(p, origin));
+        (
+            y.atan2(x).to_degrees().clamp(ANGLE_RANGE.0, ANGLE_RANGE.1),
+            x.hypot(y).max(MIN_ARM),
+        )
+    };
+    let (start_angle, start_length) = arm(p1, from, 1.0);
+    let (end_angle, end_length) = arm(p3, to, -1.0);
+    EdgeFit {
+        p2_along: (along(p2, from) / chord).clamp(0.0, 1.0),
+        p2_offset: across(p2, from),
+        start_angle,
+        start_length,
+        end_angle,
+        end_length,
+    }
+}
+
+/// Resuelve A·x = b para tres incógnitas con dos columnas de segundo miembro
+/// (z y r), por eliminación gaussiana con pivote. `None` si es singular.
+fn solve_normal_equations(a: [[f64; 4]; 3], rhs: [[f64; 2]; 3]) -> Option<[[f64; 2]; 3]> {
+    let mut m = [[0.0; 5]; 3];
+    for j in 0..3 {
+        m[j][..3].copy_from_slice(&a[j][..3]);
+        m[j][3] = rhs[j][0];
+        m[j][4] = rhs[j][1];
+    }
+    for col in 0..3 {
+        let pivot = (col..3).max_by(|&x, &y| m[x][col].abs().total_cmp(&m[y][col].abs()))?;
+        if m[pivot][col].abs() < 1e-12 {
+            return None;
+        }
+        m.swap(col, pivot);
+        for row in 0..3 {
+            if row != col {
+                let factor = m[row][col] / m[col][col];
+                let pivot_row = m[col];
+                for (value, base) in m[row].iter_mut().zip(pivot_row).skip(col) {
+                    *value -= factor * base;
+                }
+            }
+        }
+    }
+    Some([
+        [m[0][3] / m[0][0], m[0][4] / m[0][0]],
+        [m[1][3] / m[1][1], m[1][4] / m[1][1]],
+        [m[2][3] / m[2][2], m[2][4] / m[2][2]],
+    ])
+}
+
 /// El ángulo del brazo del borde de ataque en el extremo `end` de la pared
 /// `wall_line`, con la cuerda hacia `other` y en grados con una décima, con que
 /// sale perpendicular a la pared, hacia el canal. `sign` es 1 si el extremo es
@@ -1248,10 +1399,9 @@ fn edge_shape(
     from: [f64; 2],
     to: [f64; 2],
     edit: &EdgeEdit,
-    auto_angles: (f64, f64),
+    auto: &EdgeFit,
 ) -> Result<EdgeShape, DesignError> {
     let chord = (to[0] - from[0]).hypot(to[1] - from[1]);
-    let auto_arm_length = chord / 4.0;
     let number = |value: Option<f64>, auto: f64, what: &str, range: (f64, f64)| {
         let value = value.unwrap_or(auto);
         if value.is_finite() && (range.0..=range.1).contains(&value) {
@@ -1263,22 +1413,32 @@ fn edge_shape(
             )))
         }
     };
-    let p2_along = number(edit.p2_along, 0.5, "la posición de P2", (0.0, 1.0))?;
-    let p2_offset = number(edit.p2_offset, 0.0, "el desvío de P2 (mm)", (-1.0e6, 1.0e6))?;
+    let p2_along = number(
+        edit.p2_along,
+        auto.p2_along,
+        "la posición de P2",
+        (0.0, 1.0),
+    )?;
+    let p2_offset = number(
+        edit.p2_offset,
+        auto.p2_offset,
+        "el desvío de P2 (mm)",
+        (-1.0e6, 1.0e6),
+    )?;
     let start_angle = number(
         edit.start_angle,
-        auto_angles.0,
+        auto.start_angle,
         "el ángulo de inicio (grados)",
         ANGLE_RANGE,
     )?;
     let end_angle = number(
         edit.end_angle,
-        auto_angles.1,
+        auto.end_angle,
         "el ángulo final (grados)",
         ANGLE_RANGE,
     )?;
-    let positive = |value: Option<f64>, what: &str| {
-        let value = value.unwrap_or(auto_arm_length);
+    let positive = |value: Option<f64>, auto: f64, what: &str| {
+        let value = value.unwrap_or(auto);
         if value.is_finite() && value > 0.0 || (chord < RANGE_TOLERANCE && value == 0.0) {
             Ok(value)
         } else {
@@ -1287,8 +1447,12 @@ fn edge_shape(
             )))
         }
     };
-    let start_length = positive(edit.start_length, "la longitud de inicio")?;
-    let end_length = positive(edit.end_length, "la longitud final")?;
+    let start_length = positive(
+        edit.start_length,
+        auto.start_length,
+        "la longitud de inicio",
+    )?;
+    let end_length = positive(edit.end_length, auto.end_length, "la longitud final")?;
     let points = match edge_frame(from, to) {
         None => [from; 5],
         Some((u, n)) => {
@@ -1320,7 +1484,7 @@ fn edge_shape(
         start_length,
         end_angle,
         end_length,
-        auto_arm_length,
+        auto: *auto,
     })
 }
 

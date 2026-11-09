@@ -727,23 +727,35 @@ fn a_dragged_p2_survives_rounding_to_hundredths_of_a_millimetre() {
     }
 }
 
-/// Sin editar, el borde es una Bézier de 5 puntos con brazos de la cuarta
-/// parte de la cuerda y P2 en su punto medio, sin desvío; solo los ángulos son
-/// los perpendiculares a las paredes (antes 0: la recta).
+/// Sin editar, el borde es una Bézier de 5 puntos cuyos valores son los del
+/// ajuste al borde que sigue el canal; lo escrito manda y el resto sigue siendo
+/// el automático.
 #[test]
-fn an_unedited_edge_keeps_quarter_arms_and_a_central_p2() {
+fn an_unedited_edge_uses_the_fitted_values_as_its_automatic_ones() {
     let (_, auto) = model();
     let edge = &auto.params.edge;
     let [from, to] = auto.params.edge_points;
     assert_eq!((edge.points[0], edge.points[4]), (from, to));
-    let mid = [(from[0] + to[0]) / 2.0, (from[1] + to[1]) / 2.0];
-    assert!((edge.points[2][0] - mid[0]).abs() < 1e-9);
-    assert!((edge.points[2][1] - mid[1]).abs() < 1e-9);
-    assert!((edge.start_length - edge.chord / 4.0).abs() < 1e-12);
-    assert!((edge.end_length - edge.chord / 4.0).abs() < 1e-12);
-    assert!((edge.auto_arm_length - edge.chord / 4.0).abs() < 1e-12);
-    assert_eq!((edge.p2_along, edge.p2_offset), (0.5, 0.0));
-    assert!(edge.start_angle != 0.0 || edge.end_angle != 0.0);
+    assert_eq!(
+        (
+            edge.p2_along,
+            edge.p2_offset,
+            edge.start_angle,
+            edge.start_length,
+            edge.end_angle,
+            edge.end_length
+        ),
+        (
+            edge.auto.p2_along,
+            edge.auto.p2_offset,
+            edge.auto.start_angle,
+            edge.auto.start_length,
+            edge.auto.end_angle,
+            edge.auto.end_length
+        )
+    );
+    assert!(edge.start_length > 0.0 && edge.end_length > 0.0);
+    assert!((0.0..=1.0).contains(&edge.p2_along));
 }
 
 /// Los brazos y P2 se miden en el marco de la cuerda. En un borde radial en
@@ -1492,7 +1504,9 @@ fn a_drag_that_stays_inside_the_channel_is_not_changed() {
     else {
         panic!("P2 del borde da EdgePoint");
     };
-    assert!((along - (0.5 + 1.0 / chord)).abs() < 1e-3, "{along}");
+    // Un milímetro a lo largo de la cuerda más allá del P2 automático (ajustado).
+    let start = base.params.edge.p2_along;
+    assert!((along - (start + 1.0 / chord)).abs() < 1e-3, "{along}");
 }
 
 #[test]
@@ -1774,22 +1788,65 @@ fn a_cut_past_the_automatic_edge_is_refused_until_the_edge_moves() {
     assert!(fits.is_ok(), "{fits:?}");
 }
 
-// ---- El borde automático sale perpendicular a las dos paredes ----
+// ---- El borde automático sigue el canal ----
 
-/// Grados entre el brazo de la Bézier del borde en un extremo (P0→P1 o
-/// P4→P3) y la tangente de la pared en ese punto.
-fn angle_with_wall(model: &MeridionalModel, wall: &str, at_start: bool) -> f64 {
-    let control = &model.params.edge.points;
-    let (end, next) = if at_start {
-        (control[0], control[1])
-    } else {
-        (control[4], control[3])
-    };
-    let arm = [next[0] - end[0], next[1] - end[1]];
-    let length = arm[0].hypot(arm[1]);
-    let wall_tangent = tangent_at(points(model, wall), end);
-    let cos = (arm[0] * wall_tangent[0] + arm[1] * wall_tangent[1]) / length;
-    cos.abs().acos().to_degrees()
+/// El punto de la polilínea a esa fracción de su longitud.
+fn at_fraction(line: &[[f64; 2]], fraction: f64) -> [f64; 2] {
+    let mut lengths = vec![0.0];
+    for pair in line.windows(2) {
+        let last = *lengths.last().unwrap();
+        lengths.push(last + (pair[1][0] - pair[0][0]).hypot(pair[1][1] - pair[0][1]));
+    }
+    let target = fraction * lengths[lengths.len() - 1];
+    for i in 1..line.len() {
+        if lengths[i] >= target {
+            let t = (target - lengths[i - 1]) / (lengths[i] - lengths[i - 1]);
+            return [
+                line[i - 1][0] + t * (line[i][0] - line[i - 1][0]),
+                line[i - 1][1] + t * (line[i][1] - line[i - 1][1]),
+            ];
+        }
+    }
+    line[line.len() - 1]
+}
+
+/// El borde que sigue el canal, calculado aparte: cada línea de corriente, a
+/// una fracción `phi` del cubo (0) a la tapa (1) sobre la línea que une los
+/// puntos de las dos paredes a igual fracción de su longitud, corta el borde
+/// en la fracción de pared que va de la del cubo a la de la tapa.
+fn channel_locus(model: &MeridionalModel) -> Vec<[f64; 2]> {
+    let p = &model.params;
+    let (front, rear) = (
+        points(model, "Tapa delantera"),
+        points(model, "Tapa trasera"),
+    );
+    (0..=200)
+        .map(|k| {
+            let phi = f64::from(k) / 200.0;
+            let u = p.edge_hub + phi * (p.edge_shroud - p.edge_hub);
+            let (hub, shroud) = (at_fraction(rear, u), at_fraction(front, u));
+            [
+                hub[0] + phi * (shroud[0] - hub[0]),
+                hub[1] + phi * (shroud[1] - hub[1]),
+            ]
+        })
+        .collect()
+}
+
+fn distance_to_polyline(line: &[[f64; 2]], point: [f64; 2]) -> f64 {
+    line.windows(2)
+        .map(|pair| {
+            let (dz, dr) = (pair[1][0] - pair[0][0], pair[1][1] - pair[0][1]);
+            let squared = dz * dz + dr * dr;
+            let t = if squared > 0.0 {
+                (((point[0] - pair[0][0]) * dz + (point[1] - pair[0][1]) * dr) / squared)
+                    .clamp(0.0, 1.0)
+            } else {
+                0.0
+            };
+            (point[0] - pair[0][0] - t * dz).hypot(point[1] - pair[0][1] - t * dr)
+        })
+        .fold(f64::MAX, f64::min)
 }
 
 fn default_models() -> Vec<MeridionalModel> {
@@ -1801,13 +1858,33 @@ fn default_models() -> Vec<MeridionalModel> {
 }
 
 #[test]
-fn the_automatic_edge_is_perpendicular_to_both_walls() {
+fn the_automatic_edge_follows_the_channel() {
     for model in default_models() {
-        for (wall, at_start) in [("Tapa delantera", true), ("Tapa trasera", false)] {
-            let angle = angle_with_wall(&model, wall, at_start);
-            assert!((angle - 90.0).abs() < 0.5, "{wall}: {angle}°");
+        let locus = channel_locus(&model);
+        let edge = points(&model, "Borde de ataque");
+        // Los extremos son los de las paredes y la curva no se aparta del
+        // borde del canal más de medio milímetro.
+        assert_eq!(edge[0], model.params.edge_points[0]);
+        assert_eq!(edge[edge.len() - 1], model.params.edge_points[1]);
+        for point in edge {
+            let gap = distance_to_polyline(&locus, *point);
+            assert!(gap < 0.5, "{point:?} a {gap} mm del canal");
         }
     }
+}
+
+#[test]
+fn a_fixed_hub_position_changes_the_automatic_edge_shape() {
+    // Con las fracciones de las dos tapas iguales el borde es la línea que une
+    // los puntos de igual fracción: recta, con los brazos sobre la cuerda.
+    let model = edited(&MeridianEdits {
+        edge_shroud: Some(0.2),
+        edge_hub: Some(0.2),
+        ..MeridianEdits::default()
+    });
+    let edge = &model.params.edge;
+    assert!(edge.p2_offset.abs() < 1e-6, "{}", edge.p2_offset);
+    assert!(edge.start_angle.abs() < 1e-6 && edge.end_angle.abs() < 1e-6);
 }
 
 #[test]

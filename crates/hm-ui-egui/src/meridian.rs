@@ -924,15 +924,15 @@ fn wall_boxes(ui: &mut egui::Ui, boxes: &mut Meridian, auto: Option<&MeridionalM
     let edge_edit = parsed.edge;
     let edge_hints = auto
         .map(|model| {
-            let edge = &model.params.edge;
+            let auto = &model.params.edge.auto;
             let hints = edge_hints(model);
             [
-                "0.5 (auto)".to_string(),
-                format!("{} (auto)", length_text(0.0)),
+                format!("{:.3} (auto)", auto.p2_along),
+                format!("{} (auto)", length_text(auto.p2_offset)),
                 hints.angles[0].clone(),
-                format!("{} (auto)", length_text(edge.auto_arm_length)),
+                format!("{} (auto)", length_text(auto.start_length)),
                 hints.angles[1].clone(),
-                format!("{} (auto)", length_text(edge.auto_arm_length)),
+                format!("{} (auto)", length_text(auto.end_length)),
             ]
         })
         .unwrap_or_default();
@@ -976,7 +976,7 @@ fn wall_boxes(ui: &mut egui::Ui, boxes: &mut Meridian, auto: Option<&MeridionalM
                      a su cuerda. P2 a lo largo: fracción de 0 a 1 de la cuerda. P2 desvío: con \
                      unidad y signo, positivo hacia aguas arriba. Ángulo: grados de -90 a 90 con la \
                      cuerda, positivo hacia aguas arriba. Longitud del brazo: con unidad, mayor que \
-                     0. Vacía: el borde automático, con los brazos perpendiculares a las paredes.",
+                     0. Vacía: el borde automático, que sigue el canal.",
                 )
                 .changed();
         }
@@ -1281,8 +1281,8 @@ fn edge_hints(model: &MeridionalModel) -> EdgeHints {
     EdgeHints {
         hub_fraction: format!("{:.3} (auto)", p.edge_hub),
         angles: [
-            format!("{} (auto)", angle_text(p.edge.start_angle)),
-            format!("{} (auto)", angle_text(p.edge.end_angle)),
+            format!("{} (auto)", angle_text(p.edge.auto.start_angle)),
+            format!("{} (auto)", angle_text(p.edge.auto.end_angle)),
         ],
     }
 }
@@ -2283,8 +2283,8 @@ mod tests {
         assert_eq!(
             hints.angles,
             [
-                format!("{} (auto)", angle_text(auto.params.edge.start_angle)),
-                format!("{} (auto)", angle_text(auto.params.edge.end_angle)),
+                format!("{} (auto)", angle_text(auto.params.edge.auto.start_angle)),
+                format!("{} (auto)", angle_text(auto.params.edge.auto.end_angle)),
             ]
         );
     }

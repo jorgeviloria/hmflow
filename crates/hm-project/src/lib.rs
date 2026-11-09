@@ -1347,6 +1347,12 @@ fn check_wall_segments(
             );
         }
     }
+    if wall.nodes.is_empty() && head + wall.tail_count() > 0 {
+        problem(
+            format!("{table}.nodes"),
+            "con prolongación hay que dar la posición de sus nodos".to_string(),
+        );
+    }
     if !wall.nodes.is_empty() && wall.nodes.len() != nodes {
         problem(
             format!("{table}.nodes"),

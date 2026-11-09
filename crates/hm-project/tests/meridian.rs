@@ -902,6 +902,10 @@ fn bad_extensions_are_hm_proj_031() {
             extended_segments("1", &[], &["line", "curve"], &["1 mm, 1 mm", ""], ""),
         ),
         (
+            "segments.shroud.nodes",
+            extended_segments("1", &[], &["line", "curve"], &[], ""),
+        ),
+        (
             "segments.shroud.tail",
             extended_segments("", &[], &["curve", "curve"], &["", "", "1 mm, 1 mm"], "x"),
         ),

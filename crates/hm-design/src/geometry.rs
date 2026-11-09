@@ -24,7 +24,12 @@ pub const BLADE_STEPS: usize = 20;
 
 /// Número de tramos de la línea media cuando β(r) lleva desviación: la curva
 /// ya no es una recta y 20 tramos se quedan cortos para integrar θ.
-pub const BLADE_STEPS_SHAPED: usize = 60;
+pub const BLADE_STEPS_SHAPED: usize = 200;
+
+/// β mínimo de la línea media con desviación, en grados. Por debajo, θ =
+/// ∫dr/(r·tan β) se dispara y el álabe da vueltas: es una decisión de hmflow,
+/// no un valor de Gülich, y solo vale cuando hay desviación.
+pub const BLADE_BETA_MIN_DEG: f64 = 5.0;
 
 /// Diámetros nominales DN de tubería (ISO 6708), en mm. El DN se toma como
 /// diámetro interior aproximado de la tubuladura de descarga.

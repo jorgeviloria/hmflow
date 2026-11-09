@@ -2749,9 +2749,9 @@ fn design_once(
     let blade_bow = selection.blade_bow_deg;
     if blade_bow != (0.0, 0.0) {
         let (min, max, _) = beta_profile_range(beta1b, selection.beta2_deg.to_radians(), blade_bow);
-        if min <= 0.0 || max >= std::f64::consts::FRAC_PI_2 {
+        if min < geometry::BLADE_BETA_MIN_DEG.to_radians() || max >= std::f64::consts::FRAC_PI_2 {
             return Err(DesignError::Input(format!(
-                "`beta_bow1_deg` = {} y `beta_bow2_deg` = {} sacan β de (0°, 90°): va de {:.1}° a {:.1}°",
+                "`beta_bow1_deg` = {} y `beta_bow2_deg` = {} sacan β de (5°, 90°): va de {:.1}° a {:.1}°",
                 blade_bow.0,
                 blade_bow.1,
                 min.to_degrees(),

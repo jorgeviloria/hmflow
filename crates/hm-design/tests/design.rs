@@ -1923,7 +1923,17 @@ fn bow_that_drives_beta_out_of_range_is_an_error() {
     // baja unos 22,5° y β cruza 0°.
     let error = b1_with_bow((-30.0, -30.0)).unwrap_err().to_string();
     assert!(error.contains("beta_bow1_deg"), "{error}");
-    assert!(error.contains("(0°, 90°)"), "{error}");
+    assert!(error.contains("(5°, 90°)"), "{error}");
+}
+
+#[test]
+fn bow_that_leaves_beta_under_the_minimum_is_an_error() {
+    // −22° en las dos manijas bajan β unos 16,5° en el centro: de ~19,5° a ~3°,
+    // por encima de 0 pero por debajo del mínimo de 5°.
+    let error = b1_with_bow((-22.0, -22.0)).unwrap_err().to_string();
+    assert!(error.contains("beta_bow1_deg"), "{error}");
+    // −17° deja el mínimo cerca de 7°: vale.
+    assert!(b1_with_bow((-17.0, -17.0)).is_ok());
 }
 
 #[test]

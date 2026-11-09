@@ -18,6 +18,7 @@ mod model;
 mod plan;
 mod session;
 mod summary;
+mod theme;
 
 use eframe::egui;
 use hm_formula::Registry;

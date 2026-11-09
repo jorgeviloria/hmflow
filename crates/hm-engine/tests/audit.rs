@@ -131,6 +131,9 @@ fn auto(formula: &str, value: String) -> Param {
 fn design_params(result: &DesignResult, defaults: &ManualDefaults) -> BTreeMap<String, Param> {
     let mut params = BTreeMap::new();
     for spec in PARAM_SPECS {
+        if hm_design::OPTIONAL_PARAMS.contains(&spec.name) {
+            continue;
+        }
         let param = if let Some(formula) = spec.formula {
             auto(formula, auto_text(result, spec))
         } else {

@@ -469,3 +469,67 @@ fn an_angle_with_the_wrong_unit_says_deg() {
         );
     }
 }
+
+#[test]
+fn bow_params_reach_the_design_options() {
+    let mut project = project();
+    set(&mut project, "beta_bow1_deg", "6 deg");
+    set(&mut project, "beta_bow2_deg", "-4 deg");
+
+    let case = case_from_project(&project).unwrap();
+    assert!((case.design.beta_bow1_deg.unwrap() - 6.0).abs() < 1e-9);
+    assert!((case.design.beta_bow2_deg.unwrap() + 4.0).abs() < 1e-9);
+
+    let plain = case_from_project(&self::project()).unwrap();
+    assert_eq!(plain.design.beta_bow1_deg, None);
+    assert_eq!(plain.design.beta_bow2_deg, None);
+}
+
+#[test]
+fn bow_with_a_wrong_unit_names_its_parameter() {
+    for (name, text) in [
+        ("beta_bow1_deg", "5 kg"),
+        ("beta_bow2_deg", "5 kg"),
+        ("beta_bow1_deg", "5"),
+    ] {
+        let mut project = project();
+        set(&mut project, name, text);
+        let error = case_from_project(&project).unwrap_err();
+        let expected = if name == "beta_bow1_deg" {
+            "beta_bow1_deg"
+        } else {
+            "beta_bow2_deg"
+        };
+        assert_eq!(
+            error.field(),
+            Some(CaseField::Param(expected)),
+            "{name} {text}"
+        );
+    }
+}
+
+#[test]
+fn a_project_without_bow_loads_and_saves_without_the_field() {
+    let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../hm-project/tests/fixtures/end_suction_v0.9.hmf");
+    let project = Project::load(&path).unwrap();
+    assert!(!project.params.contains_key("beta_bow1_deg"));
+    let text = project.to_toml().unwrap();
+    assert!(!text.contains("beta_bow"));
+    // Y sigue auditándose sin el parámetro: es opcional.
+    assert!(!hm_engine::audit(&project).has_errors());
+}
+
+#[test]
+fn design_edits_show_only_a_set_bow() {
+    let mut project = project();
+    let edits = hm_engine::design_edits(&project);
+    assert_eq!(
+        (edits.beta_bow1.as_str(), edits.beta_bow2.as_str()),
+        ("", "")
+    );
+    set(&mut project, "beta_bow1_deg", "6 deg");
+    let edits = hm_engine::design_edits(&project);
+    assert_eq!(edits.beta_bow1, "6 deg");
+    assert_eq!(edits.beta_bow2, "");
+}

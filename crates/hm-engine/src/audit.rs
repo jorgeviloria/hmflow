@@ -6,8 +6,8 @@
 use hm_core::{Diagnostic, Diagnostics, PumpType};
 use hm_design::{
     DesignError, DesignInput, DesignOptions, DesignResult, LEGACY_METHODS, METHOD,
-    MODEL_VOLUTE_PARAMS, PARAM_SPECS, design_with_options, designed_si, param_spec,
-    stored_si_matches,
+    MODEL_VOLUTE_PARAMS, OPTIONAL_PARAMS, PARAM_SPECS, design_with_options, designed_si,
+    param_spec, stored_si_matches,
 };
 use hm_formula::Registry;
 use hm_project::{Param, Project};
@@ -192,6 +192,9 @@ fn validate_design_schema(project: &Project, diagnostics: &mut Diagnostics) {
     for spec in PARAM_SPECS {
         let Some(param) = project.params.get(spec.name) else {
             if project.casing.is_some() && MODEL_VOLUTE_PARAMS.contains(&spec.name) {
+                continue;
+            }
+            if OPTIONAL_PARAMS.contains(&spec.name) {
                 continue;
             }
             diagnostics.push(
@@ -397,6 +400,8 @@ fn stale_selections(
         volute_channels: case.design.volute_channels,
         volute_wrap_deg: case.design.volute_wrap_deg,
         incidence_deg: case.design.incidence_deg,
+        beta_bow1_deg: case.design.beta_bow1_deg,
+        beta_bow2_deg: case.design.beta_bow2_deg,
         casing: case.design.casing.clone(),
         ..DesignOptions::default()
     };

@@ -6,8 +6,8 @@ use std::collections::BTreeMap;
 use hm_design::geometry::DEFAULT_INCIDENCE_DEG;
 use hm_design::{
     CasingFit, CasingLeakage, DEFAULT_K_EFF, DEFAULT_VOLUTE_C, DEFAULT_VOLUTE_RATIO, DesignError,
-    DesignOptions, DesignResult, MODEL_VOLUTE_PARAMS, PARAM_SPECS, ParamSpec, designed_si,
-    water_density,
+    DesignOptions, DesignResult, MODEL_VOLUTE_PARAMS, OPTIONAL_PARAMS, PARAM_SPECS, ParamSpec,
+    designed_si, water_density,
 };
 use hm_project::{Casing, Param, Project};
 use hm_units::{Quantity, parse_quantity, parse_unit};
@@ -92,6 +92,8 @@ direct_param!(
 );
 direct_param!(get_volute_wrap_deg, set_volute_wrap_deg, volute_wrap_deg);
 direct_param!(get_incidence_deg, set_incidence_deg, incidence_deg);
+direct_param!(get_beta_bow1_deg, set_beta_bow1_deg, beta_bow1_deg);
+direct_param!(get_beta_bow2_deg, set_beta_bow2_deg, beta_bow2_deg);
 
 fn get_beta2(options: &DesignOptions) -> Option<f64> {
     options.beta2_rad.map(f64::to_degrees)
@@ -286,6 +288,20 @@ pub const MANUAL_PARAMS: &[ManualParam] = &[
         },
         get: get_incidence_deg,
         set: set_incidence_deg,
+    },
+    ManualParam {
+        name: "beta_bow1_deg",
+        unit: "deg",
+        decode: Decode::Degrees { zero_is_none: true },
+        get: get_beta_bow1_deg,
+        set: set_beta_bow1_deg,
+    },
+    ManualParam {
+        name: "beta_bow2_deg",
+        unit: "deg",
+        decode: Decode::Degrees { zero_is_none: true },
+        get: get_beta_bow2_deg,
+        set: set_beta_bow2_deg,
     },
 ];
 
@@ -773,6 +789,8 @@ pub struct ManualDefaults {
     volute_channels: String,
     volute_wrap_deg: String,
     incidence_deg: String,
+    beta_bow1_deg: String,
+    beta_bow2_deg: String,
 }
 
 impl ManualDefaults {
@@ -799,6 +817,8 @@ impl ManualDefaults {
                 "{} deg",
                 options.incidence_deg.unwrap_or(DEFAULT_INCIDENCE_DEG)
             ),
+            beta_bow1_deg: format!("{} deg", options.beta_bow1_deg.unwrap_or(0.0)),
+            beta_bow2_deg: format!("{} deg", options.beta_bow2_deg.unwrap_or(0.0)),
         }
     }
 }
@@ -839,6 +859,8 @@ fn default_manual_text(
             _ => defaults.volute_wrap_deg.clone(),
         },
         "incidence_deg" => defaults.incidence_deg.clone(),
+        "beta_bow1_deg" => defaults.beta_bow1_deg.clone(),
+        "beta_bow2_deg" => defaults.beta_bow2_deg.clone(),
         _ => return None,
     })
 }
@@ -885,6 +907,11 @@ pub fn design_params(
     let mut filled = Vec::new();
 
     for spec in PARAM_SPECS {
+        if OPTIONAL_PARAMS.contains(&spec.name)
+            && !existing.is_some_and(|params| params.contains_key(spec.name))
+        {
+            continue;
+        }
         let param = if let Some(formula) = spec.formula {
             if result.model_volute.is_none() && MODEL_VOLUTE_PARAMS.contains(&spec.name) {
                 continue;

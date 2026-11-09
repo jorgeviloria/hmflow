@@ -91,6 +91,9 @@ pub struct DesignSelection {
     pub a: f64,
     pub j: f64,
     pub margin: f64,
+    /// Desviación cúbica de β(r) respecto de la recta, en grados: las dos
+    /// manijas de [`geometry::beta_profile`]. (0, 0) es la recta de siempre.
+    pub blade_bow_deg: (f64, f64),
 }
 
 /// Pérdidas del rodete de Gülich 2020, tabla 3.8 (1), referidas a u2²/2g.
@@ -434,6 +437,16 @@ pub const PARAM_SPECS: &[ParamSpec] = &[
     },
     ParamSpec {
         name: "incidence_deg",
+        unit: "deg",
+        formula: None,
+    },
+    ParamSpec {
+        name: "beta_bow1_deg",
+        unit: "deg",
+        formula: None,
+    },
+    ParamSpec {
+        name: "beta_bow2_deg",
         unit: "deg",
         formula: None,
     },
@@ -893,6 +906,11 @@ pub struct DesignOptions {
     /// 0..4° de Gülich p. 411). Entre 0 y [`INCIDENCE_RANGE_DEG`].1. Mueve
     /// QSF, QW, QPS y w1q/w1m (HM-DES-035), no el NPSH3.
     pub incidence_deg: Option<f64>,
+    /// Desviación de β(r) respecto de la recta de β1 a β2, en grados, en las
+    /// dos manijas de la Bézier cúbica ([`geometry::beta_profile`]). Sin dato,
+    /// 0: la línea media recta de siempre. Entre [`BETA_BOW_RANGE_DEG`].
+    pub beta_bow1_deg: Option<f64>,
+    pub beta_bow2_deg: Option<f64>,
     /// Número de lenguas de la voluta zLe: 1 en una voluta simple (por
     /// defecto), 2 en una doble. Con un zLe par se evita un Z par (Gülich
     /// p. 491).
@@ -955,6 +973,24 @@ impl DesignOptions {
                     INCIDENCE_RANGE_DEG.0, INCIDENCE_RANGE_DEG.1
                 ),
             });
+        }
+
+        for (name, value) in [
+            ("beta_bow1_deg", self.beta_bow1_deg),
+            ("beta_bow2_deg", self.beta_bow2_deg),
+        ] {
+            if let Some(value) = value
+                && (!value.is_finite()
+                    || !(BETA_BOW_RANGE_DEG.0..=BETA_BOW_RANGE_DEG.1).contains(&value))
+            {
+                return Err(FieldError {
+                    name,
+                    message: format!(
+                        "`{name}` = {value} no es válido; debe estar entre {} y {} grados",
+                        BETA_BOW_RANGE_DEG.0, BETA_BOW_RANGE_DEG.1
+                    ),
+                });
+            }
         }
 
         if self.volute_channels == Some(0) {
@@ -1109,6 +1145,7 @@ fn base_selection(
         a: 4.5,
         j: DEFAULT_EYE_RATIO,
         margin: 1.1,
+        blade_bow_deg: (0.0, 0.0),
     })
 }
 
@@ -1726,6 +1763,30 @@ fn choose_inlet(
 /// que ya no es incidencia.
 pub const INCIDENCE_RANGE_DEG: (f64, f64) = (0.0, 10.0);
 
+/// Rango de la desviación de β(r) en cada manija, en grados.
+pub const BETA_BOW_RANGE_DEG: (f64, f64) = (-30.0, 30.0);
+
+/// β de la línea media en cada tramo, para comprobar que no sale de (0°, 90°)
+/// y si es monótona. Devuelve (mínimo, máximo, monótona).
+fn beta_profile_range(beta1: f64, beta2: f64, bow_deg: (f64, f64)) -> (f64, f64, bool) {
+    let steps = geometry::BLADE_STEPS_SHAPED;
+    let betas: Vec<f64> = (0..=steps)
+        .map(|index| geometry::beta_profile(beta1, beta2, bow_deg, index as f64 / steps as f64))
+        .collect();
+    let min = betas.iter().copied().fold(f64::INFINITY, f64::min);
+    let max = betas.iter().copied().fold(f64::NEG_INFINITY, f64::max);
+    let rising = beta2 >= beta1;
+    let monotonic = betas.windows(2).all(|pair| {
+        let delta = pair[1] - pair[0];
+        if rising {
+            delta >= -1.0e-12
+        } else {
+            delta <= 1.0e-12
+        }
+    });
+    (min, max, monotonic)
+}
+
 /// β1B y τ1. β1B = arctan(τ1·cm0/u1) + i1, y τ1 depende de β1B.
 fn leading_edge(
     registry: &Registry,
@@ -2017,6 +2078,10 @@ fn design_once(
         a: options.a.unwrap_or(table.a),
         j: options.j.unwrap_or(table.j),
         margin: options.margin.unwrap_or(table.margin),
+        blade_bow_deg: (
+            options.beta_bow1_deg.unwrap_or(0.0),
+            options.beta_bow2_deg.unwrap_or(0.0),
+        ),
     };
     // R3 = k3·D2/2 (Srinivasan 2017, ec. 5.7) con k3 por defecto el dz/d2
     // mínimo de Gülich 2020, tabla 10.2, para pulsaciones de presión bajas.
@@ -2681,12 +2746,30 @@ fn design_once(
         &[("nq", quantity(nq, one.clone()))],
     )?
     .value();
-    let blade = geometry::camber_line(
+    let blade_bow = selection.blade_bow_deg;
+    if blade_bow != (0.0, 0.0) {
+        let (min, max, _) = beta_profile_range(beta1b, selection.beta2_deg.to_radians(), blade_bow);
+        if min <= 0.0 || max >= std::f64::consts::FRAC_PI_2 {
+            return Err(DesignError::Input(format!(
+                "`beta_bow1_deg` = {} y `beta_bow2_deg` = {} sacan β de (0°, 90°): va de {:.1}° a {:.1}°",
+                blade_bow.0,
+                blade_bow.1,
+                min.to_degrees(),
+                max.to_degrees()
+            )));
+        }
+    }
+    let blade = geometry::camber_line_shaped(
         (0.5 * d1.si, 0.5 * d2.si),
         (beta1b, selection.beta2_deg.to_radians()),
         (selection.cm0, cm2.si),
         qth.si,
-        geometry::BLADE_STEPS,
+        blade_bow,
+        if blade_bow == (0.0, 0.0) {
+            geometry::BLADE_STEPS
+        } else {
+            geometry::BLADE_STEPS_SHAPED
+        },
     );
     let blades = f64::from(selection.blade_count);
     let impeller_losses = options
@@ -2964,6 +3047,11 @@ pub const MIN_TRANSITION_RATIO: f64 = 0.95;
 /// Parámetros que describen la voluta del modelo. Con carcasa no existen, y un
 /// `.hmf` no tiene por qué traerlos.
 pub const MODEL_VOLUTE_PARAMS: [&str; 3] = ["a360", "d360", "r4"];
+
+/// Parámetros que un `.hmf` puede no traer: sin ellos vale el defecto (sin
+/// desviación de β). El diseño solo los escribe si el proyecto ya los tiene o
+/// si se editan, así un proyecto anterior sigue siendo válido y no cambia.
+pub const OPTIONAL_PARAMS: [&str; 2] = ["beta_bow1_deg", "beta_bow2_deg"];
 
 /// Dispersión del inicio de la recirculación según Gülich 2020, p. 237.
 pub const RECIRCULATION_SCATTER: f64 = 0.1;
@@ -3758,6 +3846,23 @@ fn diagnostics_for(
                 ),
             )
             .with_hint("La deceleración a la entrada es fuerte: revisa β1B y la incidencia."),
+        );
+    }
+
+    let bow = result.selection.blade_bow_deg;
+    if bow != (0.0, 0.0)
+        && !beta_profile_range(result.beta1b, result.selection.beta2_deg.to_radians(), bow).2
+    {
+        diagnostics.push(
+            Diagnostic::warning(
+                "HM-DES-050",
+                format!(
+                    "β no es monótona entre r1 y r2 con `beta_bow1_deg` = {} y \
+                     `beta_bow2_deg` = {}: el álabe cambia de sentido su curvatura",
+                    bow.0, bow.1
+                ),
+            )
+            .with_hint("Baja la desviación o vuelve a la recta."),
         );
     }
 

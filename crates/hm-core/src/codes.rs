@@ -355,6 +355,11 @@ pub const CODES: &[CodeInfo] = &[
         "El golpe a la entrada del rodete no se calcula: w1q/w1m queda fuera de la ec. (T3.8.9).",
     ),
     active(
+        "HM-DES-050",
+        Warning,
+        "β(r) del álabe no es monótona entre r1 y r2 por la desviación de las manijas.",
+    ),
+    active(
         "HM-DES-046",
         Warning,
         "Los agujeros de equilibrio suman poca área frente al anillo trasero gastado.",

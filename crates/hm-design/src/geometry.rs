@@ -22,6 +22,10 @@ pub const DIFFUSER_LENGTH_RANGE: (f64, f64) = (1.0, 50.0);
 /// Número de tramos de la línea media del álabe.
 pub const BLADE_STEPS: usize = 20;
 
+/// Número de tramos de la línea media cuando β(r) lleva desviación: la curva
+/// ya no es una recta y 20 tramos se quedan cortos para integrar θ.
+pub const BLADE_STEPS_SHAPED: usize = 60;
+
 /// Diámetros nominales DN de tubería (ISO 6708), en mm. El DN se toma como
 /// diámetro interior aproximado de la tubuladura de descarga.
 pub const NOMINAL_DIAMETERS_MM: [f64; 19] = [
@@ -108,16 +112,42 @@ pub fn blade_length(points: &[BladePoint]) -> f64 {
         .sum()
 }
 
+/// β a la fracción `fraction` (0 a 1) de r, en rad: la recta de `beta1` a
+/// `beta2` más una desviación cúbica. La desviación es la Bézier con puntos de
+/// control (0, 0), (1/3, d1), (2/3, d2) y (1, 0), con `bow_deg` = (d1, d2) en
+/// grados. Como los controles en r están equiespaciados, r es lineal en el
+/// parámetro y se evalúa directamente en la fracción. Sin desviación es la
+/// recta de siempre.
+pub fn beta_profile(beta1: f64, beta2: f64, bow_deg: (f64, f64), fraction: f64) -> f64 {
+    let f = fraction;
+    let (d1, d2) = (bow_deg.0.to_radians(), bow_deg.1.to_radians());
+    let bow = 3.0 * (1.0 - f) * (1.0 - f) * f * d1 + 3.0 * (1.0 - f) * f * f * d2;
+    beta1 + (beta2 - beta1) * f + bow
+}
+
 /// Línea media de un álabe cilíndrico de r1 a r2 con β lineal en r y la
 /// anchura meridional b = Qth/(2π r cm) con cm lineal de cm1 a cm2.
 ///
 /// Con cm1 = cm0 y cm2 la del triángulo de salida, b vale B1 en r1 y B2 en
 /// r2, como `design.b1` y `design.b2`.
 pub fn camber_line(
+    radii: (f64, f64),
+    betas: (f64, f64),
+    cms: (f64, f64),
+    qth: f64,
+    steps: usize,
+) -> Vec<BladePoint> {
+    camber_line_shaped(radii, betas, cms, qth, (0.0, 0.0), steps)
+}
+
+/// Como [`camber_line`], con la desviación cúbica de β de [`beta_profile`]
+/// (`bow_deg` en grados). Los extremos y las anchuras no cambian.
+pub fn camber_line_shaped(
     (r1, r2): (f64, f64),
     (beta1, beta2): (f64, f64),
     (cm1, cm2): (f64, f64),
     qth: f64,
+    bow_deg: (f64, f64),
     steps: usize,
 ) -> Vec<BladePoint> {
     let steps = steps.max(1);
@@ -125,7 +155,7 @@ pub fn camber_line(
     for index in 0..=steps {
         let fraction = index as f64 / steps as f64;
         let r = r1 + (r2 - r1) * fraction;
-        let beta = beta1 + (beta2 - beta1) * fraction;
+        let beta = beta_profile(beta1, beta2, bow_deg, fraction);
         let cm = cm1 + (cm2 - cm1) * fraction;
         let theta = match points.last() {
             Some(previous) => {
@@ -148,12 +178,18 @@ pub fn geometry(input: &DesignInput, result: &DesignResult) -> Result<Geometry, 
     let registry = Registry::all();
 
     let beta1b = result.beta1b;
-    let blade = camber_line(
+    let bow = result.selection.blade_bow_deg;
+    let blade = camber_line_shaped(
         (result.d1.si / 2.0, result.d2.si / 2.0),
         (beta1b, result.selection.beta2_deg.to_radians()),
         (result.selection.cm0, result.cm2.si),
         result.qth.si,
-        BLADE_STEPS,
+        bow,
+        if bow == (0.0, 0.0) {
+            BLADE_STEPS
+        } else {
+            BLADE_STEPS_SHAPED
+        },
     );
     let wrap = blade.last().map_or(0.0, |point| point.theta);
 

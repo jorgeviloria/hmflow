@@ -1874,3 +1874,89 @@ fn reachable_head_still_suggests_more_blades() {
         .to_string();
     assert!(error.contains("aumenta Z"), "{error}");
 }
+
+// ---- F4: desviación cúbica de β(r) ----
+
+fn b1_with_bow(bow: (f64, f64)) -> Result<hm_design::DesignResult, hm_design::DesignError> {
+    design_with_options(
+        &input("120 m3/h", "45 m", "2900 rpm"),
+        &DesignOptions {
+            beta_bow1_deg: Some(bow.0),
+            beta_bow2_deg: Some(bow.1),
+            ..DesignOptions::default()
+        },
+    )
+}
+
+#[test]
+fn zero_bow_leaves_the_design_unchanged() {
+    let base = design(&input("120 m3/h", "45 m", "2900 rpm")).unwrap();
+    let zero = b1_with_bow((0.0, 0.0)).unwrap();
+    assert_eq!(base.blade_loading, zero.blade_loading);
+    let wrap = |result: &hm_design::DesignResult| {
+        hm_design::geometry::geometry(&input("120 m3/h", "45 m", "2900 rpm"), result)
+            .unwrap()
+            .impeller
+            .wrap_angle
+    };
+    assert_eq!(wrap(&base), wrap(&zero));
+}
+
+#[test]
+fn bow_changes_loading_and_wrap_in_the_expected_direction() {
+    let base = b1_with_bow((0.0, 0.0)).unwrap();
+    let bowed = b1_with_bow((8.0, 8.0)).unwrap();
+    assert_ne!(base.blade_loading, bowed.blade_loading);
+    let wrap = |result: &hm_design::DesignResult| {
+        hm_design::geometry::geometry(&input("120 m3/h", "45 m", "2900 rpm"), result)
+            .unwrap()
+            .impeller
+            .wrap_angle
+    };
+    // Más β en el interior, menos envolvimiento.
+    assert!(wrap(&bowed) < wrap(&base));
+}
+
+#[test]
+fn bow_that_drives_beta_out_of_range_is_an_error() {
+    // B1: β1B ≈ 20,3° y β2 ≈ 18,8°; con −30° en las dos manijas el centro
+    // baja unos 22,5° y β cruza 0°.
+    let error = b1_with_bow((-30.0, -30.0)).unwrap_err().to_string();
+    assert!(error.contains("beta_bow1_deg"), "{error}");
+    assert!(error.contains("(0°, 90°)"), "{error}");
+}
+
+#[test]
+fn non_monotonic_beta_warns() {
+    // β baja 1,5° de r1 a r2; +5° en la primera manija la hace subir al principio.
+    let bowed = b1_with_bow((5.0, 0.0)).unwrap();
+    assert!(has(&bowed, "HM-DES-050"));
+    assert!(!has(&b1_with_bow((0.0, 0.0)).unwrap(), "HM-DES-050"));
+}
+
+#[test]
+fn invalid_bow_names_its_parameter() {
+    for value in [45.0, -45.0, f64::NAN] {
+        for first in [true, false] {
+            let name = if first {
+                "beta_bow1_deg"
+            } else {
+                "beta_bow2_deg"
+            };
+            let options = if first {
+                DesignOptions {
+                    beta_bow1_deg: Some(value),
+                    ..DesignOptions::default()
+                }
+            } else {
+                DesignOptions {
+                    beta_bow2_deg: Some(value),
+                    ..DesignOptions::default()
+                }
+            };
+            let error = options.validate().unwrap_err();
+            assert_eq!(error.name, name);
+            assert!(error.message.contains(name), "{}", error.message);
+        }
+    }
+}

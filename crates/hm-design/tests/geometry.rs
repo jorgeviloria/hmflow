@@ -189,3 +189,72 @@ fn blade_length_follows_the_camber_line() {
     );
     close(blade_length(&[point(0.1, 0.0)]), 0.0, 0.0);
 }
+
+mod beta_bow {
+    use hm_design::geometry::{
+        BLADE_STEPS, BLADE_STEPS_SHAPED, beta_profile, camber_line, camber_line_shaped,
+    };
+
+    const B1: f64 = 0.35;
+    const B2: f64 = 0.44;
+
+    fn line(bow: (f64, f64)) -> Vec<hm_design::geometry::BladePoint> {
+        camber_line_shaped(
+            (0.05, 0.14),
+            (B1, B2),
+            (2.0, 3.0),
+            0.02,
+            bow,
+            BLADE_STEPS_SHAPED,
+        )
+    }
+
+    #[test]
+    fn beta_profile_with_zero_bow_is_the_straight_line() {
+        for f in [0.0, 0.25, 0.5, 1.0] {
+            assert_eq!(beta_profile(B1, B2, (0.0, 0.0), f), B1 + (B2 - B1) * f);
+        }
+    }
+
+    #[test]
+    fn beta_profile_keeps_the_ends_fixed() {
+        assert!((beta_profile(B1, B2, (20.0, -15.0), 0.0) - B1).abs() < 1.0e-12);
+        assert!((beta_profile(B1, B2, (20.0, -15.0), 1.0) - B2).abs() < 1.0e-12);
+    }
+
+    #[test]
+    fn camber_line_without_bow_is_unchanged() {
+        let old = camber_line((0.05, 0.14), (B1, B2), (2.0, 3.0), 0.02, BLADE_STEPS);
+        let new = camber_line_shaped(
+            (0.05, 0.14),
+            (B1, B2),
+            (2.0, 3.0),
+            0.02,
+            (0.0, 0.0),
+            BLADE_STEPS,
+        );
+        assert_eq!(old, new);
+    }
+
+    #[test]
+    fn positive_bow_raises_beta_and_shortens_the_wrap() {
+        let straight = line((0.0, 0.0));
+        let bowed = line((10.0, 10.0));
+        let mid = straight.len() / 2;
+        assert!(bowed[mid].beta > straight[mid].beta);
+        assert!(bowed.last().unwrap().theta < straight.last().unwrap().theta);
+    }
+
+    #[test]
+    fn bow_does_not_move_the_end_radii_or_widths() {
+        let straight = line((0.0, 0.0));
+        let bowed = line((10.0, -6.0));
+        for (a, b) in [
+            (&straight[0], &bowed[0]),
+            (straight.last().unwrap(), bowed.last().unwrap()),
+        ] {
+            assert_eq!(a.r, b.r);
+            assert_eq!(a.width, b.width);
+        }
+    }
+}

@@ -1896,3 +1896,16 @@ fn a_shock_out_of_range_says_so() {
     let free = design(&input()).unwrap();
     assert!(!codes(&free).iter().any(|code| code == "HM-DES-049"));
 }
+
+#[test]
+fn bow_with_a_casing_still_designs() {
+    let options = DesignOptions {
+        beta_bow1_deg: Some(5.0),
+        beta_bow2_deg: Some(-5.0),
+        ..with(sample())
+    };
+    let bowed = design_with_options(&input(), &options).unwrap();
+    let plain = design_with_options(&input(), &with(sample())).unwrap();
+    assert!(bowed.blade_loading.is_finite());
+    assert_ne!(bowed.blade_loading, plain.blade_loading);
+}

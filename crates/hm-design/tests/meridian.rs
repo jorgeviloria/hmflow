@@ -6,8 +6,8 @@ use std::f64::consts::PI;
 
 use hm_design::DesignError;
 use hm_design::meridian::{
-    CUT_NAME, ControlPoint, CutMode, EdgeEdit, HubCutEdit, MIN_ARM, MeridianEdits, MeridionalModel,
-    Moved, Wall, WallEdit, meridional_model, meridional_model_with,
+    CUT_NAME, ControlPoint, CutMode, EdgeClamp, EdgeEdit, HubCutEdit, MIN_ARM, MeridianEdits,
+    MeridionalModel, Moved, Wall, WallEdit, meridional_model, meridional_model_with,
 };
 use hm_design::{DesignInput, DesignResult, design};
 use hm_geometry::{Bezier, Curve, Point};
@@ -94,9 +94,11 @@ fn the_ends_are_fixed_by_the_1d_design() {
 #[test]
 fn the_inlet_area_is_the_one_of_the_1d_design() {
     let (result, base) = model();
-    // Con el dH del 1D (el cubo ya no arranca ahí por defecto).
+    // Con el dH del 1D (el cubo ya no arranca ahí por defecto) y el borde
+    // radial en el plano de entrada, como en el 1D.
     let model = edited(&MeridianEdits {
         hub_diameter: Some(base.params.auto_d1i),
+        edge_hub: Some(0.0),
         ..MeridianEdits::default()
     });
     let leading = points(&model, "Borde de ataque");
@@ -170,9 +172,11 @@ fn the_engine_arm_lengths_give_the_smoothest_curve() {
 #[test]
 fn the_channel_narrows_from_the_inlet_to_b2_without_jumps() {
     let (result, base) = model();
-    // Con el dH del 1D, el área de entrada es la del 1D.
+    // Con el dH del 1D y el borde radial en el plano de entrada, el área de
+    // entrada es la del 1D.
     let model = edited(&MeridianEdits {
         hub_diameter: Some(base.params.auto_d1i),
+        edge_hub: Some(0.0),
         ..MeridianEdits::default()
     });
     let channel = model.channel();
@@ -433,7 +437,13 @@ fn an_inlet_wider_than_the_eye_is_refused() {
 /// escrito, el borde va del eje a la tapa y su área es π·r1·r1.
 #[test]
 fn by_default_the_hub_diameter_is_the_1d_one_and_the_leading_edge_has_the_1d_area() {
-    let (result, auto) = model();
+    let result = design(&input()).unwrap();
+    // El área del 1D es la del borde radial en el plano de entrada: se fija
+    // en el cubo, porque el automático se inclina.
+    let auto = edited(&MeridianEdits {
+        edge_hub: Some(0.0),
+        ..MeridianEdits::default()
+    });
     let p = &auto.params;
     let r1 = mm(&result.d1) / 2.0;
     let one_d = PI * mm(&result.d1) * mm(&result.b1);
@@ -448,6 +458,7 @@ fn by_default_the_hub_diameter_is_the_1d_one_and_the_leading_edge_has_the_1d_are
 
     let axis = edited(&MeridianEdits {
         hub_diameter: Some(0.0),
+        edge_hub: Some(0.0),
         ..MeridianEdits::default()
     });
     let axis_area = PI * r1 * r1;
@@ -741,6 +752,7 @@ fn an_edited_edge_places_p1_p2_and_p3_in_the_chord_frame() {
             end_angle: Some(20.0),
             end_length: Some(6.0),
         },
+        edge_hub: Some(0.0),
         ..MeridianEdits::default()
     });
     let shape = &edge.params.edge;
@@ -780,7 +792,10 @@ fn an_edited_edge_places_p1_p2_and_p3_in_the_chord_frame() {
         .sum();
     assert!((edge.params.edge_area - area).abs() < 1e-9 * area);
     // Los extremos y las tapas no cambian.
-    let (_, auto) = model();
+    let auto = edited(&MeridianEdits {
+        edge_hub: Some(0.0),
+        ..MeridianEdits::default()
+    });
     assert_eq!(edge.params.edge_points, auto.params.edge_points);
     for name in ["Tapa delantera", "Tapa trasera"] {
         assert_eq!(points(&edge, name), points(&auto, name), "{name}");
@@ -940,8 +955,11 @@ fn the_edge_points_are_draggable_in_the_chord_frame() {
 /// el del borde de ataque es su cola: acaban en la misma salida.
 #[test]
 fn the_whole_channel_starts_at_the_inlet_plane_and_the_edge_channel_is_its_tail() {
-    let (_, auto) = model();
     // Con el borde en el plano de entrada son el mismo canal.
+    let auto = edited(&MeridianEdits {
+        edge_hub: Some(0.0),
+        ..MeridianEdits::default()
+    });
     assert_eq!(auto.channel_from(0.0, 0.0), auto.channel());
     let moved = edited(&MeridianEdits {
         edge_shroud: Some(0.3),
@@ -1554,4 +1572,149 @@ fn the_perpendicular_angle_makes_each_arm_meet_its_wall_at_ninety_degrees() {
     }
     // Solo P1 y P3 tienen brazo.
     assert_eq!(base.perpendicular_angle(6), None);
+}
+
+// ---- El borde de ataque automático: el cubo donde S iguala al de la tapa ----
+
+fn s_gap(p: &hm_design::meridian::MeridianParams) -> f64 {
+    (p.edge_auto.s_hub - p.edge_auto.s_shroud).abs() / p.edge_auto.s_shroud
+}
+
+#[test]
+fn the_automatic_edge_equalises_the_static_moments() {
+    let (_, model) = model();
+    let p = &model.params;
+    assert!(p.edge_auto.hub_auto);
+    assert!(
+        s_gap(p) < 1e-3,
+        "S cubo {} S tapa {}",
+        p.edge_auto.s_hub,
+        p.edge_auto.s_shroud
+    );
+    assert_eq!(p.edge_shroud, 0.0);
+    assert!(p.edge_hub > 0.0);
+    assert!(p.edge_points[1][0] > 0.0, "el cubo queda aguas abajo");
+    assert_eq!(p.edge_auto.clamp, None);
+}
+
+#[test]
+fn the_automatic_edge_is_inclined_for_the_big_pump() {
+    let result = design(&big_input()).unwrap();
+    let model = meridional_model(&result).unwrap();
+    let p = &model.params;
+    eprintln!(
+        "extremo del cubo: z = {:.2} mm, r = {:.2} mm, fracción {:.4}",
+        p.edge_points[1][0], p.edge_points[1][1], p.edge_hub
+    );
+    assert!((0.1..=0.6).contains(&p.edge_hub), "{}", p.edge_hub);
+    assert!(p.edge_angle > 0.0);
+}
+
+#[test]
+fn a_written_hub_fraction_wins() {
+    let model = edited(&MeridianEdits {
+        edge_hub: Some(0.5),
+        ..Default::default()
+    });
+    assert_eq!(model.params.edge_hub, 0.5);
+    assert!(!model.params.edge_auto.hub_auto);
+}
+
+#[test]
+fn a_written_shroud_fraction_moves_the_reference() {
+    let (_, auto) = model();
+    let model = edited(&MeridianEdits {
+        edge_shroud: Some(0.2),
+        ..Default::default()
+    });
+    let p = &model.params;
+    assert_eq!(p.edge_shroud, 0.2);
+    assert!(p.edge_auto.hub_auto);
+    assert!(s_gap(p) < 1e-3);
+    assert!(p.edge_auto.s_shroud < auto.params.edge_auto.s_shroud);
+}
+
+#[test]
+fn an_on_axis_hub_still_converges() {
+    let model = edited(&MeridianEdits {
+        hub_diameter: Some(0.0),
+        ..Default::default()
+    });
+    let p = &model.params;
+    assert!(p.edge_auto.hub_auto);
+    assert!(s_gap(p) < 1e-3 || p.edge_auto.clamp == Some(EdgeClamp::AtLimit));
+}
+
+/// Con las tapas editables el cubo siempre es más largo que la tapa y su S
+/// desde la entrada es mayor, así que el límite «en la entrada» se prueba con
+/// líneas sintéticas en `edge_hub_fraction_pins_to_the_inlet...` (src). Aquí,
+/// el aviso que acompaña a ese límite.
+#[test]
+fn the_inlet_limit_has_its_diagnostic() {
+    let (_, mut model) = model();
+    model.params.edge_auto.clamp = Some(EdgeClamp::AtInlet);
+    let diagnostics = model.diagnostics();
+    assert_eq!(diagnostics.len(), 1);
+    assert_eq!(diagnostics[0].code, "HM-DES-051");
+    assert!(diagnostics[0].hint.is_some());
+}
+
+#[test]
+fn the_edge_stays_at_the_limit_when_the_tip_moment_is_tiny() {
+    let model = edited(&MeridianEdits {
+        edge_shroud: Some(0.9),
+        ..Default::default()
+    });
+    let p = &model.params;
+    assert_eq!(p.edge_hub, 0.9);
+    assert_eq!(p.edge_auto.clamp, Some(EdgeClamp::AtLimit));
+    assert!(model.diagnostics().iter().any(|d| d.code == "HM-DES-051"));
+}
+
+#[test]
+fn a_balanced_edge_has_no_diagnostics() {
+    let (_, model) = model();
+    assert!(model.diagnostics().is_empty());
+}
+
+#[test]
+fn the_automatic_edge_follows_the_walls_and_a_fixed_one_does_not() {
+    let (_, auto) = model();
+    let mut moved = MeridianEdits::default();
+    let corner = auto.params.hub.points[2];
+    moved.hub.p2 = Some([corner[0] - 5.0, corner[1] + 3.0]);
+    let free = edited(&moved);
+    assert_ne!(free.params.edge_hub, auto.params.edge_hub);
+
+    moved.edge_hub = Some(0.3);
+    let fixed = edited(&moved);
+    assert_eq!(fixed.params.edge_hub, 0.3);
+}
+
+/// El punto de operación del B1: 1060 gpm, 83 m, 1750 rpm.
+fn b1_input() -> DesignInput {
+    let q = |text: &str| parse_quantity(text).unwrap();
+    DesignInput {
+        q: q("1060 gpm"),
+        h: q("83 m"),
+        n: q("1750 rpm"),
+        ..input()
+    }
+}
+
+#[test]
+fn the_b1_hub_cut_still_fits_the_automatic_edge() {
+    let result = design(&b1_input()).unwrap();
+    let edits = MeridianEdits {
+        hub_cut: HubCutEdit {
+            z: Some(37.5),
+            mode: CutMode::Through,
+            shaft_diameter: Some(41.275),
+            counterbore_diameter: Some(58.0),
+            counterbore_depth: Some(7.0),
+            chamfer: Some(1.0),
+        },
+        ..Default::default()
+    };
+    assert!(meridional_model_with(&result, &edits).is_ok());
 }

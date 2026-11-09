@@ -181,7 +181,9 @@ pub struct MeridianEdits {
     pub hub_diameter: Option<f64>,
     /// Posición del borde de ataque sobre la tapa delantera y sobre el cubo,
     /// como fracción de la longitud de cada curva desde el plano de entrada,
-    /// dentro de [`EDGE_FRACTION_RANGE`]. `None` es 0.
+    /// dentro de [`EDGE_FRACTION_RANGE`]. En la tapa, `None` es 0 (el ojo); en
+    /// el cubo, `None` es la fracción que iguala el momento estático S de las
+    /// dos paredes (criterio S).
     pub edge_shroud: Option<f64>,
     pub edge_hub: Option<f64>,
     /// El borde de ataque como Bézier de 5 puntos, de la tapa al cubo.
@@ -261,6 +263,28 @@ pub struct HubCutShape {
     pub points: Vec<[f64; 2]>,
 }
 
+/// Por qué el borde de ataque automático no iguala los momentos estáticos.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum EdgeClamp {
+    /// Con la fracción 0 el cubo ya tiene menos momento estático que la tapa.
+    AtInlet,
+    /// Igualarlos pide pasar del límite de [`EDGE_FRACTION_RANGE`].
+    AtLimit,
+}
+
+/// Lo que dio el criterio S para el borde de ataque.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct EdgeAuto {
+    /// La fracción del cubo salió del criterio S; `false` si estaba escrita.
+    pub hub_auto: bool,
+    /// Momento estático S = ∫ r ds, en mm², de la tapa delantera y del cubo,
+    /// desde los extremos del borde usados hasta la salida.
+    pub s_shroud: f64,
+    pub s_hub: f64,
+    /// `Some` si el criterio se quedó en un límite sin igualar los momentos.
+    pub clamp: Option<EdgeClamp>,
+}
+
 /// Las cotas con que se construyó el corte, en mm.
 #[derive(Debug, Clone, PartialEq)]
 pub struct MeridianParams {
@@ -275,6 +299,9 @@ pub struct MeridianParams {
     /// como fracción de la longitud de cada curva.
     pub edge_shroud: f64,
     pub edge_hub: f64,
+    /// El criterio S del borde de ataque: si la fracción del cubo fue
+    /// automática, los dos S y el límite alcanzado, si lo hubo.
+    pub edge_auto: EdgeAuto,
     /// Los dos extremos del borde de ataque, `[z, r]`: el de la tapa y el del
     /// cubo.
     pub edge_points: [[f64; 2]; 2],
@@ -753,6 +780,35 @@ impl MeridionalModel {
         Some((angle * 10.0).round() / 10.0)
     }
 
+    /// Avisos del corte: el borde de ataque automático que se queda en un
+    /// límite sin igualar los momentos estáticos (`HM-DES-051`, informativo).
+    #[must_use]
+    pub fn diagnostics(&self) -> Vec<hm_core::Diagnostic> {
+        let auto = &self.params.edge_auto;
+        let Some(clamp) = auto.clamp else {
+            return Vec::new();
+        };
+        let hint = match clamp {
+            EdgeClamp::AtInlet => format!(
+                "Con el borde del cubo en el plano de entrada, S cubo = {:.0} mm² ya queda por debajo de S tapa = {:.0} mm². Mueve el borde de la tapa aguas abajo o abre el cubo.",
+                auto.s_hub, auto.s_shroud
+            ),
+            EdgeClamp::AtLimit => format!(
+                "Igualar S pide pasar del {:.0} % del cubo: S cubo = {:.0} mm² frente a S tapa = {:.0} mm². Acerca el borde de la tapa al ojo o cierra el cubo.",
+                EDGE_FRACTION_RANGE.1 * 100.0,
+                auto.s_hub,
+                auto.s_shroud
+            ),
+        };
+        vec![
+            hm_core::Diagnostic::info(
+                "HM-DES-051",
+                "El borde de ataque automático no iguala el momento estático de cubo y tapa: se queda en el límite.",
+            )
+            .with_hint(hint),
+        ]
+    }
+
     /// CSV para exportar, con columnas `z_mm,r_mm`.
     #[must_use]
     pub fn to_csv(&self) -> String {
@@ -816,7 +872,10 @@ pub fn meridional_model_with(
         }
     };
     let edge_shroud = fraction(edits.edge_shroud, "sobre la tapa delantera")?;
-    let edge_hub = fraction(edits.edge_hub, "sobre el cubo")?;
+    let written_hub = edits
+        .edge_hub
+        .map(|value| fraction(Some(value), "sobre el cubo"))
+        .transpose()?;
     let z_e = ZE_A * inlet_width * result.nq.powf(ZE_X);
     let r_ds = RDS_RATIO * inlet_width;
 
@@ -841,6 +900,10 @@ pub fn meridional_model_with(
             "meridiano: las tapas delantera y trasera se cruzan".to_string(),
         ));
     }
+
+    // Borde de ataque: la tapa en su fracción (0 es el ojo) y el cubo donde su
+    // momento estático iguala al de la tapa, salvo que esté escrito.
+    let (edge_hub, edge_auto) = edge_hub_fraction(&front, &rear, edge_shroud, written_hub);
 
     // El borde de ataque se apoya sobre las dos curvas, que siguen aguas arriba.
     let on_curve = |line: &[[f64; 2]], fraction: f64| {
@@ -905,6 +968,7 @@ pub fn meridional_model_with(
             inlet_width,
             edge_shroud,
             edge_hub,
+            edge_auto,
             edge_points,
             edge,
             edge_angle,
@@ -1495,6 +1559,74 @@ impl ChannelStation {
     }
 }
 
+/// Momento estático S = ∫ r ds de la polilínea `line` (puntos `[z, r]`) desde
+/// la fracción `from_fraction` de su longitud hasta el final, en mm²: la suma
+/// de ½(r_i + r_{i+1})·|Δs|, con el primer tramo cortado por interpolación.
+fn static_moment(line: &[[f64; 2]], from_fraction: f64) -> f64 {
+    let lengths = cumulative(line);
+    let start = from_fraction * lengths[lengths.len() - 1];
+    let mut points = vec![at_length(line, &lengths, start)];
+    for (point, length) in line.iter().zip(&lengths) {
+        if *length > start {
+            points.push(*point);
+        }
+    }
+    points
+        .windows(2)
+        .map(|pair| {
+            0.5 * (pair[0][1] + pair[1][1])
+                * (pair[1][0] - pair[0][0]).hypot(pair[1][1] - pair[0][1])
+        })
+        .sum()
+}
+
+/// La fracción del borde de ataque sobre el cubo. Escrita, manda. Si no, es la
+/// que hace el momento estático del cubo igual al de la tapa desde su fracción
+/// (criterio de igual transmisión de energía en cubo y tapa; momento estático
+/// de Pfleiderer, ver notas de estudio). S del cubo decrece con la fracción:
+/// bisección en [`EDGE_FRACTION_RANGE`]. En un límite, se queda ahí y lo anota.
+fn edge_hub_fraction(
+    front: &[[f64; 2]],
+    rear: &[[f64; 2]],
+    edge_shroud: f64,
+    written: Option<f64>,
+) -> (f64, EdgeAuto) {
+    let s_shroud = static_moment(front, edge_shroud);
+    if let Some(fraction) = written {
+        let auto = EdgeAuto {
+            hub_auto: false,
+            s_shroud,
+            s_hub: static_moment(rear, fraction),
+            clamp: None,
+        };
+        return (fraction, auto);
+    }
+    let (low, high) = EDGE_FRACTION_RANGE;
+    let (fraction, clamp) = if static_moment(rear, low) <= s_shroud {
+        (low, Some(EdgeClamp::AtInlet))
+    } else if static_moment(rear, high) > s_shroud {
+        (high, Some(EdgeClamp::AtLimit))
+    } else {
+        let (mut lo, mut hi) = (low, high);
+        while hi - lo > 1e-9 {
+            let mid = 0.5 * (lo + hi);
+            if static_moment(rear, mid) > s_shroud {
+                lo = mid;
+            } else {
+                hi = mid;
+            }
+        }
+        (0.5 * (lo + hi), None)
+    };
+    let auto = EdgeAuto {
+        hub_auto: true,
+        s_shroud,
+        s_hub: static_moment(rear, fraction),
+        clamp,
+    };
+    (fraction, auto)
+}
+
 /// Longitud acumulada de una polilínea en cada punto.
 fn cumulative(line: &[[f64; 2]]) -> Vec<f64> {
     let mut lengths = vec![0.0];
@@ -1568,4 +1700,41 @@ fn at_length(line: &[[f64; 2]], lengths: &[f64], target: f64) -> [f64; 2] {
 
 fn geometry_failed(error: hm_geometry::GeometryError) -> DesignError {
     DesignError::Input(format!("meridiano: {error}"))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn static_moment_is_the_integral_of_r_ds_from_the_fraction() {
+        // Recta horizontal a r = 10 y 10 mm de largo: S = 100; desde la mitad, 50.
+        let line = [[0.0, 10.0], [4.0, 10.0], [10.0, 10.0]];
+        assert!((static_moment(&line, 0.0) - 100.0).abs() < 1e-12);
+        assert!((static_moment(&line, 0.5) - 50.0).abs() < 1e-12);
+        // Recta inclinada de r = 0 a r = 10 en 10 mm: S = ½·10·10.
+        let ramp = [[0.0, 0.0], [10.0, 10.0]];
+        assert!((static_moment(&ramp, 0.0) - 0.5 * 10.0 * 10.0 * 2f64.sqrt()).abs() < 1e-9);
+    }
+
+    #[test]
+    fn edge_hub_fraction_pins_to_the_inlet_when_the_hub_moment_is_already_smaller() {
+        let front = [[0.0, 10.0], [10.0, 10.0]];
+        let rear = [[0.0, 1.0], [10.0, 1.0]];
+        let (fraction, auto) = edge_hub_fraction(&front, &rear, 0.0, None);
+        assert_eq!(fraction, 0.0);
+        assert_eq!(auto.clamp, Some(EdgeClamp::AtInlet));
+        assert!(auto.hub_auto);
+    }
+
+    #[test]
+    fn edge_hub_fraction_bisects_to_equal_moments() {
+        let front = [[0.0, 10.0], [10.0, 10.0]];
+        let rear = [[0.0, 20.0], [20.0, 20.0]];
+        // S tapa = 100; S cubo(f) = 20·20·(1 − f) = 100 → f = 0,75.
+        let (fraction, auto) = edge_hub_fraction(&front, &rear, 0.0, None);
+        assert!((fraction - 0.75).abs() < 1e-6, "{fraction}");
+        assert_eq!(auto.clamp, None);
+        assert!((auto.s_hub - auto.s_shroud).abs() < 1e-4);
+    }
 }

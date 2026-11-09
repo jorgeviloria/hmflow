@@ -360,6 +360,11 @@ pub const CODES: &[CodeInfo] = &[
         "β(r) del álabe no es monótona entre r1 y r2 por la desviación de las manijas.",
     ),
     active(
+        "HM-DES-051",
+        Info,
+        "El borde de ataque automático no iguala el momento estático de cubo y tapa: se queda en el límite.",
+    ),
+    active(
         "HM-DES-046",
         Warning,
         "Los agujeros de equilibrio suman poca área frente al anillo trasero gastado.",

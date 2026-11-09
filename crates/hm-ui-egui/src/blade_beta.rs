@@ -3,7 +3,7 @@
 use eframe::egui;
 use egui::Color32;
 use egui_plot::{Plot, PlotPoint, Points};
-use hm_design::geometry::beta_profile;
+use hm_design::geometry::{BLADE_BETA_MIN_DEG, beta_profile};
 use hm_design::{BETA_BOW_RANGE_DEG, INCIDENCE_RANGE_DEG};
 
 use crate::curves::line;
@@ -33,6 +33,16 @@ impl BetaGraph {
 
     fn line_deg(&self, fraction: f64) -> f64 {
         (self.beta.0 + (self.beta.1 - self.beta.0) * fraction).to_degrees()
+    }
+
+    /// β mínimo de la curva con esa desviación, en grados.
+    fn min_beta_deg(&self, bow: (f64, f64)) -> f64 {
+        (0..=60)
+            .map(|index| {
+                let fraction = f64::from(index) / 60.0;
+                beta_profile(self.beta.0, self.beta.1, bow, fraction).to_degrees()
+            })
+            .fold(f64::INFINITY, f64::min)
     }
 
     /// La curva: `[r en mm, β en grados]`.
@@ -73,8 +83,24 @@ impl BetaGraph {
 
     /// La desviación, en grados, de arrastrar la manija `index` a `beta_deg`.
     pub fn bow_from_handle(&self, index: usize, beta_deg: f64) -> f64 {
-        let bow = beta_deg - self.line_deg(HANDLE_FRACTIONS[index.min(1)]);
-        bow.clamp(BETA_BOW_RANGE_DEG.0, BETA_BOW_RANGE_DEG.1)
+        let index = index.min(1);
+        let wanted = beta_deg - self.line_deg(HANDLE_FRACTIONS[index]);
+        let mut bow = wanted.clamp(BETA_BOW_RANGE_DEG.0, BETA_BOW_RANGE_DEG.1);
+        // β no baja del mínimo: se acerca la manija a la recta hasta que cumpla.
+        let with = |value: f64| {
+            if index == 0 {
+                (value, self.bow.1)
+            } else {
+                (self.bow.0, value)
+            }
+        };
+        while bow != 0.0 && self.min_beta_deg(with(bow)) < BLADE_BETA_MIN_DEG {
+            bow -= bow.signum() * 0.25;
+            if bow.abs() < 0.25 {
+                bow = 0.0;
+            }
+        }
+        bow
     }
 }
 
@@ -373,6 +399,18 @@ mod tests {
             }
         );
         assert_eq!(beta2_text(24.0), "24.00 deg");
+    }
+
+    #[test]
+    fn dragging_a_handle_never_drives_beta_under_the_minimum() {
+        // La otra manija ya está en −30°: la primera no puede llegar a −30°.
+        let g = graph((0.0, -30.0));
+        let bow = g.bow_from_handle(0, -60.0);
+        let low = BetaGraph { bow: (bow, -30.0), ..g };
+        let min = low.curve(200).iter().map(|p| p[1]).fold(f64::INFINITY, f64::min);
+        assert!(min >= BLADE_BETA_MIN_DEG - 1e-6, "{min}");
+        // Y no recorta más de lo necesario.
+        assert!(bow < 0.0 && bow > BETA_BOW_RANGE_DEG.0);
     }
 
     #[test]

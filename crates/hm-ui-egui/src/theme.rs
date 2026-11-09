@@ -88,7 +88,7 @@ pub(crate) const DARK: Palette = Palette {
     text: rgb(230, 233, 236),
     text_weak: rgb(160, 168, 175),
     accent: rgb(70, 175, 190),
-    accent_soft: rgb(20, 80, 90),
+    accent_soft: rgb(14, 56, 64),
     copper: rgb(222, 145, 90),
     ok: rgb(95, 195, 130),
     warn: rgb(230, 180, 70),
@@ -382,6 +382,15 @@ mod tests {
                     );
                 }
             }
+        }
+    }
+
+    #[test]
+    fn selected_widget_text_reaches_aa() {
+        for theme in [egui::Theme::Light, egui::Theme::Dark] {
+            let v = visuals(theme);
+            let r = contrast_ratio(v.selection.stroke.color, v.selection.bg_fill);
+            assert!(r >= 4.5, "{theme:?}: {r}");
         }
     }
 }

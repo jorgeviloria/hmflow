@@ -533,3 +533,32 @@ fn design_edits_show_only_a_set_bow() {
     assert_eq!(edits.beta_bow1, "6 deg");
     assert_eq!(edits.beta_bow2, "");
 }
+
+#[test]
+fn a_locked_beta2_is_a_decision_of_the_window() {
+    let mut project = project();
+    set(&mut project, "beta2", "20 deg");
+    // Un beta2 en `manual` es lo que eligió el motor: la caja va vacía.
+    assert_eq!(hm_engine::design_edits(&project).beta2, "");
+
+    let mut edits = hm_engine::design_edits(&project);
+    edits.beta2 = "24 deg".to_string();
+    let options = hm_engine::edited_options(Some(&project), &edits).unwrap();
+    assert!((options.beta2_rad.unwrap().to_degrees() - 24.0).abs() < 1e-9);
+
+    // Lo escrito queda fijado y la ventana lo vuelve a mostrar.
+    let mut locked = project.clone();
+    locked.params.insert(
+        "beta2".to_string(),
+        Param::Locked {
+            value: "24 deg".to_string(),
+        },
+    );
+    assert_eq!(hm_engine::design_edits(&locked).beta2, "24 deg");
+
+    // Vaciar la caja quita el fijado.
+    let mut cleared = hm_engine::design_edits(&locked);
+    cleared.beta2 = String::new();
+    let options = hm_engine::edited_options(Some(&locked), &cleared).unwrap();
+    assert_eq!(options.beta2_rad, None);
+}

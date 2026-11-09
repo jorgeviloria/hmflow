@@ -166,6 +166,8 @@ pub struct DesignEdits {
     pub casing: Option<Casing>,
     pub phi: String,
     pub blade_count: String,
+    /// β2 fijado a mano, con unidad. Vacío: el de Euler.
+    pub beta2: String,
     pub roughness: String,
     pub incidence: String,
     /// Desviación de β(r) en las dos manijas (texto con unidad, vacío: recta).
@@ -197,6 +199,7 @@ pub fn design_edits(project: &Project) -> DesignEdits {
         casing: project.casing.clone(),
         phi: locked("phi"),
         blade_count: locked("blade_count"),
+        beta2: locked("beta2"),
         roughness: measure("impeller_roughness", 0.0),
         incidence: measure("incidence_deg", DEFAULT_INCIDENCE_DEG.to_radians()),
         beta_bow1: measure("beta_bow1_deg", 0.0),
@@ -221,6 +224,7 @@ fn apply_edits(project: &mut Project, edits: &DesignEdits) -> Result<(), EngineE
     project.casing = edits.casing.clone();
     write_decision(project, "phi", &edits.phi);
     write_decision(project, "blade_count", &edits.blade_count);
+    write_decision(project, "beta2", &edits.beta2);
     write_measure(project, "impeller_roughness", &edits.roughness);
     write_measure(project, "incidence_deg", &edits.incidence);
     write_measure(project, "beta_bow1_deg", &edits.beta_bow1);

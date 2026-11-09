@@ -79,6 +79,11 @@ pub struct Meridian {
     pub edge_shroud: String,
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub edge_hub: String,
+    /// Forma automática del borde de ataque: vacío o `channel`, el que sigue el
+    /// canal; `line`, la recta entre sus dos extremos. Lo escrito en `edge`
+    /// manda sobre ella (la Bézier editada parte de la forma elegida).
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub edge_shape: String,
     /// El borde de ataque como Bézier de 5 puntos, de la tapa al cubo.
     #[serde(default, skip_serializing_if = "MeridianEdge::is_empty")]
     pub edge: MeridianEdge,
@@ -480,9 +485,14 @@ impl MeridianWall {
 impl Meridian {
     #[must_use]
     pub fn is_empty(&self) -> bool {
-        [&self.hub_diameter, &self.edge_shroud, &self.edge_hub]
-            .iter()
-            .all(|text| text.trim().is_empty())
+        [
+            &self.hub_diameter,
+            &self.edge_shroud,
+            &self.edge_hub,
+            &self.edge_shape,
+        ]
+        .iter()
+        .all(|text| text.trim().is_empty())
             && self.edge.is_empty()
             && self.shroud.is_empty()
             && self.hub.is_empty()
@@ -1069,6 +1079,13 @@ fn check_meridian(diagnostics: &mut Diagnostics, meridian: &Meridian) {
                 format!("debe estar entre 0 y 0.9: {text}"),
             ),
         }
+    }
+    let shape = meridian.edge_shape.trim();
+    if !matches!(shape, "" | "channel" | "line") {
+        problem(
+            "edge_shape".to_string(),
+            format!("debe ser channel o line: {shape}"),
+        );
     }
     let edge = &meridian.edge;
     let along = edge.p2_along.trim();

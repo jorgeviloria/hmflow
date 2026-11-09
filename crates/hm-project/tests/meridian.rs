@@ -980,3 +980,36 @@ fn bad_closed_is_hm_proj_031() {
         );
     }
 }
+
+#[test]
+fn the_edge_shape_round_trips_and_is_checked() {
+    let line = with(Meridian {
+        edge_shape: "line".into(),
+        ..Meridian::default()
+    });
+    let written = line.to_toml().unwrap();
+    assert!(written.contains("edge_shape = \"line\""), "{written}");
+    let back = Project::from_toml(&written).unwrap();
+    assert_eq!(back.meridian.as_ref().unwrap().edge_shape, "line");
+    // Vacío no se escribe, y un meridiano con solo la forma no está vacío.
+    assert!(Meridian::default().is_empty());
+    assert!(
+        !Meridian {
+            edge_shape: "line".into(),
+            ..Meridian::default()
+        }
+        .is_empty()
+    );
+    for good in ["", "channel", "line", " line "] {
+        let ok = problems(Meridian {
+            edge_shape: good.into(),
+            ..Meridian::default()
+        });
+        assert!(ok.is_empty(), "{good:?}: {ok:?}");
+    }
+    let bad = problems(Meridian {
+        edge_shape: "spline".into(),
+        ..Meridian::default()
+    });
+    assert!(bad.iter().any(|m| m.contains("edge_shape")), "{bad:?}");
+}

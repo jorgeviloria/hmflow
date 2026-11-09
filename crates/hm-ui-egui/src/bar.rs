@@ -187,6 +187,17 @@ fn file_menu(ui: &mut egui::Ui) -> MenuChoice {
                 choice.export_meridian = true;
             }
         });
+        ui.menu_button("Ver", |ui| {
+            ui.label("Tema");
+            let mut preference = ui.ctx().options(|o| o.theme_preference);
+            let before = preference;
+            ui.radio_value(&mut preference, egui::ThemePreference::System, "Sistema");
+            ui.radio_value(&mut preference, egui::ThemePreference::Light, "Claro");
+            ui.radio_value(&mut preference, egui::ThemePreference::Dark, "Oscuro");
+            if preference != before {
+                ui.ctx().set_theme(preference);
+            }
+        });
     });
     choice
 }
@@ -324,6 +335,7 @@ fn choose_and_export_geometry(app: &mut App) {
 
 fn status(ui: &egui::Ui, app: &App) -> (&'static str, Color32) {
     let visuals = ui.visuals();
+    let ok = crate::theme::palette(ui.ctx()).ok;
     let Some(outcome) = &app.outcome else {
         return ("SIN DISEÑO", visuals.error_fg_color);
     };
@@ -346,7 +358,7 @@ fn status(ui: &egui::Ui, app: &App) -> (&'static str, Color32) {
         {
             ("REVISAR AVISOS", visuals.warn_fg_color)
         } else {
-            ("SIN AVISOS", Color32::from_rgb(80, 180, 120))
+            ("SIN AVISOS", ok)
         }
     } else if outcome.has_errors() {
         ("ERRORES", visuals.error_fg_color)
@@ -357,7 +369,7 @@ fn status(ui: &egui::Ui, app: &App) -> (&'static str, Color32) {
     {
         ("REVISAR AVISOS", visuals.warn_fg_color)
     } else {
-        ("SIN AVISOS", Color32::from_rgb(80, 180, 120))
+        ("SIN AVISOS", ok)
     }
 }
 

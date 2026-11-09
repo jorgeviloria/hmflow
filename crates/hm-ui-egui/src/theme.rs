@@ -128,6 +128,83 @@ pub(crate) fn palette(ctx: &egui::Context) -> &'static Palette {
     }
 }
 
+/// `Visuals` de un tema construidos con su paleta.
+pub(crate) fn visuals(theme: egui::Theme) -> egui::Visuals {
+    let (mut v, p) = match theme {
+        egui::Theme::Dark => (egui::Visuals::dark(), &DARK),
+        egui::Theme::Light => (egui::Visuals::light(), &LIGHT),
+    };
+    v.panel_fill = p.background;
+    v.window_fill = p.paper;
+    v.extreme_bg_color = p.paper;
+    v.faint_bg_color = p.grid;
+    v.widgets.noninteractive.fg_stroke.color = p.text;
+    v.weak_text_color = Some(p.text_weak);
+    v.hyperlink_color = p.accent;
+    v.selection.bg_fill = p.accent_soft;
+    v.selection.stroke = egui::Stroke::new(1.0, p.accent);
+    v.warn_fg_color = p.warn;
+    v.error_fg_color = p.error;
+    let corner = egui::CornerRadius::same(3);
+    v.widgets.noninteractive.corner_radius = corner;
+    v.widgets.inactive.corner_radius = corner;
+    v.widgets.hovered.corner_radius = corner;
+    v.widgets.active.corner_radius = corner;
+    v.widgets.open.corner_radius = corner;
+    v
+}
+
+fn style(theme: egui::Theme) -> egui::Style {
+    use egui::{FontFamily, FontId, TextStyle};
+    let mut style = egui::Style {
+        visuals: visuals(theme),
+        ..egui::Style::default()
+    };
+    style.text_styles = [
+        (
+            TextStyle::Heading,
+            FontId::new(18.0, FontFamily::Proportional),
+        ),
+        (TextStyle::Body, FontId::new(12.5, FontFamily::Proportional)),
+        (
+            TextStyle::Button,
+            FontId::new(12.5, FontFamily::Proportional),
+        ),
+        (
+            TextStyle::Monospace,
+            FontId::new(12.0, FontFamily::Monospace),
+        ),
+        (
+            TextStyle::Small,
+            FontId::new(10.0, FontFamily::Proportional),
+        ),
+    ]
+    .into();
+    style.spacing.item_spacing = egui::vec2(8.0, 5.0);
+    style.spacing.button_padding = egui::vec2(6.0, 3.0);
+    style
+}
+
+/// Registra los dos temas y deja que el sistema elija el activo.
+pub(crate) fn install(ctx: &egui::Context) {
+    ctx.set_style_of(egui::Theme::Light, style(egui::Theme::Light));
+    ctx.set_style_of(egui::Theme::Dark, style(egui::Theme::Dark));
+    ctx.set_theme(egui::ThemePreference::System);
+}
+
+/// Tema pedido por `HMF_THEME` (solo para capturas). Un valor desconocido
+/// avisa por `stderr` y cae en claro.
+pub(crate) fn theme_from_env(value: Option<&str>) -> Option<egui::ThemePreference> {
+    match value? {
+        "light" => Some(egui::ThemePreference::Light),
+        "dark" => Some(egui::ThemePreference::Dark),
+        other => {
+            eprintln!("HMF_THEME: no entiendo `{other}`; uso claro");
+            Some(egui::ThemePreference::Light)
+        }
+    }
+}
+
 fn luminance(c: Color32) -> f32 {
     let channel = |v: u8| {
         let v = f32::from(v) / 255.0;
@@ -229,5 +306,50 @@ mod tests {
             assert_ne!(p.blade, p.volute);
             assert_ne!(p.copper, p.accent);
         }
+    }
+
+    #[test]
+    fn visuals_use_palette() {
+        for (theme, p, dark) in [
+            (egui::Theme::Light, &LIGHT, false),
+            (egui::Theme::Dark, &DARK, true),
+        ] {
+            let v = visuals(theme);
+            assert_eq!(v.dark_mode, dark);
+            assert_eq!(v.panel_fill, p.background);
+            assert_eq!(v.extreme_bg_color, p.paper);
+            assert_eq!(v.selection.bg_fill, p.accent_soft);
+        }
+    }
+
+    #[test]
+    fn palette_follows_context_theme() {
+        let ctx = egui::Context::default();
+        install(&ctx);
+        ctx.set_theme(egui::Theme::Dark);
+        assert_eq!(palette(&ctx).paper, DARK.paper);
+        ctx.set_theme(egui::Theme::Light);
+        assert_eq!(palette(&ctx).paper, LIGHT.paper);
+    }
+
+    #[test]
+    fn env_theme_parses() {
+        assert_eq!(
+            theme_from_env(Some("dark")),
+            Some(egui::ThemePreference::Dark)
+        );
+        assert_eq!(
+            theme_from_env(Some("light")),
+            Some(egui::ThemePreference::Light)
+        );
+        assert_eq!(theme_from_env(None), None);
+    }
+
+    #[test]
+    fn unknown_env_theme_falls_back_to_light() {
+        assert_eq!(
+            theme_from_env(Some("sepia")),
+            Some(egui::ThemePreference::Light)
+        );
     }
 }

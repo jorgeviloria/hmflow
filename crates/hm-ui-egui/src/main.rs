@@ -46,7 +46,15 @@ fn main() -> eframe::Result {
     eframe::run_native(
         "HidroMac Flow",
         options,
-        Box::new(|_cc| Ok(Box::new(App::new()))),
+        Box::new(|cc| {
+            theme::install(&cc.egui_ctx);
+            if let Some(preference) =
+                theme::theme_from_env(std::env::var("HMF_THEME").ok().as_deref())
+            {
+                cc.egui_ctx.set_theme(preference);
+            }
+            Ok(Box::new(App::new()))
+        }),
     )
 }
 

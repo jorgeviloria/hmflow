@@ -142,6 +142,125 @@ pub(super) fn beta2_text(value_deg: f64) -> String {
     format!("{value_deg:.2} deg")
 }
 
+/// Lo que la gráfica edita: las cuatro cajas, como texto.
+#[derive(Debug, Clone, Default, PartialEq)]
+pub(super) struct BetaSnapshot {
+    pub bow1: String,
+    pub bow2: String,
+    pub incidence: String,
+    pub beta2: String,
+}
+
+impl BetaSnapshot {
+    pub fn of(inputs: &Inputs) -> Self {
+        Self {
+            bow1: inputs.beta_bow1.clone(),
+            bow2: inputs.beta_bow2.clone(),
+            incidence: inputs.incidence.clone(),
+            beta2: inputs.beta2.clone(),
+        }
+    }
+
+    pub fn apply(&self, inputs: &mut Inputs) {
+        inputs.beta_bow1.clone_from(&self.bow1);
+        inputs.beta_bow2.clone_from(&self.bow2);
+        inputs.incidence.clone_from(&self.incidence);
+        inputs.beta2.clone_from(&self.beta2);
+    }
+}
+
+/// Pasos que se recuerdan para deshacer.
+const HISTORY_STEPS: usize = 200;
+
+/// Cambios seguidos a menos de esto (segundos) forman un solo paso: un
+/// arrastre entero se deshace de una vez.
+const HISTORY_GAP: f64 = 0.6;
+
+/// Deshacer y rehacer de lo editado en la gráfica de β(r).
+#[derive(Debug, Default)]
+pub(super) struct BetaHistory {
+    last: BetaSnapshot,
+    undo: Vec<BetaSnapshot>,
+    redo: Vec<BetaSnapshot>,
+    last_change: f64,
+}
+
+impl BetaHistory {
+    /// Las cajas cambiaron por otra vía (se escribió en una caja, se abrió
+    /// un archivo): se olvida lo anterior.
+    pub fn follow(&mut self, now: &BetaSnapshot) {
+        if *now != self.last {
+            self.last = now.clone();
+            self.undo.clear();
+            self.redo.clear();
+        }
+    }
+
+    /// Anota un cambio hecho en la gráfica, en el instante `time`.
+    pub fn record(&mut self, now: &BetaSnapshot, time: f64) {
+        if time - self.last_change > HISTORY_GAP || self.undo.is_empty() {
+            self.undo.push(self.last.clone());
+            if self.undo.len() > HISTORY_STEPS {
+                self.undo.remove(0);
+            }
+        }
+        self.redo.clear();
+        self.last_change = time;
+        self.last = now.clone();
+    }
+
+    pub fn can_undo(&self) -> bool {
+        !self.undo.is_empty()
+    }
+
+    pub fn can_redo(&self) -> bool {
+        !self.redo.is_empty()
+    }
+
+    /// El paso anterior, dado lo de ahora; `None` si no hay.
+    pub fn undo(&mut self, current: &BetaSnapshot) -> Option<BetaSnapshot> {
+        let previous = self.undo.pop()?;
+        self.redo.push(current.clone());
+        self.last = previous.clone();
+        self.last_change = f64::NEG_INFINITY;
+        Some(previous)
+    }
+
+    /// El paso deshecho, dado lo de ahora; `None` si no hay.
+    pub fn redo(&mut self, current: &BetaSnapshot) -> Option<BetaSnapshot> {
+        let next = self.redo.pop()?;
+        self.undo.push(current.clone());
+        self.last = next.clone();
+        self.last_change = f64::NEG_INFINITY;
+        Some(next)
+    }
+}
+
+/// Vacía las dos desviaciones y no toca los extremos.
+pub(super) fn straighten(inputs: &mut Inputs) {
+    inputs.beta_bow1.clear();
+    inputs.beta_bow2.clear();
+}
+
+/// La línea de lectura: β1, β2, envolvimiento y carga. El segundo valor es
+/// `true` si la carga pasa de la admisible más el margen de Gülich.
+pub(super) fn reading_text(
+    beta1_deg: f64,
+    beta2_deg: f64,
+    wrap_deg: f64,
+    loading: f64,
+    allowable: f64,
+) -> (String, bool) {
+    let flagged = loading > (1.0 + hm_design::BLADE_LOADING_MARGIN) * allowable;
+    (
+        format!(
+            "β1 = {beta1_deg:.1}° · β2 = {beta2_deg:.1}° · envolvimiento = {wrap_deg:.0}° · \
+             carga ξeff = {loading:.2} (admisible {allowable:.2})"
+        ),
+        flagged,
+    )
+}
+
 /// La gráfica de β(r) de este diseño, si se puede construir.
 fn graph_of(outcome: &Outcome) -> BetaGraph {
     let result = &outcome.result;
@@ -158,8 +277,54 @@ fn bow_text(value: f64) -> String {
 
 /// Dibuja la gráfica y deja arrastrar las manijas interiores. Devuelve
 /// `true` si se escribió una caja de `inputs`, y hay que recalcular.
-pub(super) fn blade_beta_view(ui: &mut egui::Ui, outcome: &Outcome, inputs: &mut Inputs) -> bool {
+pub(super) fn blade_beta_view(
+    ui: &mut egui::Ui,
+    outcome: &Outcome,
+    inputs: &mut Inputs,
+    history: &mut BetaHistory,
+) -> bool {
+    use egui::{Key, KeyboardShortcut, Modifiers};
     let graph = graph_of(outcome);
+    history.follow(&BetaSnapshot::of(inputs));
+    let typing = ui.memory(|memory| memory.focused().is_some());
+    let (redo_keys, undo_key) = ui.input_mut(|input| {
+        let redo = !typing
+            && (input.consume_shortcut(&KeyboardShortcut::new(
+                Modifiers::COMMAND | Modifiers::SHIFT,
+                Key::Z,
+            )) || input.consume_shortcut(&KeyboardShortcut::new(Modifiers::COMMAND, Key::Y)));
+        let undo =
+            !typing && input.consume_shortcut(&KeyboardShortcut::new(Modifiers::COMMAND, Key::Z));
+        (redo, undo)
+    });
+    let mut edited = false;
+    ui.horizontal(|ui| {
+        let undo = ui.add_enabled(history.can_undo(), egui::Button::new("Deshacer"));
+        let redo = ui.add_enabled(history.can_redo(), egui::Button::new("Rehacer"));
+        let has_bow = !inputs.beta_bow1.trim().is_empty() || !inputs.beta_bow2.trim().is_empty();
+        let flat = ui
+            .add_enabled(has_bow, egui::Button::new("Volver a recta"))
+            .on_hover_text("Vacía las dos desviaciones; los extremos no se tocan.");
+        if undo.clicked() || undo_key {
+            let current = BetaSnapshot::of(inputs);
+            if let Some(previous) = history.undo(&current) {
+                previous.apply(inputs);
+                edited = true;
+            }
+        }
+        if redo.clicked() || redo_keys {
+            let current = BetaSnapshot::of(inputs);
+            if let Some(next) = history.redo(&current) {
+                next.apply(inputs);
+                edited = true;
+            }
+        }
+        if flat.clicked() {
+            straighten(inputs);
+            history.record(&BetaSnapshot::of(inputs), ui.input(|input| input.time));
+            edited = true;
+        }
+    });
     ui.label(
         egui::RichText::new(
             "β(r) del álabe, en grados. Gris: la recta del 1D. Naranjas: dan la forma. \
@@ -169,8 +334,8 @@ pub(super) fn blade_beta_view(ui: &mut egui::Ui, outcome: &Outcome, inputs: &mut
         .small()
         .weak(),
     );
-    let mut edited = false;
     let status_id = egui::Id::unique("blade_beta_status");
+    let mut dragged = false;
     Plot::new("blade_beta")
         .height(190.0)
         .allow_drag(false)
@@ -213,10 +378,42 @@ pub(super) fn blade_beta_view(ui: &mut egui::Ui, outcome: &Outcome, inputs: &mut
                     .ctx()
                     .data_mut(|data| data.insert_temp(status_id, status));
                 edited = true;
+                dragged = true;
             }
         });
+    if dragged {
+        history.record(&BetaSnapshot::of(inputs), ui.input(|input| input.time));
+    }
     if let Some(status) = ui.ctx().data(|data| data.get_temp::<String>(status_id)) {
         ui.label(egui::RichText::new(status).small());
+    }
+    let result = &outcome.result;
+    let wrap_deg = outcome
+        .geometry
+        .as_ref()
+        .map_or(f64::NAN, |shape| shape.impeller.wrap_angle.to_degrees());
+    let (text, flagged) = reading_text(
+        graph.beta.0.to_degrees(),
+        graph.beta.1.to_degrees(),
+        wrap_deg,
+        result.blade_loading,
+        hm_design::blade_loading_allowable(result.nq),
+    );
+    let reading = egui::RichText::new(text).small();
+    ui.label(if flagged {
+        reading.color(Color32::from_rgb(210, 60, 50))
+    } else {
+        reading
+    });
+    if flagged {
+        ui.label(
+            egui::RichText::new(
+                "La carga pasa de la admisible de Gülich más un 15 %: el álabe es corto \
+                 para su número.",
+            )
+            .small()
+            .color(Color32::from_rgb(210, 60, 50)),
+        );
     }
     edited
 }
@@ -406,11 +603,96 @@ mod tests {
         // La otra manija ya está en −30°: la primera no puede llegar a −30°.
         let g = graph((0.0, -30.0));
         let bow = g.bow_from_handle(0, -60.0);
-        let low = BetaGraph { bow: (bow, -30.0), ..g };
-        let min = low.curve(200).iter().map(|p| p[1]).fold(f64::INFINITY, f64::min);
+        let low = BetaGraph {
+            bow: (bow, -30.0),
+            ..g
+        };
+        let min = low
+            .curve(200)
+            .iter()
+            .map(|p| p[1])
+            .fold(f64::INFINITY, f64::min);
         assert!(min >= BLADE_BETA_MIN_DEG - 1e-6, "{min}");
         // Y no recorta más de lo necesario.
         assert!(bow < 0.0 && bow > BETA_BOW_RANGE_DEG.0);
+    }
+
+    fn snap(bow1: &str) -> BetaSnapshot {
+        BetaSnapshot {
+            bow1: bow1.to_string(),
+            ..BetaSnapshot::default()
+        }
+    }
+
+    #[test]
+    fn straighten_clears_only_the_bows() {
+        let mut inputs = Inputs {
+            beta_bow1: "5 deg".into(),
+            beta_bow2: "-3 deg".into(),
+            incidence: "4 deg".into(),
+            beta2: "24 deg".into(),
+            ..Inputs::default()
+        };
+        straighten(&mut inputs);
+        assert_eq!(
+            (inputs.beta_bow1.as_str(), inputs.beta_bow2.as_str()),
+            ("", "")
+        );
+        assert_eq!(
+            (inputs.incidence.as_str(), inputs.beta2.as_str()),
+            ("4 deg", "24 deg")
+        );
+    }
+
+    #[test]
+    fn undo_restores_the_previous_snapshot_and_redo_returns() {
+        let mut history = BetaHistory::default();
+        history.follow(&snap(""));
+        history.record(&snap("1 deg"), 10.0);
+        history.record(&snap("2 deg"), 20.0);
+        let back = history.undo(&snap("2 deg")).unwrap();
+        assert_eq!(back, snap("1 deg"));
+        let forward = history.redo(&back).unwrap();
+        assert_eq!(forward, snap("2 deg"));
+    }
+
+    #[test]
+    fn changes_close_in_time_are_one_step() {
+        let mut history = BetaHistory::default();
+        history.follow(&snap(""));
+        history.record(&snap("1 deg"), 10.0);
+        history.record(&snap("2 deg"), 10.1);
+        history.record(&snap("3 deg"), 10.2);
+        assert_eq!(history.undo(&snap("3 deg")).unwrap(), snap(""));
+        assert!(!history.can_undo());
+    }
+
+    #[test]
+    fn a_new_record_clears_the_redo_stack() {
+        let mut history = BetaHistory::default();
+        history.follow(&snap(""));
+        history.record(&snap("1 deg"), 10.0);
+        let back = history.undo(&snap("1 deg")).unwrap();
+        assert!(history.can_redo());
+        history.record(&snap("9 deg"), 20.0);
+        assert!(!history.can_redo());
+        let _ = back;
+    }
+
+    #[test]
+    fn undo_on_an_empty_history_is_none() {
+        let mut history = BetaHistory::default();
+        assert!(history.undo(&snap("")).is_none());
+        assert!(history.redo(&snap("")).is_none());
+    }
+
+    #[test]
+    fn the_reading_flags_a_loading_above_the_allowable_plus_the_margin() {
+        let (ok, flagged) = reading_text(20.3, 18.8, 99.0, 0.9, 1.0);
+        assert!(!flagged);
+        assert!(ok.contains("20.3") && ok.contains("18.8") && ok.contains("99"));
+        let (_, flagged) = reading_text(20.3, 18.8, 99.0, 1.2, 1.0);
+        assert!(flagged);
     }
 
     #[test]

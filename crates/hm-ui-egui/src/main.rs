@@ -70,6 +70,7 @@ struct App {
     reselect_requested: bool,
     /// Deshacer y rehacer de la pestaña Meridiano.
     meridian_history: meridian::History,
+    beta_history: blade_beta::BetaHistory,
 }
 
 /// `HMF_SCREENSHOT=ruta.ppm` (y opcionalmente `HMF_TAB=curves|geometry|meridian`)
@@ -101,6 +102,7 @@ impl App {
             }),
             reselect_requested: false,
             meridian_history: meridian::History::default(),
+            beta_history: blade_beta::BetaHistory::default(),
         };
         // Solo para las capturas: `HMF_MERIDIAN="hub_diameter=0 mm;edge_hub=0.4"`.
         if let Ok(text) = std::env::var("HMF_MERIDIAN") {
@@ -203,7 +205,12 @@ impl eframe::App for App {
                 }
                 Tab::Curves => curves(ui, outcome),
                 Tab::Geometry => {
-                    if blade_beta::blade_beta_view(ui, outcome, &mut self.session.inputs) {
+                    if blade_beta::blade_beta_view(
+                        ui,
+                        outcome,
+                        &mut self.session.inputs,
+                        &mut self.beta_history,
+                    ) {
                         meridian_edited = true;
                     }
                     plan_view(ui, outcome);

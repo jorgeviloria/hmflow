@@ -35,14 +35,30 @@ impl BetaGraph {
         (self.beta.0 + (self.beta.1 - self.beta.0) * fraction).to_degrees()
     }
 
-    /// β mínimo de la curva con esa desviación, en grados.
-    fn min_beta_deg(&self, bow: (f64, f64)) -> f64 {
-        (0..=60)
-            .map(|index| {
-                let fraction = f64::from(index) / 60.0;
-                beta_profile(self.beta.0, self.beta.1, bow, fraction).to_degrees()
-            })
-            .fold(f64::INFINITY, f64::min)
+    /// Lo mismo que comprueba el motor: con desviación, β queda entre el
+    /// mínimo y 90°. Sin desviación no se comprueba nada, como en el motor.
+    fn is_valid(&self) -> bool {
+        if self.bow == (0.0, 0.0) {
+            return true;
+        }
+        let (min, max, _) = hm_design::beta_profile_range(self.beta.0, self.beta.1, self.bow);
+        min >= BLADE_BETA_MIN_DEG.to_radians() && max < std::f64::consts::FRAC_PI_2
+    }
+
+    /// La misma gráfica con β1 (grados) cambiado.
+    fn with_beta1_deg(&self, deg: f64) -> Self {
+        Self {
+            beta: (deg.to_radians(), self.beta.1),
+            ..*self
+        }
+    }
+
+    /// La misma gráfica con β2 (grados) cambiado.
+    fn with_beta2_deg(&self, deg: f64) -> Self {
+        Self {
+            beta: (self.beta.0, deg.to_radians()),
+            ..*self
+        }
     }
 
     /// La curva: `[r en mm, β en grados]`.
@@ -85,16 +101,20 @@ impl BetaGraph {
     pub fn bow_from_handle(&self, index: usize, beta_deg: f64) -> f64 {
         let index = index.min(1);
         let wanted = beta_deg - self.line_deg(HANDLE_FRACTIONS[index]);
+        // Con los dos decimales de la caja, para que el motor vea lo mismo.
         let mut bow = wanted.clamp(BETA_BOW_RANGE_DEG.0, BETA_BOW_RANGE_DEG.1);
-        // β no baja del mínimo: se acerca la manija a la recta hasta que cumpla.
-        let with = |value: f64| {
-            if index == 0 {
+        bow = (bow * 100.0).round() / 100.0;
+        // β no sale del rango del motor: se acerca la manija a la recta hasta
+        // que cumpla.
+        let with = |value: f64| Self {
+            bow: if index == 0 {
                 (value, self.bow.1)
             } else {
                 (self.bow.0, value)
-            }
+            },
+            ..*self
         };
-        while bow != 0.0 && self.min_beta_deg(with(bow)) < BLADE_BETA_MIN_DEG {
+        while bow != 0.0 && !with(bow).is_valid() {
             bow -= bow.signum() * 0.25;
             if bow.abs() < 0.25 {
                 bow = 0.0;
@@ -250,8 +270,11 @@ pub(super) fn reading_text(
     wrap_deg: f64,
     loading: f64,
     allowable: f64,
+    cylindrical: bool,
 ) -> (String, bool) {
-    let flagged = loading > (1.0 + hm_design::BLADE_LOADING_MARGIN) * allowable;
+    // Con nq por encima del límite el álabe cilíndrico es solo una
+    // simplificación y el motor no juzga la carga: aquí tampoco.
+    let flagged = cylindrical && loading > (1.0 + hm_design::BLADE_LOADING_MARGIN) * allowable;
     (
         format!(
             "β1 = {beta1_deg:.1}° · β2 = {beta2_deg:.1}° · envolvimiento = {wrap_deg:.0}° · \
@@ -373,12 +396,14 @@ pub(super) fn blade_beta_view(
                     .color(Color32::from_rgb(70, 150, 240))
                     .radius(6.0),
             );
-            if let Some(status) = drag_handles(plot_ui, &graph, inputs) {
+            if let Some(drag) = drag_handles(plot_ui, &graph, inputs) {
                 plot_ui
                     .ctx()
-                    .data_mut(|data| data.insert_temp(status_id, status));
-                edited = true;
-                dragged = true;
+                    .data_mut(|data| data.insert_temp(status_id, drag.status));
+                if drag.written {
+                    edited = true;
+                    dragged = true;
+                }
             }
         });
     if dragged {
@@ -398,6 +423,7 @@ pub(super) fn blade_beta_view(
         wrap_deg,
         result.blade_loading,
         hm_design::blade_loading_allowable(result.nq),
+        result.nq <= hm_design::CYLINDRICAL_BLADE_MAX_NQ,
     );
     let reading = egui::RichText::new(text).small();
     ui.label(if flagged {
@@ -420,12 +446,19 @@ pub(super) fn blade_beta_view(
 
 /// La incidencia que lleva la caja, o la de por defecto si está vacía.
 fn applied_incidence_deg(inputs: &Inputs) -> f64 {
-    inputs
-        .incidence
-        .split_whitespace()
-        .next()
-        .and_then(|number| number.parse().ok())
-        .unwrap_or(hm_design::geometry::DEFAULT_INCIDENCE_DEG)
+    incidence_text_deg(&inputs.incidence)
+}
+
+/// La incidencia de una caja, en grados, con su unidad (`deg` o `rad`). Vacía
+/// o ilegible, la de por defecto.
+fn incidence_text_deg(text: &str) -> f64 {
+    if text.trim().is_empty() {
+        return hm_design::geometry::DEFAULT_INCIDENCE_DEG;
+    }
+    hm_units::parse_quantity(text.trim())
+        .map_or(hm_design::geometry::DEFAULT_INCIDENCE_DEG, |quantity| {
+            quantity.si.to_degrees()
+        })
 }
 
 /// Agarra el punto más cercano al empezar a arrastrar y, mientras dura,
@@ -435,7 +468,7 @@ fn drag_handles(
     plot_ui: &mut egui_plot::PlotUi<'_>,
     graph: &BetaGraph,
     inputs: &mut Inputs,
-) -> Option<String> {
+) -> Option<Drag> {
     let id = egui::Id::unique("blade_beta_dragged");
     let response = plot_ui.response().clone();
     let pointer = plot_ui.pointer_coordinate()?;
@@ -477,6 +510,10 @@ fn drag_handles(
         2 => {
             let applied = applied_incidence_deg(inputs);
             let clamped = incidence_for_beta1(pointer.y, graph.beta.0.to_degrees(), applied);
+            let wanted = graph.beta.0.to_degrees() - applied + clamped.value;
+            if !graph.with_beta1_deg(wanted).is_valid() {
+                return Some(Drag::refused());
+            }
             let mut status = format!("Incidencia = {:.1}°", clamped.value);
             if clamped.limited {
                 status.push_str(&format!(
@@ -488,6 +525,9 @@ fn drag_handles(
         }
         _ => {
             let clamped = beta2_for_target(pointer.y);
+            if !graph.with_beta2_deg(clamped.value).is_valid() {
+                return Some(Drag::refused());
+            }
             let mut status = format!("β2 fijado = {:.1}°", clamped.value);
             if clamped.limited {
                 status.push_str(" (límite: de 1 a 89°)");
@@ -495,9 +535,29 @@ fn drag_handles(
             (&mut inputs.beta2, beta2_text(clamped.value), status)
         }
     };
-    let changed = *target != text;
+    let written = *target != text;
     *target = text;
-    changed.then_some(status)
+    Some(Drag { status, written })
+}
+
+/// Lo que pasó en un fotograma de arrastre.
+struct Drag {
+    /// Lo que dice la línea bajo la gráfica.
+    status: String,
+    /// Si se escribió una caja (y hay que recalcular).
+    written: bool,
+}
+
+impl Drag {
+    /// El punto no se mueve: con la desviación actual β saldría del rango.
+    fn refused() -> Self {
+        Self {
+            status: format!(
+                "No se mueve: con la desviación actual β saldría de {BLADE_BETA_MIN_DEG}° a 90°"
+            ),
+            written: false,
+        }
+    }
 }
 
 /// Solo para las capturas: `HMF_BLADE="8,-5"` pone la desviación de las dos
@@ -688,11 +748,58 @@ mod tests {
 
     #[test]
     fn the_reading_flags_a_loading_above_the_allowable_plus_the_margin() {
-        let (ok, flagged) = reading_text(20.3, 18.8, 99.0, 0.9, 1.0);
+        let (ok, flagged) = reading_text(20.3, 18.8, 99.0, 0.9, 1.0, true);
         assert!(!flagged);
         assert!(ok.contains("20.3") && ok.contains("18.8") && ok.contains("99"));
-        let (_, flagged) = reading_text(20.3, 18.8, 99.0, 1.2, 1.0);
+        let (_, flagged) = reading_text(20.3, 18.8, 99.0, 1.2, 1.0, true);
         assert!(flagged);
+    }
+
+    #[test]
+    fn the_reading_does_not_flag_the_loading_of_a_non_cylindrical_blade() {
+        let (_, flagged) = reading_text(20.3, 18.8, 99.0, 1.2, 1.0, false);
+        assert!(!flagged);
+    }
+
+    #[test]
+    fn the_clamped_bow_is_accepted_by_the_engine_range_for_any_drag_target() {
+        // Con el muestreo del motor, no con uno propio de la gráfica.
+        let g = graph((0.0, -30.0));
+        let mut target = -60.0;
+        while target <= 60.0 {
+            for index in 0..2 {
+                let bow = g.bow_from_handle(index, target);
+                let bow = if index == 0 { (bow, -30.0) } else { (0.0, bow) };
+                let drawn = BetaGraph { bow, ..g };
+                assert!(
+                    drawn.is_valid(),
+                    "manija {index}, objetivo {target}: {bow:?}"
+                );
+            }
+            target += 0.7;
+        }
+    }
+
+    #[test]
+    fn an_end_drag_that_breaks_the_range_is_refused() {
+        // Con −12° en la primera manija, β ya baja unos 5° bajo la recta.
+        let g = graph((-12.0, 0.0));
+        assert!(g.is_valid());
+        assert!(!g.with_beta2_deg(4.0).is_valid());
+        assert!(g.with_beta2_deg(18.0).is_valid());
+        assert!(!g.with_beta1_deg(6.0).is_valid());
+        assert!(g.with_beta1_deg(20.0).is_valid());
+        // Sin desviación el motor no comprueba nada, y la gráfica tampoco.
+        assert!(graph((0.0, 0.0)).with_beta2_deg(4.0).is_valid());
+    }
+
+    #[test]
+    fn the_incidence_text_is_read_with_its_unit() {
+        assert!((incidence_text_deg("0.05 rad") - 2.864_788_975).abs() < 1e-6);
+        assert_eq!(incidence_text_deg("4 deg"), 4.0);
+        let default = hm_design::geometry::DEFAULT_INCIDENCE_DEG;
+        assert_eq!(incidence_text_deg(""), default);
+        assert_eq!(incidence_text_deg("no es un número"), default);
     }
 
     #[test]

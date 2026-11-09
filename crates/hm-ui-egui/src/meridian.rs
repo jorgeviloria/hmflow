@@ -17,19 +17,26 @@ use hm_project::{Meridian, MeridianWall};
 
 use crate::meridian_segments::{Dimension, NodeDimensions};
 use crate::model::Outcome;
+use crate::theme::{self, Palette};
 
 /// Color de cada curva del corte, los de CFturbo: tapa delantera en verde,
 /// cubo en azul y los bordes en negro y gris oscuro. Una curva sin color
 /// asignado se dibuja igual, en gris: no desaparece.
-pub(super) fn meridian_color(name: &str) -> Color32 {
+pub(super) fn meridian_color(p: &Palette, name: &str) -> Color32 {
     match name {
-        "Tapa delantera" => Color32::from_rgb(40, 130, 30),
-        "Tapa trasera" => Color32::from_rgb(25, 25, 235),
-        "Borde de ataque" => Color32::from_rgb(20, 20, 20),
-        "Borde de salida" => Color32::from_rgb(70, 70, 70),
-        CUT_NAME => Color32::from_rgb(200, 90, 0),
-        _ => Color32::GRAY,
+        "Tapa delantera" => p.shroud,
+        "Tapa trasera" => p.hub,
+        "Borde de ataque" => p.leading_edge,
+        "Borde de salida" => p.trailing_edge,
+        CUT_NAME => p.cut,
+        _ => p.construction,
     }
+}
+
+/// Color del texto de una cota: las que se pueden escribir, en el color de la
+/// selección.
+fn dimension_text_colour(p: &Palette, writable: bool) -> Color32 {
+    if writable { p.accent } else { p.dimension_text }
 }
 
 /// Grosor de cada curva del corte: las tapas más gruesas que los bordes.
@@ -40,19 +47,10 @@ fn meridian_width(name: &str) -> f32 {
     }
 }
 
-/// El papel del dibujo y su rejilla, muy tenue como en CFturbo.
-const PAPER: Color32 = Color32::WHITE;
-const GRID: Color32 = Color32::from_gray(232);
-/// El rojo de CFturbo para círculos extremos, línea de centros y marcas.
-const RED: Color32 = Color32::from_rgb(225, 55, 55);
-/// El verde azulado de los extremos del borde de ataque.
-const TEAL: Color32 = Color32::from_rgb(0, 125, 135);
-
 /// Distancia en píxeles a la que un clic agarra un punto de control.
 const GRAB_PIXELS: f32 = 12.0;
 /// A cuántos píxeles de otro punto la z o la r se pegan a él.
 const SNAP_PIXELS: f32 = 6.0;
-const SNAP_GUIDE: Color32 = Color32::from_rgb(230, 120, 30);
 
 /// Lo que se dibuja de las cotas.
 #[derive(Debug, Default, PartialEq)]
@@ -133,10 +131,7 @@ fn dimensioning(
     out
 }
 
-const DIMENSION_GREY: Color32 = Color32::from_gray(120);
-const DIMENSION_TEXT: Color32 = Color32::from_gray(45);
 /// Valor de una cota que se escribe con un clic encima.
-const WRITABLE_TEXT: Color32 = Color32::from_rgb(20, 90, 200);
 /// Tamaño de pantalla (píxeles) de la flecha: largo y medio ancho.
 const ARROW_LENGTH: f32 = 11.0;
 const ARROW_HALF_WIDTH: f32 = 3.5;
@@ -177,6 +172,7 @@ fn paint_labels(ui: &egui::Ui, transform: &egui_plot::PlotTransform, labels: &[L
 
 /// Una flecha cerrada, estrecha, de tamaño de pantalla, con la punta en `tip`.
 fn draw_arrow(plot_ui: &mut egui_plot::PlotUi<'_>, tip: [f64; 2], direction: [f64; 2]) {
+    let pal = theme::palette(plot_ui.ctx());
     let transform = *plot_ui.transform();
     let tip_px = transform.position_from_point(&PlotPoint::new(tip[0], tip[1]));
     // Las y de pantalla crecen hacia abajo.
@@ -195,8 +191,8 @@ fn draw_arrow(plot_ui: &mut egui_plot::PlotUi<'_>, tip: [f64; 2], direction: [f6
                 at(ARROW_LENGTH, -ARROW_HALF_WIDTH),
             ],
         )
-        .fill_color(DIMENSION_GREY)
-        .stroke(egui::Stroke::new(0.5, DIMENSION_GREY)),
+        .fill_color(pal.dimension)
+        .stroke(egui::Stroke::new(0.5, pal.dimension)),
     );
 }
 
@@ -330,6 +326,7 @@ pub(super) fn meridian_view(
 /// `tip` y la cabeza arriba a la derecha. Se dibuja en píxeles, así que no
 /// cambia de tamaño al acercar o alejar el dibujo.
 fn draw_pin(plot_ui: &mut egui_plot::PlotUi<'_>, tip: [f64; 2]) {
+    let pal = theme::palette(plot_ui.ctx());
     let transform = *plot_ui.transform();
     let origin = transform.position_from_point(&PlotPoint::new(tip[0], tip[1]));
     // `along` va de la punta a la cabeza y `across` es perpendicular.
@@ -339,7 +336,7 @@ fn draw_pin(plot_ui: &mut egui_plot::PlotUi<'_>, tip: [f64; 2]) {
         let value = transform.value_from_position(origin + along * forward + across * side);
         [value.x, value.y]
     };
-    let grey = Color32::from_gray(110);
+    let grey = pal.dimension;
     plot_ui.line(line("Chincheta", vec![at(0.0, 0.0), at(10.0, 0.0)], grey).width(1.2));
     // El collar, el cuerpo que se ensancha y la tapa.
     let parts = [
@@ -350,7 +347,7 @@ fn draw_pin(plot_ui: &mut egui_plot::PlotUi<'_>, tip: [f64; 2]) {
     for part in parts {
         plot_ui.polygon(
             egui_plot::Polygon::new("Chincheta", part)
-                .fill_color(Color32::WHITE)
+                .fill_color(pal.paper)
                 .stroke(egui::Stroke::new(1.0, grey)),
         );
     }
@@ -380,6 +377,7 @@ fn model_or_uncut(
 /// Edita `[meridian]` en `boxes` con texto o arrastrando los puntos de
 /// control. Devuelve si cambió algo.
 fn meridian_edit(ui: &mut egui::Ui, outcome: &Outcome, boxes: &mut Meridian) -> bool {
+    let pal = theme::palette(ui.ctx());
     let auto = meridional_model(&outcome.result);
     // El modelo con lo escrito ahora, para que elegir la Bézier parta de él.
     let current = model_or_uncut(&outcome.result, &hm_engine::meridian_edits_of(boxes))
@@ -446,11 +444,11 @@ fn meridian_edit(ui: &mut egui::Ui, outcome: &Outcome, boxes: &mut Meridian) -> 
         32.0
     };
     ui.scope(|ui| {
-        ui.visuals_mut().extreme_bg_color = PAPER;
+        ui.visuals_mut().extreme_bg_color = pal.paper;
         let mut labels = Vec::new();
         let plot = Plot::new("meridian")
             .data_aspect(1.0)
-            .grid_color(GRID)
+            .grid_color(pal.grid)
             .allow_drag(false)
             .height(ui.available_height() - graphs_height)
             .show(ui, |plot_ui| {
@@ -540,12 +538,13 @@ fn draw_section(
     labels: &mut Vec<Label>,
     wall_thickness: Option<f64>,
 ) -> bool {
+    let pal = theme::palette(plot_ui.ctx());
     // La propuesta del motor, debajo de todo.
     if let Some(engine) = engine {
         for wall in Wall::ALL {
             if let Some(curve) = engine.curve(wall.name()) {
                 plot_ui.line(
-                    line("Propuesta del motor", curve.points.clone(), RED)
+                    line("Propuesta del motor", curve.points.clone(), pal.marker)
                         .width(1.0)
                         .style(egui_plot::LineStyle::dashed_loose()),
                 );
@@ -571,7 +570,7 @@ fn draw_section(
             line(
                 "Referencias",
                 vec![[x_min, *r], [x_max, *r]],
-                Color32::from_gray(205),
+                pal.construction,
             )
             .width(3.5),
         );
@@ -581,7 +580,7 @@ fn draw_section(
             text: name.clone(),
             anchor: egui::Align2::LEFT_TOP,
             angle: 0.0,
-            colour: Color32::from_gray(140),
+            colour: pal.text_weak,
         });
     }
     // Los círculos de área: la familia entera, de la entrada a la salida, en gris
@@ -594,19 +593,26 @@ fn draw_section(
             line(
                 "Círculos de área",
                 circle_points(*centre, *radius),
-                if end { RED } else { Color32::from_gray(185) },
+                if end { pal.marker } else { pal.construction },
             )
             .width(if end { 1.4 } else { 0.6 }),
         );
     }
     if let Some((centre, radius)) = edge_circle(model) {
-        plot_ui.line(line("Círculo del borde", circle_points(centre, radius), RED).width(1.4));
+        plot_ui.line(
+            line(
+                "Círculo del borde",
+                circle_points(centre, radius),
+                pal.marker,
+            )
+            .width(1.4),
+        );
     }
     plot_ui.line(
         line(
             "Línea de centros",
             circles.iter().map(|(centre, _)| *centre).collect(),
-            RED,
+            pal.marker,
         )
         .width(1.0)
         .style(egui_plot::LineStyle::dashed_dense()),
@@ -622,7 +628,7 @@ fn draw_section(
             line(
                 "Polígono de control",
                 model.params.wall(wall).points.to_vec(),
-                meridian_color(wall.name()).gamma_multiply(0.55),
+                meridian_color(pal, wall.name()).gamma_multiply(0.55),
             )
             .width(1.0)
             .style(egui_plot::LineStyle::dashed_dense()),
@@ -641,7 +647,7 @@ fn draw_section(
                     [low[0], high[1]],
                     [low[0], low[1]],
                 ],
-                Color32::from_gray(150),
+                pal.construction,
             )
             .width(0.8)
             .style(egui_plot::LineStyle::dotted_dense()),
@@ -658,7 +664,7 @@ fn draw_section(
                 crate::meridian_segments::start_of(boxes, model, Wall::Hub),
                 crate::meridian_segments::start_of(boxes, model, Wall::Shroud),
             ],
-            meridian_color("Borde de ataque"),
+            meridian_color(pal, "Borde de ataque"),
         )
         .width(1.2),
     );
@@ -670,16 +676,19 @@ fn draw_section(
             wall.name() == curve.name && crate::meridian_segments::reference_only(boxes, wall)
         });
         let (colour, width) = if reference {
-            (Color32::from_gray(150), 1.0)
+            (pal.construction, 1.0)
         } else {
-            (meridian_color(&curve.name), meridian_width(&curve.name))
+            (
+                meridian_color(pal, &curve.name),
+                meridian_width(&curve.name),
+            )
         };
         plot_ui.line(line(&curve.name, curve.points.clone(), colour).width(width));
     }
     crate::meridian_segments::draw(plot_ui, model, boxes);
     // Las cotas del punto seleccionado.
     for dimension_line in dimensioning.lines {
-        plot_ui.line(line("Cotas", dimension_line, DIMENSION_GREY).width(1.0));
+        plot_ui.line(line("Cotas", dimension_line, pal.dimension).width(1.0));
     }
     for (tip, direction) in dimensioning.arrows {
         draw_arrow(plot_ui, tip, direction);
@@ -688,7 +697,7 @@ fn draw_section(
         Points::new("Cotas", dimensioning.origins)
             .radius(4.0)
             .filled(false)
-            .color(DIMENSION_GREY),
+            .color(pal.dimension),
     );
     // Los valores que se pueden escribir: dónde quedan en pantalla.
     let mut writable = Vec::new();
@@ -724,31 +733,27 @@ fn draw_section(
             anchor: egui::Align2::CENTER_BOTTOM,
             angle,
             // Las que se pueden escribir, en el color de la selección.
-            colour: if kind.is_some() {
-                WRITABLE_TEXT
-            } else {
-                DIMENSION_TEXT
-            },
+            colour: dimension_text_colour(pal, kind.is_some()),
         });
     }
     crate::meridian_segments::dimension_click(plot_ui, &writable);
     // Los puntos de control: extremos P0 y P4 en cuadrados grises con borde,
     // los interiores y los del borde de ataque en círculos con borde.
     for wall in Wall::ALL {
-        let colour = meridian_color(wall.name());
+        let colour = meridian_color(pal, wall.name());
         let ends = model.params.wall(wall).points;
         let squares = vec![ends[0], ends[4]];
         plot_ui.points(
             Points::new("Extremos", squares.clone())
                 .shape(egui_plot::MarkerShape::Square)
                 .radius(5.5)
-                .color(Color32::from_gray(40)),
+                .color(pal.text),
         );
         plot_ui.points(
             Points::new("Extremos", squares)
                 .shape(egui_plot::MarkerShape::Square)
                 .radius(3.8)
-                .color(Color32::from_gray(150)),
+                .color(pal.construction),
         );
         let inner: Vec<[f64; 2]> = model
             .handles()
@@ -777,7 +782,7 @@ fn draw_section(
             line(
                 "Polígono del borde",
                 model.params.edge.points.to_vec(),
-                TEAL.gamma_multiply(0.7),
+                pal.accent.gamma_multiply(0.7),
             )
             .width(1.0)
             .style(egui_plot::LineStyle::dashed_dense()),
@@ -793,18 +798,22 @@ fn draw_section(
         .filter(|handle| handle.control.index >= 5)
         .map(|handle| handle.at)
         .collect();
-    plot_ui.points(Points::new("Borde de ataque", ends).radius(4.5).color(TEAL));
+    plot_ui.points(
+        Points::new("Borde de ataque", ends)
+            .radius(4.5)
+            .color(pal.accent),
+    );
     plot_ui.points(
         Points::new("Puntos del borde", inner)
             .radius(4.2)
-            .color(TEAL)
+            .color(pal.accent)
             .filled(false),
     );
     // El punto seleccionado, con un aro.
     plot_ui.points(
         Points::new("Seleccionado", vec![at])
             .radius(8.0)
-            .color(Color32::from_gray(30))
+            .color(pal.text)
             .filled(false),
     );
     // La curvatura máxima de cada tapa: donde está su radio mínimo.
@@ -814,7 +823,7 @@ fn draw_section(
             Points::new("Curvatura máxima", vec![shape.max_curvature_at])
                 .radius(7.0)
                 .shape(egui_plot::MarkerShape::Diamond)
-                .color(RED)
+                .color(pal.marker)
                 .filled(false),
         );
     }
@@ -1084,6 +1093,7 @@ fn drag_handles(
     model: &MeridionalModel,
     boxes: &mut Meridian,
 ) -> bool {
+    let pal = theme::palette(plot_ui.ctx());
     let id = egui::Id::unique("meridian_dragged_point");
     let response = plot_ui.response().clone();
     let Some(pointer) = plot_ui.pointer_coordinate() else {
@@ -1136,10 +1146,10 @@ fn drag_handles(
     ];
     let (target, guides) = snap_to_alignments([pointer.x, pointer.y], &others, tolerance);
     if let Some(z) = guides[0] {
-        plot_ui.line(line("", vec![[z, -1.0e4], [z, 1.0e4]], SNAP_GUIDE).width(1.0));
+        plot_ui.line(line("", vec![[z, -1.0e4], [z, 1.0e4]], pal.copper).width(1.0));
     }
     if let Some(r) = guides[1] {
-        plot_ui.line(line("", vec![[-1.0e4, r], [1.0e4, r]], SNAP_GUIDE).width(1.0));
+        plot_ui.line(line("", vec![[-1.0e4, r], [1.0e4, r]], pal.copper).width(1.0));
     }
     write_moved(boxes, control, model.moved(control, target))
 }
@@ -1478,6 +1488,7 @@ fn edited_note(edits: &MeridianEdits) -> String {
 /// A(m) y cm(m) sobre la línea media: geometría del corte, sin bloqueo de
 /// álabes. No predicen rendimiento.
 fn channel_graphs(ui: &mut egui::Ui, model: &MeridionalModel, qth: f64) {
+    let pal = theme::palette(ui.ctx());
     let channel = model.channel();
     let (_, velocity) = profiles(&channel, qth);
     let (area, reference) = area_against_length(&channel);
@@ -1496,9 +1507,9 @@ fn channel_graphs(ui: &mut egui::Ui, model: &MeridionalModel, qth: f64) {
         Plot::new("channel_area")
             .legend(Legend::default())
             .show(&mut columns[0], |plot_ui| {
-                plot_ui.line(line("A, cm²", area, Color32::from_rgb(70, 150, 240)));
+                plot_ui.line(line("A, cm²", area, pal.head));
                 plot_ui.line(
-                    line("Recta entrada–salida", reference, Color32::GRAY)
+                    line("Recta entrada–salida", reference, pal.reference)
                         .width(1.0)
                         .style(egui_plot::LineStyle::dashed_loose()),
                 );
@@ -1506,7 +1517,7 @@ fn channel_graphs(ui: &mut egui::Ui, model: &MeridionalModel, qth: f64) {
         Plot::new("channel_cm")
             .legend(Legend::default())
             .show(&mut columns[1], |plot_ui| {
-                plot_ui.line(line("cm, m/s", velocity, Color32::from_rgb(240, 160, 50)));
+                plot_ui.line(line("cm, m/s", velocity, pal.power));
             });
         Plot::new("wall_curvature")
             .legend(Legend::default().position(egui_plot::Corner::RightTop))
@@ -1516,7 +1527,7 @@ fn channel_graphs(ui: &mut egui::Ui, model: &MeridionalModel, qth: f64) {
                     else {
                         continue;
                     };
-                    let colour = meridian_color(wall.name());
+                    let colour = meridian_color(pal, wall.name());
                     // La marca de curvatura máxima, la misma del corte.
                     let peak = profile
                         .iter()
@@ -1528,7 +1539,7 @@ fn channel_graphs(ui: &mut egui::Ui, model: &MeridionalModel, qth: f64) {
                             Points::new("Curvatura máxima", vec![peak])
                                 .shape(egui_plot::MarkerShape::Diamond)
                                 .radius(5.0)
-                                .color(RED),
+                                .color(pal.marker),
                         );
                     }
                 }
@@ -1674,6 +1685,7 @@ fn area_against_length(channel: &[ChannelStation]) -> (Vec<[f64; 2]>, Vec<[f64; 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::theme::{DARK, LIGHT, contrast_ratio};
     use hm_design::meridian::EdgeEdit;
 
     #[test]
@@ -1703,24 +1715,44 @@ mod tests {
             "Borde de ataque",
             "Borde de salida",
         ];
-        let colours: Vec<Color32> = names.iter().map(|name| meridian_color(name)).collect();
-        for (index, colour) in colours.iter().enumerate() {
-            assert_ne!(*colour, Color32::GRAY, "{}", names[index]);
-            assert!(!colours[..index].contains(colour), "{}", names[index]);
+        for p in [&LIGHT, &DARK] {
+            let colours: Vec<Color32> = names.iter().map(|name| meridian_color(p, name)).collect();
+            for (index, colour) in colours.iter().enumerate() {
+                assert_ne!(*colour, p.construction, "{}", names[index]);
+                assert!(!colours[..index].contains(colour), "{}", names[index]);
+            }
+        }
+    }
+
+    #[test]
+    fn meridian_colors_per_theme() {
+        for p in [&LIGHT, &DARK] {
+            assert_eq!(meridian_color(p, "Tapa trasera"), p.hub);
+            assert_eq!(meridian_color(p, "Tapa delantera"), p.shroud);
+            assert_eq!(meridian_color(p, "Nariz del cubo"), p.construction);
+        }
+    }
+
+    #[test]
+    fn labels_follow_dark_paper() {
+        assert!(contrast_ratio(DARK.dimension_text, DARK.paper) >= 4.5);
+        for p in [&LIGHT, &DARK] {
+            assert_eq!(dimension_text_colour(p, true), p.accent);
+            assert_eq!(dimension_text_colour(p, false), p.dimension_text);
         }
     }
 
     #[test]
     fn the_cut_curve_has_its_own_colour_and_width() {
-        let cut = meridian_color(CUT_NAME);
-        assert_ne!(cut, Color32::GRAY);
+        let cut = meridian_color(&LIGHT, CUT_NAME);
+        assert_ne!(cut, LIGHT.construction);
         for name in [
             "Tapa delantera",
             "Tapa trasera",
             "Borde de ataque",
             "Borde de salida",
         ] {
-            assert_ne!(cut, meridian_color(name), "{name}");
+            assert_ne!(cut, meridian_color(&LIGHT, name), "{name}");
         }
         assert_eq!(meridian_width(CUT_NAME), meridian_width("Tapa trasera"));
     }
@@ -1771,7 +1803,7 @@ mod tests {
 
     #[test]
     fn a_curve_without_a_colour_is_still_drawn() {
-        assert_eq!(meridian_color("Nariz del cubo"), Color32::GRAY);
+        assert_eq!(meridian_color(&LIGHT, "Nariz del cubo"), LIGHT.construction);
     }
 
     #[test]

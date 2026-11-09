@@ -19,6 +19,7 @@
 //! Se guarda en `[meridian.segments]` del `.hmf`, así que entra en deshacer
 //! como lo demás de la pestaña.
 
+use crate::theme::{self, Palette};
 use eframe::egui;
 use egui::Color32;
 use egui_plot::{PlotPoint, Points};
@@ -48,14 +49,15 @@ const SEGMENT_POINTS: usize = 80;
 /// Puntos con que se dibuja el arco de un radio.
 const ARC_POINTS: usize = 40;
 
-/// Color de un radio que no cabe.
-const REFUSED: Color32 = Color32::from_rgb(210, 40, 40);
-
-/// Color de una cota que se escribe con un clic, como las del paso C1.
-const DIMENSION: Color32 = Color32::from_rgb(20, 90, 200);
-
-/// Color del tramo seleccionado y de las guías de ajuste.
-const SELECTED: Color32 = Color32::from_rgb(230, 120, 0);
+/// Trazo de un tramo del contorno mecánico: el seleccionado, en cobre y más
+/// grueso; el resto, en el color de su tapa.
+fn segment_stroke(p: &Palette, base: Color32, selected: bool) -> egui::Stroke {
+    if selected {
+        egui::Stroke::new(4.0, p.copper)
+    } else {
+        egui::Stroke::new(2.5, base)
+    }
+}
 
 /// Una punta de la cadena de nodos de una tapa.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -1706,6 +1708,7 @@ fn node_editor(
     model: &MeridionalModel,
     segments: &mut Segments,
 ) -> bool {
+    let pal = theme::palette(plot_ui.ctx());
     let ctx = plot_ui.ctx().clone();
     let Some(mut editor) = ctx
         .data(|data| data.get_temp::<Option<Editor>>(editor_id()))
@@ -1834,14 +1837,14 @@ fn node_editor(
                 ui.label(
                     egui::RichText::new("El chaflán no cabe: la esquina se dibuja viva.")
                         .small()
-                        .color(REFUSED),
+                        .color(pal.error),
                 );
             }
             if let Corner::TooBig(_) = corner {
                 ui.label(
                     egui::RichText::new("El radio no cabe: la esquina se dibuja viva.")
                         .small()
-                        .color(REFUSED),
+                        .color(pal.error),
                 );
             }
             ui.label(
@@ -2090,6 +2093,7 @@ pub(super) fn node_positions(boxes: &Meridian, model: &MeridionalModel) -> Vec<[
 /// y los puntos: círculos los que se deslizan por la curva, cuadrados los
 /// libres.
 pub(super) fn draw(plot_ui: &mut egui_plot::PlotUi<'_>, model: &MeridionalModel, boxes: &Meridian) {
+    let pal = theme::palette(plot_ui.ctx());
     let segments = read(boxes);
     let open = open_node(plot_ui.ctx());
     crate::meridian_constraints::draw(plot_ui, model, &segments, open);
@@ -2100,16 +2104,16 @@ pub(super) fn draw(plot_ui: &mut egui_plot::PlotUi<'_>, model: &MeridionalModel,
             continue;
         }
         let points = &model.params.wall(wall).points;
-        let colour = crate::meridian::meridian_color(wall.name());
+        let colour = crate::meridian::meridian_color(pal, wall.name());
         for (piece, polyline) in state.contour(points).into_iter().enumerate() {
             let chosen = selected == Some((wall, piece));
             plot_ui.line(
                 line(
                     "Contorno mecánico",
                     polyline,
-                    if chosen { SELECTED } else { colour },
+                    segment_stroke(pal, colour, chosen).color,
                 )
-                .width(if chosen { 4.0 } else { 2.5 }),
+                .width(segment_stroke(pal, colour, chosen).width),
             );
         }
         for (index, corner) in state.corners(points).into_iter().enumerate() {
@@ -2117,26 +2121,22 @@ pub(super) fn draw(plot_ui: &mut egui_plot::PlotUi<'_>, model: &MeridionalModel,
                 Corner::Sharp => continue,
                 Corner::Round(f) => {
                     let middle = meridian_fillet::arc(&f, 2)[1];
-                    (
-                        format!("R{}", trimmed(f.radius, 2)),
-                        middle,
-                        Color32::from_gray(20),
-                    )
+                    (format!("R{}", trimmed(f.radius, 2)), middle, pal.text)
                 }
                 Corner::Chamfer(c) => (
                     format!("C{}", trimmed(c.distance, 2)),
                     [(c.a[0] + c.b[0]) / 2.0, (c.a[1] + c.b[1]) / 2.0],
-                    Color32::from_gray(20),
+                    pal.text,
                 ),
                 Corner::TooBig(r) => (
                     format!("R{} no cabe", trimmed(r, 2)),
                     state.node_at(points, index),
-                    REFUSED,
+                    pal.error,
                 ),
                 Corner::TooBigChamfer(d) => (
                     format!("C{} no cabe", trimmed(d, 2)),
                     state.node_at(points, index),
-                    REFUSED,
+                    pal.error,
                 ),
             };
             if matches!(corner, Corner::TooBig(_) | Corner::TooBigChamfer(_)) {
@@ -2144,7 +2144,7 @@ pub(super) fn draw(plot_ui: &mut egui_plot::PlotUi<'_>, model: &MeridionalModel,
                     Points::new("Radio que no cabe", vec![at])
                         .radius(7.0)
                         .filled(false)
-                        .color(REFUSED),
+                        .color(pal.error),
                 );
             }
             plot_ui.text(
@@ -2170,15 +2170,15 @@ pub(super) fn draw(plot_ui: &mut egui_plot::PlotUi<'_>, model: &MeridionalModel,
                             state.node_at(points, piece),
                             state.node_at(points, piece + 1),
                         ],
-                        REFUSED,
+                        pal.error,
                     )
                     .width(2.5),
                 );
             }
             let (text, colour) = if refused {
-                (format!("R{} no cabe", trimmed(radius.abs(), 2)), REFUSED)
+                (format!("R{} no cabe", trimmed(radius.abs(), 2)), pal.error)
             } else {
-                (format!("R{}", trimmed(radius.abs(), 2)), DIMENSION)
+                (format!("R{}", trimmed(radius.abs(), 2)), pal.accent)
             };
             plot_ui.text(
                 egui_plot::Text::new("Arco", PlotPoint::new(at[0], at[1]), {
@@ -2197,6 +2197,7 @@ pub(super) fn draw_nodes(
     model: &MeridionalModel,
     boxes: &Meridian,
 ) {
+    let pal = theme::palette(plot_ui.ctx());
     let segments = read(boxes);
     for wall in Wall::ALL {
         let state = segments.wall(wall);
@@ -2222,14 +2223,14 @@ pub(super) fn draw_nodes(
                 Points::new("Puntos del contorno", nodes.clone())
                     .shape(shape)
                     .radius(5.0)
-                    .color(Color32::WHITE),
+                    .color(pal.paper),
             );
             plot_ui.points(
                 Points::new("Puntos del contorno", nodes)
                     .shape(shape)
                     .radius(5.0)
                     .filled(false)
-                    .color(Color32::from_gray(20)),
+                    .color(pal.text),
             );
         }
     }
@@ -2424,6 +2425,7 @@ fn draw_extension(
     segments: &mut Segments,
     drawing: Drawing,
 ) -> bool {
+    let pal = theme::palette(plot_ui.ctx());
     let ctx = plot_ui.ctx().clone();
     let response = plot_ui.response().clone();
     let points = model.params.wall(drawing.wall).points;
@@ -2456,12 +2458,12 @@ fn draw_extension(
     );
     to[1] = to[1].max(0.0);
     if let Some(z) = guides[0] {
-        plot_ui.line(line("", vec![[z, -1.0e4], [z, 1.0e4]], SELECTED).width(1.0));
+        plot_ui.line(line("", vec![[z, -1.0e4], [z, 1.0e4]], pal.copper).width(1.0));
     }
     if let Some(r) = guides[1] {
-        plot_ui.line(line("", vec![[-1.0e4, r], [1.0e4, r]], SELECTED).width(1.0));
+        plot_ui.line(line("", vec![[-1.0e4, r], [1.0e4, r]], pal.copper).width(1.0));
     }
-    plot_ui.line(line("", vec![tip, to], SELECTED).width(2.5));
+    plot_ui.line(line("", vec![tip, to], pal.copper).width(2.5));
     plot_ui.text(
         egui_plot::Text::new(
             "Prolongación",
@@ -2471,7 +2473,7 @@ fn draw_extension(
                 to[0],
                 2.0 * to[1]
             ))
-            .color(Color32::from_gray(20)),
+            .color(pal.text),
         )
         .anchor(egui::Align2::LEFT_BOTTOM),
     );
@@ -2504,6 +2506,7 @@ fn drag_node(
     model: &MeridionalModel,
     segments: &mut Segments,
 ) -> (bool, bool) {
+    let pal = theme::palette(plot_ui.ctx());
     let ctx = plot_ui.ctx().clone();
     let response = plot_ui.response().clone();
     if response.drag_started_by(egui::PointerButton::Primary) {
@@ -2573,10 +2576,10 @@ fn drag_node(
                 }
             }
             if let Some(z) = guides[0] {
-                plot_ui.line(line("", vec![[z, -1.0e4], [z, 1.0e4]], SELECTED).width(1.0));
+                plot_ui.line(line("", vec![[z, -1.0e4], [z, 1.0e4]], pal.copper).width(1.0));
             }
             if let Some(r) = guides[1] {
-                plot_ui.line(line("", vec![[-1.0e4, r], [1.0e4, r]], SELECTED).width(1.0));
+                plot_ui.line(line("", vec![[-1.0e4, r], [1.0e4, r]], pal.copper).width(1.0));
             }
         }
         changed = segments
@@ -2593,7 +2596,7 @@ fn drag_node(
                 at[0],
                 2.0 * at[1]
             ))
-            .color(Color32::from_gray(20)),
+            .color(pal.text),
         )
         .anchor(egui::Align2::LEFT_BOTTOM),
     );
@@ -3104,6 +3107,18 @@ fn seed_from_env(ctx: &egui::Context, model: &MeridionalModel, boxes: &mut Merid
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::theme::{DARK, LIGHT};
+
+    #[test]
+    fn selected_is_thicker_than_normal() {
+        for p in [&LIGHT, &DARK] {
+            let normal = segment_stroke(p, p.hub, false);
+            let chosen = segment_stroke(p, p.hub, true);
+            assert_eq!(normal.color, p.hub);
+            assert_eq!(chosen.color, p.copper);
+            assert!(chosen.width > normal.width);
+        }
+    }
 
     const POINTS: [[f64; 2]; 5] = [
         [0.0, 50.0],

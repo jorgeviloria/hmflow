@@ -2,9 +2,6 @@
 //! Acero (neutros), azul petróleo (acción y selección) y cobre (acento, valores
 //! editados a mano y elemento seleccionado).
 
-// Provisional: las Tasks 2-4 empiezan a usar los tokens; se retira en la Task 4.
-#![allow(dead_code)]
-
 use eframe::egui::{self, Color32};
 
 /// Colores semánticos de la interfaz y de la máquina; iguales en todas las vistas.
@@ -205,6 +202,7 @@ pub(crate) fn theme_from_env(value: Option<&str>) -> Option<egui::ThemePreferenc
     }
 }
 
+#[cfg(test)]
 fn luminance(c: Color32) -> f32 {
     let channel = |v: u8| {
         let v = f32::from(v) / 255.0;
@@ -218,6 +216,7 @@ fn luminance(c: Color32) -> f32 {
 }
 
 /// Razón de contraste WCAG 2.1 entre dos colores opacos.
+#[cfg(test)]
 pub(crate) fn contrast_ratio(a: Color32, b: Color32) -> f32 {
     let (la, lb) = (luminance(a), luminance(b));
     let (hi, lo) = if la >= lb { (la, lb) } else { (lb, la) };

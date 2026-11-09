@@ -420,10 +420,6 @@ fn enforce_with(points: [&[[f64; 2]; 5]; 2], boxes: &mut Meridian) -> bool {
     write(boxes, &segments)
 }
 
-/// Gris oscuro de las cotas que mandan; las azules de C1 son medidas.
-const COMMANDING: Color32 = Color32::from_gray(40);
-const BROKEN: Color32 = Color32::from_rgb(200, 30, 30);
-
 /// Qué es un valor dibujado: una cota que manda, o una provisional del par
 /// que se está acotando.
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -534,6 +530,7 @@ pub(super) fn draw(
     segments: &Segments,
     open: Option<(Wall, usize)>,
 ) {
+    let pal = crate::theme::palette(plot_ui.ctx());
     let ctx = plot_ui.ctx().clone();
     let points = wall_points(model);
     let mut walls = segments.walls.clone();
@@ -553,8 +550,8 @@ pub(super) fn draw(
             ConstraintKind::Ang => format!("{}°", trimmed(acute(constraint.value), 1)),
         };
         let (colour, text) = match problems.iter().find(|problem| problem.index == index) {
-            Some(problem) => (BROKEN, format!("{label} · {}", problem.reason)),
-            None => (COMMANDING, label),
+            Some(problem) => (pal.error, format!("{label} · {}", problem.reason)),
+            None => (pal.text, label),
         };
         let rect = if constraint.kind == ConstraintKind::Ang {
             label_between(plot_ui, [from, to], text, colour)
@@ -587,7 +584,7 @@ pub(super) fn draw(
                 PlotPoint::new(at[0], at[1]),
                 egui::RichText::new(format!(" {mark}"))
                     .small()
-                    .color(COMMANDING),
+                    .color(pal.text),
             )
             .anchor(egui::Align2::LEFT_BOTTOM),
         );
@@ -606,7 +603,7 @@ pub(super) fn draw(
                     (ConstraintKind::Dd, "ΔØ", dd),
                 ] {
                     let text = format!("{symbol} {}?", mm_text(value));
-                    let rect = dimension(plot_ui, ends(kind, from, to), text, Color32::GRAY);
+                    let rect = dimension(plot_ui, ends(kind, from, to), text, pal.dimension);
                     values.push((rect, Value::New(kind)));
                 }
             }
@@ -626,7 +623,7 @@ pub(super) fn draw(
                         PlotPoint::new(at[0], at[1]),
                         egui::RichText::new(format!("  {text}"))
                             .small()
-                            .color(BROKEN),
+                            .color(pal.error),
                     )
                     .anchor(egui::Align2::LEFT_TOP),
                 );
@@ -816,6 +813,7 @@ pub(super) fn menu_constraint(ctx: &egui::Context) -> Option<usize> {
 /// La caja de la cota que se escribe. Intro la crea o la cambia; Esc o un
 /// clic fuera la cierran. Devuelve si cambió algo.
 pub(super) fn writing(ctx: &egui::Context, segments: &mut Segments) -> bool {
+    let pal = crate::theme::palette(ctx);
     let Some(mut writing) = ctx
         .data(|data| data.get_temp::<Option<Writing>>(writing_id()))
         .flatten()
@@ -861,7 +859,7 @@ pub(super) fn writing(ctx: &egui::Context, segments: &mut Segments) -> bool {
                     }
                 });
                 if let Some(refusal) = writing.refusal {
-                    ui.label(egui::RichText::new(refusal).small().color(BROKEN));
+                    ui.label(egui::RichText::new(refusal).small().color(pal.error));
                 }
             });
         });

@@ -30,10 +30,7 @@ pub(super) fn curves(ui: &mut egui::Ui, outcome: &Outcome) {
         .collect();
     let h_top = head.iter().map(|p| p[1]).fold(0.0, f64::max) * 1.1;
 
-    let blue = Color32::from_rgb(70, 150, 240);
-    let orange = Color32::from_rgb(240, 160, 50);
-    let green = Color32::from_rgb(80, 180, 120);
-    let purple = Color32::from_rgb(180, 120, 220);
+    let palette = crate::theme::palette(ui.ctx());
     let qd_color = ui.visuals().strong_text_color();
     // Las marcas comunes solo llevan nombre (y entrada en la leyenda) en la
     // primera gráfica.
@@ -55,8 +52,8 @@ pub(super) fn curves(ui: &mut egui::Ui, outcome: &Outcome) {
                     [por_low * q_design, top],
                 ]),
             )
-            .fill_color(Color32::from_rgba_unmultiplied(80, 180, 120, 28))
-            .stroke(egui::Stroke::new(0.0, green)),
+            .fill_color(palette.preferred_region)
+            .stroke(egui::Stroke::new(0.0, palette.ok)),
         );
         plot_ui.vline(VLine::new(name("Qd"), q_design).color(qd_color).width(1.5));
         plot_ui.vline(
@@ -64,7 +61,7 @@ pub(super) fn curves(ui: &mut egui::Ui, outcome: &Outcome) {
                 name("Inicio de recirculación"),
                 outcome.result.recirculation_onset * q_design,
             )
-            .color(purple)
+            .color(palette.recirculation)
             .style(egui_plot::LineStyle::dashed_dense()),
         );
     };
@@ -81,15 +78,15 @@ pub(super) fn curves(ui: &mut egui::Ui, outcome: &Outcome) {
         .include_y(0.0)
         .show(ui, |plot_ui| {
             marks(plot_ui, h_top, true);
-            plot_ui.line(line("H", head, blue));
-            plot_ui.line(line("NPSHr", npshr, orange));
+            plot_ui.line(line("H", head, palette.head));
+            plot_ui.line(line("NPSHr", npshr, palette.npsh_r));
             if let Some(npsha) = &outcome.input.npsha {
-                plot_ui.hline(HLine::new("NPSHa", npsha.si).color(green));
+                plot_ui.hline(HLine::new("NPSHa", npsha.si).color(palette.npsh_a));
             }
             plot_ui.points(
                 Points::new("Punto de diseño", vec![[q_design, outcome.input.h.si]])
                     .radius(5.0)
-                    .color(blue),
+                    .color(palette.head),
             );
         });
 
@@ -102,7 +99,7 @@ pub(super) fn curves(ui: &mut egui::Ui, outcome: &Outcome) {
         .include_y(0.0)
         .show(ui, |plot_ui| {
             marks(plot_ui, 100.0, false);
-            plot_ui.line(line("η", eta, green));
+            plot_ui.line(line("η", eta, palette.efficiency));
         });
 
     let p_top = power.iter().map(|p| p[1]).fold(0.0, f64::max) * 1.2;
@@ -116,14 +113,14 @@ pub(super) fn curves(ui: &mut egui::Ui, outcome: &Outcome) {
         .include_y(0.0)
         .show(ui, |plot_ui| {
             marks(plot_ui, p_top, false);
-            plot_ui.line(line("P eje", power, orange));
+            plot_ui.line(line("P eje", power, palette.power));
             if let Some(rating) = outcome
                 .mechanics
                 .as_ref()
                 .ok()
                 .and_then(|mech| mech.motor_rating)
             {
-                plot_ui.hline(HLine::new("Motor IEC", rating / 1000.0).color(Color32::RED));
+                plot_ui.hline(HLine::new("Motor IEC", rating / 1000.0).color(palette.motor_limit));
             }
         });
 }

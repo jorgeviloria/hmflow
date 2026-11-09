@@ -1,7 +1,6 @@
 //! Gráfica β(r) del álabe: la ley de ángulo con sus manijas arrastrables.
 
 use eframe::egui;
-use egui::Color32;
 use egui_plot::{Plot, PlotPoint, Points};
 use hm_design::geometry::{BLADE_BETA_MIN_DEG, beta_profile};
 use hm_design::{BETA_BOW_RANGE_DEG, INCIDENCE_RANGE_DEG};
@@ -359,6 +358,7 @@ pub(super) fn blade_beta_view(
     );
     let status_id = egui::Id::unique("blade_beta_status");
     let mut dragged = false;
+    let palette = crate::theme::palette(ui.ctx());
     Plot::new("blade_beta")
         .height(190.0)
         .allow_drag(false)
@@ -369,31 +369,23 @@ pub(super) fn blade_beta_view(
         .y_axis_label("β, °")
         .show(ui, |plot_ui| {
             let [a, b] = graph.straight();
-            plot_ui.line(line("Recta del 1D", vec![a, b], Color32::GRAY).width(1.0));
-            plot_ui.line(line(
-                "β(r)",
-                graph.curve(60),
-                Color32::from_rgb(70, 150, 240),
-            ));
+            plot_ui.line(line("Recta del 1D", vec![a, b], palette.reference).width(1.0));
+            plot_ui.line(line("β(r)", graph.curve(60), palette.blade));
             let handles = graph.handles();
             // Polígono de control, para que se vea qué tira de la curva.
             plot_ui.line(
-                line(
-                    "",
-                    vec![a, handles[0], handles[1], b],
-                    Color32::from_rgb(240, 160, 50),
-                )
-                .width(1.0)
-                .style(egui_plot::LineStyle::dashed_loose()),
+                line("", vec![a, handles[0], handles[1], b], palette.copper)
+                    .width(1.0)
+                    .style(egui_plot::LineStyle::dashed_loose()),
             );
             plot_ui.points(
                 Points::new("Manijas", handles.to_vec())
-                    .color(Color32::from_rgb(240, 160, 50))
+                    .color(palette.copper)
                     .radius(6.0),
             );
             plot_ui.points(
                 Points::new("Extremos", graph.ends().to_vec())
-                    .color(Color32::from_rgb(70, 150, 240))
+                    .color(palette.blade)
                     .radius(6.0),
             );
             if let Some(drag) = drag_handles(plot_ui, &graph, inputs) {
@@ -427,7 +419,7 @@ pub(super) fn blade_beta_view(
     );
     let reading = egui::RichText::new(text).small();
     ui.label(if flagged {
-        reading.color(Color32::from_rgb(210, 60, 50))
+        reading.color(crate::theme::palette(ui.ctx()).marker)
     } else {
         reading
     });
@@ -438,7 +430,7 @@ pub(super) fn blade_beta_view(
                  para su número.",
             )
             .small()
-            .color(Color32::from_rgb(210, 60, 50)),
+            .color(crate::theme::palette(ui.ctx()).marker),
         );
     }
     edited

@@ -6,6 +6,7 @@ use egui_plot::{Legend, Plot};
 
 use crate::curves::line;
 use crate::model::Outcome;
+use crate::theme::{self, Palette};
 
 /// Cómo se dibuja una curva del modelo en planta.
 struct CurveStyle<'a> {
@@ -17,7 +18,7 @@ struct CurveStyle<'a> {
 
 /// Estilo por el nombre de la curva. Una curva que el modelo traiga sin
 /// estilo asignado se dibuja igual, con su nombre: no desaparece.
-fn curve_style(name: &str) -> CurveStyle<'_> {
+fn curve_style<'a>(p: &Palette, name: &'a str) -> CurveStyle<'a> {
     let style = |legend, color, width, dashed| CurveStyle {
         legend,
         color,
@@ -28,11 +29,11 @@ fn curve_style(name: &str) -> CurveStyle<'_> {
         .strip_prefix("Álabe ")
         .is_some_and(|number| number.parse::<u32>().is_ok());
     match name {
-        "D1" | "D2" => style(name, Color32::GRAY, 1.0, false),
-        "Lengua" => style(name, Color32::from_gray(90), 1.0, true),
-        "Voluta" => style(name, Color32::from_rgb(240, 160, 50), 2.0, false),
-        _ if numbered_blade => style("Álabes", Color32::from_rgb(70, 150, 240), 2.0, false),
-        _ => style(name, Color32::from_rgb(120, 180, 90), 2.0, false),
+        "D1" | "D2" => style(name, p.reference, 1.0, false),
+        "Lengua" => style(name, p.tongue, 1.0, true),
+        "Voluta" => style(name, p.volute, 2.0, false),
+        _ if numbered_blade => style("Álabes", p.blade, 2.0, false),
+        _ => style(name, p.construction, 2.0, false),
     }
 }
 
@@ -65,12 +66,13 @@ pub(super) fn plan_view(ui: &mut egui::Ui, outcome: &Outcome) {
         .small()
         .weak(),
     );
+    let palette = theme::palette(ui.ctx());
     Plot::new("plan")
         .data_aspect(1.0)
         .legend(Legend::default())
         .show(ui, |plot_ui| {
             for curve in &model.curves {
-                let style = curve_style(&curve.name);
+                let style = curve_style(palette, &curve.name);
                 let mut drawn =
                     line(style.legend, curve.points.clone(), style.color).width(style.width);
                 if style.dashed {
@@ -84,41 +86,45 @@ pub(super) fn plan_view(ui: &mut egui::Ui, outcome: &Outcome) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::theme::{DARK, LIGHT};
 
     #[test]
-    fn every_plan_curve_keeps_the_look_it_had() {
-        let grey = curve_style("D1");
-        assert_eq!(
-            (grey.legend, grey.color, grey.width, grey.dashed),
-            ("D1", Color32::GRAY, 1.0, false)
-        );
-        assert_eq!(curve_style("D2").legend, "D2");
-        let tongue = curve_style("Lengua");
-        assert_eq!(
-            (tongue.color, tongue.width, tongue.dashed),
-            (Color32::from_gray(90), 1.0, true)
-        );
-        for name in ["Álabe 1", "Álabe 7", "Álabe 12"] {
-            let blade = curve_style(name);
+    fn plan_legend_matches_strokes() {
+        for p in [&LIGHT, &DARK] {
+            let grey = curve_style(p, "D1");
             assert_eq!(
-                (blade.legend, blade.color, blade.width),
-                ("Álabes", Color32::from_rgb(70, 150, 240), 2.0),
-                "{name}"
+                (grey.legend, grey.color, grey.width, grey.dashed),
+                ("D1", p.reference, 1.0, false)
+            );
+            assert_eq!(curve_style(p, "D2").legend, "D2");
+            let tongue = curve_style(p, "Lengua");
+            assert_eq!(
+                (tongue.color, tongue.width, tongue.dashed),
+                (p.tongue, 1.0, true)
+            );
+            for name in ["Álabe 1", "Álabe 7", "Álabe 12"] {
+                let blade = curve_style(p, name);
+                assert_eq!(
+                    (blade.legend, blade.color, blade.width),
+                    ("Álabes", p.blade, 2.0),
+                    "{name}"
+                );
+            }
+            let volute = curve_style(p, "Voluta");
+            assert_eq!(
+                (volute.legend, volute.color, volute.width),
+                ("Voluta", p.volute, 2.0)
             );
         }
-        let volute = curve_style("Voluta");
-        assert_eq!(
-            (volute.legend, volute.color, volute.width),
-            ("Voluta", Color32::from_rgb(240, 160, 50), 2.0)
-        );
     }
 
     #[test]
     fn a_curve_without_a_style_is_still_drawn_under_its_own_name() {
-        let unknown = curve_style("Difusor");
+        let unknown = curve_style(&LIGHT, "Difusor");
         assert_eq!(unknown.legend, "Difusor");
         assert!(unknown.width > 0.0);
+        assert_eq!(unknown.color, LIGHT.construction);
         // Sin número no es uno de los Z álabes: no se agrupa con ellos.
-        assert_eq!(curve_style("Álabe guía").legend, "Álabe guía");
+        assert_eq!(curve_style(&LIGHT, "Álabe guía").legend, "Álabe guía");
     }
 }

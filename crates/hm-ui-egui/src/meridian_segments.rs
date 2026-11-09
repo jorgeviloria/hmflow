@@ -822,7 +822,12 @@ impl WallSegments {
     /// Si el nodo se puede arrastrar: libre o deslizándose (un corte). Los
     /// extremos pegados a una curva son los de la Bézier y no se mueven aquí.
     fn draggable(&self, index: usize) -> bool {
-        self.can_free(index) || self.interior(index)
+        self.can_free(index) || self.cut_slot(index).is_some()
+    }
+
+    /// Si el tramo puede volver a ser curva: los de la prolongación, no.
+    pub(super) fn can_be_curve(&self, piece: usize) -> bool {
+        !self.extension_piece(piece)
     }
 
     /// Si el nodo tiene un tramo a cada lado (no es una punta de la cadena).
@@ -2704,7 +2709,10 @@ pub(super) fn interact(
                 arc_typing = Some((hit.wall, piece));
                 ui.close();
             }
-            if kind != Piece::Curve && ui.button("Volver a curva").clicked() {
+            if kind != Piece::Curve
+                && state.can_be_curve(piece)
+                && ui.button("Volver a curva").clicked()
+            {
                 constraints.line_lost(hit.wall, piece);
                 changed |= state.set_piece(piece, Piece::Curve);
                 ui.close();
@@ -3802,5 +3810,24 @@ mod tests {
         };
         let s = WallSegments::from_texts(&texts).unwrap();
         assert!(!s.closed);
+    }
+
+    #[test]
+    fn p0_and_p4_are_not_draggable_with_an_extension() {
+        let s = extended(1, 1);
+        assert!(!s.draggable(s.p0()));
+        assert!(!s.draggable(s.p4()));
+        assert!(s.draggable(0) && s.draggable(s.node_count() - 1));
+        // Sin prolongación, como antes: los extremos pegados a la curva no se mueven.
+        let plain = cut_twice();
+        assert!(!plain.draggable(0) && !plain.draggable(plain.node_count() - 1));
+        assert!(plain.draggable(1) && plain.draggable(2));
+    }
+
+    #[test]
+    fn an_extension_piece_cannot_go_back_to_a_curve() {
+        let s = extended(1, 0);
+        assert!(!s.can_be_curve(0));
+        assert!(s.can_be_curve(1));
     }
 }

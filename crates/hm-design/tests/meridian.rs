@@ -1702,6 +1702,18 @@ fn the_automatic_edge_follows_the_walls_and_a_fixed_one_does_not() {
     assert_eq!(fixed.params.edge_hub, 0.3);
 }
 
+/// El B1 real de `oracle/b1/rodete-nuevo/rodete.hmf`: Ø425, ojo de 140 mm y
+/// dH = 58 mm (b1 con que el área del 1D da ese dH). Sobre el diseño de su
+/// punto de operación (1060 gpm, 83 m, 1750 rpm) se fijan d1, b1, d2 y b2.
+fn b1_425() -> DesignResult {
+    let mut result = design(&b1_input()).unwrap();
+    result.d1.si = 0.14;
+    result.b1.si = 0.028_992_857_142_857_143;
+    result.d2.si = 0.425;
+    result.b2.si = 0.016_897_589_102_846_885;
+    result
+}
+
 /// El punto de operación del B1: 1060 gpm, 83 m, 1750 rpm.
 fn b1_input() -> DesignInput {
     let q = |text: &str| parse_quantity(text).unwrap();
@@ -1713,21 +1725,53 @@ fn b1_input() -> DesignInput {
     }
 }
 
+fn b1_cut(z: f64) -> HubCutEdit {
+    HubCutEdit {
+        z: Some(z),
+        mode: CutMode::Through,
+        shaft_diameter: Some(41.275),
+        counterbore_diameter: Some(58.0),
+        counterbore_depth: Some(7.0),
+        chamfer: Some(1.0),
+    }
+}
+
 #[test]
-fn the_b1_hub_cut_still_fits_the_automatic_edge() {
-    let result = design(&b1_input()).unwrap();
-    let edits = MeridianEdits {
-        hub_cut: HubCutEdit {
-            z: Some(37.5),
-            mode: CutMode::Through,
-            shaft_diameter: Some(41.275),
-            counterbore_diameter: Some(58.0),
-            counterbore_depth: Some(7.0),
-            chamfer: Some(1.0),
-        },
+fn the_b1_automatic_edge_follows_the_formula() {
+    let model = meridional_model(&b1_425()).unwrap();
+    let p = &model.params;
+    assert_eq!(p.d1i, 58.0);
+    assert!(p.edge_auto.hub_auto && p.edge_auto.clamp.is_none());
+    assert!(s_gap(p) < 1e-3);
+    // El criterio S sobre el B1 real: cubo en z = 33,6 mm, r = 57,7 mm.
+    assert!(
+        (p.edge_points[1][0] - 33.58).abs() < 0.05,
+        "{:?}",
+        p.edge_points
+    );
+    assert!(
+        (p.edge_points[1][1] - 57.69).abs() < 0.05,
+        "{:?}",
+        p.edge_points
+    );
+}
+
+/// Un recorte que pasa del borde que da la fórmula en el cubo (z = 33,6 en el
+/// B1 real) se rechaza nombrando el borde, como ya pasaba con el borde en
+/// z = 0; cabe con el borde más allá o con un recorte que no lo pase.
+#[test]
+fn a_cut_past_the_automatic_edge_is_refused_until_the_edge_moves() {
+    let result = b1_425();
+    let at = |z: f64, edge_hub: Option<f64>| MeridianEdits {
+        edge_hub,
+        hub_cut: b1_cut(z),
         ..Default::default()
     };
-    assert!(meridional_model_with(&result, &edits).is_ok());
+    assert!(meridional_model_with(&result, &at(30.0, None)).is_ok());
+    let refused = meridional_model_with(&result, &at(35.0, None)).unwrap_err();
+    assert!(refused.to_string().contains("borde de ataque"), "{refused}");
+    let fits = meridional_model_with(&result, &at(35.0, Some(0.4)));
+    assert!(fits.is_ok(), "{fits:?}");
 }
 
 // ---- El borde automático sale perpendicular a las dos paredes ----
@@ -1752,7 +1796,7 @@ fn default_models() -> Vec<MeridionalModel> {
     vec![
         model().1,
         meridional_model(&design(&big_input()).unwrap()).unwrap(),
-        meridional_model(&design(&b1_input()).unwrap()).unwrap(),
+        meridional_model(&b1_425()).unwrap(),
     ]
 }
 

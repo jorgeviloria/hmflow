@@ -26,9 +26,9 @@ fn inputs_content(ui: &mut egui::Ui, app: &mut App) {
     let errors = app.errors.clone();
     let eta_m_locked = app.session.basis.eta_m_is_locked();
     for (field, label, hint) in [
-        (Field::Q, "Caudal Q", "120 m3/h"),
-        (Field::H, "Altura H", "45 m"),
-        (Field::N, "Velocidad n", "2900 rpm"),
+        (Field::Q, "Caudal Q", "1060 gpm"),
+        (Field::H, "Altura H", "83 m"),
+        (Field::N, "Velocidad n", "1750 rpm"),
         (Field::Temperature, "Temperatura del agua, °C", "20"),
         (Field::EtaM, "ηm cojinetes y cierre (vacío: Gülich)", "auto"),
     ] {

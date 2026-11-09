@@ -216,12 +216,22 @@ impl CasingBoxes {
     }
 }
 
+/// La bomba pequeña con que arrancaba la aplicación (120 m3/h, 45 m, 2900 rpm).
+/// Las carcasas y los archivos de los tests están dimensionados para ella y
+/// sus cifras, no para el ejemplo actual (el B1).
+#[cfg(test)]
+pub(crate) fn small_pump(inputs: &mut Inputs) {
+    inputs.q = "120 m3/h".into();
+    inputs.h = "45 m".into();
+    inputs.n = "2900 rpm".into();
+}
+
 impl Default for Inputs {
     fn default() -> Self {
         Self {
-            q: "120 m3/h".into(),
-            h: "45 m".into(),
-            n: "2900 rpm".into(),
+            q: "1060 gpm".into(),
+            h: "83 m".into(),
+            n: "1750 rpm".into(),
             temperature_c: "20".into(),
             eta_m: String::new(),
             npsha: "15 m".into(),
@@ -1352,6 +1362,7 @@ mod tests {
 
     fn free(edit: impl FnOnce(&mut Inputs)) -> Inputs {
         let mut inputs = Inputs::default();
+        super::small_pump(&mut inputs);
         edit(&mut inputs);
         inputs
     }
@@ -1398,6 +1409,25 @@ mod tests {
         assert!((empty.result.selection.beta2_deg - 24.0).abs() > 1e-3);
     }
 
+    /// El ejemplo con que arranca la aplicación es el punto de diseño del B1
+    /// (la ETN 100-400 de Ø425 del catálogo): 1060 gpm, 83 m, 1750 rpm.
+    #[test]
+    fn the_default_example_is_the_b1_duty_point() {
+        let inputs = Inputs::default();
+        assert_eq!(
+            (inputs.q.as_str(), inputs.h.as_str(), inputs.n.as_str()),
+            ("1060 gpm", "83 m", "1750 rpm")
+        );
+        let outcome = super::compute(&inputs, &Basis::default()).unwrap();
+        let d2_mm = outcome.result.d2.si * 1000.0;
+        assert!((d2_mm - 425.0).abs() < 5.0, "d2 = {d2_mm} mm");
+        assert!(
+            (outcome.result.nq - 16.5).abs() < 0.5,
+            "nq = {}",
+            outcome.result.nq
+        );
+    }
+
     #[test]
     fn empty_bow_boxes_mean_no_bow() {
         let outcome = super::compute(&Inputs::default(), &Basis::default()).unwrap();
@@ -1406,7 +1436,7 @@ mod tests {
 
     #[test]
     fn emptying_a_box_gives_the_design_of_the_engine_back() {
-        let engine = super::compute(&Inputs::default(), &Basis::default()).unwrap();
+        let engine = super::compute(&free(|_| ()), &Basis::default()).unwrap();
         let emptied = free(|inputs| inputs.phi = "   ".to_string());
         let again = super::compute(&emptied, &Basis::default()).unwrap();
         assert_eq!(engine.result.selection.phi, again.result.selection.phi);
@@ -1738,10 +1768,12 @@ mod tests {
             *boxes.text_mut(name).unwrap() = text.to_string();
         }
         edit(&mut boxes);
-        Inputs {
+        let mut inputs = Inputs {
             casing: Some(boxes),
             ..Inputs::default()
-        }
+        };
+        super::small_pump(&mut inputs);
+        inputs
     }
 
     fn errors_of(inputs: &Inputs) -> Vec<(Field, String)> {
@@ -2085,13 +2117,13 @@ mod tests {
             hm_design::water_density(293.15).unwrap()
         ))
         .unwrap();
-        let q = hm_units::parse_quantity("120 m3/h").unwrap();
-        let n = hm_units::parse_quantity("2900 rpm").unwrap();
+        let q = hm_units::parse_quantity("1060 gpm").unwrap();
+        let n = hm_units::parse_quantity("1750 rpm").unwrap();
         let input = DesignInput {
             eta_m: hm_design::default_mechanical_efficiency(&q, &n).unwrap(),
             q,
             n,
-            h: hm_units::parse_quantity("45 m").unwrap(),
+            h: hm_units::parse_quantity("83 m").unwrap(),
             rho,
             npsha: Some(hm_units::parse_quantity("15 m").unwrap()),
             nu: hm_design::fluid::water_kinematic_viscosity(293.15),

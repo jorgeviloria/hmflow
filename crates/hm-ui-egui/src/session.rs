@@ -907,6 +907,7 @@ mod tests {
         let dir = scratch(name);
         let path = dir.join("rodete.hmf");
         let mut session = Session::default();
+        crate::model::small_pump(&mut session.inputs);
         session.save_to(&path).unwrap();
         (dir, session)
     }
@@ -1400,6 +1401,7 @@ mod tests {
         let dir = scratch("carcasa-nueva");
         let path = dir.join("rodete.hmf");
         let mut session = Session::default();
+        crate::model::small_pump(&mut session.inputs);
         session.inputs.casing = Some(sample_boxes());
         session.edited();
         session.save_to(&path).unwrap();

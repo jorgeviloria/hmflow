@@ -73,7 +73,8 @@ pub struct Meridian {
     pub hub_diameter: String,
     /// Posición del borde de ataque sobre la tapa delantera y sobre el cubo:
     /// fracción de la longitud de cada curva desde el plano de entrada, sin
-    /// unidad, de 0 a 0,9. Vacío: 0 (el borde en el plano de entrada).
+    /// unidad, de 0 a 0,9. Vacío: en la tapa, 0 (el ojo); en el cubo, la que
+    /// iguala el momento estático S = ∫ r ds de cubo y tapa (criterio S).
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub edge_shroud: String,
     #[serde(default, skip_serializing_if = "String::is_empty")]
@@ -402,14 +403,16 @@ pub struct MeridianEdge {
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub p2_offset: String,
     /// Ángulo del brazo de inicio (P0→P1) con la cuerda, en grados, sin
-    /// unidad, de −90 a 90; positivo hacia aguas arriba. Vacío: 0.
+    /// unidad, de −90 a 90; positivo hacia aguas arriba. Vacío: el que deja el
+    /// brazo perpendicular a la pared.
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub start_angle_deg: String,
     /// Longitud del brazo de inicio, con unidad, mayor que 0. Vacío: la cuarta
     /// parte de la cuerda.
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub start_length: String,
-    /// Ángulo del brazo final (P4→P3) con la cuerda, visto desde P4, igual.
+    /// Ángulo del brazo final (P4→P3) con la cuerda, visto desde P4, igual:
+    /// vacío es el perpendicular al cubo.
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub end_angle_deg: String,
     #[serde(default, skip_serializing_if = "String::is_empty")]

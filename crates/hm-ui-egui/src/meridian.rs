@@ -401,6 +401,18 @@ fn meridian_edit(ui: &mut egui::Ui, outcome: &Outcome, boxes: &mut Meridian) -> 
             ui.data_mut(|data| data.remove::<bool>(fit_id));
         }
     });
+    ui.label(RichText::new(edge_reading(&model)).small());
+    for diagnostic in model.diagnostics() {
+        let hint = diagnostic.hint.as_deref().unwrap_or_default();
+        ui.label(
+            RichText::new(format!(
+                "{}: {} {hint}",
+                diagnostic.code, diagnostic.message
+            ))
+            .small()
+            .color(ui.visuals().warn_fg_color),
+        );
+    }
     egui::CollapsingHeader::new(RichText::new("Datos del corte").small())
         .default_open(false)
         .show(ui, |ui| {
@@ -882,15 +894,17 @@ fn wall_boxes(ui: &mut egui::Ui, boxes: &mut Meridian, auto: Option<&MeridionalM
                 parsed.edge_shroud.is_none(),
                 "0 (auto)".to_string(),
                 "Dónde se apoya el borde de ataque sobre la tapa delantera: fracción de su longitud \
-                 desde el plano de entrada, de 0 a 0,9. La curva sigue aguas arriba del borde.",
+                 desde el plano de entrada, de 0 a 0,9. Vacío: 0, el ojo. La curva sigue aguas \
+                 arriba del borde.",
             ),
             (
                 "Borde en cubo",
                 &mut boxes.edge_hub,
                 parsed.edge_hub.is_none(),
-                "0 (auto)".to_string(),
+                auto.map_or_else(|| "auto".to_string(), |model| edge_hints(model).hub_fraction),
                 "Dónde se apoya el borde de ataque sobre el cubo: fracción de su longitud desde el \
-                 plano de entrada, de 0 a 0,9.",
+                 plano de entrada, de 0 a 0,9. Vacío: la que iguala el momento estático S = ∫ r ds \
+                 del cubo y de la tapa (criterio S).",
             ),
         ];
         for (label, text, unread, hint, help) in fields {
@@ -911,18 +925,30 @@ fn wall_boxes(ui: &mut egui::Ui, boxes: &mut Meridian, auto: Option<&MeridionalM
     let edge_hints = auto
         .map(|model| {
             let edge = &model.params.edge;
+            let hints = edge_hints(model);
             [
                 "0.5 (auto)".to_string(),
                 format!("{} (auto)", length_text(0.0)),
-                format!("{} (auto)", angle_text(0.0)),
+                hints.angles[0].clone(),
                 format!("{} (auto)", length_text(edge.auto_arm_length)),
-                format!("{} (auto)", angle_text(0.0)),
+                hints.angles[1].clone(),
                 format!("{} (auto)", length_text(edge.auto_arm_length)),
             ]
         })
         .unwrap_or_default();
     ui.horizontal_wrapped(|ui| {
         ui.label(RichText::new("Borde de ataque").strong());
+        let automatic = edge_is_automatic(boxes);
+        if ui
+            .add_enabled(!automatic, egui::Button::new("Borde automático (criterio S)"))
+            .on_hover_text(
+                "Coloca el borde para igualar el momento estático S = ∫ r ds del cubo y de la \
+                 tapa, perpendicular a las dos paredes.",
+            )
+            .clicked()
+        {
+            changed |= reset_edge(boxes);
+        }
         let texts = &mut boxes.edge;
         let fields: [(&str, &mut String, bool); 6] = [
             ("P2 a lo largo", &mut texts.p2_along, edge_edit.p2_along.is_none()),
@@ -950,7 +976,7 @@ fn wall_boxes(ui: &mut egui::Ui, boxes: &mut Meridian, auto: Option<&MeridionalM
                      a su cuerda. P2 a lo largo: fracción de 0 a 1 de la cuerda. P2 desvío: con \
                      unidad y signo, positivo hacia aguas arriba. Ángulo: grados de -90 a 90 con la \
                      cuerda, positivo hacia aguas arriba. Longitud del brazo: con unidad, mayor que \
-                     0. Vacía: la recta.",
+                     0. Vacía: el borde automático, con los brazos perpendiculares a las paredes.",
                 )
                 .changed();
         }
@@ -1222,6 +1248,58 @@ fn wall_mut(boxes: &mut Meridian, wall: Wall) -> &mut MeridianWall {
         Wall::Shroud => &mut boxes.shroud,
         Wall::Hub => &mut boxes.hub,
     }
+}
+
+/// Si el borde de ataque no tiene nada escrito: fracciones, P2, ángulos ni
+/// longitudes. Entonces sale el automático (criterio S, perpendicular).
+fn edge_is_automatic(boxes: &Meridian) -> bool {
+    boxes.edge_shroud.trim().is_empty() && boxes.edge_hub.trim().is_empty() && boxes.edge.is_empty()
+}
+
+/// Vacía las cajas del borde de ataque: vuelve al borde automático. Devuelve si
+/// cambió algo; quien la llama lo anota para deshacer como cualquier edición.
+fn reset_edge(boxes: &mut Meridian) -> bool {
+    if boxes.edge_shroud.is_empty() && boxes.edge_hub.is_empty() && boxes.edge.is_empty() {
+        return false;
+    }
+    boxes.edge_shroud.clear();
+    boxes.edge_hub.clear();
+    boxes.edge = hm_project::MeridianEdge::default();
+    true
+}
+
+/// Lo que las cajas del borde muestran como pista cuando están vacías.
+struct EdgeHints {
+    /// La fracción automática del cubo, con «(auto)».
+    hub_fraction: String,
+    /// Los ángulos automáticos de inicio y final, con «(auto)».
+    angles: [String; 2],
+}
+
+fn edge_hints(model: &MeridionalModel) -> EdgeHints {
+    let p = &model.params;
+    EdgeHints {
+        hub_fraction: format!("{:.3} (auto)", p.edge_hub),
+        angles: [
+            format!("{} (auto)", angle_text(p.edge.start_angle)),
+            format!("{} (auto)", angle_text(p.edge.end_angle)),
+        ],
+    }
+}
+
+/// La lectura del criterio S: los dos momentos estáticos y si el cubo es
+/// automático o está fijado.
+fn edge_reading(model: &MeridionalModel) -> String {
+    let p = &model.params;
+    let mode = if p.edge_auto.hub_auto {
+        "automático"
+    } else {
+        "fijado"
+    };
+    format!(
+        "Borde de ataque, criterio S: S cubo = {:.0} mm² · S tapa = {:.0} mm² · cubo {mode} ({:.3})",
+        p.edge_auto.s_hub, p.edge_auto.s_shroud, p.edge_hub
+    )
 }
 
 /// Qué viene editado, para la cabecera.
@@ -2100,5 +2178,114 @@ mod tests {
         // No es el del plano de entrada: el borde está más adentro.
         let family = area_circles(&model, AREA_CIRCLES);
         assert_ne!((centre, radius), family[0]);
+    }
+
+    fn edge_design() -> hm_design::DesignResult {
+        hm_design::design(&hm_design::DesignInput {
+            q: hm_units::parse_quantity("120 m3/h").unwrap(),
+            h: hm_units::parse_quantity("45 m").unwrap(),
+            n: hm_units::parse_quantity("2900 rpm").unwrap(),
+            rho: hm_units::parse_quantity("998.2 kg/m3").unwrap(),
+            eta_m: 0.95,
+            npsha: None,
+            nu: None,
+        })
+        .unwrap()
+    }
+
+    fn fixed_edge_boxes() -> Meridian {
+        let mut boxes = Meridian {
+            edge_shroud: "0.1".to_string(),
+            edge_hub: "0.5".to_string(),
+            ..Meridian::default()
+        };
+        boxes.edge.p2_offset = "3 mm".to_string();
+        boxes.edge.start_angle_deg = "10".to_string();
+        boxes.edge.end_length = "5 mm".to_string();
+        boxes
+    }
+
+    #[test]
+    fn the_automatic_edge_button_clears_the_edge() {
+        let mut boxes = fixed_edge_boxes();
+        assert!(!edge_is_automatic(&boxes));
+        assert!(reset_edge(&mut boxes));
+        let edits = hm_engine::meridian_edits_of(&boxes);
+        assert!(edits.edge_hub.is_none());
+        assert!(edits.edge_shroud.is_none());
+        assert!(edits.edge.is_default());
+        assert!(boxes.edge_hub.is_empty() && boxes.edge_shroud.is_empty());
+        assert!(boxes.edge.is_empty());
+        assert!(edge_is_automatic(&boxes));
+        // Ya automático: no hay nada que cambiar.
+        assert!(!reset_edge(&mut boxes));
+    }
+
+    #[test]
+    fn the_automatic_edge_button_leaves_the_rest_of_the_edits() {
+        let mut boxes = fixed_edge_boxes();
+        boxes.hub_diameter = "30 mm".to_string();
+        boxes.shroud.p2_z = "20 mm".to_string();
+        reset_edge(&mut boxes);
+        assert_eq!(boxes.hub_diameter, "30 mm");
+        assert_eq!(boxes.shroud.p2_z, "20 mm");
+    }
+
+    #[test]
+    fn the_automatic_edge_button_can_be_undone() {
+        let mut boxes = fixed_edge_boxes();
+        let before = boxes.clone();
+        let mut history = History::default();
+        history.follow(&boxes);
+        assert!(reset_edge(&mut boxes));
+        history.record(&boxes, 1.0);
+        assert!(history.undo(&mut boxes));
+        assert_eq!(boxes, before);
+        assert_eq!(boxes.edge_hub, "0.5");
+    }
+
+    #[test]
+    fn the_edited_note_does_not_list_an_automatic_edge() {
+        assert!(!edited_note(&MeridianEdits::default()).contains("borde de ataque"));
+        let fixed = hm_engine::meridian_edits_of(&fixed_edge_boxes());
+        assert!(edited_note(&fixed).contains("borde de ataque"));
+    }
+
+    #[test]
+    fn the_edge_reading_gives_both_moments_and_whether_the_hub_is_automatic() {
+        let result = edge_design();
+        let auto = meridional_model(&result).unwrap();
+        let text = edge_reading(&auto);
+        let p = &auto.params.edge_auto;
+        assert!(text.contains("S cubo"), "{text}");
+        assert!(text.contains(&format!("{:.0}", p.s_hub)), "{text}");
+        assert!(text.contains(&format!("{:.0}", p.s_shroud)), "{text}");
+        assert!(text.contains("automático"), "{text}");
+        let fixed = meridional_model_with(
+            &result,
+            &MeridianEdits {
+                edge_hub: Some(0.5),
+                ..MeridianEdits::default()
+            },
+        )
+        .unwrap();
+        assert!(edge_reading(&fixed).contains("fijado"));
+    }
+
+    #[test]
+    fn the_edge_hints_show_the_automatic_values() {
+        let auto = meridional_model(&edge_design()).unwrap();
+        let hints = edge_hints(&auto);
+        assert_eq!(
+            hints.hub_fraction,
+            format!("{:.3} (auto)", auto.params.edge_hub)
+        );
+        assert_eq!(
+            hints.angles,
+            [
+                format!("{} (auto)", angle_text(auto.params.edge.start_angle)),
+                format!("{} (auto)", angle_text(auto.params.edge.end_angle)),
+            ]
+        );
     }
 }

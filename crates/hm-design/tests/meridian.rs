@@ -1355,3 +1355,203 @@ fn b1_like_hub_cut_reproduces_the_drawing_contour() {
     assert_eq!(a.d1i, b.d1i);
     assert_eq!(a.z_e, b.z_e);
 }
+
+// ---- El borde de ataque no sale del canal, y su brazo puede ir perpendicular ----
+
+/// Un modelo con el borde apoyado a un cuarto de la tapa y a dos quintos del cubo.
+fn resting_edge() -> MeridionalModel {
+    edited(&MeridianEdits {
+        edge_shroud: Some(0.25),
+        edge_hub: Some(0.4),
+        ..MeridianEdits::default()
+    })
+}
+
+fn shroud_control(index: usize) -> ControlPoint {
+    ControlPoint {
+        wall: Wall::Shroud,
+        index,
+    }
+}
+
+/// El modelo con el borde que da `moved`, para mirar si queda dentro.
+fn with_moved_edge(base: &MeridionalModel, moved: Moved, index: usize) -> MeridionalModel {
+    let mut edit = EdgeEdit::default();
+    match (index, moved) {
+        (5, Moved::Arm { angle, length }) => {
+            edit.start_angle = Some(angle);
+            edit.start_length = Some(length);
+        }
+        (7, Moved::Arm { angle, length }) => {
+            edit.end_angle = Some(angle);
+            edit.end_length = Some(length);
+        }
+        (6, Moved::EdgePoint { along, offset }) => {
+            edit.p2_along = Some(along);
+            edit.p2_offset = Some(offset);
+        }
+        other => panic!("no es un punto del borde: {other:?}"),
+    }
+    edited(&MeridianEdits {
+        edge_shroud: Some(base.params.edge_shroud),
+        edge_hub: Some(base.params.edge_hub),
+        edge: edit,
+        ..MeridianEdits::default()
+    })
+}
+
+#[test]
+fn the_default_edge_and_a_resting_one_are_inside_the_channel() {
+    let (_, auto) = model();
+    assert!(auto.edge_inside_channel(&auto.params.edge.points));
+    let resting = resting_edge();
+    assert!(resting.edge_inside_channel(&resting.params.edge.points));
+}
+
+#[test]
+fn dragging_edge_p2_far_outside_keeps_the_edge_inside_the_channel() {
+    let base = resting_edge();
+    let at = base.control_position(shroud_control(6)).unwrap();
+    for pointer in [
+        [at[0], at[1] + 500.0],
+        [at[0], at[1] - 500.0],
+        [at[0] + 500.0, at[1]],
+        [at[0] - 500.0, at[1] + 300.0],
+    ] {
+        let moved = base.moved(shroud_control(6), pointer);
+        let after = with_moved_edge(&base, moved, 6);
+        assert!(
+            base.edge_inside_channel(&after.params.edge.points),
+            "{pointer:?} -> {moved:?}"
+        );
+    }
+}
+
+#[test]
+fn dragging_an_edge_arm_far_outside_keeps_the_edge_inside_the_channel() {
+    let base = resting_edge();
+    for (index, from) in [
+        (5, base.params.edge.points[0]),
+        (7, base.params.edge.points[4]),
+    ] {
+        for pointer in [
+            [from[0] + 400.0, from[1] + 400.0],
+            [from[0] - 400.0, from[1] + 400.0],
+            [from[0] + 400.0, from[1] - 400.0],
+        ] {
+            let moved = base.moved(shroud_control(index), pointer);
+            let after = with_moved_edge(&base, moved, index);
+            assert!(
+                base.edge_inside_channel(&after.params.edge.points),
+                "P{} {pointer:?} -> {moved:?}",
+                index - 4
+            );
+        }
+    }
+}
+
+#[test]
+fn a_drag_that_stays_inside_the_channel_is_not_changed() {
+    // El mismo gesto que ya probaba el arrastre en el marco de la cuerda.
+    let base = resting_edge();
+    let at = base.control_position(shroud_control(6)).unwrap();
+    let chord = base.params.edge.chord;
+    let [from, to] = base.params.edge_points;
+    let u = [(to[0] - from[0]) / chord, (to[1] - from[1]) / chord];
+    let Moved::EdgePoint { along, .. } =
+        base.moved(shroud_control(6), [at[0] + 1.0 * u[0], at[1] + 1.0 * u[1]])
+    else {
+        panic!("P2 del borde da EdgePoint");
+    };
+    assert!((along - (0.5 + 1.0 / chord)).abs() < 1e-3, "{along}");
+}
+
+#[test]
+fn an_edge_already_outside_the_channel_is_not_trapped() {
+    // Un borde guardado que ya sale del canal se puede seguir arrastrando:
+    // sin un último valor válido al que volver, no se recorta.
+    let outside = edited(&MeridianEdits {
+        edge_shroud: Some(0.25),
+        edge_hub: Some(0.4),
+        edge: EdgeEdit {
+            p2_offset: Some(400.0),
+            ..EdgeEdit::default()
+        },
+        ..MeridianEdits::default()
+    });
+    assert!(!outside.edge_inside_channel(&outside.params.edge.points));
+    let at = outside.control_position(shroud_control(6)).unwrap();
+    let Moved::EdgePoint { offset, .. } =
+        outside.moved(shroud_control(6), [at[0] + 2.0, at[1] + 2.0])
+    else {
+        panic!("P2 del borde da EdgePoint");
+    };
+    // El desvío sigue al puntero (cambia), no se queda en 400.
+    assert!((offset - 400.0).abs() > 0.5, "{offset}");
+}
+
+/// La tangente de una polilínea donde pasa `at`, unitaria y en el sentido en
+/// que se recorre.
+fn tangent_at(line: &[[f64; 2]], at: [f64; 2]) -> [f64; 2] {
+    let distance = |a: [f64; 2], b: [f64; 2], p: [f64; 2]| {
+        let (dz, dr) = (b[0] - a[0], b[1] - a[1]);
+        let t = (((p[0] - a[0]) * dz + (p[1] - a[1]) * dr) / (dz * dz + dr * dr)).clamp(0.0, 1.0);
+        (p[0] - a[0] - t * dz).hypot(p[1] - a[1] - t * dr)
+    };
+    let (index, _) = line
+        .windows(2)
+        .enumerate()
+        .map(|(i, pair)| (i, distance(pair[0], pair[1], at)))
+        .min_by(|a, b| a.1.total_cmp(&b.1))
+        .unwrap();
+    let (dz, dr) = (
+        line[index + 1][0] - line[index][0],
+        line[index + 1][1] - line[index][1],
+    );
+    let length = dz.hypot(dr);
+    [dz / length, dr / length]
+}
+
+#[test]
+fn the_perpendicular_angle_makes_each_arm_meet_its_wall_at_ninety_degrees() {
+    let base = resting_edge();
+    for (index, wall_name, k, end) in [(5, "Tapa delantera", 1, 0), (7, "Tapa trasera", 3, 4)] {
+        let angle = base
+            .perpendicular_angle(index)
+            .unwrap_or_else(|| panic!("P{} sin ángulo", index - 4));
+        let edit = if index == 5 {
+            EdgeEdit {
+                start_angle: Some(angle),
+                ..EdgeEdit::default()
+            }
+        } else {
+            EdgeEdit {
+                end_angle: Some(angle),
+                ..EdgeEdit::default()
+            }
+        };
+        let turned = edited(&MeridianEdits {
+            edge_shroud: Some(0.25),
+            edge_hub: Some(0.4),
+            edge: edit,
+            ..MeridianEdits::default()
+        });
+        let points = &turned.params.edge.points;
+        let arm = [points[k][0] - points[end][0], points[k][1] - points[end][1]];
+        let length = arm[0].hypot(arm[1]);
+        let tangent = tangent_at(&turned.curve(wall_name).unwrap().points, points[end]);
+        let cos = (arm[0] * tangent[0] + arm[1] * tangent[1]) / length;
+        // El ángulo se guarda con una décima de grado.
+        assert!(cos.abs() < 2.0e-3, "P{}: cos = {cos}", index - 4);
+        // Y el brazo entra en el canal: va hacia el otro extremo del borde.
+        let other = if end == 0 { points[4] } else { points[0] };
+        let toward = [other[0] - points[end][0], other[1] - points[end][1]];
+        assert!(
+            arm[0] * toward[0] + arm[1] * toward[1] > 0.0,
+            "P{}",
+            index - 4
+        );
+    }
+    // Solo P1 y P3 tienen brazo.
+    assert_eq!(base.perpendicular_angle(6), None);
+}

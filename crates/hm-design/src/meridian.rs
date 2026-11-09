@@ -557,7 +557,7 @@ impl MeridionalModel {
                 let v = [pointer[0] - origin[0], pointer[1] - origin[1]];
                 (v[0] * u[0] + v[1] * u[1], v[0] * n[0] + v[1] * n[1])
             };
-            return match control.index {
+            let wanted = match control.index {
                 5 | 7 => {
                     // P1 se mide desde P0 a lo largo de la cuerda; P3, desde P4
                     // hacia P0.
@@ -586,6 +586,7 @@ impl MeridionalModel {
                     }
                 }
             };
+            return self.limit_to_channel(control.index, wanted);
         }
         let (from, sign) = match control.index {
             1 => (shape.points[0], 1.0),
@@ -620,6 +621,136 @@ impl MeridionalModel {
                 .clamp(ANGLE_RANGE.0, ANGLE_RANGE.1),
             length: dz.hypot(dr).max(MIN_ARM),
         }
+    }
+
+    /// El contorno del canal para decidir si el borde de ataque cabe: la tapa
+    /// delantera, el cubo al revés, y ambas prolongadas aguas arriba, donde el
+    /// borde puede entrar (su desvío positivo va hacia allí).
+    fn channel_outline(&self) -> Option<Vec<[f64; 2]>> {
+        let shroud = &self.curve(Wall::Shroud.name())?.points;
+        let hub = &self.curve(Wall::Hub.name())?.points;
+        let (shroud_start, hub_start) = (*shroud.first()?, *hub.first()?);
+        let mut outline = vec![[shroud_start[0] - UPSTREAM_EXTENSION_MM, shroud_start[1]]];
+        outline.extend(shroud.iter().copied());
+        outline.extend(hub.iter().rev().copied());
+        outline.push([hub_start[0] - UPSTREAM_EXTENSION_MM, hub_start[1]]);
+        Some(outline)
+    }
+
+    /// Si los puntos del borde de ataque, salvo sus dos extremos (que están
+    /// sobre las tapas), quedan dentro del canal. Una décima de rebase se
+    /// perdona: el apoyo en la curva y el redondeo de las cajas.
+    #[must_use]
+    pub fn edge_inside_channel(&self, points: &[[f64; 2]; 5]) -> bool {
+        let Some(outline) = self.channel_outline() else {
+            return true;
+        };
+        let Ok(samples) = sample(points) else {
+            return true;
+        };
+        let inner = &samples[1..samples.len() - 1];
+        inner.iter().all(|point| {
+            point_in_polygon(&outline, *point)
+                || distance_to_closed_line(&outline, *point) <= CHANNEL_TOLERANCE_MM
+        })
+    }
+
+    /// El borde con `moved` aplicado al punto `index` (5, 6 o 7), si cabe en el
+    /// canal. Un valor que no se puede construir no cabe.
+    fn edge_fits(&self, index: usize, moved: Moved) -> bool {
+        let edge = &self.params.edge;
+        let mut edit = EdgeEdit {
+            p2_along: Some(edge.p2_along),
+            p2_offset: Some(edge.p2_offset),
+            start_angle: Some(edge.start_angle),
+            start_length: Some(edge.start_length),
+            end_angle: Some(edge.end_angle),
+            end_length: Some(edge.end_length),
+        };
+        match (index, moved) {
+            (5, Moved::Arm { angle, length }) => {
+                edit.start_angle = Some(angle);
+                edit.start_length = Some(length);
+            }
+            (7, Moved::Arm { angle, length }) => {
+                edit.end_angle = Some(angle);
+                edit.end_length = Some(length);
+            }
+            (6, Moved::EdgePoint { along, offset }) => {
+                edit.p2_along = Some(along);
+                edit.p2_offset = Some(offset);
+            }
+            _ => return true,
+        }
+        edge_shape(edge.points[0], edge.points[4], &edit)
+            .is_ok_and(|shape| self.edge_inside_channel(&shape.points))
+    }
+
+    /// Lleva `wanted` hasta el último valor que deja el borde dentro del canal,
+    /// buscándolo por bisección entre el valor actual y el pedido. Si el borde
+    /// actual ya sale del canal no hay a dónde volver, y no se recorta: un
+    /// archivo guardado así se puede seguir arrastrando.
+    fn limit_to_channel(&self, index: usize, wanted: Moved) -> Moved {
+        let edge = &self.params.edge;
+        let current = match index {
+            5 => Moved::Arm {
+                angle: edge.start_angle,
+                length: edge.start_length,
+            },
+            7 => Moved::Arm {
+                angle: edge.end_angle,
+                length: edge.end_length,
+            },
+            _ => Moved::EdgePoint {
+                along: edge.p2_along,
+                offset: edge.p2_offset,
+            },
+        };
+        if self.edge_fits(index, wanted) || !self.edge_fits(index, current) {
+            return wanted;
+        }
+        let (mut inside, mut outside) = (0.0, 1.0);
+        for _ in 0..24 {
+            let middle = 0.5 * (inside + outside);
+            if self.edge_fits(index, blend(current, wanted, middle)) {
+                inside = middle;
+            } else {
+                outside = middle;
+            }
+        }
+        let limited = rounded_move(blend(current, wanted, inside));
+        if self.edge_fits(index, limited) {
+            limited
+        } else {
+            current
+        }
+    }
+
+    /// El ángulo del brazo de P1 (`index` 5) o de P3 (7), con la cuerda y en
+    /// grados con una décima, con que sale perpendicular a su pared, hacia el
+    /// canal. `None` para otro punto, o sin cuerda.
+    #[must_use]
+    pub fn perpendicular_angle(&self, index: usize) -> Option<f64> {
+        let edge = &self.params.edge;
+        let (u, n) = edge_frame(edge.points[0], edge.points[4])?;
+        let (wall, end, sign) = match index {
+            5 => (Wall::Shroud, edge.points[0], 1.0),
+            7 => (Wall::Hub, edge.points[4], -1.0),
+            _ => return None,
+        };
+        let tangent = wall_tangent(&self.curve(wall.name())?.points, end)?;
+        // De las dos perpendiculares, la que va hacia el otro extremo del borde.
+        let mut direction = [-tangent[1], tangent[0]];
+        if sign * (direction[0] * u[0] + direction[1] * u[1]) < 0.0 {
+            direction = [-direction[0], -direction[1]];
+        }
+        let along = direction[0] * u[0] + direction[1] * u[1];
+        let across = direction[0] * n[0] + direction[1] * n[1];
+        let angle = across
+            .atan2(sign * along)
+            .to_degrees()
+            .clamp(ANGLE_RANGE.0, ANGLE_RANGE.1);
+        Some((angle * 10.0).round() / 10.0)
     }
 
     /// CSV para exportar, con columnas `z_mm,r_mm`.
@@ -893,6 +1024,123 @@ fn hub_cut_shape(
         shaft_radius: rs,
         points,
     }))
+}
+
+/// Cuánto se prolongan las tapas aguas arriba para decidir si el borde de
+/// ataque queda dentro del canal, en mm.
+const UPSTREAM_EXTENSION_MM: f64 = 1000.0;
+
+/// Lo que un punto del borde puede quedar fuera de una pared sin contar como
+/// salida, en mm.
+const CHANNEL_TOLERANCE_MM: f64 = 0.05;
+
+/// Si `point` está dentro del polígono cerrado `outline` (regla par-impar).
+fn point_in_polygon(outline: &[[f64; 2]], point: [f64; 2]) -> bool {
+    let mut inside = false;
+    let mut previous = outline[outline.len() - 1];
+    for &current in outline {
+        let crosses = (current[1] > point[1]) != (previous[1] > point[1]);
+        if crosses {
+            let z = previous[0]
+                + (point[1] - previous[1]) * (current[0] - previous[0])
+                    / (current[1] - previous[1]);
+            if point[0] < z {
+                inside = !inside;
+            }
+        }
+        previous = current;
+    }
+    inside
+}
+
+/// Distancia de `point` a la poligonal cerrada `outline`.
+fn distance_to_closed_line(outline: &[[f64; 2]], point: [f64; 2]) -> f64 {
+    let mut previous = outline[outline.len() - 1];
+    let mut best = f64::INFINITY;
+    for &current in outline {
+        best = best.min(distance_to_segment(previous, current, point));
+        previous = current;
+    }
+    best
+}
+
+fn distance_to_segment(a: [f64; 2], b: [f64; 2], point: [f64; 2]) -> f64 {
+    let (dz, dr) = (b[0] - a[0], b[1] - a[1]);
+    let squared = dz * dz + dr * dr;
+    let t = if squared > 0.0 {
+        (((point[0] - a[0]) * dz + (point[1] - a[1]) * dr) / squared).clamp(0.0, 1.0)
+    } else {
+        0.0
+    };
+    (point[0] - a[0] - t * dz).hypot(point[1] - a[1] - t * dr)
+}
+
+/// La tangente unitaria de una poligonal donde pasa `at`, en el sentido en que
+/// se recorre.
+fn wall_tangent(line: &[[f64; 2]], at: [f64; 2]) -> Option<[f64; 2]> {
+    let (index, _) = line
+        .windows(2)
+        .enumerate()
+        .map(|(index, pair)| (index, distance_to_segment(pair[0], pair[1], at)))
+        .min_by(|a, b| a.1.total_cmp(&b.1))?;
+    let (dz, dr) = (
+        line[index + 1][0] - line[index][0],
+        line[index + 1][1] - line[index][1],
+    );
+    let length = dz.hypot(dr);
+    (length > 0.0).then(|| [dz / length, dr / length])
+}
+
+/// La mezcla de dos valores de un mismo punto del borde: `current` con `0`,
+/// `wanted` con `1`. Otro tipo de movimiento no se mezcla.
+fn blend(current: Moved, wanted: Moved, s: f64) -> Moved {
+    let mix = |a: f64, b: f64| a + (b - a) * s;
+    match (current, wanted) {
+        (
+            Moved::Arm {
+                angle: a0,
+                length: l0,
+            },
+            Moved::Arm {
+                angle: a1,
+                length: l1,
+            },
+        ) => Moved::Arm {
+            angle: mix(a0, a1),
+            length: mix(l0, l1),
+        },
+        (
+            Moved::EdgePoint {
+                along: a0,
+                offset: o0,
+            },
+            Moved::EdgePoint {
+                along: a1,
+                offset: o1,
+            },
+        ) => Moved::EdgePoint {
+            along: mix(a0, a1),
+            offset: mix(o0, o1),
+        },
+        _ => wanted,
+    }
+}
+
+/// Con la rejilla de las cajas: décimas de grado, centésimas de mm y milésimas
+/// de cuerda.
+fn rounded_move(moved: Moved) -> Moved {
+    let round = |value: f64, scale: f64| (value * scale).round() / scale;
+    match moved {
+        Moved::Arm { angle, length } => Moved::Arm {
+            angle: round(angle, 10.0),
+            length: round(length, 100.0),
+        },
+        Moved::EdgePoint { along, offset } => Moved::EdgePoint {
+            along: round(along, 1000.0),
+            offset: round(offset, 100.0),
+        },
+        other => other,
+    }
 }
 
 /// Los ejes del marco de la cuerda de `from` a `to`: el unitario de la cuerda

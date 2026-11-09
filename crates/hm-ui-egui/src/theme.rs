@@ -351,4 +351,37 @@ mod tests {
             Some(egui::ThemePreference::Light)
         );
     }
+
+    #[test]
+    fn no_loose_colours_outside_theme() {
+        const FORBIDDEN: [&str; 10] = [
+            "Color32::from_",
+            "Color32::RED",
+            "Color32::GREEN",
+            "Color32::BLUE",
+            "Color32::GRAY",
+            "Color32::WHITE",
+            "Color32::BLACK",
+            "Color32::YELLOW",
+            "Color32::LIGHT_",
+            "Color32::DARK_",
+        ];
+        let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
+        for entry in std::fs::read_dir(dir).unwrap() {
+            let path = entry.unwrap().path();
+            let name = path.file_name().unwrap().to_string_lossy().into_owned();
+            if !name.ends_with(".rs") || name == "theme.rs" {
+                continue;
+            }
+            let text = std::fs::read_to_string(&path).unwrap();
+            for (index, line) in text.lines().enumerate() {
+                if let Some(found) = FORBIDDEN.iter().find(|f| line.contains(**f)) {
+                    panic!(
+                        "{name}:{}: color suelto `{found}`; usa un token de theme.rs",
+                        index + 1
+                    );
+                }
+            }
+        }
+    }
 }

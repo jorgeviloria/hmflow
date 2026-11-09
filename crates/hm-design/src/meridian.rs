@@ -1791,6 +1791,12 @@ impl ChannelStation {
 /// Momento estático S = ∫ r ds de la polilínea `line` (puntos `[z, r]`) desde
 /// la fracción `from_fraction` de su longitud hasta el final, en mm²: la suma
 /// de ½(r_i + r_{i+1})·|Δs|, con el primer tramo cortado por interpolación.
+///
+/// Es el momento estático de la línea de corriente proyectada en el plano
+/// meridional que usa Pfleiderer en su fórmula del factor de deslizamiento
+/// (Pfleiderer, *Kreiselpumpen für Flüssigkeiten und Gase*, 5.ª ed., Springer
+/// 1961). Gülich, *Centrifugal Pumps*, 4.ª ed. 2020, §3.3, p. 90 la menciona y
+/// la lista como [B.1] (p. 1255), pero no escribe la ecuación.
 fn static_moment(line: &[[f64; 2]], from_fraction: f64) -> f64 {
     let lengths = cumulative(line);
     let start = from_fraction * lengths[lengths.len() - 1];
@@ -1810,10 +1816,12 @@ fn static_moment(line: &[[f64; 2]], from_fraction: f64) -> f64 {
 }
 
 /// La fracción del borde de ataque sobre el cubo. Escrita, manda. Si no, es la
-/// que hace el momento estático del cubo igual al de la tapa desde su fracción
-/// (criterio de igual transmisión de energía en cubo y tapa; momento estático
-/// de Pfleiderer, ver notas de estudio). S del cubo decrece con la fracción:
-/// bisección en [`EDGE_FRACTION_RANGE`]. En un límite, se queda ahí y lo anota.
+/// que hace el momento estático del cubo igual al de la tapa desde su fracción.
+/// Igualar S en las dos paredes, para repartir por igual la transmisión de
+/// energía del álabe, es el criterio de colocación del borde que eligió hmflow
+/// (spec 2026-11-08); la literatura citada en [`static_moment`] da el momento
+/// estático, no este criterio. S del cubo decrece con la fracción: bisección en
+/// [`EDGE_FRACTION_RANGE`]. En un límite, se queda ahí y lo anota.
 fn edge_hub_fraction(
     front: &[[f64; 2]],
     rear: &[[f64; 2]],

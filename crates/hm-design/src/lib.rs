@@ -10,6 +10,7 @@
 
 use std::collections::BTreeMap;
 
+pub mod blade_camber;
 pub mod blade_setup;
 pub mod fluid;
 pub mod geometry;

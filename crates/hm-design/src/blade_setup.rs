@@ -140,6 +140,27 @@ impl BladeShape {
     }
 }
 
+/// Las manijas de la desviación de β de un álabe 3D, en grados, a 1/3 y 2/3 de
+/// la longitud meridional: dos en el cubo y dos en la tapa. Las líneas de
+/// corriente intermedias las interpolan en ψ.
+#[derive(Debug, Clone, Copy, PartialEq, Default)]
+pub struct CamberBows {
+    pub hub: (f64, f64),
+    pub shroud: (f64, f64),
+}
+
+impl CamberBows {
+    /// Las manijas de la línea con fracción de caudal `psi`:
+    /// (1 − ψ)·cubo + ψ·tapa. De hmflow.
+    #[must_use]
+    pub fn at(&self, psi: f64) -> (f64, f64) {
+        (
+            (1.0 - psi) * self.hub.0 + psi * self.shroud.0,
+            (1.0 - psi) * self.hub.1 + psi * self.shroud.1,
+        )
+    }
+}
+
 /// Lo que el usuario elige del álabe antes de trazarlo.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct BladeSetup {

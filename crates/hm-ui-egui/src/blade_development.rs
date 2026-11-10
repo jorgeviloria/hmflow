@@ -131,9 +131,9 @@ pub(super) fn development_view(ui: &mut egui::Ui, camber: &BladeCamber) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::model::Basis;
     use crate::model::Inputs;
     use hm_design::blade_setup::BladeShape;
-    use crate::model::Basis;
 
     fn b1_camber() -> BladeCamber {
         let mut inputs = Inputs::default();

@@ -391,7 +391,10 @@ fn draw_ruled_edge(
         labels.push(Label {
             position: *middle,
             offset: egui::vec2(6.0, -6.0),
-            text: format!("Borde de la reglada · desvío máx. {:.1} mm", layer.max_gap_mm),
+            text: format!(
+                "Borde de la reglada · desvío máx. {:.1} mm",
+                layer.max_gap_mm
+            ),
             anchor: egui::Align2::LEFT_BOTTOM,
             angle: 0.0,
             colour: pal.text_weak,

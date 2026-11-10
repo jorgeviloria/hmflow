@@ -442,11 +442,12 @@ pub(super) fn blade_beta_view(
             .color(crate::theme::palette(ui.ctx()).marker),
         );
     }
+    crate::blade_inlet::inlet_table(ui, outcome);
     edited
 }
 
 /// La incidencia que lleva la caja, o la de por defecto si está vacía.
-fn applied_incidence_deg(inputs: &Inputs) -> f64 {
+pub(super) fn applied_incidence_deg(inputs: &Inputs) -> f64 {
     incidence_text_deg(&inputs.incidence)
 }
 

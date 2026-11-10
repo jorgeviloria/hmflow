@@ -356,7 +356,7 @@ fn draw_pin(plot_ui: &mut egui_plot::PlotUi<'_>, tip: [f64; 2]) {
 /// El modelo con las ediciones. Si falla por el recorte del cubo, el modelo
 /// sin recorte (el perfil hidráulico no cambia por él) y el error del recorte;
 /// un error que no es del recorte se devuelve tal cual.
-fn model_or_uncut(
+pub(super) fn model_or_uncut(
     result: &DesignResult,
     edits: &MeridianEdits,
 ) -> Result<(MeridionalModel, Option<String>), DesignError> {

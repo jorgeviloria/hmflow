@@ -4,10 +4,20 @@
 //! exactos. El arco mide el ángulo desde el eje +x, en sentido antihorario, en
 //! radianes. Este crate no elige unidades: quien lo llama decide si el plano
 //! está en milímetros.
+//!
+//! El módulo [`mesh`] añade lo único que hay en 3D: la malla de triángulos, la
+//! superficie de revolución y la superficie por una rejilla.
 
 #![deny(clippy::print_stdout, clippy::print_stderr, clippy::exit)]
 
 use std::fmt;
+
+pub mod mesh;
+
+pub use mesh::{
+    CREASE_ANGLE_DEG, Polyline3, REVOLVE_MIN_SEGMENTS, TriangleMesh, grid_surface, revolve,
+    revolve_segments,
+};
 
 /// Punto del plano.
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -97,17 +107,24 @@ impl std::ops::Mul<f64> for Vector {
     }
 }
 
-/// Fallo al construir o evaluar una curva.
+/// Fallo al construir o evaluar una curva o una malla.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum GeometryError {
     /// `t` no es finito o está fuera de 0..=1.
     OutOfRange,
-    /// La curva no tiene longitud: un punto, un radio nulo o un barrido nulo.
+    /// La curva no tiene longitud: un punto, un radio nulo o un barrido nulo. En una malla, la
+    /// superficie no tiene área o trae coordenadas no finitas.
     Degenerate,
     /// La derivada es nula en ese parámetro.
     NoTangent,
     /// Hacen falta al menos dos puntos para muestrear, incluidos los extremos.
     TooFewSamples,
+    /// Un perfil de revolución tiene un radio negativo.
+    NegativeRadius,
+    /// La tolerancia no es un número mayor que cero, o es tan fina que la malla no cabe.
+    BadTolerance,
+    /// El número de puntos no es filas por columnas.
+    GridMismatch,
 }
 
 impl fmt::Display for GeometryError {
@@ -117,6 +134,11 @@ impl fmt::Display for GeometryError {
             Self::Degenerate => "la curva no tiene longitud ni tangente",
             Self::NoTangent => "la derivada es nula y no hay tangente",
             Self::TooFewSamples => "hacen falta al menos dos puntos",
+            Self::NegativeRadius => "el perfil tiene un radio negativo",
+            Self::BadTolerance => {
+                "la tolerancia tiene que ser mayor que cero y no tan fina que la malla no quepa"
+            }
+            Self::GridMismatch => "la rejilla no cuadra con el número de puntos",
         })
     }
 }

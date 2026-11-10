@@ -227,7 +227,13 @@ fn selections_section(ui: &mut egui::Ui, app: &mut App, errors: &FieldErrors) ->
         .default_open(open)
         .open(force.then_some(true))
         .show(ui, |ui| {
+            // Con forma 3D la desviación son cuatro campos de la pestaña Geometría.
+            let three_d =
+                inputs.blade.shape.family() == hm_design::blade_setup::BladeFamily::ThreeD;
             for (name, label, hint) in SELECTION_BOXES {
+                if three_d && matches!(name, "beta_bow1_deg" | "beta_bow2_deg") {
+                    continue;
+                }
                 if let Some(value) = inputs.selection_mut(name) {
                     let error = error_of(errors, Field::Selection(name));
                     changed |= text_box(ui, label, value, hint, error, name);

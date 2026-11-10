@@ -2,7 +2,8 @@
 
 use eframe::egui;
 use egui_plot::{Plot, PlotPoint, Points};
-use hm_design::blade_setup::BladeSetup;
+use hm_design::blade_camber::BladeCamber;
+use hm_design::blade_setup::{BladeFamily, BladeSetup, CamberBows};
 use hm_design::geometry::{BLADE_BETA_MIN_DEG, beta_profile};
 use hm_design::{BETA_BOW_RANGE_DEG, INCIDENCE_RANGE_DEG};
 
@@ -27,6 +28,16 @@ pub(super) struct BetaGraph {
 }
 
 impl BetaGraph {
+    /// La ley de una pared con la abscisa x (0 a 1) en lugar de r: así se
+    /// reutiliza todo lo de arriba, y `r_mm(f)` vale `f`.
+    fn on_x(beta: (f64, f64), bow: (f64, f64)) -> Self {
+        Self {
+            r: (0.0, 1.0e-3),
+            beta,
+            bow,
+        }
+    }
+
     fn r_mm(&self, fraction: f64) -> f64 {
         (self.r.0 + (self.r.1 - self.r.0) * fraction) * 1000.0
     }
@@ -266,6 +277,149 @@ pub(super) fn straighten(inputs: &mut Inputs) {
     inputs.beta_bow2.clear();
 }
 
+/// Pone a cero las cuatro manijas 3D (cubo y tapa). Las cajas del 2D, los
+/// extremos y la forma no se tocan.
+pub(super) fn straighten_3d(inputs: &mut Inputs) {
+    inputs.blade.bows = CamberBows::default();
+}
+
+/// Qué pared lleva la manija.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) enum Wall {
+    Hub,
+    Shroud,
+}
+
+impl Wall {
+    fn name(self) -> &'static str {
+        match self {
+            Self::Hub => "Cubo",
+            Self::Shroud => "Tapa",
+        }
+    }
+}
+
+/// Las leyes β(x) de un álabe 3D: una curva por línea de corriente, `[x, β°]`
+/// con x la fracción de longitud meridional, y las manijas de cubo y tapa. La
+/// ley de cada pared es la misma de [`BetaGraph`], con x en lugar de la
+/// fracción de r.
+pub(super) struct BetaGraph3d {
+    curves: Vec<Vec<[f64; 2]>>,
+    hub: BetaGraph,
+    shroud: BetaGraph,
+    /// ψ, β de entrada y β de salida (rad) de cada línea.
+    laws: Vec<(f64, f64, f64)>,
+    bows: CamberBows,
+    /// Solo la libre integra las intermedias con su ley.
+    checks_inner_lines: bool,
+}
+
+impl BetaGraph3d {
+    pub fn of(outcome: &Outcome, camber: &BladeCamber) -> Self {
+        let bows = outcome.inputs.blade.bows;
+        let ends = |line: &hm_design::blade_camber::CamberLine| {
+            (
+                line.points.first().map_or(0.0, |point| point.beta),
+                line.points.last().map_or(0.0, |point| point.beta),
+            )
+        };
+        let wall = |line: Option<&hm_design::blade_camber::CamberLine>, bow| {
+            BetaGraph::on_x(line.map_or((0.0, 0.0), ends), bow)
+        };
+        Self {
+            curves: camber
+                .lines
+                .iter()
+                .map(|line| {
+                    line.points
+                        .iter()
+                        .map(|point| [point.x, point.beta.to_degrees()])
+                        .collect()
+                })
+                .collect(),
+            hub: wall(camber.lines.first(), bows.hub),
+            shroud: wall(camber.lines.last(), bows.shroud),
+            laws: camber
+                .lines
+                .iter()
+                .map(|line| {
+                    let (first, last) = ends(line);
+                    (line.psi, first, last)
+                })
+                .collect(),
+            bows,
+            checks_inner_lines: camber.shape == hm_design::blade_setup::BladeShape::Free3D,
+        }
+    }
+
+    /// Los dos extremos arrastrables: la entrada de la tapa (incidencia) y la
+    /// salida (β2, la misma en todas las líneas).
+    fn ends(&self) -> [[f64; 2]; 2] {
+        [
+            [0.0, self.shroud.beta.0.to_degrees()],
+            [1.0, self.hub.beta.1.to_degrees()],
+        ]
+    }
+
+    /// Una curva por línea, del cubo a la tapa.
+    pub fn curves(&self) -> Vec<Vec<[f64; 2]>> {
+        self.curves.clone()
+    }
+
+    fn wall(&self, wall: Wall) -> &BetaGraph {
+        match wall {
+            Wall::Hub => &self.hub,
+            Wall::Shroud => &self.shroud,
+        }
+    }
+
+    /// Las dos manijas de la pared, en x = 1/3 y 2/3: la recta de la pared más
+    /// la desviación (los puntos de control de la Bézier).
+    pub fn handles(&self, wall: Wall) -> [[f64; 2]; 2] {
+        self.wall(wall).handles()
+    }
+
+    /// Lo mismo que comprueba el motor: con desviación, β de las paredes (y de
+    /// las intermedias de la libre) queda entre el mínimo y 90°. `shift` mueve
+    /// β de entrada de todas las líneas (la incidencia) y `last` fija β2.
+    fn is_valid_with(&self, bows: &CamberBows, shift: f64, last: Option<f64>) -> bool {
+        let law = |first: f64, end: f64, bow| {
+            BetaGraph::on_x((first + shift, last.unwrap_or(end)), bow).is_valid()
+        };
+        if !law(self.hub.beta.0, self.hub.beta.1, bows.hub)
+            || !law(self.shroud.beta.0, self.shroud.beta.1, bows.shroud)
+        {
+            return false;
+        }
+        !self.checks_inner_lines
+            || self
+                .laws
+                .iter()
+                .all(|&(psi, first, end)| law(first, end, bows.at(psi)))
+    }
+
+    /// Las manijas con la `index` de `wall` llevada a `beta_deg`, recortada al
+    /// rango del motor y a dos decimales; `None` si con ellas β saldría de 5°
+    /// a 90° (el arrastre se queda en el último valor válido).
+    pub fn with_handle(&self, wall: Wall, index: usize, beta_deg: f64) -> Option<CamberBows> {
+        let index = index.min(1);
+        let wanted = beta_deg - self.wall(wall).line_deg(HANDLE_FRACTIONS[index]);
+        let bow = wanted.clamp(BETA_BOW_RANGE_DEG.0, BETA_BOW_RANGE_DEG.1);
+        let bow = (bow * 100.0).round() / 100.0;
+        let mut bows = self.bows;
+        let pair = match wall {
+            Wall::Hub => &mut bows.hub,
+            Wall::Shroud => &mut bows.shroud,
+        };
+        if index == 0 {
+            pair.0 = bow;
+        } else {
+            pair.1 = bow;
+        }
+        self.is_valid_with(&bows, 0.0, None).then_some(bows)
+    }
+}
+
 /// La línea de lectura: β1, β2, envolvimiento y carga. El segundo valor es
 /// `true` si la carga pasa de la admisible más el margen de Gülich.
 pub(super) fn reading_text(
@@ -311,7 +465,6 @@ pub(super) fn blade_beta_view(
     history: &mut BetaHistory,
 ) -> bool {
     use egui::{Key, KeyboardShortcut, Modifiers};
-    let graph = graph_of(outcome);
     history.follow(&BetaSnapshot::of(inputs));
     let typing = ui.memory(|memory| memory.focused().is_some());
     let (redo_keys, undo_key) = ui.input_mut(|input| {
@@ -329,13 +482,23 @@ pub(super) fn blade_beta_view(
         history.record(&BetaSnapshot::of(inputs), ui.input(|input| input.time));
         edited = true;
     }
+    let camber = crate::blade_inlet::camber_of(outcome);
+    let three_d = inputs.blade.shape.family() == BladeFamily::ThreeD;
     ui.horizontal(|ui| {
         let undo = ui.add_enabled(history.can_undo(), egui::Button::new("Deshacer"));
         let redo = ui.add_enabled(history.can_redo(), egui::Button::new("Rehacer"));
-        let has_bow = !inputs.beta_bow1.trim().is_empty() || !inputs.beta_bow2.trim().is_empty();
+        let has_bow = if three_d {
+            inputs.blade.bows != CamberBows::default()
+        } else {
+            !inputs.beta_bow1.trim().is_empty() || !inputs.beta_bow2.trim().is_empty()
+        };
         let flat = ui
             .add_enabled(has_bow, egui::Button::new("Volver a recta"))
-            .on_hover_text("Vacía las dos desviaciones; los extremos no se tocan.");
+            .on_hover_text(if three_d {
+                "Pone a cero las cuatro manijas de cubo y tapa; los extremos no se tocan."
+            } else {
+                "Vacía las dos desviaciones; los extremos no se tocan."
+            });
         if undo.clicked() || undo_key {
             let current = BetaSnapshot::of(inputs);
             if let Some(previous) = history.undo(&current) {
@@ -351,11 +514,167 @@ pub(super) fn blade_beta_view(
             }
         }
         if flat.clicked() {
-            straighten(inputs);
+            if three_d {
+                straighten_3d(inputs);
+            } else {
+                straighten(inputs);
+            }
             history.record(&BetaSnapshot::of(inputs), ui.input(|input| input.time));
             edited = true;
         }
     });
+    match &camber {
+        Ok(Some(camber)) => {
+            edited |= beta_3d_plot(ui, outcome, inputs, history, camber);
+            edited |= bow_fields(ui, inputs, history);
+        }
+        Err(message) => {
+            ui.label(format!("Sin línea media 3D: {message}."));
+            edited |= bow_fields(ui, inputs, history);
+        }
+        Ok(None) => edited |= beta_2d_plot(ui, outcome, inputs, history),
+    }
+    crate::blade_inlet::inlet_table(ui, outcome);
+    edited
+}
+
+/// Las cuatro manijas 3D como números, en grados: se pueden corregir también
+/// cuando la línea media falla y no hay gráfica.
+fn bow_fields(ui: &mut egui::Ui, inputs: &mut Inputs, history: &mut BetaHistory) -> bool {
+    let mut changed = false;
+    ui.horizontal(|ui| {
+        let bows = &mut inputs.blade.bows;
+        for (label, value) in [
+            ("Cubo 1/3", &mut bows.hub.0),
+            ("Cubo 2/3", &mut bows.hub.1),
+            ("Tapa 1/3", &mut bows.shroud.0),
+            ("Tapa 2/3", &mut bows.shroud.1),
+        ] {
+            ui.label(label);
+            changed |= ui
+                .add(
+                    egui::DragValue::new(value)
+                        .range(BETA_BOW_RANGE_DEG.0..=BETA_BOW_RANGE_DEG.1)
+                        .speed(0.1)
+                        .fixed_decimals(2)
+                        .suffix("°"),
+                )
+                .changed();
+        }
+    });
+    if changed {
+        history.record(&BetaSnapshot::of(inputs), ui.input(|input| input.time));
+    }
+    changed
+}
+
+/// La gráfica β(x) de un álabe 3D: una curva por línea, cubo y tapa gruesas con
+/// sus manijas. Devuelve `true` si se escribió una caja.
+fn beta_3d_plot(
+    ui: &mut egui::Ui,
+    outcome: &Outcome,
+    inputs: &mut Inputs,
+    history: &mut BetaHistory,
+    camber: &BladeCamber,
+) -> bool {
+    let graph = BetaGraph3d::of(outcome, camber);
+    ui.label(
+        egui::RichText::new(
+            "β(x) de cada línea de corriente, en grados; x es la fracción de la longitud \
+             meridional del álabe. Gruesas: cubo y tapa; sus manijas naranjas dan la forma. \
+             Azules: la entrada de la tapa mueve la incidencia y la salida fija β2.",
+        )
+        .small()
+        .weak(),
+    );
+    let status_id = egui::Id::unique("blade_beta_status_3d");
+    let palette = crate::theme::palette(ui.ctx());
+    let mut edited = false;
+    Plot::new("blade_beta_3d")
+        .height(190.0)
+        .allow_drag(false)
+        .allow_zoom(false)
+        .allow_scroll(false)
+        .allow_boxed_zoom(false)
+        .x_axis_label("x, fracción de longitud meridional")
+        .y_axis_label("β, °")
+        .show(ui, |plot_ui| {
+            let curves = graph.curves();
+            let last = curves.len().saturating_sub(1);
+            for (index, curve) in curves.into_iter().enumerate() {
+                let (name, color, width) = match index {
+                    0 => ("Cubo", palette.hub, 2.5),
+                    i if i == last => ("Tapa", palette.shroud, 2.5),
+                    _ => ("Intermedias", palette.construction, 1.0),
+                };
+                plot_ui.line(line(name, curve, color).width(width));
+            }
+            for wall in [Wall::Hub, Wall::Shroud] {
+                let law = graph.wall(wall);
+                let [a, b] = law.straight();
+                let handles = graph.handles(wall);
+                plot_ui.line(
+                    line("", vec![a, handles[0], handles[1], b], palette.copper)
+                        .width(1.0)
+                        .style(egui_plot::LineStyle::dashed_loose()),
+                );
+            }
+            let handles: Vec<[f64; 2]> = [Wall::Hub, Wall::Shroud]
+                .into_iter()
+                .flat_map(|wall| graph.handles(wall))
+                .collect();
+            plot_ui.points(
+                Points::new("Manijas", handles)
+                    .color(palette.copper)
+                    .radius(6.0),
+            );
+            plot_ui.points(
+                Points::new("Extremos", graph.ends().to_vec())
+                    .color(palette.blade)
+                    .radius(6.0),
+            );
+            if let Some(drag) = drag_handles_3d(plot_ui, &graph, inputs) {
+                plot_ui
+                    .ctx()
+                    .data_mut(|data| data.insert_temp(status_id, drag.status));
+                edited |= drag.written;
+            }
+        });
+    if edited {
+        history.record(&BetaSnapshot::of(inputs), ui.input(|input| input.time));
+    }
+    if let Some(status) = ui.ctx().data(|data| data.get_temp::<String>(status_id)) {
+        ui.label(egui::RichText::new(status).small());
+    }
+    let beta = |line: Option<&hm_design::blade_camber::CamberLine>| {
+        line.and_then(|line| line.points.first())
+            .map_or(f64::NAN, |point| point.beta.to_degrees())
+    };
+    let wraps = camber.lines.iter().map(|line| line.wrap.to_degrees());
+    let low = wraps.clone().fold(f64::INFINITY, f64::min);
+    let high = wraps.fold(f64::NEG_INFINITY, f64::max);
+    ui.label(
+        egui::RichText::new(format!(
+            "β1B = {:.1}° (cubo) a {:.1}° (tapa) · β2 = {:.1}° · envolvimiento de {low:.0} a \
+             {high:.0}°",
+            beta(camber.lines.first()),
+            beta(camber.lines.last()),
+            outcome.result.selection.beta2_deg,
+        ))
+        .small(),
+    );
+    edited
+}
+
+/// La gráfica de β(r) del álabe 2D, con sus tres manijas y extremos.
+fn beta_2d_plot(
+    ui: &mut egui::Ui,
+    outcome: &Outcome,
+    inputs: &mut Inputs,
+    history: &mut BetaHistory,
+) -> bool {
+    let graph = graph_of(outcome);
+    let mut edited = false;
     ui.label(
         egui::RichText::new(
             "β(r) del álabe, en grados. Gris: la recta del 1D. Naranjas: dan la forma. \
@@ -442,7 +761,6 @@ pub(super) fn blade_beta_view(
             .color(crate::theme::palette(ui.ctx()).marker),
         );
     }
-    crate::blade_inlet::inlet_table(ui, outcome);
     edited
 }
 
@@ -540,6 +858,101 @@ fn drag_handles(
     let written = *target != text;
     *target = text;
     Some(Drag { status, written })
+}
+
+/// Como [`drag_handles`], para la gráfica 3D: seis puntos, las dos manijas del
+/// cubo (0, 1) y de la tapa (2, 3), la entrada de la tapa (4, incidencia) y la
+/// salida (5, β2). Un arrastre que sacaría β de 5° a 90° no escribe nada.
+fn drag_handles_3d(
+    plot_ui: &mut egui_plot::PlotUi<'_>,
+    graph: &BetaGraph3d,
+    inputs: &mut Inputs,
+) -> Option<Drag> {
+    let id = egui::Id::unique("blade_beta_dragged_3d");
+    let response = plot_ui.response().clone();
+    let pointer = plot_ui.pointer_coordinate()?;
+    let points: Vec<[f64; 2]> = {
+        let [hub_a, hub_b] = graph.handles(Wall::Hub);
+        let [shroud_a, shroud_b] = graph.handles(Wall::Shroud);
+        let [inlet, outlet] = graph.ends();
+        vec![hub_a, hub_b, shroud_a, shroud_b, inlet, outlet]
+    };
+    if response.drag_started() {
+        let at = plot_ui.screen_from_plot(pointer);
+        let grabbed = points
+            .iter()
+            .enumerate()
+            .map(|(index, point)| {
+                let screen = plot_ui.screen_from_plot(PlotPoint::new(point[0], point[1]));
+                (index, screen.distance(at))
+            })
+            .filter(|(_, distance)| *distance <= GRAB_PIXELS)
+            .min_by(|a, b| a.1.total_cmp(&b.1))
+            .map(|(index, _)| index);
+        plot_ui.ctx().data_mut(|data| data.insert_temp(id, grabbed));
+    }
+    let grabbed: Option<usize> = plot_ui.ctx().data(|data| data.get_temp(id)).flatten();
+    if response.drag_stopped() {
+        plot_ui
+            .ctx()
+            .data_mut(|data| data.remove::<Option<usize>>(id));
+    }
+    let (Some(index), true) = (grabbed, response.dragged()) else {
+        return None;
+    };
+    match index {
+        0..=3 => {
+            let wall = if index < 2 { Wall::Hub } else { Wall::Shroud };
+            let Some(bows) = graph.with_handle(wall, index % 2, pointer.y) else {
+                return Some(Drag::refused());
+            };
+            let value = match wall {
+                Wall::Hub => bows.hub,
+                Wall::Shroud => bows.shroud,
+            };
+            let value = if index % 2 == 0 { value.0 } else { value.1 };
+            let written = inputs.blade.bows != bows;
+            inputs.blade.bows = bows;
+            let third = if index % 2 == 0 { "1/3" } else { "2/3" };
+            Some(Drag {
+                status: format!("{} {third}: desviación = {value:.1}°", wall.name()),
+                written,
+            })
+        }
+        4 => {
+            let applied = applied_incidence_deg(inputs);
+            let clamped = incidence_for_beta1(pointer.y, graph.shroud.beta.0.to_degrees(), applied);
+            let shift = (clamped.value - applied).to_radians();
+            if !graph.is_valid_with(&graph.bows, shift, None) {
+                return Some(Drag::refused());
+            }
+            let mut status = format!("Incidencia = {:.1}°", clamped.value);
+            if clamped.limited {
+                status.push_str(&format!(
+                    " (límite: la incidencia va de {} a {}°)",
+                    INCIDENCE_RANGE_DEG.0, INCIDENCE_RANGE_DEG.1
+                ));
+            }
+            let text = bow_text(clamped.value);
+            let written = inputs.incidence != text;
+            inputs.incidence = text;
+            Some(Drag { status, written })
+        }
+        _ => {
+            let clamped = beta2_for_target(pointer.y);
+            if !graph.is_valid_with(&graph.bows, 0.0, Some(clamped.value.to_radians())) {
+                return Some(Drag::refused());
+            }
+            let mut status = format!("β2 fijado = {:.1}°", clamped.value);
+            if clamped.limited {
+                status.push_str(" (límite: de 1 a 89°)");
+            }
+            let text = beta2_text(clamped.value);
+            let written = inputs.beta2 != text;
+            inputs.beta2 = text;
+            Some(Drag { status, written })
+        }
+    }
 }
 
 /// Lo que pasó en un fotograma de arrastre.
@@ -838,5 +1251,188 @@ mod tests {
         let g = graph((0.0, 0.0));
         assert_eq!(g.bow_from_handle(0, 80.0), BETA_BOW_RANGE_DEG.1);
         assert_eq!(g.bow_from_handle(1, -80.0), BETA_BOW_RANGE_DEG.0);
+    }
+
+    // -----------------------------------------------------------------
+    // Forma 3D
+    // -----------------------------------------------------------------
+
+    use crate::model::Basis;
+    use hm_design::blade_camber::BladeCamber;
+    use hm_design::blade_setup::{BladeShape, CamberBows};
+
+    /// B1 con esa forma y esas manijas: el resultado y su línea media.
+    fn b1_3d(shape: BladeShape, bows: CamberBows) -> (Outcome, BladeCamber) {
+        let mut inputs = Inputs::default();
+        inputs.blade.shape = shape;
+        inputs.blade.streamlines = 5;
+        inputs.blade.bows = bows;
+        let outcome = crate::model::compute(&inputs, &Basis::default()).unwrap();
+        let camber = crate::blade_inlet::camber_of(&outcome)
+            .unwrap()
+            .expect("forma 3D");
+        (outcome, camber)
+    }
+
+    fn flat() -> CamberBows {
+        CamberBows::default()
+    }
+
+    /// β de la recta de la pared en `x`, grados.
+    fn wall_line_deg(camber: &BladeCamber, wall: Wall, x: f64) -> f64 {
+        let line = match wall {
+            Wall::Hub => camber.lines.first(),
+            Wall::Shroud => camber.lines.last(),
+        }
+        .unwrap();
+        let (a, b) = (
+            line.points.first().unwrap().beta,
+            line.points.last().unwrap().beta,
+        );
+        (a + (b - a) * x).to_degrees()
+    }
+
+    #[test]
+    fn the_3d_graph_has_one_curve_per_line_from_zero_to_one() {
+        let (outcome, camber) = b1_3d(BladeShape::Free3D, flat());
+        let graph = BetaGraph3d::of(&outcome, &camber);
+        let curves = graph.curves();
+        assert_eq!(curves.len(), 5);
+        let beta2 = outcome.result.selection.beta2_deg;
+        for (curve, line) in curves.iter().zip(&camber.lines) {
+            assert_eq!(curve.first().unwrap()[0], 0.0);
+            assert_eq!(curve.last().unwrap()[0], 1.0);
+            assert!((curve.first().unwrap()[1] - line.points[0].beta.to_degrees()).abs() < 1e-9);
+            assert!((curve.last().unwrap()[1] - beta2).abs() < 1e-6, "{curve:?}");
+        }
+        // El primer β de cada línea es su β1B (la tabla de entrada).
+        let (_, triangles) = crate::blade_inlet::inlet_lines(&outcome).unwrap();
+        for (curve, triangle) in curves.iter().zip(&triangles) {
+            assert!((curve[0][1] - triangle.beta1b.to_degrees()).abs() < 1e-6);
+        }
+    }
+
+    #[test]
+    fn a_hub_handle_sits_on_the_hub_law() {
+        let bows = CamberBows {
+            hub: (4.0, 0.0),
+            shroud: (0.0, 0.0),
+        };
+        let (outcome, camber) = b1_3d(BladeShape::Free3D, bows);
+        let graph = BetaGraph3d::of(&outcome, &camber);
+        let [first, second] = graph.handles(Wall::Hub);
+        let line = wall_line_deg(&camber, Wall::Hub, 1.0 / 3.0);
+        assert!((first[0] - 1.0 / 3.0).abs() < 1e-9);
+        // La manija es el punto de control: la recta más la desviación.
+        assert!((first[1] - (line + 4.0)).abs() < 1e-9, "{first:?}");
+        assert!((second[0] - 2.0 / 3.0).abs() < 1e-9);
+        // La cúbica vale 4/9 de la manija en su x: ahí está la curva del cubo.
+        let on_curve = graph.curves()[0]
+            .iter()
+            .min_by(|a, b| {
+                (a[0] - 1.0 / 3.0)
+                    .abs()
+                    .total_cmp(&(b[0] - 1.0 / 3.0).abs())
+            })
+            .copied()
+            .unwrap();
+        let x = on_curve[0];
+        let expected = wall_line_deg(&camber, Wall::Hub, x) + 4.0 * 3.0 * (1.0 - x) * (1.0 - x) * x;
+        assert!(
+            (on_curve[1] - expected).abs() < 1e-6,
+            "{on_curve:?} {expected}"
+        );
+    }
+
+    #[test]
+    fn dragging_a_hub_handle_writes_only_the_hub() {
+        let start = CamberBows {
+            hub: (2.0, -1.0),
+            shroud: (0.5, 3.0),
+        };
+        let (outcome, camber) = b1_3d(BladeShape::Free3D, start);
+        let graph = BetaGraph3d::of(&outcome, &camber);
+        let wanted = wall_line_deg(&camber, Wall::Hub, 1.0 / 3.0) + 3.0;
+        let bows = graph
+            .with_handle(Wall::Hub, 0, wanted)
+            .expect("es una desviación válida");
+        assert_eq!(bows.hub, (3.0, -1.0));
+        assert_eq!(bows.shroud, start.shroud);
+        // Con las manijas puestas, la manija vuelve a estar donde se pidió.
+        let (again, camber) = b1_3d(BladeShape::Free3D, bows);
+        let handle = BetaGraph3d::of(&again, &camber).handles(Wall::Hub)[0];
+        assert!((handle[1] - wanted).abs() < 1e-6, "{handle:?} {wanted}");
+    }
+
+    #[test]
+    fn a_handle_is_clamped_to_its_range() {
+        let (outcome, camber) = b1_3d(BladeShape::Free3D, flat());
+        let graph = BetaGraph3d::of(&outcome, &camber);
+        let wanted = wall_line_deg(&camber, Wall::Hub, 1.0 / 3.0) + 50.0;
+        let bows = graph.with_handle(Wall::Hub, 0, wanted).unwrap();
+        assert_eq!(bows.hub.0, BETA_BOW_RANGE_DEG.1);
+    }
+
+    // Review Focus 4: un arrastre que sacaría β de 5° a 90° no se escribe.
+    #[test]
+    fn a_drag_that_breaks_the_wall_is_refused() {
+        let start = CamberBows {
+            hub: (-30.0, 0.0),
+            shroud: (0.0, 0.0),
+        };
+        let (outcome, camber) = b1_3d(BladeShape::Free3D, start);
+        let graph = BetaGraph3d::of(&outcome, &camber);
+        // Pedir lo mismo que ya hay es válido…
+        let same = wall_line_deg(&camber, Wall::Hub, 2.0 / 3.0);
+        assert!(graph.with_handle(Wall::Hub, 1, same).is_some());
+        // …y llevar la segunda manija a −30° deja el cubo bajo 5°.
+        assert_eq!(graph.with_handle(Wall::Hub, 1, same - 60.0), None);
+    }
+
+    #[test]
+    fn undo_restores_the_four_handles() {
+        let mut inputs = Inputs::default();
+        inputs.blade.shape = BladeShape::Free3D;
+        inputs.blade.bows = CamberBows {
+            hub: (1.0, 2.0),
+            shroud: (3.0, 4.0),
+        };
+        let before = inputs.blade.bows;
+        let mut history = BetaHistory::default();
+        history.follow(&BetaSnapshot::of(&inputs));
+        inputs.blade.bows.hub.0 = 9.0;
+        history.record(&BetaSnapshot::of(&inputs), 10.0);
+        let back = history.undo(&BetaSnapshot::of(&inputs)).unwrap();
+        back.apply(&mut inputs);
+        assert_eq!(inputs.blade.bows, before);
+    }
+
+    #[test]
+    fn straighten_3d_zeroes_the_handles_and_leaves_the_2d_boxes() {
+        let mut inputs = Inputs {
+            beta_bow1: "5 deg".into(),
+            beta_bow2: "-3 deg".into(),
+            ..Inputs::default()
+        };
+        inputs.blade.bows = CamberBows {
+            hub: (1.0, 2.0),
+            shroud: (3.0, 4.0),
+        };
+        straighten_3d(&mut inputs);
+        assert_eq!(inputs.blade.bows, CamberBows::default());
+        assert_eq!(inputs.beta_bow1, "5 deg");
+        assert_eq!(inputs.beta_bow2, "-3 deg");
+    }
+
+    #[test]
+    fn with_the_2d_shape_the_graph_is_todays() {
+        let outcome = crate::model::compute(&Inputs::default(), &Basis::default()).unwrap();
+        assert_eq!(crate::blade_inlet::camber_of(&outcome), Ok(None));
+        let graph = graph_of(&outcome);
+        let curve = graph.curve(10);
+        // La abscisa sigue siendo r en mm, de D1/2 a D2/2.
+        assert!((curve[0][0] - outcome.result.d1.si / 2.0 * 1000.0).abs() < 1e-9);
+        assert!((curve[10][0] - outcome.result.d2.si / 2.0 * 1000.0).abs() < 1e-9);
+        assert_eq!(graph.bow, outcome.result.selection.blade_bow_deg);
     }
 }

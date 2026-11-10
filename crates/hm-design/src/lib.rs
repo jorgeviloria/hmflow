@@ -13,6 +13,7 @@ use std::collections::BTreeMap;
 pub mod blade_setup;
 pub mod fluid;
 pub mod geometry;
+pub mod inlet_triangles;
 pub mod mechanics;
 pub mod meridian;
 pub mod plan;
@@ -1791,27 +1792,29 @@ pub fn beta_profile_range(beta1: f64, beta2: f64, bow_deg: (f64, f64)) -> (f64, 
     (min, max, monotonic)
 }
 
-/// β1B y τ1. β1B = arctan(τ1·cm0/u1) + i1, y τ1 depende de β1B.
-fn leading_edge(
+/// β1B y τ1. β1B = arctan(τ1·c1m/u1) + i1, y τ1 depende de β1B. La usan el 1D,
+/// con d1, y las líneas de corriente, con el diámetro de su corte con el borde
+/// de ataque ([`inlet_triangles`]).
+pub(crate) fn leading_edge(
     registry: &Registry,
     incidence_deg: f64,
-    cm0: f64,
+    c1m: f64,
     u1: f64,
-    d1: f64,
+    diameter: f64,
     thickness: f64,
     blade_count: u32,
 ) -> Result<(f64, f64), DesignError> {
     let deg = unit("deg")?;
     let ms = unit("m/s")?;
     let incidence = incidence_deg.to_radians();
-    let mut beta = (cm0 / u1.max(1.0e-9)).atan() + incidence;
-    let mut tau = blade_blockage(blade_count, thickness, d1, beta);
+    let mut beta = (c1m / u1.max(1.0e-9)).atan() + incidence;
+    let mut tau = blade_blockage(blade_count, thickness, diameter, beta);
     for _ in 0..20 {
         let next = evaluate(
             registry,
             "design.blade_inlet_angle",
             &[
-                ("c1m", Quantity::from_si(tau * cm0, ms.clone())),
+                ("c1m", Quantity::from_si(tau * c1m, ms.clone())),
                 ("u1", Quantity::from_si(u1, ms.clone())),
                 ("i1", Quantity::from_si(incidence, deg.clone())),
             ],
@@ -1822,9 +1825,9 @@ fn leading_edge(
             break;
         }
         beta = next;
-        tau = blade_blockage(blade_count, thickness, d1, beta);
+        tau = blade_blockage(blade_count, thickness, diameter, beta);
     }
-    tau = blade_blockage(blade_count, thickness, d1, beta);
+    tau = blade_blockage(blade_count, thickness, diameter, beta);
     Ok((beta, tau))
 }
 

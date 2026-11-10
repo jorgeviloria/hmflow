@@ -579,7 +579,7 @@ const CURVATURE_SAMPLES: usize = 200;
 fn summary(model: &MeridionalModel, edits: &MeridianEdits) -> String {
     let p = &model.params;
     format!(
-        "zE {:.1} · dH {:.1} (dH del 1D: {:.2} mm) · radio mínimo tapa {:.1}, cubo {:.1} · borde {:.1}° · área de entrada {:.0} mm².{}",
+        "zE {:.1} · dH {:.1} (dH del 1D: {:.2} mm) · radio mínimo tapa {:.1}, cubo {:.1} · borde {:.1}° · superficie del borde {:.0} mm².{}",
         p.z_e,
         p.d1i,
         p.auto_d1i,
@@ -1785,6 +1785,21 @@ mod tests {
                 assert!(!colours[..index].contains(colour), "{}", names[index]);
             }
         }
+    }
+
+    /// La cifra del resumen es la superficie que genera el borde, no la
+    /// sección de paso con la que se calcula c1m: el rótulo lo dice.
+    #[test]
+    fn the_summary_names_the_edge_surface() {
+        let outcome = crate::model::compute(
+            &crate::model::Inputs::default(),
+            &crate::model::Basis::default(),
+        )
+        .unwrap();
+        let model = meridional_model(&outcome.result).unwrap();
+        let text = summary(&model, &MeridianEdits::default());
+        assert!(text.contains("superficie del borde"), "{text}");
+        assert!(!text.contains("área de entrada"), "{text}");
     }
 
     /// La capa de líneas de corriente está encendida mientras no se apague,

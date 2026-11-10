@@ -24,12 +24,18 @@
 //! borde de ataque: de ahí sale c1m = Q_La / A1 «según la posición del borde»
 //! (Gülich, ec. T3.1.2, p. 83).
 //!
+//! El plano de entrada y la salida se fuerzan como primera y última estación
+//! aunque las paredes no arranquen axiales ni acaben radiales. Si el cubo
+//! empieza aguas abajo de la tapa o acaba antes que ella, las estaciones que
+//! no tienen cuasi-normal salen en abanico desde el extremo del cubo.
+//!
 //! Supuesto declarado: las cuasi-normales son rectas y cm es constante sobre
 //! cada una. Srinivasan dice que corregir las normales con más precisión no
 //! cambia el rodete.
 //!
 //! Las líneas no entran en las curvas del modelo: ni su huella ni su CSV
-//! cambian. El cálculo es cerrado por estación, sin iteración.
+//! cambian. El reparto sobre cada estación es cerrado; el punto del cubo de
+//! cada cuasi-normal se busca por bisección.
 
 use thiserror::Error;
 
@@ -160,7 +166,11 @@ pub fn quasi_normals(model: &MeridionalModel) -> Vec<QuasiNormal> {
     else {
         return Vec::new();
     };
-    let (front, rear) = (front.points.as_slice(), rear.points.as_slice());
+    normals_between(&front.points, &rear.points)
+}
+
+/// Las cuasi-normales entre dos paredes dadas como polilíneas `[z, r]`.
+fn normals_between(front: &[[f64; 2]], rear: &[[f64; 2]]) -> Vec<QuasiNormal> {
     if front.len() < 2 || rear.len() < 2 {
         return Vec::new();
     }
@@ -435,6 +445,89 @@ fn segment_crossing(a: [f64; 2], b: [f64; 2], c: [f64; 2], d: [f64; 2]) -> Optio
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Una pared axial de radio `r`, con un punto cada 10 mm de `from` a `to`.
+    fn axial_wall(r: f64, from: u32, to: u32) -> Vec<[f64; 2]> {
+        (from..=to).step_by(10).map(|z| [f64::from(z), r]).collect()
+    }
+
+    fn assert_sound(stations: &[QuasiNormal], rear: &[[f64; 2]]) {
+        let mut reached = f64::NEG_INFINITY;
+        for station in stations {
+            assert!(station.area().is_finite() && station.area() > 0.0);
+            // El cubo es axial: avanzar por él es crecer en z.
+            assert!(station.hub[0] >= reached, "el cubo retrocede: {stations:?}");
+            reached = station.hub[0];
+            assert!(station.hub[0] >= rear[0][0] && station.hub[0] <= rear[rear.len() - 1][0]);
+        }
+    }
+
+    #[test]
+    fn between_parallel_walls_the_normals_are_radial() {
+        let (front, rear) = (axial_wall(80.0, 0, 100), axial_wall(30.0, 0, 100));
+        let stations = normals_between(&front, &rear);
+        assert_eq!(stations.len(), front.len());
+        for station in &stations {
+            assert!((station.hub[0] - station.shroud[0]).abs() < 1e-9);
+            assert!((station.width() - 50.0).abs() < 1e-9);
+        }
+        assert_sound(&stations, &rear);
+    }
+
+    /// Un cubo que empieza aguas abajo de la tapa: las primeras estaciones no
+    /// tienen cuasi-normal y salen en abanico desde el arranque del cubo.
+    #[test]
+    fn a_hub_that_starts_later_fans_out_from_its_first_point() {
+        let (front, rear) = (axial_wall(80.0, 0, 100), axial_wall(30.0, 40, 100));
+        let stations = normals_between(&front, &rear);
+        for station in &stations[..4] {
+            assert_eq!(station.hub, rear[0], "{station:?}");
+        }
+        for station in &stations[5..] {
+            assert!((station.hub[0] - station.shroud[0]).abs() < 1e-9);
+        }
+        assert_sound(&stations, &rear);
+    }
+
+    /// Un cubo que acaba antes que la tapa: las últimas estaciones salen en
+    /// abanico desde su final.
+    #[test]
+    fn a_hub_that_ends_early_fans_out_from_its_last_point() {
+        let (front, rear) = (axial_wall(80.0, 0, 100), axial_wall(30.0, 0, 60));
+        let stations = normals_between(&front, &rear);
+        let end = rear[rear.len() - 1];
+        for station in &stations[7..] {
+            assert_eq!(station.hub, end, "{station:?}");
+        }
+        for station in &stations[..6] {
+            assert!((station.hub[0] - station.shroud[0]).abs() < 1e-9);
+        }
+        assert_sound(&stations, &rear);
+    }
+
+    /// Un vértice repetido tres veces en el cubo no da tramos sin tangente
+    /// que rompan la búsqueda.
+    #[test]
+    fn a_repeated_vertex_on_the_hub_changes_nothing() {
+        let front = axial_wall(80.0, 0, 100);
+        let mut rear = axial_wall(30.0, 0, 100);
+        rear.insert(5, [40.0, 30.0]);
+        rear.insert(5, [40.0, 30.0]);
+        let stations = normals_between(&front, &rear);
+        for station in &stations {
+            assert!(
+                (station.hub[0] - station.shroud[0]).abs() < 1e-9,
+                "{station:?}"
+            );
+        }
+        assert_sound(&stations, &rear);
+    }
+
+    #[test]
+    fn a_wall_of_one_point_has_no_stations() {
+        assert!(normals_between(&[[0.0, 80.0]], &axial_wall(30.0, 0, 100)).is_empty());
+        assert!(normals_between(&axial_wall(80.0, 0, 100), &[[0.0, 30.0]]).is_empty());
+    }
 
     #[test]
     fn an_edge_that_crosses_twice_gives_the_first_cut_along_the_line() {

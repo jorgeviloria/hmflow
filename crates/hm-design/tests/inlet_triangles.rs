@@ -1,5 +1,6 @@
 //! Triángulo de entrada por línea de corriente: u1 = ω·r del corte con el
-//! borde de ataque, c1m común y β1B = β′1 + i1 con el bloqueo iterado
+//! borde de ataque, c1m con la sección de paso de ese corte y β1B = β′1 + i1
+//! con el bloqueo iterado
 //! (Gülich 2020, tabla 3.1 y §7.2.1, p. 411), y el ángulo del álabe 2D de hoy
 //! visto sobre cada línea.
 
@@ -124,11 +125,12 @@ fn the_shroud_line_matches_the_1d_with_a_radial_edge_in_the_eye() {
     close(shroud.beta1b, result.beta1b, 1.0e-6);
 }
 
-/// Con c1m común, β1B baja cuando sube el radio del corte. En el meridiano por
-/// defecto de B1 los radios no crecen con ψ (la línea 1 corta por debajo del
-/// cubo), así que el orden se comprueba con r1 y no con ψ.
+/// Oráculo de B1, no una ley: c1m cambia un ±1,5 % entre sus cortes y, con
+/// tan poco, β1B baja cuando sube el radio del corte. En el meridiano por
+/// defecto los radios no crecen con ψ (la línea 1 corta por debajo del cubo),
+/// así que el orden se comprueba con r1 y no con ψ.
 #[test]
-fn beta1b_falls_as_the_cut_radius_grows_in_b1() {
+fn in_b1_beta1b_falls_as_the_cut_radius_grows() {
     let case = case_of(&b1_input());
     let lines = streamlines(&case.model, 5).unwrap();
     let mut triangles = case.triangles(&lines, DEFAULT_INCIDENCE_DEG);

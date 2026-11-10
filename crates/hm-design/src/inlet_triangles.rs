@@ -29,7 +29,10 @@
 //! - cm constante sobre cada estación: cm aguas arriba del borde es «casi
 //!   siempre constante en la sección de entrada» (Gülich, p. 411). Un borde
 //!   que cruza varias estaciones toma en cada línea el cm de la suya; si el
-//!   borde sigue una estación, c1m es el mismo en todas.
+//!   borde sigue una estación, c1m es el mismo en todas. Dar un c1m por
+//!   línea es de hmflow: Gülich dibuja un solo A1, el del círculo inscrito en
+//!   el borde (fig. 7.4), y solo admite otro cm por línea según el bloqueo
+//!   local del cubo.
 //!
 //! Nada de esto cambia el 1D: su β1B sigue siendo el de d1.
 

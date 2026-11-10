@@ -1,6 +1,7 @@
 //! Crear un proyecto y pedir su informe, sin imprimir ni guardar.
 
 use hm_core::PumpType;
+use hm_design::blade_setup::{BladeSetup, BladeShape, STREAMLINE_COUNTS};
 use hm_design::meridian::{
     CutMode, EdgeEdit, EdgeMode, HubCutEdit, MeridianEdits, MeridionalModel, WallEdit,
     meridional_model_with,
@@ -320,6 +321,42 @@ pub fn meridian_edits(project: &Project) -> MeridianEdits {
         .as_ref()
         .map(meridian_edits_of)
         .unwrap_or_default()
+}
+
+/// La forma del álabe y las líneas de corriente de una sección `[blade]`; sin
+/// sección, las de por defecto. Al cargar un archivo la sección ya viene
+/// comprobada, pero una hecha a mano puede traer cualquier cosa: es un error
+/// con el mismo texto que da la carga, no se corrige en silencio.
+pub fn blade_setup_of(section: Option<&hm_project::Blade>) -> Result<BladeSetup, String> {
+    let Some(section) = section else {
+        return Ok(BladeSetup::default());
+    };
+    let shape = BladeShape::from_id(&section.shape).ok_or_else(|| {
+        format!(
+            "forma de álabe desconocida «{}»; las válidas son: {}",
+            section.shape,
+            BladeShape::ALL.map(BladeShape::id).join(", ")
+        )
+    })?;
+    if !STREAMLINE_COUNTS.contains(&section.streamlines) {
+        return Err(format!(
+            "«streamlines» = {} no es válido; debe ser 3, 5, 7 o 9",
+            section.streamlines
+        ));
+    }
+    Ok(BladeSetup {
+        shape,
+        streamlines: section.streamlines,
+    })
+}
+
+/// La sección `[blade]` de esa elección, o ninguna si es la de por defecto.
+#[must_use]
+pub fn blade_section_of(setup: &BladeSetup) -> Option<hm_project::Blade> {
+    (*setup != BladeSetup::default()).then(|| hm_project::Blade {
+        shape: setup.shape.id().to_string(),
+        streamlines: setup.streamlines,
+    })
 }
 
 /// Lo editado de una sección `[meridian]`, en mm. Un texto vacío o que no

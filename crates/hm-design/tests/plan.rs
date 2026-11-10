@@ -1,8 +1,14 @@
 //! Vista en planta: el único sitio del que leen el visor y la exportación.
 
-use hm_design::geometry::geometry;
-use hm_design::plan::{PlanModel, plan_model};
-use hm_design::{CasingFit, DesignInput, DesignOptions, design, design_with_options};
+use hm_design::blade_camber::camber_for_design;
+use hm_design::blade_setup::{BladeSetup, BladeShape};
+use hm_design::geometry::{DEFAULT_INCIDENCE_DEG, geometry};
+use hm_design::meridian::meridional_model;
+use hm_design::plan::{PlanModel, plan_model, plan_model_with};
+use hm_design::{
+    CasingFit, DesignInput, DesignOptions, default_mechanical_efficiency, design,
+    design_with_options,
+};
 use hm_units::parse_quantity;
 
 fn input() -> DesignInput {
@@ -204,4 +210,128 @@ fn the_volute_ends_on_its_last_section() {
     let radius = last.outer_radius.si * 1000.0;
     assert!((end[0] - radius * angle.cos()).abs() < 1e-9, "{end:?}");
     assert!((end[1] - radius * angle.sin()).abs() < 1e-9, "{end:?}");
+}
+
+// ---------------------------------------------------------------------------
+// Con la línea media 3D
+// ---------------------------------------------------------------------------
+
+/// El punto de máximo rendimiento de B1, como en `tests/case_b1.rs`.
+fn b1_input() -> DesignInput {
+    let q = parse_quantity("1060 gpm").unwrap();
+    let n = parse_quantity("1750 rpm").unwrap();
+    DesignInput {
+        h: parse_quantity("83 m").unwrap(),
+        rho: parse_quantity("998.2 kg/m3").unwrap(),
+        eta_m: default_mechanical_efficiency(&q, &n).unwrap(),
+        npsha: None,
+        nu: None,
+        q,
+        n,
+    }
+}
+
+#[test]
+fn without_camber_the_plan_is_todays() {
+    let input = b1_input();
+    let result = design(&input).unwrap();
+    let shape = geometry(&input, &result).unwrap();
+    let today = plan_model(&result, &shape).unwrap();
+    let with = plan_model_with(&result, &shape, None).unwrap();
+    assert_eq!(with, today);
+    assert_eq!(with.fingerprint_text(), today.fingerprint_text());
+}
+
+#[test]
+fn with_camber_each_blade_draws_its_mean_surface() {
+    let input = b1_input();
+    let result = design(&input).unwrap();
+    let shape = geometry(&input, &result).unwrap();
+    let model = meridional_model(&result).unwrap();
+    let setup = BladeSetup {
+        shape: BladeShape::Free3D,
+        streamlines: 5,
+        ..BladeSetup::default()
+    };
+    let camber = camber_for_design(
+        &result,
+        &shape.impeller,
+        &model,
+        &setup,
+        DEFAULT_INCIDENCE_DEG,
+    )
+    .unwrap()
+    .expect("forma 3D");
+    let plan = plan_model_with(&result, &shape, Some(&camber)).unwrap();
+
+    assert_eq!(result.selection.blade_count, 5);
+    let blades: Vec<&str> = names(&plan)
+        .into_iter()
+        .filter(|name| name.starts_with("Álabe "))
+        .collect();
+    // Cinco álabes por (cubo, tapa, borde de ataque) y tres intermedias del 1.
+    assert_eq!(blades.len(), 5 * 3 + 3, "{blades:?}");
+    assert!(plan.curve("Álabe 1").is_none());
+    // En B1 los bordes de salida coinciden en planta: no hay curva propia.
+    assert!(blades.iter().all(|name| !name.contains("borde de salida")));
+    for k in 1..=3 {
+        assert!(plan.curve(&format!("Álabe 1 · línea {k}")).is_some());
+    }
+    assert!(plan.curve("Álabe 2 · línea 1").is_none());
+
+    let hub = plan.curve("Álabe 1 · cubo").unwrap();
+    let first = hub.points[0];
+    assert!(
+        (first[0].hypot(first[1]) - 64.12).abs() < 0.01,
+        "radio {}",
+        first[0].hypot(first[1])
+    );
+    assert_eq!(
+        plan.curve("Álabe 1 · borde de ataque")
+            .unwrap()
+            .points
+            .len(),
+        5
+    );
+    // Cada línea de corriente tiene sus 201 nodos.
+    assert_eq!(hub.points.len(), 201);
+    // D1, D2, Lengua y Voluta siguen ahí.
+    for name in ["D1", "D2", "Lengua", "Voluta"] {
+        assert!(plan.curve(name).is_some(), "{name}");
+    }
+}
+
+#[test]
+fn a_trailing_edge_that_does_not_coincide_gets_its_own_curve() {
+    let input = b1_input();
+    let result = design(&input).unwrap();
+    let shape = geometry(&input, &result).unwrap();
+    let model = meridional_model(&result).unwrap();
+    let setup = BladeSetup {
+        shape: BladeShape::Ruled3D,
+        streamlines: 3,
+        ..BladeSetup::default()
+    };
+    let mut camber = camber_for_design(
+        &result,
+        &shape.impeller,
+        &model,
+        &setup,
+        DEFAULT_INCIDENCE_DEG,
+    )
+    .unwrap()
+    .expect("forma 3D");
+    // Se mueve la salida de la línea intermedia 1 mm en θ·r: ya no coincide.
+    let line = &mut camber.lines[1];
+    let last = line.points.last_mut().unwrap();
+    last.theta += 0.001 / last.r;
+    let plan = plan_model_with(&result, &shape, Some(&camber)).unwrap();
+    assert_eq!(
+        plan.curve("Álabe 1 · borde de salida")
+            .unwrap()
+            .points
+            .len(),
+        3
+    );
+    assert!(plan.curve("Álabe 5 · borde de salida").is_some());
 }

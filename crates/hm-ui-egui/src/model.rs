@@ -2588,6 +2588,33 @@ mod tests {
         assert_eq!(csv, hm_engine::plan(&loaded).unwrap().to_csv());
     }
 
+    /// Con forma 3D, lo exportado, lo que dibuja el visor y lo que da el motor
+    /// con el archivo guardado son lo mismo.
+    #[test]
+    fn exported_3d_geometry_is_what_the_viewer_draws() {
+        let mut inputs = Inputs {
+            q: "90 m3/h".into(),
+            ..Inputs::default()
+        };
+        inputs.blade.shape = hm_design::blade_setup::BladeShape::Free3D;
+        inputs.blade.streamlines = 5;
+        let basis = Basis::default();
+        let csv = export_geometry(&inputs, &basis, None, "sin título").unwrap();
+
+        let outcome = crate::model::compute(&inputs, &basis).unwrap();
+        let (viewer, camber) = crate::plan::plan_of(&outcome).unwrap();
+        assert!(camber.is_some(), "la forma 3D da línea media");
+        assert!(viewer.curve("Álabe 1 · cubo").is_some());
+        assert_eq!(csv, viewer.to_csv());
+
+        let built = build_project(&inputs, &basis, None, "sin título").unwrap();
+        let path = std::env::temp_dir().join(format!("hmflow-geometria-3d-{}", std::process::id()));
+        built.project.save(&path).unwrap();
+        let loaded = Project::load(&path).unwrap();
+        let _ = std::fs::remove_file(&path);
+        assert_eq!(csv, hm_engine::plan(&loaded).unwrap().to_csv());
+    }
+
     #[test]
     fn geometry_with_a_bad_box_is_not_exported() {
         let inputs = Inputs {

@@ -1,10 +1,14 @@
 //! El informe es el análisis más la auditoría, para los mismos números.
 
 use hm_design::DesignOptions;
+use hm_design::blade_camber::camber_for_design;
+use hm_design::blade_setup::{BladeSetup, BladeShape, CamberBows};
+use hm_design::geometry::DEFAULT_INCIDENCE_DEG;
+use hm_design::plan::plan_model_with;
 use hm_engine::{
     Analysis, Case, CaseField, CurvePoints, Density, DensitySource, Duty, EngineError, Entered,
-    Fluid, FluidKind, Intake, PumpType, analyze, audit_with_analysis, case_from_project,
-    new_project, parse_temperature, report,
+    Fluid, FluidKind, Intake, PumpType, analyze, audit_with_analysis, blade_section_of,
+    case_from_project, new_project, parse_temperature, report,
 };
 use hm_formula::Registry;
 use hm_project::{Param, Project};
@@ -376,6 +380,93 @@ fn the_plan_is_the_plan_of_the_analysis() {
     let plan = hm_engine::plan(&project).unwrap();
     assert_eq!(plan, expected);
     assert_eq!(plan.fingerprint(), expected.fingerprint());
+}
+
+/// Un proyecto B1 con esa elección de álabe en `[blade]`.
+fn b1_with_blade(setup: &BladeSetup) -> Project {
+    let mut project = new_project("b1", &b1(), &analyze(&b1(), points()).unwrap()).unwrap();
+    project.blade = blade_section_of(setup);
+    project
+}
+
+/// Con forma 3D la planta del proyecto es la que arma el diseño: el meridiano
+/// del proyecto, la línea media de `camber_for_design` y `plan_model_with`.
+#[test]
+fn the_plan_of_a_3d_project_is_the_design_one() {
+    let setup = BladeSetup {
+        shape: BladeShape::Free3D,
+        streamlines: 5,
+        bows: CamberBows {
+            hub: (2.0, -1.0),
+            shroud: (0.0, 3.0),
+        },
+    };
+    let project = b1_with_blade(&setup);
+    let analysis = analyze(&case_from_project(&project).unwrap(), points()).unwrap();
+    let geometry = analysis.geometry.as_ref().expect("geometría");
+    let model = hm_engine::meridian(&project).unwrap();
+    let camber = camber_for_design(
+        &analysis.result,
+        &geometry.impeller,
+        &model,
+        &setup,
+        DEFAULT_INCIDENCE_DEG,
+    )
+    .unwrap()
+    .expect("forma 3D");
+    let expected = plan_model_with(&analysis.result, geometry, Some(&camber)).unwrap();
+
+    let plan = hm_engine::plan(&project).unwrap();
+    assert_eq!(plan, expected);
+    assert!(plan.curve("Álabe 1 · cubo").is_some());
+    assert_ne!(
+        plan.fingerprint(),
+        hm_engine::plan(&b1_with_blade(&BladeSetup::default()))
+            .unwrap()
+            .fingerprint()
+    );
+}
+
+/// Volver a «2D · Libre» con manijas 3D guardadas: la planta es la de hoy.
+#[test]
+fn back_to_2d_the_plan_ignores_the_handles() {
+    let with_handles = BladeSetup {
+        shape: BladeShape::Free2D,
+        streamlines: 7,
+        bows: CamberBows {
+            hub: (4.0, -2.0),
+            shroud: (1.0, 3.0),
+        },
+    };
+    let project = b1_with_blade(&with_handles);
+    assert!(project.blade.is_some(), "las manijas se guardan");
+    let today = hm_engine::plan(&b1_with_blade(&BladeSetup::default())).unwrap();
+    let plan = hm_engine::plan(&project).unwrap();
+    assert_eq!(plan.fingerprint_text(), today.fingerprint_text());
+    assert_eq!(plan, today);
+}
+
+/// Una línea media que falla es un error de la etapa de geometría, no una
+/// planta a medias.
+#[test]
+fn a_3d_project_whose_camber_fails_has_no_plan() {
+    let mut project = b1_with_blade(&BladeSetup {
+        shape: BladeShape::Free3D,
+        ..BladeSetup::default()
+    });
+    // Una manija fuera de rango la rechaza `blade_setup_of`.
+    project.blade.as_mut().unwrap().bow_hub = [90.0, 0.0];
+    let error = hm_engine::plan(&project).unwrap_err();
+    assert!(
+        matches!(
+            error,
+            EngineError::Stage {
+                stage: hm_engine::Stage::Geometry,
+                ..
+            }
+        ),
+        "{error:?}"
+    );
 }
 
 #[test]

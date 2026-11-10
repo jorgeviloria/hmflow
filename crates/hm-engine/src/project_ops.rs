@@ -1,12 +1,14 @@
 //! Crear un proyecto y pedir su informe, sin imprimir ni guardar.
 
 use hm_core::PumpType;
-use hm_design::blade_setup::{BladeSetup, BladeShape, CamberBows, STREAMLINE_COUNTS};
+use hm_design::blade_camber::camber_for_design;
+use hm_design::blade_setup::{BladeFamily, BladeSetup, BladeShape, CamberBows, STREAMLINE_COUNTS};
+use hm_design::geometry::DEFAULT_INCIDENCE_DEG;
 use hm_design::meridian::{
     CutMode, EdgeEdit, EdgeMode, HubCutEdit, MeridianEdits, MeridionalModel, WallEdit,
     meridional_model_with,
 };
-use hm_design::plan::{PlanModel, plan_model};
+use hm_design::plan::{PlanModel, plan_model_with};
 use hm_design::{DesignInput, DesignReport, LEGACY_METHODS, METHOD, design_with_options};
 use hm_formula::Registry;
 use hm_project::{Casing, Param, Project, Suction};
@@ -283,7 +285,12 @@ pub fn report(project: &Project, curve_points: CurvePoints) -> Result<DesignRepo
 /// Vista en planta de un proyecto, la misma que dibuja el visor.
 ///
 /// Rechaza lo mismo que el informe, pero de las etapas solo exige la
-/// geometría: es lo único que la planta necesita.
+/// geometría: es lo único que la planta necesita. Con una forma 3D en
+/// `[blade]` dibuja la superficie media (meridiano del proyecto, líneas de
+/// corriente y línea media de [`camber_for_design`], la misma cadena que usa
+/// la interfaz); con una forma 2D, la línea media de siempre, también si hay
+/// manijas 3D guardadas. Una línea media que falla es un error de la etapa de
+/// geometría.
 pub fn plan(project: &Project) -> Result<PlanModel, EngineError> {
     let analysis = drawable(project)?;
     let geometry_failed = |source| EngineError::Stage {
@@ -294,7 +301,26 @@ pub fn plan(project: &Project) -> Result<PlanModel, EngineError> {
         .geometry
         .as_ref()
         .map_err(|error| geometry_failed(error.clone()))?;
-    plan_model(&analysis.result, geometry).map_err(|error| {
+    let setup = blade_setup_of(project.blade.as_ref())
+        .map_err(|message| geometry_failed(hm_design::DesignError::Input(message)))?;
+    let camber = if setup.shape.family() == BladeFamily::ThreeD {
+        let model = meridian(project)?;
+        let incidence_deg = case_from_project(project)?
+            .design
+            .incidence_deg
+            .unwrap_or(DEFAULT_INCIDENCE_DEG);
+        camber_for_design(
+            &analysis.result,
+            &geometry.impeller,
+            &model,
+            &setup,
+            incidence_deg,
+        )
+        .map_err(geometry_failed)?
+    } else {
+        None
+    };
+    plan_model_with(&analysis.result, geometry, camber.as_ref()).map_err(|error| {
         geometry_failed(hm_design::DesignError::Input(format!(
             "vista en planta: {error}"
         )))

@@ -304,7 +304,9 @@ pub fn plan(project: &Project) -> Result<PlanModel, EngineError> {
     let setup = blade_setup_of(project.blade.as_ref())
         .map_err(|message| geometry_failed(hm_design::DesignError::Input(message)))?;
     let camber = if setup.shape.family() == BladeFamily::ThreeD {
-        let model = meridian(project)?;
+        // Un recorte del cubo que falle no cambia el perfil hidráulico: la
+        // planta se arma con el meridiano sin recorte, como la dibuja el visor.
+        let model = meridian_or_uncut(project, &analysis.result)?;
         let incidence_deg = case_from_project(project)?
             .design
             .incidence_deg
@@ -336,6 +338,32 @@ pub fn meridian(project: &Project) -> Result<MeridionalModel, EngineError> {
         stage: Stage::Geometry,
         source,
     })
+}
+
+/// El meridiano del proyecto; si falla por el recorte del cubo, el mismo sin
+/// recorte. Un error que no es del recorte se devuelve tal cual. Es lo que hace
+/// la interfaz al dibujar (`model_or_uncut`), para que el visor y la
+/// exportación no se separen.
+fn meridian_or_uncut(
+    project: &Project,
+    result: &hm_design::DesignResult,
+) -> Result<MeridionalModel, EngineError> {
+    let edits = meridian_edits(project);
+    let stage = |source| EngineError::Stage {
+        stage: Stage::Geometry,
+        source,
+    };
+    match meridional_model_with(result, &edits) {
+        Ok(model) => Ok(model),
+        Err(_) if edits.hub_cut.is_active() => {
+            let plain = MeridianEdits {
+                hub_cut: HubCutEdit::default(),
+                ..edits
+            };
+            meridional_model_with(result, &plain).map_err(stage)
+        }
+        Err(source) => Err(stage(source)),
+    }
 }
 
 /// Los brazos de `[meridian]` en mm. Vacío o sin sección es automático. Un

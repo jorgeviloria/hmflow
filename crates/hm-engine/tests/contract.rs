@@ -469,6 +469,33 @@ fn a_3d_project_whose_camber_fails_has_no_plan() {
     );
 }
 
+/// Un recorte de cubo que falla no cambia el perfil hidráulico: el visor ya lo
+/// ignora al dibujar la planta 3D, y la exportación tiene que dar la misma.
+#[test]
+fn a_failing_hub_cut_does_not_stop_the_3d_plan() {
+    let setup = BladeSetup {
+        shape: BladeShape::Free3D,
+        streamlines: 5,
+        ..BladeSetup::default()
+    };
+    let plain = hm_engine::plan(&b1_with_blade(&setup)).unwrap();
+    let mut project = b1_with_blade(&setup);
+    project.meridian = Some(hm_project::Meridian {
+        hub_cut: hm_project::MeridianHubCut {
+            // El cubo acaba mucho antes de 500 mm.
+            z: "500 mm".into(),
+            ..hm_project::MeridianHubCut::default()
+        },
+        ..hm_project::Meridian::default()
+    });
+    assert!(
+        hm_engine::meridian(&project).is_err(),
+        "el recorte tiene que fallar para que la prueba valga"
+    );
+    let plan = hm_engine::plan(&project).unwrap();
+    assert_eq!(plan.fingerprint_text(), plain.fingerprint_text());
+}
+
 #[test]
 fn the_plan_refuses_what_the_report_refuses() {
     let mut project = new_project("b1", &b1(), &analyze(&b1(), points()).unwrap()).unwrap();

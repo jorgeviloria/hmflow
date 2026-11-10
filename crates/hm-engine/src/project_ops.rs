@@ -356,6 +356,7 @@ pub fn blade_section_of(setup: &BladeSetup) -> Option<hm_project::Blade> {
     (*setup != BladeSetup::default()).then(|| hm_project::Blade {
         shape: setup.shape.id().to_string(),
         streamlines: setup.streamlines,
+        ..hm_project::Blade::default()
     })
 }
 

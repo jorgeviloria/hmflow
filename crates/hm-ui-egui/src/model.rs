@@ -2758,6 +2758,7 @@ mod tests {
         project.blade = Some(hm_project::Blade {
             shape: "helicoidal".into(),
             streamlines: 5,
+            ..hm_project::Blade::default()
         });
         let error = open_loaded(project).unwrap_err();
         assert!(error.contains("helicoidal"), "{error}");

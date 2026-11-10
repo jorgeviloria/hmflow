@@ -37,7 +37,7 @@ fn shroud(wall: MeridianWall) -> Meridian {
 
 #[test]
 fn a_new_project_carries_the_current_schema() {
-    assert_eq!(SCHEMA_VERSION, 5);
+    assert_eq!(SCHEMA_VERSION, 6);
     assert_eq!(
         Project::new("demo", PumpType::EndSuction).schema,
         SCHEMA_VERSION

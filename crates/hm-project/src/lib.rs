@@ -22,10 +22,16 @@ use thiserror::Error;
 ///   y P3 de cada tapa.
 /// - 5: añade la sección opcional `[blade]`, con la forma del álabe y el
 ///   número de líneas de corriente.
-pub const SCHEMA_VERSION: u32 = 5;
+/// - 6: añade las manijas de cubo y tapa a `[blade]`.
+pub const SCHEMA_VERSION: u32 = 6;
 
 /// Esquemas anteriores que se migran al cargar.
-pub const MIGRATABLE_SCHEMAS: &[u32] = &[1, 2, 3, 4];
+pub const MIGRATABLE_SCHEMAS: &[u32] = &[1, 2, 3, 4, 5];
+
+/// Rango de cada manija de cubo y tapa, en grados. El mismo que
+/// `hm_design::BETA_BOW_RANGE_DEG`: este crate no depende de `hm-design` y una
+/// prueba de `hm-engine` comprueba que coinciden.
+pub const BLADE_BOW_RANGE_DEG: (f64, f64) = (-30.0, 30.0);
 
 /// Las formas de álabe que admite `[blade]`, con el nombre que llevan en el
 /// archivo.
@@ -92,7 +98,7 @@ pub struct Project {
 /// La forma del álabe y en cuántas líneas de corriente se reparte el canal.
 /// No va en `[params]`: no es una entrada del 1D ni mueve ningún número del
 /// diseño.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Blade {
     /// Una de [`BLADE_SHAPES`].
@@ -101,6 +107,21 @@ pub struct Blade {
     /// Uno de [`STREAMLINE_COUNTS`].
     #[serde(default = "default_streamlines", deserialize_with = "streamline_count")]
     pub streamlines: u8,
+    /// Manijas de la ley de β del cubo a 1/3 y 2/3 de la longitud meridional,
+    /// en grados (esquema 6). Cero: no se escriben.
+    #[serde(
+        default,
+        deserialize_with = "bow_pair::<_, 0>",
+        skip_serializing_if = "bows_are_zero"
+    )]
+    pub bow_hub: [f64; 2],
+    /// Ídem para la tapa (esquema 6).
+    #[serde(
+        default,
+        deserialize_with = "bow_pair::<_, 1>",
+        skip_serializing_if = "bows_are_zero"
+    )]
+    pub bow_shroud: [f64; 2],
 }
 
 impl Default for Blade {
@@ -108,6 +129,8 @@ impl Default for Blade {
         Self {
             shape: default_blade_shape(),
             streamlines: default_streamlines(),
+            bow_hub: [0.0, 0.0],
+            bow_shroud: [0.0, 0.0],
         }
     }
 }
@@ -115,7 +138,10 @@ impl Default for Blade {
 impl Blade {
     /// Si es la de un proyecto sin `[blade]`.
     pub fn is_default(&self) -> bool {
-        self.shape == DEFAULT_BLADE_SHAPE && self.streamlines == DEFAULT_STREAMLINES
+        self.shape == DEFAULT_BLADE_SHAPE
+            && self.streamlines == DEFAULT_STREAMLINES
+            && bows_are_zero(&self.bow_hub)
+            && bows_are_zero(&self.bow_shroud)
     }
 }
 
@@ -125,6 +151,10 @@ fn default_blade_shape() -> String {
 
 fn default_streamlines() -> u8 {
     DEFAULT_STREAMLINES
+}
+
+fn bows_are_zero(bows: &[f64; 2]) -> bool {
+    *bows == [0.0, 0.0]
 }
 
 fn blade_is_default(blade: &Option<Blade>) -> bool {
@@ -155,6 +185,31 @@ fn streamline_count<'de, D: serde::Deserializer<'de>>(deserializer: D) -> Result
             "«streamlines» = {count} no es válido; debe ser 3, 5, 7 o 9"
         ))),
     }
+}
+
+/// Las dos manijas de cubo (`WALL` = 0) o de tapa (`WALL` = 1): dos números
+/// finitos dentro de [`BLADE_BOW_RANGE_DEG`]. Cualquier otra cosa es un error de
+/// carga que nombra el campo y el rango.
+fn bow_pair<'de, D: serde::Deserializer<'de>, const WALL: usize>(
+    deserializer: D,
+) -> Result<[f64; 2], D::Error> {
+    let field = ["bow_hub", "bow_shroud"][WALL];
+    let (low, high) = BLADE_BOW_RANGE_DEG;
+    let values = Vec::<f64>::deserialize(deserializer)?;
+    let [first, second] = values[..] else {
+        return Err(serde::de::Error::custom(format!(
+            "«{field}» debe tener dos números (grados, de {low} a {high}), no {}",
+            values.len()
+        )));
+    };
+    for value in [first, second] {
+        if !(low..=high).contains(&value) {
+            return Err(serde::de::Error::custom(format!(
+                "«{field}» = {value} no es válido; debe ser un número de {low} a {high} grados"
+            )));
+        }
+    }
+    Ok([first, second])
 }
 
 /// Lo editado del corte meridional: cada tapa es una Bézier de 5 puntos. Lo

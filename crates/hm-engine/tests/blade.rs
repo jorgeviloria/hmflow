@@ -58,6 +58,7 @@ fn a_hand_built_section_with_bad_values_is_an_error() {
     let shape = blade_setup_of(Some(&Blade {
         shape: "foo".into(),
         streamlines: 5,
+        ..Blade::default()
     }))
     .unwrap_err();
     assert!(
@@ -67,6 +68,7 @@ fn a_hand_built_section_with_bad_values_is_an_error() {
     let count = blade_setup_of(Some(&Blade {
         shape: "free_2d".into(),
         streamlines: 4,
+        ..Blade::default()
     }))
     .unwrap_err();
     assert!(count.contains("debe ser 3, 5, 7 o 9"), "{count}");

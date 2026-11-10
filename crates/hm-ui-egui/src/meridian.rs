@@ -374,6 +374,31 @@ fn draw_streamlines(
         .map(|index| layer.cuts[index].1.clone())
 }
 
+/// El borde de ataque de la reglada, discontinuo, con su desvío máximo en el
+/// punto medio. Solo lectura.
+fn draw_ruled_edge(
+    plot_ui: &mut egui_plot::PlotUi<'_>,
+    layer: &crate::blade_inlet::RuledEdgeLayer,
+    labels: &mut Vec<Label>,
+) {
+    let pal = theme::palette(plot_ui.ctx());
+    plot_ui.line(
+        line("Borde de la reglada", layer.edge.clone(), pal.construction)
+            .width(1.5)
+            .style(egui_plot::LineStyle::dashed_loose()),
+    );
+    if let Some(middle) = layer.edge.get(layer.edge.len() / 2) {
+        labels.push(Label {
+            position: *middle,
+            offset: egui::vec2(6.0, -6.0),
+            text: format!("Borde de la reglada · desvío máx. {:.1} mm", layer.max_gap_mm),
+            anchor: egui::Align2::LEFT_BOTTOM,
+            angle: 0.0,
+            colour: pal.text_weak,
+        });
+    }
+}
+
 /// La chincheta de CFturbo: blanca con contorno gris, la punta de la aguja en
 /// `tip` y la cabeza arriba a la derecha. Se dibuja en píxeles, así que no
 /// cambia de tamaño al acercar o alejar el dibujo.
@@ -499,6 +524,9 @@ fn meridian_edit(ui: &mut egui::Ui, outcome: &Outcome, boxes: &mut Meridian) -> 
     let streamlines = streamlines_layer_on(ui.ctx())
         .then(|| crate::blade_inlet::streamline_layer(outcome, &model))
         .flatten();
+    // El borde de la reglada se enseña siempre que la forma sea esa: es parte
+    // del resultado, no una capa opcional.
+    let ruled_edge = crate::blade_inlet::ruled_edge_layer(outcome, &model);
     ui.scope(|ui| {
         ui.visuals_mut().extreme_bg_color = pal.paper;
         let mut labels = Vec::new();
@@ -529,6 +557,9 @@ fn meridian_edit(ui: &mut egui::Ui, outcome: &Outcome, boxes: &mut Meridian) -> 
                 );
                 if let Some(layer) = &streamlines {
                     hovered_cut = draw_streamlines(plot_ui, layer);
+                }
+                if let Some(layer) = &ruled_edge {
+                    draw_ruled_edge(plot_ui, layer, &mut labels);
                 }
             });
         paint_labels(ui, &plot.transform, &labels);

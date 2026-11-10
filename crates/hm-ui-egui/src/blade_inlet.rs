@@ -224,6 +224,50 @@ pub(super) fn streamline_layer(
     Some(StreamlineLayer { inner, cuts })
 }
 
+/// El borde de ataque de la reglada sobre el Meridiano, en mm.
+#[derive(Debug, Clone, PartialEq)]
+pub(super) struct RuledEdgeLayer {
+    /// `[z, r]`: los nodos 0 de la línea media, del cubo a la tapa.
+    pub edge: Vec<[f64; 2]>,
+    /// El mayor `|edge_gap|`, mm.
+    pub max_gap_mm: f64,
+}
+
+/// La capa sobre el modelo que se dibuja; `None` si la forma no es la
+/// reglada o la línea media falla (el mensaje ya está en el paso del álabe).
+pub(super) fn ruled_edge_layer(
+    outcome: &Outcome,
+    model: &MeridionalModel,
+) -> Option<RuledEdgeLayer> {
+    let setup = &outcome.inputs.blade;
+    if setup.shape != BladeShape::Ruled3D {
+        return None;
+    }
+    let geometry = outcome.geometry.as_ref().ok()?;
+    let camber = camber_for_design(
+        &outcome.result,
+        &geometry.impeller,
+        model,
+        setup,
+        crate::blade_beta::applied_incidence_deg(&outcome.inputs),
+    )
+    .ok()??;
+    let edge = camber
+        .lines
+        .iter()
+        .map(|line| {
+            let node = line.points.first()?;
+            Some([node.z * MM_PER_M, node.r * MM_PER_M])
+        })
+        .collect::<Option<Vec<_>>>()?;
+    let max_gap_mm = camber
+        .lines
+        .iter()
+        .map(|line| line.edge_gap.abs() * MM_PER_M)
+        .fold(0.0, f64::max);
+    Some(RuledEdgeLayer { edge, max_gap_mm })
+}
+
 /// El corte más cercano al puntero, en píxeles, si está a `tolerance` o menos.
 pub(super) fn nearest_cut(cuts: &[[f32; 2]], pointer: [f32; 2], tolerance: f32) -> Option<usize> {
     cuts.iter()
@@ -779,6 +823,58 @@ mod tests {
         let model = meridional_model(&outcome.result).unwrap();
         outcome.geometry = Err(DesignError::Input("no hay geometría".into()));
         assert!(streamline_layer(&outcome, &model).is_none());
+    }
+
+    #[test]
+    fn only_the_ruled_shape_has_the_layer() {
+        for (shape, expected) in [
+            (BladeShape::Free3D, false),
+            (BladeShape::Free2D, false),
+            (BladeShape::Ruled3D, true),
+        ] {
+            let outcome = shaped(shape, 5);
+            let model = meridional_model(&outcome.result).unwrap();
+            assert_eq!(
+                ruled_edge_layer(&outcome, &model).is_some(),
+                expected,
+                "{shape:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn the_ruled_edge_joins_the_two_cuts() {
+        let outcome = shaped(BladeShape::Ruled3D, 5);
+        let model = meridional_model(&outcome.result).unwrap();
+        let (lines, _) = inlet_lines(&outcome).unwrap();
+        let layer = ruled_edge_layer(&outcome, &model).unwrap();
+        assert_eq!(layer.edge.len(), 5);
+        for (got, want) in [
+            (layer.edge[0], lines[0].leading_edge),
+            (layer.edge[4], lines[4].leading_edge),
+        ] {
+            // El nodo 0 se interpola linealmente en la polilínea (1e-4 mm de
+            // diferencia con el corte); 1 µm sobra y no esconde un desajuste real.
+            assert!(
+                (got[0] - want[0]).abs() < 1e-3 && (got[1] - want[1]).abs() < 1e-3,
+                "{got:?} frente a {want:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn the_gap_is_the_largest_of_the_inner_lines() {
+        let outcome = shaped(BladeShape::Ruled3D, 5);
+        let model = meridional_model(&outcome.result).unwrap();
+        let layer = ruled_edge_layer(&outcome, &model).unwrap();
+        let camber = camber_of(&outcome).unwrap().unwrap();
+        let largest = camber
+            .lines
+            .iter()
+            .map(|line| line.edge_gap.abs() * 1000.0)
+            .fold(0.0, f64::max);
+        assert!((layer.max_gap_mm - largest).abs() < 1e-9);
+        assert!(layer.max_gap_mm > 0.0, "{}", layer.max_gap_mm);
     }
 
     #[test]

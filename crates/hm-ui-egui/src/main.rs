@@ -21,6 +21,7 @@ mod plan;
 mod session;
 mod summary;
 mod theme;
+mod view3d;
 
 use eframe::egui;
 use hm_formula::Registry;

@@ -1,7 +1,7 @@
 //! Crear un proyecto y pedir su informe, sin imprimir ni guardar.
 
 use hm_core::PumpType;
-use hm_design::blade_setup::{BladeSetup, BladeShape, STREAMLINE_COUNTS};
+use hm_design::blade_setup::{BladeSetup, BladeShape, CamberBows, STREAMLINE_COUNTS};
 use hm_design::meridian::{
     CutMode, EdgeEdit, EdgeMode, HubCutEdit, MeridianEdits, MeridionalModel, WallEdit,
     meridional_model_with,
@@ -344,9 +344,26 @@ pub fn blade_setup_of(section: Option<&hm_project::Blade>) -> Result<BladeSetup,
             section.streamlines
         ));
     }
+    let (low, high) = hm_project::BLADE_BOW_RANGE_DEG;
+    for (field, pair) in [
+        ("bow_hub", section.bow_hub),
+        ("bow_shroud", section.bow_shroud),
+    ] {
+        for value in pair {
+            if !(low..=high).contains(&value) {
+                return Err(format!(
+                    "«{field}» = {value} no es válido; debe ser un número de {low} a {high} grados"
+                ));
+            }
+        }
+    }
     Ok(BladeSetup {
         shape,
         streamlines: section.streamlines,
+        bows: CamberBows {
+            hub: (section.bow_hub[0], section.bow_hub[1]),
+            shroud: (section.bow_shroud[0], section.bow_shroud[1]),
+        },
     })
 }
 
@@ -356,7 +373,8 @@ pub fn blade_section_of(setup: &BladeSetup) -> Option<hm_project::Blade> {
     (*setup != BladeSetup::default()).then(|| hm_project::Blade {
         shape: setup.shape.id().to_string(),
         streamlines: setup.streamlines,
-        ..hm_project::Blade::default()
+        bow_hub: [setup.bows.hub.0, setup.bows.hub.1],
+        bow_shroud: [setup.bows.shroud.0, setup.bows.shroud.1],
     })
 }
 

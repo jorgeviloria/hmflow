@@ -734,6 +734,7 @@ mod tests {
         inputs.blade = BladeSetup {
             shape: BladeShape::Ruled3D,
             streamlines: 9,
+            ..BladeSetup::default()
         };
         let after = inputs.blade;
         history.record(&BetaSnapshot::of(&inputs), 10.0);

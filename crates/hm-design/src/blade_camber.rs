@@ -33,11 +33,12 @@
 
 use thiserror::Error;
 
-use crate::blade_setup::{BladeShape, CamberBows};
-use crate::geometry::{BLADE_BETA_MIN_DEG, beta_profile};
-use crate::inlet_triangles::InletTriangle;
-use crate::meridian::cumulative;
-use crate::streamlines::{Streamline, first_crossing};
+use crate::blade_setup::{BladeSetup, BladeShape, CamberBows};
+use crate::geometry::{BLADE_BETA_MIN_DEG, ImpellerGeometry, beta_profile};
+use crate::inlet_triangles::{InletTriangle, inlet_triangles};
+use crate::meridian::{MeridionalModel, cumulative};
+use crate::streamlines::{Streamline, first_crossing, streamlines};
+use crate::{DesignError, DesignResult};
 
 /// Tramos de igual Δm de cada línea media. De hmflow, igual que
 /// `BLADE_STEPS_SHAPED`.
@@ -211,6 +212,35 @@ pub fn blade_camber(
         lines: lines_out,
         wrap_max,
     })
+}
+
+/// La línea media 3D de un diseño: encadena las líneas de corriente, los
+/// triángulos de entrada y [`blade_camber`]. Es lo que usan la interfaz y la
+/// exportación, para que el visor y el archivo no puedan separarse. `None` si
+/// la forma del álabe es 2D. Un error de las líneas o de la línea media es
+/// `DesignError::Input` con su texto.
+pub fn camber_for_design(
+    result: &DesignResult,
+    impeller: &ImpellerGeometry,
+    model: &MeridionalModel,
+    setup: &BladeSetup,
+    incidence_deg: f64,
+) -> Result<Option<BladeCamber>, DesignError> {
+    if !matches!(setup.shape, BladeShape::Free3D | BladeShape::Ruled3D) {
+        return Ok(None);
+    }
+    let lines = streamlines(model, setup.streamlines)
+        .map_err(|error| DesignError::Input(error.to_string()))?;
+    let triangles = inlet_triangles(result, impeller, &lines, incidence_deg)?;
+    blade_camber(
+        setup.shape,
+        &lines,
+        &triangles,
+        result.selection.beta2_deg.to_radians(),
+        &setup.bows,
+    )
+    .map(Some)
+    .map_err(|error| DesignError::Input(error.to_string()))
 }
 
 /// Integra la línea media de una línea de corriente, con θ = 0 en el nodo 0.

@@ -1,7 +1,7 @@
 //! Forma del álabe y número de líneas de corriente.
 
 use hm_design::blade_setup::{
-    BladeFamily, BladeSetup, BladeShape, DEFAULT_STREAMLINES, STREAMLINE_COUNTS,
+    BladeFamily, BladeSetup, BladeShape, CamberBows, DEFAULT_STREAMLINES, STREAMLINE_COUNTS,
 };
 
 #[test]
@@ -12,6 +12,7 @@ fn the_default_is_free_2d_with_five_streamlines() {
         BladeSetup {
             shape: BladeShape::Free2D,
             streamlines: 5,
+            bows: CamberBows::default(),
         }
     );
     assert_eq!(DEFAULT_STREAMLINES, 5);

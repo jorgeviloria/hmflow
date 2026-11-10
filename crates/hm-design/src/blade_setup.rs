@@ -162,11 +162,14 @@ impl CamberBows {
 }
 
 /// Lo que el usuario elige del álabe antes de trazarlo.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq)]
 pub struct BladeSetup {
     pub shape: BladeShape,
     /// Uno de [`STREAMLINE_COUNTS`].
     pub streamlines: u8,
+    /// Manijas de cubo y tapa de los álabes 3D. Se guardan con cualquier
+    /// forma, para cuando se vuelva a una 3D.
+    pub bows: CamberBows,
 }
 
 impl Default for BladeSetup {
@@ -174,6 +177,7 @@ impl Default for BladeSetup {
         Self {
             shape: BladeShape::default(),
             streamlines: DEFAULT_STREAMLINES,
+            bows: CamberBows::default(),
         }
     }
 }

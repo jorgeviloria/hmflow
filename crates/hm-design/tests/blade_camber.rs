@@ -2,13 +2,15 @@
 //! anclaje con el álabe 2D de hoy, formas cerradas con solución analítica y el
 //! caso B1.
 
-use hm_design::blade_camber::{BladeCamber, CAMBER_STEPS, CamberError, CamberOrigin, blade_camber};
-use hm_design::blade_setup::{BladeShape, CamberBows};
+use hm_design::blade_camber::{
+    BladeCamber, CAMBER_STEPS, CamberError, CamberOrigin, blade_camber, camber_for_design,
+};
+use hm_design::blade_setup::{BladeSetup, BladeShape, CamberBows};
 use hm_design::geometry::{DEFAULT_INCIDENCE_DEG, camber_line_shaped, geometry};
 use hm_design::inlet_triangles::{Blade2dAngle, InletTriangle, inlet_triangles};
 use hm_design::meridian::meridional_model;
 use hm_design::streamlines::{Streamline, streamlines};
-use hm_design::{DesignInput, DesignResult, default_mechanical_efficiency, design};
+use hm_design::{DesignError, DesignInput, DesignResult, default_mechanical_efficiency, design};
 use hm_units::parse_quantity;
 
 fn close(actual: f64, expected: f64, tolerance: f64) {
@@ -649,4 +651,85 @@ fn a_ruling_that_misses_is_an_error() {
         "{err:?}"
     );
     assert!(err.to_string().contains("línea de corriente 1"), "{err}");
+}
+
+// ---------------------------------------------------------------------------
+// La cadena de un diseño
+// ---------------------------------------------------------------------------
+
+/// B1: resultado, geometría del rodete y modelo meridional.
+fn b1_design() -> (
+    DesignResult,
+    hm_design::geometry::ImpellerGeometry,
+    hm_design::meridian::MeridionalModel,
+) {
+    let input = b1_input();
+    let result = design(&input).unwrap();
+    let impeller = geometry(&input, &result).unwrap().impeller;
+    let model = meridional_model(&result).unwrap();
+    (result, impeller, model)
+}
+
+#[test]
+fn a_2d_shape_has_no_3d_camber() {
+    let (result, impeller, model) = b1_design();
+    let setup = BladeSetup {
+        shape: BladeShape::Free2D,
+        bows: CamberBows {
+            hub: (5.0, 5.0),
+            shroud: (5.0, 5.0),
+        },
+        ..BladeSetup::default()
+    };
+    let camber = camber_for_design(&result, &impeller, &model, &setup, DEFAULT_INCIDENCE_DEG);
+    assert!(matches!(camber, Ok(None)), "{camber:?}");
+}
+
+#[test]
+fn the_design_chain_matches_the_pieces() {
+    let (result, impeller, model) = b1_design();
+    let bows = CamberBows {
+        hub: (2.0, -1.0),
+        shroud: (0.0, 3.0),
+    };
+    for shape in [BladeShape::Free3D, BladeShape::Ruled3D] {
+        let setup = BladeSetup {
+            shape,
+            streamlines: 5,
+            bows,
+        };
+        let chained = camber_for_design(&result, &impeller, &model, &setup, DEFAULT_INCIDENCE_DEG)
+            .unwrap()
+            .expect("una forma 3D da línea media");
+        let lines = streamlines(&model, 5).unwrap();
+        let triangles = inlet_triangles(&result, &impeller, &lines, DEFAULT_INCIDENCE_DEG).unwrap();
+        let by_hand = blade_camber(
+            shape,
+            &lines,
+            &triangles,
+            result.selection.beta2_deg.to_radians(),
+            &bows,
+        )
+        .unwrap();
+        assert_eq!(chained, by_hand, "{shape:?}");
+    }
+}
+
+#[test]
+fn a_failing_line_is_a_design_error() {
+    let (result, impeller, model) = b1_design();
+    let setup = BladeSetup {
+        shape: BladeShape::Free3D,
+        streamlines: 5,
+        bows: CamberBows {
+            hub: (-30.0, -30.0),
+            shroud: (-30.0, -30.0),
+        },
+    };
+    let error =
+        camber_for_design(&result, &impeller, &model, &setup, DEFAULT_INCIDENCE_DEG).unwrap_err();
+    let DesignError::Input(text) = error else {
+        panic!("se esperaba DesignError::Input, salió {error:?}");
+    };
+    assert!(text.contains("línea de corriente"), "{text}");
 }

@@ -69,14 +69,7 @@ fn case_of(input: &DesignInput) -> Case {
 
 impl Case {
     fn triangles(&self, lines: &[Streamline], incidence_deg: f64) -> Vec<InletTriangle> {
-        inlet_triangles(
-            &self.result,
-            &self.impeller,
-            &self.model,
-            lines,
-            incidence_deg,
-        )
-        .unwrap()
+        inlet_triangles(&self.result, &self.impeller, lines, incidence_deg).unwrap()
     }
 
     /// d1/2, en mm.
@@ -85,9 +78,13 @@ impl Case {
     }
 }
 
+/// Sección de paso de las líneas sintéticas, mm².
+const SYNTHETIC_AREA: f64 = 20_000.0;
+
 /// Una línea de dos puntos, en mm, que corta el borde en `cut`.
 fn synthetic(points: [[f64; 2]; 2], cut: [f64; 2]) -> Streamline {
     Streamline {
+        leading_edge_area: SYNTHETIC_AREA,
         psi: 0.5,
         points: points.to_vec(),
         leading_edge: cut,
@@ -108,18 +105,20 @@ fn the_shroud_line_matches_the_1d_with_a_radial_edge_in_the_eye() {
     };
     let model = meridional_model_with(&result, &edits).unwrap();
     let lines = streamlines(&model, 5).unwrap();
-    let triangles =
-        inlet_triangles(&result, &impeller, &model, &lines, DEFAULT_INCIDENCE_DEG).unwrap();
+    let triangles = inlet_triangles(&result, &impeller, &lines, DEFAULT_INCIDENCE_DEG).unwrap();
     let shroud = triangles.last().unwrap();
 
-    // Precondiciones del spec: el borde radial en el ojo da el área y el
-    // radio del 1D, y con ellos el c1m del 1D.
+    // Precondiciones del spec: el borde radial en el ojo da la sección y el
+    // radio del 1D, y con ellos el c1m del 1D, en todas las líneas.
     let d1 = result.d1.si * 1000.0;
     let dh = model.params.d1i;
     let annulus = PI * (d1 * d1 - dh * dh) / 4.0;
     close(model.params.edge_area / annulus, 1.0, 1.0e-9);
     close(shroud.r1, result.d1.si / 2.0, 1.0e-9);
-    close(shroud.c1m / result.selection.cm0, 1.0, 1.0e-9);
+    for (triangle, line) in triangles.iter().zip(&lines) {
+        close(line.leading_edge_area / annulus, 1.0, 1.0e-9);
+        close(triangle.c1m / result.selection.cm0, 1.0, 1.0e-9);
+    }
 
     close(shroud.psi, 1.0, 0.0);
     close(shroud.beta1b, result.beta1b, 1.0e-6);
@@ -148,18 +147,52 @@ fn beta1b_falls_as_the_cut_radius_grows_in_b1() {
     }
 }
 
+/// c1m es el caudal del rodete entre la sección de paso de la estación de
+/// cada corte (Gülich, ec. T3.1.2), no entre la superficie del borde.
 #[test]
-fn every_line_shares_c1m_and_tau_is_at_least_one() {
+fn c1m_is_the_flow_over_the_section_at_each_cut() {
     let case = case_of(&b1_input());
     let lines = streamlines(&case.model, 7).unwrap();
     let triangles = case.triangles(&lines, DEFAULT_INCIDENCE_DEG);
-    let c1m = case.result.qth.si / (case.model.params.edge_area * 1.0e-6);
     let omega = 2.0 * case.result.u1.si / case.result.d1.si;
-    for triangle in &triangles {
-        close(triangle.c1m, c1m, 0.0);
+    for (triangle, line) in triangles.iter().zip(&lines) {
+        close(
+            triangle.c1m,
+            case.result.qth.si / (line.leading_edge_area * 1.0e-6),
+            1.0e-12,
+        );
         close(triangle.u1, omega * triangle.r1, 1.0e-12);
         assert!(triangle.tau1 >= 1.0, "τ1 = {}", triangle.tau1);
     }
+}
+
+/// En B1 el corte de la tapa cae en el plano de entrada, donde la sección es
+/// la corona del ojo: su c1m es el cm0 del 1D aunque el borde esté inclinado.
+/// Los demás cortes quedan cerca: cm casi no cambia en la curva del canal.
+#[test]
+fn the_shroud_cut_of_b1_sees_the_cm0_of_the_1d() {
+    let case = case_of(&b1_input());
+    let lines = streamlines(&case.model, 5).unwrap();
+    let triangles = case.triangles(&lines, DEFAULT_INCIDENCE_DEG);
+    let cm0 = case.result.selection.cm0;
+    close(triangles[4].c1m / cm0, 1.0, 1.0e-9);
+    for triangle in &triangles {
+        close(triangle.c1m / cm0, 1.0, 0.05);
+    }
+    // Con la superficie del borde, c1m saldría un 19 % bajo.
+    let over_the_edge = case.result.qth.si / (case.model.params.edge_area * 1.0e-6);
+    assert!(over_the_edge < 0.85 * cm0, "{over_the_edge}");
+}
+
+#[test]
+fn a_line_without_a_section_is_an_error() {
+    let case = case_of(&b1_input());
+    let r = case.r1_mm();
+    let mut line = synthetic([[10.0, r - 5.0], [10.0, r + 5.0]], [10.0, r]);
+    line.leading_edge_area = 0.0;
+    let error =
+        inlet_triangles(&case.result, &case.impeller, &[line], DEFAULT_INCIDENCE_DEG).unwrap_err();
+    assert!(error.to_string().contains("sección de paso"), "{error}");
 }
 
 #[test]

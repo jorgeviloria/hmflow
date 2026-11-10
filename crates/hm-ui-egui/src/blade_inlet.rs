@@ -252,7 +252,6 @@ fn inlet_lines_of(
     let triangles = inlet_triangles(
         &outcome.result,
         &geometry.impeller,
-        model,
         &lines,
         crate::blade_beta::applied_incidence_deg(&outcome.inputs),
     )

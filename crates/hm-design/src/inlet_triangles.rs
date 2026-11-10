@@ -3,9 +3,12 @@
 //! En el corte de la línea k con el borde de ataque, de radio r_k:
 //!
 //! - u1,k = ω·r_k (Gülich, *Centrifugal Pumps*, 4.ª ed., 2020, tabla 3.1).
-//! - c1m = Q_La / A1, igual en todas las líneas. Q_La es el caudal del rodete,
-//!   con fugas, y A1 el área sobre el borde de ataque (ec. T3.1.2, p. 83, «A1
-//!   según la posición del borde de ataque»).
+//! - c1m,k = Q_La / A1,k. Q_La es el caudal del rodete, con fugas, y A1,k la
+//!   sección de paso 2π·r·b de la estación cuasi-normal que pasa por el corte
+//!   (ec. T3.1.2, p. 83, «A1 según la posición del borde de ataque»; las
+//!   secciones A = 2π·r·b, §7.2.2.1, p. 418). No es la superficie que genera
+//!   el borde: un borde inclinado respecto a las normales tiene más superficie
+//!   que sección de paso, y con ella c1m saldría bajo.
 //! - β′1,k = arctan(τ1,k·c1m / u1,k), sin prerrotación, y β1B,k = β′1,k + i1
 //!   (§7.2.1, p. 411: el cálculo se hace en varias líneas de corriente). τ1,k
 //!   es el bloqueo de la ec. T3.1.7 con el diámetro 2·r_k, y se itera con β1B,k
@@ -23,15 +26,16 @@
 //!
 //! - λ_La = 90°: el álabe es perpendicular a la tapa en el borde de ataque. El
 //!   ángulo real solo se conoce con el álabe 3D. El 1D ya lo supone.
-//! - c1m común: cm aguas arriba del borde es «casi siempre constante en la
-//!   sección de entrada» (Gülich, p. 411).
+//! - cm constante sobre cada estación: cm aguas arriba del borde es «casi
+//!   siempre constante en la sección de entrada» (Gülich, p. 411). Un borde
+//!   que cruza varias estaciones toma en cada línea el cm de la suya; si el
+//!   borde sigue una estación, c1m es el mismo en todas.
 //!
 //! Nada de esto cambia el 1D: su β1B sigue siendo el de d1.
 
 use hm_formula::Registry;
 
 use crate::geometry::{BladePoint, ImpellerGeometry};
-use crate::meridian::MeridionalModel;
 use crate::streamlines::Streamline;
 use crate::{DesignError, DesignResult, leading_edge, mechanics};
 
@@ -71,7 +75,8 @@ pub struct InletTriangle {
     pub r1: f64,
     /// Velocidad periférica en el corte, m/s.
     pub u1: f64,
-    /// Velocidad meridional aguas arriba del borde, m/s. Igual en todas.
+    /// Velocidad meridional aguas arriba del borde, m/s: el caudal del rodete
+    /// entre la sección de paso de la estación del corte.
     pub c1m: f64,
     /// Bloqueo del álabe, ≥ 1.
     pub tau1: f64,
@@ -101,12 +106,12 @@ impl InletTriangle {
 ///
 /// # Errors
 ///
-/// Los de la fórmula de β1B y los del espesor del álabe si el resultado no
-/// trae Z, u2, nq y D2 válidos.
+/// Los de la fórmula de β1B, los del espesor del álabe si el resultado no
+/// trae Z, u2, nq y D2 válidos, y una línea cuya sección de paso en el corte
+/// no sea positiva.
 pub fn inlet_triangles(
     result: &DesignResult,
     impeller: &ImpellerGeometry,
-    model: &MeridionalModel,
     lines: &[Streamline],
     incidence_deg: f64,
 ) -> Result<Vec<InletTriangle>, DesignError> {
@@ -115,13 +120,21 @@ pub fn inlet_triangles(
     let (_, thickness, _) =
         mechanics::blade_thicknesses(blade_count, result.u2.si, result.nq, result.d2.si)?;
     let omega = 2.0 * result.u1.si / result.d1.si;
-    let c1m = result.qth.si / (model.params.edge_area / MM2_PER_M2);
     let blade_start = result.d1.si / 2.0;
     let incidence = incidence_deg.to_radians();
 
     lines
         .iter()
         .map(|line| {
+            let section = line.leading_edge_area;
+            if !(section.is_finite() && section > 0.0) {
+                return Err(DesignError::Input(format!(
+                    "la línea de corriente ψ = {:.2} no tiene sección de paso en su corte \
+                     con el borde de ataque",
+                    line.psi
+                )));
+            }
+            let c1m = result.qth.si / (section / MM2_PER_M2);
             let r1 = line.leading_edge[1] / MM_PER_M;
             let u1 = omega * r1;
             // En el eje u1 = 0 y la fórmula divide por él: se da su límite, el

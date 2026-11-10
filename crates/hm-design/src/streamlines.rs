@@ -7,14 +7,26 @@
 //! cm = constante»; Srinivasan, *Rotodynamic Pumps*, 2.ª ed., ec. 4.63,
 //! r·Δb = cte).
 //!
-//! Las estaciones son las de [`MeridionalModel::channel_from`] con (0, 0): el
-//! canal entero desde el plano de entrada, porque el borde de ataque puede
-//! meterse en el ojo y las líneas tienen que llegar a él. Cada estación es la
-//! recta del punto del cubo al de la tapa.
+//! Las estaciones son cuasi-normales ([`quasi_normals`]): rectas del cubo a
+//! la tapa que forman el mismo ángulo con las dos paredes, como la cuerda entre
+//! los puntos de contacto de un círculo inscrito. Son las «normales estimadas»
+//! de Gülich (p. 419) y quedan perpendiculares a la dirección media del flujo,
+//! así que 2π·r·b es la sección de paso de la estación. Van del plano de
+//! entrada a la salida, porque el borde de ataque puede meterse en el ojo y
+//! las líneas tienen que llegar a él.
 //!
-//! Supuesto declarado: esas rectas no son normales exactas a las líneas.
-//! Gülich habla de normales «estimadas» (p. 419) y Srinivasan dice que
-//! corregirlas con precisión no cambia el rodete.
+//! Emparejar las dos tapas por igual fracción de su longitud, como hace
+//! [`MeridionalModel::channel_from`], no sirve aquí: en la curva del canal esas
+//! rectas se apartan decenas de grados de la normal y su 2π·r·b ya no es una
+//! sección de paso.
+//!
+//! Cada línea guarda la sección de la estación que pasa por su corte con el
+//! borde de ataque: de ahí sale c1m = Q_La / A1 «según la posición del borde»
+//! (Gülich, ec. T3.1.2, p. 83).
+//!
+//! Supuesto declarado: las cuasi-normales son rectas y cm es constante sobre
+//! cada una. Srinivasan dice que corregir las normales con más precisión no
+//! cambia el rodete.
 //!
 //! Las líneas no entran en las curvas del modelo: ni su huella ni su CSV
 //! cambian. El cálculo es cerrado por estación, sin iteración.
@@ -23,6 +35,10 @@ use thiserror::Error;
 
 use crate::blade_setup::STREAMLINE_COUNTS;
 use crate::meridian::{MeridionalModel, arc_fraction, cumulative};
+
+/// Pasos de la bisección que busca el punto del cubo de una cuasi-normal. De
+/// hmflow: deja el error muy por debajo de una micra en un cubo de metros.
+const NORMAL_BISECTION_STEPS: usize = 48;
 
 /// Holgura, en fracción de tramo, con que un corte en el extremo de un tramo
 /// cuenta como corte. De hmflow: evita perder un cruce que cae en un vértice.
@@ -39,6 +55,9 @@ pub struct Streamline {
     pub leading_edge: [f64; 2],
     /// Longitud sobre la línea desde su primer punto hasta ese corte.
     pub m_leading_edge: f64,
+    /// Sección de paso, mm², de la estación que pasa por el corte: 2π·r·b,
+    /// interpolada entre las dos estaciones que lo encierran.
+    pub leading_edge_area: f64,
 }
 
 impl Streamline {
@@ -101,6 +120,213 @@ pub fn equal_flow_fraction(r_hub: f64, r_shroud: f64, psi: f64) -> f64 {
     (2.0 * psi * whole / denominator).clamp(0.0, 1.0)
 }
 
+/// Una estación del canal, en mm: la recta del punto del cubo al de la tapa.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct QuasiNormal {
+    /// `[z, r]` sobre la tapa trasera.
+    pub hub: [f64; 2],
+    /// `[z, r]` sobre la tapa delantera.
+    pub shroud: [f64; 2],
+}
+
+impl QuasiNormal {
+    /// Anchura del canal sobre la estación, b.
+    #[must_use]
+    pub fn width(&self) -> f64 {
+        (self.shroud[0] - self.hub[0]).hypot(self.shroud[1] - self.hub[1])
+    }
+
+    /// Sección de paso, 2π·r·b con r el radio del punto medio: el área del
+    /// tronco de cono que genera la estación (Gülich 2020, §7.2.2.1, p. 418).
+    #[must_use]
+    pub fn area(&self) -> f64 {
+        std::f64::consts::PI * (self.hub[1] + self.shroud[1]) * self.width()
+    }
+}
+
+/// Las estaciones cuasi-normales del canal, una por punto de la tapa
+/// delantera, del plano de entrada a la salida.
+///
+/// Para cada punto S de la tapa delantera se busca el punto H del cubo en el
+/// que la recta H–S forma el mismo ángulo con las dos paredes:
+/// (H − S)·(t_S + t_H) = 0, con t las tangentes unitarias. Es la cuerda entre
+/// los puntos de contacto del círculo inscrito y es perpendicular a la
+/// bisectriz de las dos paredes, la dirección media del flujo. La primera y la
+/// última estación son los extremos de las dos curvas, y el punto del cubo
+/// nunca retrocede, así que las estaciones no se cruzan.
+#[must_use]
+pub fn quasi_normals(model: &MeridionalModel) -> Vec<QuasiNormal> {
+    let (Some(front), Some(rear)) = (model.curve("Tapa delantera"), model.curve("Tapa trasera"))
+    else {
+        return Vec::new();
+    };
+    let (front, rear) = (front.points.as_slice(), rear.points.as_slice());
+    if front.len() < 2 || rear.len() < 2 {
+        return Vec::new();
+    }
+    let rear_wall = Wall::new(rear);
+    let front_tangents = vertex_tangents(front);
+    let last = front.len() - 1;
+    let mut reached = 0.0;
+    front
+        .iter()
+        .zip(&front_tangents)
+        .enumerate()
+        .map(|(index, (shroud, tangent))| {
+            reached = if index == 0 {
+                0.0
+            } else if index == last {
+                rear_wall.total()
+            } else {
+                rear_wall.partner(*shroud, *tangent, reached)
+            };
+            QuasiNormal {
+                hub: rear_wall.at(reached).0,
+                shroud: *shroud,
+            }
+        })
+        .collect()
+}
+
+/// Una pared como polilínea con su longitud acumulada y sus tangentes.
+struct Wall<'a> {
+    points: &'a [[f64; 2]],
+    lengths: Vec<f64>,
+    tangents: Vec<[f64; 2]>,
+}
+
+impl<'a> Wall<'a> {
+    fn new(points: &'a [[f64; 2]]) -> Self {
+        Self {
+            points,
+            lengths: cumulative(points),
+            tangents: vertex_tangents(points),
+        }
+    }
+
+    fn total(&self) -> f64 {
+        self.lengths[self.lengths.len() - 1]
+    }
+
+    /// El punto y la tangente unitaria a la longitud `length` desde el
+    /// principio. En los extremos, el vértice exacto.
+    fn at(&self, length: f64) -> ([f64; 2], [f64; 2]) {
+        let last = self.points.len() - 1;
+        if length <= 0.0 {
+            return (self.points[0], self.tangents[0]);
+        }
+        if length >= self.total() {
+            return (self.points[last], self.tangents[last]);
+        }
+        let index = self
+            .lengths
+            .partition_point(|reached| *reached <= length)
+            .clamp(1, last)
+            - 1;
+        let span = self.lengths[index + 1] - self.lengths[index];
+        let fraction = if span > 0.0 {
+            (length - self.lengths[index]) / span
+        } else {
+            0.0
+        };
+        let blend = |a: [f64; 2], b: [f64; 2]| {
+            [
+                a[0] + fraction * (b[0] - a[0]),
+                a[1] + fraction * (b[1] - a[1]),
+            ]
+        };
+        (
+            blend(self.points[index], self.points[index + 1]),
+            unit(blend(self.tangents[index], self.tangents[index + 1])),
+        )
+    }
+
+    /// (H − S)·(t_S + t_H) en el punto H de esta pared a la longitud `length`:
+    /// negativo si H se queda atrás, positivo si se adelanta.
+    fn misalignment(&self, shroud: [f64; 2], tangent: [f64; 2], length: f64) -> f64 {
+        let (hub, hub_tangent) = self.at(length);
+        (hub[0] - shroud[0]) * (tangent[0] + hub_tangent[0])
+            + (hub[1] - shroud[1]) * (tangent[1] + hub_tangent[1])
+    }
+
+    /// La longitud, de `from` en adelante, del punto que hace cuasi-normal la
+    /// recta hasta `shroud`. Se toma el primer cambio de signo recorriendo los
+    /// vértices y se afina por bisección. Si desde `from` ya se adelanta, se
+    /// queda en `from`; si nunca alcanza, en el final de la pared.
+    fn partner(&self, shroud: [f64; 2], tangent: [f64; 2], from: f64) -> f64 {
+        if self.misalignment(shroud, tangent, from) >= 0.0 {
+            return from;
+        }
+        let mut low = from;
+        let Some(mut high) = self
+            .lengths
+            .iter()
+            .copied()
+            .filter(|length| *length > from)
+            .find(|length| {
+                let ahead = self.misalignment(shroud, tangent, *length) >= 0.0;
+                if !ahead {
+                    low = *length;
+                }
+                ahead
+            })
+        else {
+            return self.total();
+        };
+        for _ in 0..NORMAL_BISECTION_STEPS {
+            let middle = (low + high) / 2.0;
+            if self.misalignment(shroud, tangent, middle) >= 0.0 {
+                high = middle;
+            } else {
+                low = middle;
+            }
+        }
+        (low + high) / 2.0
+    }
+}
+
+/// La tangente unitaria en cada vértice: la dirección entre sus dos vecinos.
+fn vertex_tangents(points: &[[f64; 2]]) -> Vec<[f64; 2]> {
+    let last = points.len().saturating_sub(1);
+    (0..points.len())
+        .map(|index| {
+            let (before, after) = (
+                points[index.saturating_sub(1)],
+                points[(index + 1).min(last)],
+            );
+            unit([after[0] - before[0], after[1] - before[1]])
+        })
+        .collect()
+}
+
+/// El vector con módulo 1; el nulo se deja como está.
+fn unit(vector: [f64; 2]) -> [f64; 2] {
+    let length = vector[0].hypot(vector[1]);
+    if length > 0.0 {
+        [vector[0] / length, vector[1] / length]
+    } else {
+        vector
+    }
+}
+
+/// La sección de la estación que pasa por el punto a la longitud `m` de una
+/// línea: la de las dos estaciones que lo encierran, interpolada. `lengths`
+/// es la longitud acumulada de la línea, con un punto por estación.
+fn area_at(areas: &[f64], lengths: &[f64], m: f64) -> f64 {
+    let last = areas.len() - 1;
+    let index = lengths
+        .partition_point(|reached| *reached <= m)
+        .clamp(1, last)
+        - 1;
+    let span = lengths[index + 1] - lengths[index];
+    let fraction = if span > 0.0 {
+        ((m - lengths[index]) / span).clamp(0.0, 1.0)
+    } else {
+        0.0
+    };
+    areas[index] + fraction * (areas[index + 1] - areas[index])
+}
+
 /// Las `count` líneas de corriente del modelo, del cubo (ψ = 0) a la tapa
 /// (ψ = 1), con ψ_k = k/(N − 1).
 ///
@@ -113,10 +339,11 @@ pub fn streamlines(model: &MeridionalModel, count: u8) -> Result<Vec<Streamline>
         STREAMLINE_COUNTS.contains(&count),
         "número de líneas de corriente fuera de la lista: {count}"
     );
-    let stations = model.channel_from(0.0, 0.0);
+    let stations = quasi_normals(model);
     if stations.len() < 2 {
         return Err(StreamlineError::NoChannel);
     }
+    let areas: Vec<f64> = stations.iter().map(QuasiNormal::area).collect();
     let count = usize::from(count.max(2));
     let last = count - 1;
     let edge: &[[f64; 2]] = model
@@ -131,7 +358,7 @@ pub fn streamlines(model: &MeridionalModel, count: u8) -> Result<Vec<Streamline>
             let points: Vec<[f64; 2]> = stations
                 .iter()
                 .map(|station| {
-                    let (hub, shroud) = (station.hub_point, station.shroud_point);
+                    let (hub, shroud) = (station.hub, station.shroud);
                     if line == 0 {
                         hub
                     } else if line == last {
@@ -162,6 +389,7 @@ pub fn streamlines(model: &MeridionalModel, count: u8) -> Result<Vec<Streamline>
                 points,
                 leading_edge,
                 m_leading_edge,
+                leading_edge_area: area_at(&areas, &lengths, m_leading_edge),
             })
         })
         .collect()

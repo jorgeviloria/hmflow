@@ -1,6 +1,7 @@
 //! Lo que se elige del álabe antes de trazarlo, su forma y el número de líneas
-//! de corriente, que va arriba del paso «Álabe β(r)», y la tabla del triángulo
-//! de entrada en cada línea, que va debajo de la gráfica.
+//! de corriente, que va arriba del paso «Álabe β(r)», la tabla del triángulo
+//! de entrada en cada línea, que va debajo de la gráfica, y lo que la capa
+//! «Líneas de corriente» dibuja en el Meridiano.
 
 use eframe::egui;
 use hm_design::blade_setup::{BladeFamily, BladeSetup, BladeShape, STREAMLINE_COUNTS};
@@ -178,6 +179,63 @@ fn row_of(label: String, triangle: &InletTriangle) -> InletRow {
         mismatch: mismatch_deg.map_or_else(|| "—".to_string(), |delta| format!("{delta:+.1}")),
         flagged: mismatch_deg.is_some_and(|delta| delta.abs() > INLET_MISMATCH_WARN_DEG),
     }
+}
+
+/// «Línea 2 · ψ = 0.50 · r1 = 51.3 mm · β1B = 24.6°»: lo que dice el corte de
+/// una línea con el borde de ataque. El cubo y la tapa van con su nombre.
+pub(super) fn cut_summary(label: &str, triangle: &InletTriangle) -> String {
+    let name = if label.parse::<usize>().is_ok() {
+        format!("Línea {label}")
+    } else {
+        label.to_string()
+    };
+    format!(
+        "{name} · ψ = {:.2} · r1 = {:.1} mm · β1B = {:.1}°",
+        triangle.psi,
+        triangle.r1 * MM_PER_M,
+        triangle.beta1b.to_degrees()
+    )
+}
+
+/// Lo que la capa «Líneas de corriente» dibuja en el Meridiano, en mm.
+#[derive(Debug, Clone, PartialEq)]
+pub(super) struct StreamlineLayer {
+    /// Las líneas intermedias, `[z, r]`. Cubo y tapa ya son curvas del corte.
+    pub inner: Vec<Vec<[f64; 2]>>,
+    /// El corte de cada línea con el borde de ataque y su [`cut_summary`].
+    pub cuts: Vec<([f64; 2], String)>,
+}
+
+/// La capa sobre el modelo que se dibuja; `None` si las líneas o sus
+/// triángulos fallan (el mensaje ya está en la tabla del paso del álabe).
+pub(super) fn streamline_layer(
+    outcome: &Outcome,
+    model: &MeridionalModel,
+) -> Option<StreamlineLayer> {
+    let (lines, triangles) = inlet_lines_of(outcome, model).ok()?;
+    let last = lines.len().saturating_sub(1);
+    let inner = lines
+        .iter()
+        .enumerate()
+        .filter(|(index, _)| *index > 0 && *index < last)
+        .map(|(_, line)| line.points.clone())
+        .collect();
+    let cuts = row_labels(lines.len())
+        .iter()
+        .zip(lines.iter().zip(&triangles))
+        .map(|(label, (line, triangle))| (line.leading_edge, cut_summary(label, triangle)))
+        .collect();
+    Some(StreamlineLayer { inner, cuts })
+}
+
+/// El corte más cercano al puntero, en píxeles, si está a `tolerance` o menos.
+pub(super) fn nearest_cut(cuts: &[[f32; 2]], pointer: [f32; 2], tolerance: f32) -> Option<usize> {
+    cuts.iter()
+        .map(|at| (at[0] - pointer[0]).hypot(at[1] - pointer[1]))
+        .enumerate()
+        .filter(|(_, distance)| *distance <= tolerance)
+        .min_by(|a, b| a.1.total_cmp(&b.1))
+        .map(|(index, _)| index)
 }
 
 /// Las líneas y sus triángulos sobre un modelo dado, o el mensaje del error.
@@ -472,5 +530,78 @@ mod tests {
         for (line, triangle) in lines.iter().zip(&triangles) {
             assert_eq!(line.psi.to_bits(), triangle.psi.to_bits());
         }
+    }
+
+    #[test]
+    fn the_summary_names_the_line_and_its_numbers() {
+        let cut = InletTriangle {
+            psi: 0.5,
+            r1: 0.0513,
+            beta1b: 24.6_f64.to_radians(),
+            ..triangle(Blade2dAngle::NoBlade)
+        };
+        assert_eq!(
+            cut_summary("2", &cut),
+            "Línea 2 · ψ = 0.50 · r1 = 51.3 mm · β1B = 24.6°"
+        );
+    }
+
+    #[test]
+    fn the_summary_of_the_walls_uses_their_names() {
+        let hub = InletTriangle {
+            psi: 0.0,
+            ..triangle(Blade2dAngle::NoBlade)
+        };
+        let shroud = InletTriangle {
+            psi: 1.0,
+            ..triangle(Blade2dAngle::NoBlade)
+        };
+        assert_eq!(
+            cut_summary("Cubo", &hub),
+            "Cubo · ψ = 0.00 · r1 = 66.2 mm · β1B = 20.0°"
+        );
+        assert_eq!(
+            cut_summary("Tapa", &shroud),
+            "Tapa · ψ = 1.00 · r1 = 66.2 mm · β1B = 20.0°"
+        );
+    }
+
+    #[test]
+    fn the_layer_draws_one_cut_per_streamline() {
+        for count in STREAMLINE_COUNTS {
+            let outcome = outcome(count);
+            let model = meridional_model(&outcome.result).unwrap();
+            let (lines, _) = inlet_lines(&outcome).unwrap();
+            let layer = streamline_layer(&outcome, &model).unwrap();
+            let count = usize::from(count);
+            assert_eq!(lines.len(), count);
+            assert_eq!(layer.cuts.len(), count);
+            // Cubo y tapa ya son curvas del corte: solo se trazan las de dentro.
+            assert_eq!(layer.inner.len(), count - 2);
+            assert_eq!(layer.inner[0], lines[1].points);
+            for (cut, line) in layer.cuts.iter().zip(&lines) {
+                assert_eq!(cut.0, line.leading_edge);
+            }
+            assert!(layer.cuts[0].1.starts_with("Cubo · "));
+            assert!(layer.cuts[1].1.starts_with("Línea 1 · "));
+            assert!(layer.cuts[count - 1].1.starts_with("Tapa · "));
+        }
+    }
+
+    #[test]
+    fn a_design_without_lines_has_no_layer() {
+        let mut outcome = outcome(5);
+        let model = meridional_model(&outcome.result).unwrap();
+        outcome.geometry = Err(DesignError::Input("no hay geometría".into()));
+        assert!(streamline_layer(&outcome, &model).is_none());
+    }
+
+    #[test]
+    fn the_pointer_picks_the_nearest_cut_within_reach() {
+        let cuts = [[100.0, 100.0], [100.0, 120.0], [300.0, 300.0]];
+        assert_eq!(nearest_cut(&cuts, [101.0, 112.0], 12.0), Some(1));
+        assert_eq!(nearest_cut(&cuts, [101.0, 104.0], 12.0), Some(0));
+        assert_eq!(nearest_cut(&cuts, [200.0, 200.0], 12.0), None);
+        assert_eq!(nearest_cut(&[], [0.0, 0.0], 12.0), None);
     }
 }

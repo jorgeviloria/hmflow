@@ -314,12 +314,64 @@ pub(super) fn meridian_view(
         if (redo.clicked() || redo_keys) && history.redo(boxes) {
             changed = true;
         }
+        let mut layer = streamlines_layer_on(ui.ctx());
+        if ui
+            .checkbox(&mut layer, "Líneas de corriente")
+            .on_hover_text(
+                "Las líneas de igual caudal entre el cubo y la tapa y su corte con el borde \
+                 de ataque. Pasa el ratón por un corte para leer su β1B.",
+            )
+            .changed()
+        {
+            ui.data_mut(|data| data.insert_temp(streamlines_layer_id(), layer));
+        }
     });
     if meridian_edit(ui, outcome, boxes) {
         history.record(boxes, ui.input(|input| input.time));
         changed = true;
     }
     changed
+}
+
+/// Dónde vive, en la memoria temporal de egui, si la capa «Líneas de
+/// corriente» está encendida. No va al `.hmf` ni al deshacer.
+pub(super) fn streamlines_layer_id() -> egui::Id {
+    egui::Id::unique("meridian_streamlines_layer")
+}
+
+/// La capa está encendida mientras no se apague.
+fn streamlines_layer_on(ctx: &egui::Context) -> bool {
+    ctx.data(|data| data.get_temp::<bool>(streamlines_layer_id()))
+        .unwrap_or(true)
+}
+
+/// Dibuja la capa: las líneas intermedias, finas, y un punto en el corte de
+/// cada línea con el borde de ataque. Devuelve el texto del corte que queda
+/// bajo el puntero, si hay alguno. No agarra nada ni cambia ningún gesto.
+fn draw_streamlines(
+    plot_ui: &mut egui_plot::PlotUi<'_>,
+    layer: &crate::blade_inlet::StreamlineLayer,
+) -> Option<String> {
+    let pal = theme::palette(plot_ui.ctx());
+    for points in &layer.inner {
+        plot_ui.line(line("Línea de corriente", points.clone(), pal.construction).width(1.0));
+    }
+    let cuts: Vec<[f64; 2]> = layer.cuts.iter().map(|(at, _)| *at).collect();
+    plot_ui.points(
+        Points::new("Corte con el borde de ataque", cuts.clone())
+            .radius(3.0)
+            .color(pal.marker),
+    );
+    let pointer = plot_ui.screen_from_plot(plot_ui.pointer_coordinate()?);
+    let on_screen: Vec<[f32; 2]> = cuts
+        .iter()
+        .map(|at| {
+            let at = plot_ui.screen_from_plot(PlotPoint::new(at[0], at[1]));
+            [at.x, at.y]
+        })
+        .collect();
+    crate::blade_inlet::nearest_cut(&on_screen, [pointer.x, pointer.y], GRAB_PIXELS)
+        .map(|index| layer.cuts[index].1.clone())
 }
 
 /// La chincheta de CFturbo: blanca con contorno gris, la punta de la aguja en
@@ -443,9 +495,14 @@ fn meridian_edit(ui: &mut egui::Ui, outcome: &Outcome, boxes: &mut Meridian) -> 
     } else {
         32.0
     };
+    // La capa va sobre el modelo que se dibuja, para que siga a un arrastre.
+    let streamlines = streamlines_layer_on(ui.ctx())
+        .then(|| crate::blade_inlet::streamline_layer(outcome, &model))
+        .flatten();
     ui.scope(|ui| {
         ui.visuals_mut().extreme_bg_color = pal.paper;
         let mut labels = Vec::new();
+        let mut hovered_cut = None;
         let plot = Plot::new("meridian")
             .data_aspect(1.0)
             .grid_color(pal.grid)
@@ -470,8 +527,14 @@ fn meridian_edit(ui: &mut egui::Ui, outcome: &Outcome, boxes: &mut Meridian) -> 
                     &mut labels,
                     wall_thickness,
                 );
+                if let Some(layer) = &streamlines {
+                    hovered_cut = draw_streamlines(plot_ui, layer);
+                }
             });
         paint_labels(ui, &plot.transform, &labels);
+        if let Some(text) = hovered_cut {
+            plot.response.on_hover_text_at_pointer(text);
+        }
     });
     graphs
         .show_header(ui, |ui| {
@@ -1722,6 +1785,16 @@ mod tests {
                 assert!(!colours[..index].contains(colour), "{}", names[index]);
             }
         }
+    }
+
+    /// La capa de líneas de corriente está encendida mientras no se apague,
+    /// y su estado no sale de la memoria temporal de egui.
+    #[test]
+    fn the_streamlines_layer_is_on_until_it_is_switched_off() {
+        let ctx = egui::Context::default();
+        assert!(streamlines_layer_on(&ctx));
+        ctx.data_mut(|data| data.insert_temp(streamlines_layer_id(), false));
+        assert!(!streamlines_layer_on(&ctx));
     }
 
     #[test]

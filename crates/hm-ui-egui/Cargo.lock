@@ -1544,6 +1544,7 @@ dependencies = [
 name = "hm-ui-egui"
 version = "0.0.1"
 dependencies = [
+ "bytemuck",
  "eframe",
  "egui_plot",
  "glam",

@@ -17,6 +17,7 @@ path = "src/main.rs"
 
 [dependencies]
 eframe = "0.37"
+bytemuck = { version = "1", features = ["derive"] }
 glam = "0.30"
 egui_plot = "0.38"
 hm-core = { path = "../hm-core" }

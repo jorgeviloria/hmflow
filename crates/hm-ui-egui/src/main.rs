@@ -44,6 +44,9 @@ fn main() -> eframe::Result {
             .with_title("HidroMac Flow")
             .with_inner_size([1360.0, 860.0])
             .with_min_inner_size([900.0, 600.0]),
+        // El visor 3D dibuja con wgpu; se escribe aquí para que no dependa
+        // del motor por defecto de eframe.
+        renderer: eframe::Renderer::Wgpu,
         ..Default::default()
     };
     eframe::run_native(
@@ -56,7 +59,7 @@ fn main() -> eframe::Result {
             {
                 cc.egui_ctx.set_theme(preference);
             }
-            Ok(Box::new(App::new()))
+            Ok(Box::new(App::new(cc)))
         }),
     )
 }
@@ -67,6 +70,7 @@ enum Tab {
     Curves,
     Geometry,
     Meridian,
+    Model3d,
 }
 
 struct App {
@@ -83,9 +87,11 @@ struct App {
     /// Deshacer y rehacer de la pestaña Meridiano.
     meridian_history: meridian::History,
     beta_history: blade_beta::BetaHistory,
+    /// Visor 3D de la pestaña «Modelo 3D».
+    view3d: view3d::View3d,
 }
 
-/// `HMF_SCREENSHOT=ruta.ppm` (y opcionalmente `HMF_TAB=curves|geometry|meridian`)
+/// `HMF_SCREENSHOT=ruta.ppm` (y opcionalmente `HMF_TAB=curves|geometry|meridian|model3d`)
 /// guarda la ventana en PPM tras unos fotogramas y cierra la aplicación.
 struct Capture {
     path: std::path::PathBuf,
@@ -94,7 +100,7 @@ struct Capture {
 }
 
 impl App {
-    fn new() -> Self {
+    fn new(cc: &eframe::CreationContext<'_>) -> Self {
         let mut app = Self {
             session: Session::default(),
             outcome: None,
@@ -104,6 +110,7 @@ impl App {
                 Ok("curves") => Tab::Curves,
                 Ok("geometry") => Tab::Geometry,
                 Ok("meridian") => Tab::Meridian,
+                Ok("model3d") => Tab::Model3d,
                 _ => Tab::Summary,
             },
             registry: Registry::all(),
@@ -115,6 +122,7 @@ impl App {
             reselect_requested: false,
             meridian_history: meridian::History::default(),
             beta_history: blade_beta::BetaHistory::default(),
+            view3d: view3d::View3d::new(cc.wgpu_render_state.as_ref()),
         };
         // Solo para las capturas: `HMF_MERIDIAN="hub_diameter=0 mm;edge_hub=0.4"`.
         if let Ok(text) = std::env::var("HMF_MERIDIAN") {
@@ -203,6 +211,7 @@ impl eframe::App for App {
                 ui.selectable_value(&mut self.tab, Tab::Curves, "Curvas");
                 ui.selectable_value(&mut self.tab, Tab::Geometry, "Geometría");
                 ui.selectable_value(&mut self.tab, Tab::Meridian, "Meridiano");
+                ui.selectable_value(&mut self.tab, Tab::Model3d, "Modelo 3D");
             });
             ui.separator();
             let Some(outcome) = &self.outcome else {
@@ -237,6 +246,7 @@ impl eframe::App for App {
                         meridian_edited = true;
                     }
                 }
+                Tab::Model3d => self.view3d.show(ui, outcome),
             }
         });
         // Fuera del panel, que tiene prestado el resultado: sin recalcular,

@@ -8,6 +8,7 @@
 use std::path::Path;
 
 use hm_core::{Diagnostic, Diagnostics};
+use hm_design::blade_setup::BladeSetup;
 use hm_design::geometry::Geometry;
 use hm_design::mechanics::{BALANCE_HOLE_AREA_RATIO, Mechanics};
 use hm_design::{CurvePoint, DesignError, DesignInput, DesignResult, ViscousCorrection};
@@ -69,6 +70,8 @@ pub struct Inputs {
     pub beta_bow2: String,
     /// Lo editado del meridiano (`[meridian]`); vacío es lo del motor.
     pub meridian: Meridian,
+    /// La forma del álabe y el número de líneas de corriente (`[blade]`).
+    pub blade: BladeSetup,
 }
 
 /// Cajas de selecciones y medidas: parámetro, etiqueta y ejemplo.
@@ -249,6 +252,7 @@ impl Default for Inputs {
             beta_bow1: String::new(),
             beta_bow2: String::new(),
             meridian: Meridian::default(),
+            blade: BladeSetup::default(),
         }
     }
 }
@@ -783,6 +787,7 @@ pub fn case_to_inputs(case: &Case) -> Inputs {
         beta_bow1: String::new(),
         beta_bow2: String::new(),
         meridian: Meridian::default(),
+        blade: BladeSetup::default(),
     }
 }
 
@@ -839,6 +844,7 @@ pub fn open_loaded(project: Project) -> Result<OpenedFile, String> {
     inputs.beta_bow1.clone_from(&opened.edits.beta_bow1);
     inputs.beta_bow2.clone_from(&opened.edits.beta_bow2);
     inputs.meridian = project.meridian.clone().unwrap_or_default();
+    inputs.blade = hm_engine::blade_setup_of(project.blade.as_ref())?;
     let basis = Basis::from_opened(&project, &opened, &inputs);
     Ok(OpenedFile {
         project,
@@ -916,6 +922,7 @@ pub fn build_project(
 ) -> Result<Built, String> {
     let mut built = build_design(inputs, basis, previous, name)?;
     built.project.meridian = meridian_section(&inputs.meridian)?;
+    built.project.blade = hm_engine::blade_section_of(&inputs.blade);
     Ok(built)
 }
 
@@ -2701,5 +2708,58 @@ mod tests {
         };
         let error = build_project(&inputs, &Basis::default(), None, "x").unwrap_err();
         assert!(error.contains("shroud.start_angle_deg"), "{error}");
+    }
+
+    /// La forma y el número de líneas van al archivo y vuelven al abrirlo.
+    #[test]
+    fn the_blade_setup_survives_save_and_open() {
+        let mut inputs = Inputs::default();
+        inputs.blade.streamlines = 9;
+        let project = build_project(&inputs, &Basis::default(), None, "x")
+            .unwrap()
+            .project;
+        let text = project.to_toml().unwrap();
+        assert!(text.contains("[blade]"), "{text}");
+        let opened = open_loaded(Project::from_toml(&text).unwrap()).unwrap();
+        assert_eq!(opened.inputs.blade, inputs.blade);
+    }
+
+    #[test]
+    fn a_default_blade_setup_writes_no_section() {
+        let project = build_project(&Inputs::default(), &Basis::default(), None, "x")
+            .unwrap()
+            .project;
+        assert_eq!(project.blade, None);
+        assert!(!project.to_toml().unwrap().contains("[blade]"));
+        let opened = open_loaded(project).unwrap();
+        assert_eq!(opened.inputs.blade, Inputs::default().blade);
+    }
+
+    /// Guardar sin `[blade]` quita la sección que traía el proyecto anterior.
+    #[test]
+    fn going_back_to_the_default_setup_drops_the_section() {
+        let mut inputs = Inputs::default();
+        inputs.blade.streamlines = 7;
+        let basis = Basis::default();
+        let previous = build_project(&inputs, &basis, None, "x").unwrap().project;
+        assert!(previous.blade.is_some());
+        let again = build_project(&Inputs::default(), &basis, Some(&previous), "x")
+            .unwrap()
+            .project;
+        assert_eq!(again.blade, None);
+    }
+
+    /// Un `[blade]` que el motor no entiende no se abre a medias.
+    #[test]
+    fn an_unknown_blade_shape_does_not_open() {
+        let mut project = build_project(&Inputs::default(), &Basis::default(), None, "x")
+            .unwrap()
+            .project;
+        project.blade = Some(hm_project::Blade {
+            shape: "helicoidal".into(),
+            streamlines: 5,
+        });
+        let error = open_loaded(project).unwrap_err();
+        assert!(error.contains("helicoidal"), "{error}");
     }
 }

@@ -5,6 +5,7 @@
 
 mod bar;
 mod blade_beta;
+mod blade_inlet;
 mod curves;
 mod diagnostics;
 mod inputs;

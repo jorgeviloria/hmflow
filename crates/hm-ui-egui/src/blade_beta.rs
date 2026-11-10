@@ -2,6 +2,7 @@
 
 use eframe::egui;
 use egui_plot::{Plot, PlotPoint, Points};
+use hm_design::blade_setup::BladeSetup;
 use hm_design::geometry::{BLADE_BETA_MIN_DEG, beta_profile};
 use hm_design::{BETA_BOW_RANGE_DEG, INCIDENCE_RANGE_DEG};
 
@@ -161,13 +162,15 @@ pub(super) fn beta2_text(value_deg: f64) -> String {
     format!("{value_deg:.2} deg")
 }
 
-/// Lo que la gráfica edita: las cuatro cajas, como texto.
+/// Lo que el paso edita: las cuatro cajas de la gráfica, como texto, y la
+/// forma del álabe con su número de líneas de corriente.
 #[derive(Debug, Clone, Default, PartialEq)]
 pub(super) struct BetaSnapshot {
     pub bow1: String,
     pub bow2: String,
     pub incidence: String,
     pub beta2: String,
+    pub blade: BladeSetup,
 }
 
 impl BetaSnapshot {
@@ -177,6 +180,7 @@ impl BetaSnapshot {
             bow2: inputs.beta_bow2.clone(),
             incidence: inputs.incidence.clone(),
             beta2: inputs.beta2.clone(),
+            blade: inputs.blade,
         }
     }
 
@@ -185,6 +189,7 @@ impl BetaSnapshot {
         inputs.beta_bow2.clone_from(&self.bow2);
         inputs.incidence.clone_from(&self.incidence);
         inputs.beta2.clone_from(&self.beta2);
+        inputs.blade = self.blade;
     }
 }
 
@@ -320,6 +325,10 @@ pub(super) fn blade_beta_view(
         (redo, undo)
     });
     let mut edited = false;
+    if crate::blade_inlet::blade_setup_controls(ui, &mut inputs.blade) {
+        history.record(&BetaSnapshot::of(inputs), ui.input(|input| input.time));
+        edited = true;
+    }
     ui.horizontal(|ui| {
         let undo = ui.add_enabled(history.can_undo(), egui::Button::new("Deshacer"));
         let redo = ui.add_enabled(history.can_redo(), egui::Button::new("Rehacer"));
@@ -553,8 +562,14 @@ impl Drag {
 }
 
 /// Solo para las capturas: `HMF_BLADE="8,-5"` pone la desviación de las dos
-/// manijas, en grados.
+/// manijas, en grados, y `HMF_STREAMLINES=7` el número de líneas de corriente.
 pub(super) fn seed_from_env(inputs: &mut Inputs) {
+    if let Ok(text) = std::env::var("HMF_STREAMLINES") {
+        match crate::blade_inlet::streamlines_from_text(&text) {
+            Some(count) => inputs.blade.streamlines = count,
+            None => eprintln!("HMF_STREAMLINES: se espera 3, 5, 7 o 9; llegó {text:?}"),
+        }
+    }
     let Ok(text) = std::env::var("HMF_BLADE") else {
         return;
     };
@@ -706,6 +721,28 @@ mod tests {
         assert_eq!(back, snap("1 deg"));
         let forward = history.redo(&back).unwrap();
         assert_eq!(forward, snap("2 deg"));
+    }
+
+    #[test]
+    fn undo_restores_the_previous_shape_and_count() {
+        use hm_design::blade_setup::{BladeSetup, BladeShape};
+        let mut inputs = Inputs::default();
+        let before = inputs.blade;
+        let mut history = BetaHistory::default();
+        history.follow(&BetaSnapshot::of(&inputs));
+        inputs.blade = BladeSetup {
+            shape: BladeShape::Ruled3D,
+            streamlines: 9,
+        };
+        let after = inputs.blade;
+        history.record(&BetaSnapshot::of(&inputs), 10.0);
+        let back = history.undo(&BetaSnapshot::of(&inputs)).unwrap();
+        back.apply(&mut inputs);
+        assert_eq!(inputs.blade, before);
+        assert_eq!(inputs.blade.streamlines, 5);
+        let forward = history.redo(&BetaSnapshot::of(&inputs)).unwrap();
+        forward.apply(&mut inputs);
+        assert_eq!(inputs.blade, after);
     }
 
     #[test]

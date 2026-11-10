@@ -17,6 +17,7 @@ pub mod mechanics;
 pub mod meridian;
 pub mod plan;
 mod report;
+pub mod streamlines;
 mod viscous;
 
 pub use fluid::{WATER_DENSITY_RANGE_C, water_density};

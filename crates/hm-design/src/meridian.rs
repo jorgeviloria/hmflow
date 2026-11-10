@@ -1865,7 +1865,7 @@ fn edge_hub_fraction(
 }
 
 /// Longitud acumulada de una polilínea en cada punto.
-fn cumulative(line: &[[f64; 2]]) -> Vec<f64> {
+pub(crate) fn cumulative(line: &[[f64; 2]]) -> Vec<f64> {
     let mut lengths = vec![0.0];
     for pair in line.windows(2) {
         let last = lengths[lengths.len() - 1];
@@ -1876,7 +1876,7 @@ fn cumulative(line: &[[f64; 2]]) -> Vec<f64> {
 
 /// La fracción de la longitud de la polilínea a la que cae el punto de ella
 /// más cercano a `target`.
-fn arc_fraction(line: &[[f64; 2]], target: [f64; 2]) -> f64 {
+pub(crate) fn arc_fraction(line: &[[f64; 2]], target: [f64; 2]) -> f64 {
     if line.len() < 2 {
         return 0.0;
     }

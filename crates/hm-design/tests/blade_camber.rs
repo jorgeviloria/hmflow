@@ -4,6 +4,7 @@
 
 use hm_design::blade_camber::{
     BladeCamber, CAMBER_STEPS, CamberError, CamberOrigin, blade_camber, camber_for_design,
+    wrap_range_deg,
 };
 use hm_design::blade_setup::{BladeSetup, BladeShape, CamberBows};
 use hm_design::geometry::{DEFAULT_INCIDENCE_DEG, camber_line_shaped, geometry};
@@ -732,4 +733,15 @@ fn a_failing_line_is_a_design_error() {
         panic!("se esperaba DesignError::Input, salió {error:?}");
     };
     assert!(text.contains("línea de corriente"), "{text}");
+}
+
+#[test]
+fn gulich_wrap_ranges_cover_five_to_seven_blades() {
+    // Gülich (2020), p. 422.
+    assert_eq!(wrap_range_deg(5), Some((130.0, 160.0)));
+    assert_eq!(wrap_range_deg(6), Some((120.0, 140.0)));
+    assert_eq!(wrap_range_deg(7), Some((100.0, 130.0)));
+    for count in [0, 1, 3, 4, 8, 12] {
+        assert_eq!(wrap_range_deg(count), None, "{count}");
+    }
 }

@@ -1,9 +1,9 @@
 //! La forma del álabe y en cuántas líneas de corriente se reparte el canal.
 //!
-//! De momento la forma no cambia ningún cálculo: las líneas de corriente y
-//! los triángulos de entrada son los mismos para cualquiera. Solo se guarda y
-//! se muestra, para que la línea media por línea de corriente (punto 2) y las
-//! formas 2D que faltan (punto 4) encuentren el sitio hecho.
+//! Las líneas de corriente y los triángulos de entrada son los mismos para
+//! cualquier forma. La forma decide el álabe que se traza sobre ellas: la
+//! línea media 2D de hoy, o una por línea de corriente con las formas 3D
+//! (`blade_camber`). Las formas 2D que faltan llegan en el punto 4.
 //!
 //! La lista de formas es una idea de producto tomada de otros programas de
 //! diseño de rodetes (`oracle/notas/cfturbo.md`, «Formas de álabe del
@@ -15,9 +15,6 @@ pub const STREAMLINE_COUNTS: [u8; 4] = [3, 5, 7, 9];
 
 /// Las líneas de corriente de un diseño que no dice otra cosa. De hmflow.
 pub const DEFAULT_STREAMLINES: u8 = 5;
-
-/// Punto del plan del álabe en que llegan las formas 3D.
-const POINT_3D: u8 = 2;
 
 /// Punto del plan del álabe en que llegan las 2D que faltan.
 const POINT_2D: u8 = 4;
@@ -124,8 +121,7 @@ impl BladeShape {
     #[must_use]
     pub fn arrives_in(self) -> Option<u8> {
         match self {
-            Self::Free2D => None,
-            Self::Free3D | Self::Ruled3D => Some(POINT_3D),
+            Self::Free2D | Self::Free3D | Self::Ruled3D => None,
             Self::Circular2D
             | Self::Straight2D
             | Self::CircularFree2D
@@ -133,7 +129,7 @@ impl BladeShape {
         }
     }
 
-    /// Si ya se puede elegir. Hoy, solo la 2D libre.
+    /// Si ya se puede elegir: la 2D libre y las dos 3D.
     #[must_use]
     pub fn is_available(self) -> bool {
         self.arrives_in().is_none()

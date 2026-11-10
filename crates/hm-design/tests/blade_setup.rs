@@ -21,19 +21,22 @@ fn the_default_is_free_2d_with_five_streamlines() {
 }
 
 #[test]
-fn only_free_2d_is_available() {
+fn free_2d_and_the_two_3d_shapes_are_available() {
     let available: Vec<BladeShape> = BladeShape::ALL
         .into_iter()
         .filter(|shape| shape.is_available())
         .collect();
-    assert_eq!(available, [BladeShape::Free2D]);
+    assert_eq!(
+        available,
+        [BladeShape::Free3D, BladeShape::Ruled3D, BladeShape::Free2D]
+    );
 }
 
 #[test]
 fn each_shape_says_when_it_arrives() {
     use BladeShape::*;
-    assert_eq!(Free3D.arrives_in(), Some(2));
-    assert_eq!(Ruled3D.arrives_in(), Some(2));
+    assert_eq!(Free3D.arrives_in(), None);
+    assert_eq!(Ruled3D.arrives_in(), None);
     assert_eq!(Free2D.arrives_in(), None);
     for shape in [Circular2D, Straight2D, CircularFree2D, LogSpiralStraight2D] {
         assert_eq!(shape.arrives_in(), Some(4), "{shape:?}");

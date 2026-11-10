@@ -4,6 +4,7 @@
 //! «Líneas de corriente» dibuja en el Meridiano.
 
 use eframe::egui;
+use hm_design::blade_camber::{BladeCamber, CamberOrigin, camber_for_design, wrap_range_deg};
 use hm_design::blade_setup::{BladeFamily, BladeSetup, BladeShape, STREAMLINE_COUNTS};
 use hm_design::inlet_triangles::{
     Blade2dAngle, INLET_MISMATCH_WARN_DEG, InletTriangle, inlet_triangles,
@@ -276,19 +277,192 @@ pub(super) fn inlet_rows(outcome: &Outcome) -> Result<Vec<InletRow>, String> {
         .collect())
 }
 
-/// La tabla «Entrada por línea de corriente», con su ayuda, bajo un título que
-/// se pliega para devolver el sitio a la vista en planta. Si no se puede
-/// calcular, el mensaje en su lugar.
+/// Las cabeceras de la tabla «Álabe por línea de corriente».
+const BLADE_HEADERS: [&str; 13] = [
+    "Línea",
+    "ψ",
+    "r1 [mm]",
+    "u1 [m/s]",
+    "c1m [m/s]",
+    "τ1",
+    "β′1 [°]",
+    "β1B [°]",
+    "β álabe [°]",
+    "Δβ [°]",
+    "ε [°]",
+    "θ borde [°]",
+    "L [mm]",
+];
+
+/// Una fila de la tabla «Álabe por línea de corriente», ya como texto.
+#[derive(Debug, Clone, PartialEq)]
+pub(super) struct BladeRow {
+    /// «Cubo», «1», …, «Tapa».
+    pub label: String,
+    /// ψ, r1, u1, c1m, τ1, β′1, β1B, β álabe, Δβ, ε, θ borde y L.
+    pub cells: [String; 12],
+    /// |Δβ| pasa de [`INLET_MISMATCH_WARN_DEG`]: Δβ va con el color de aviso.
+    pub flagged: bool,
+}
+
+/// Un ángulo con signo y un decimal; un cero (también el redondeado) sin signo.
+fn signed_degrees(value: f64) -> String {
+    let text = format!("{value:+.1}");
+    if text == "+0.0" || text == "-0.0" {
+        "0.0".to_string()
+    } else {
+        text
+    }
+}
+
+/// La línea media 3D de este diseño sobre el meridiano editado; `Ok(None)` con
+/// forma 2D, y el mensaje del error si falla.
+pub(super) fn camber_of(outcome: &Outcome) -> Result<Option<BladeCamber>, String> {
+    let setup = &outcome.inputs.blade;
+    if setup.shape.family() != BladeFamily::ThreeD {
+        return Ok(None);
+    }
+    let geometry = outcome
+        .geometry
+        .as_ref()
+        .map_err(std::string::ToString::to_string)?;
+    let edits = hm_engine::meridian_edits_of(&outcome.inputs.meridian);
+    let (model, _) = crate::meridian::model_or_uncut(&outcome.result, &edits)
+        .map_err(|error| error.to_string())?;
+    camber_for_design(
+        &outcome.result,
+        &geometry.impeller,
+        &model,
+        setup,
+        crate::blade_beta::applied_incidence_deg(&outcome.inputs),
+    )
+    .map_err(|error| error.to_string())
+}
+
+/// Las filas de la tabla 3D, del cubo a la tapa, o el mensaje del error.
+pub(super) fn blade_rows(outcome: &Outcome) -> Result<Vec<BladeRow>, String> {
+    let (_, triangles) = inlet_lines(outcome)?;
+    let camber = camber_of(outcome)?
+        .ok_or_else(|| "la forma del álabe no es 3D: no hay línea media por línea".to_string())?;
+    Ok(row_labels(triangles.len())
+        .into_iter()
+        .zip(triangles.iter().zip(&camber.lines))
+        .map(|(label, (triangle, line))| {
+            let inlet = row_of(label.clone(), triangle);
+            let first = &line.points[0];
+            let delta = (first.beta - triangle.beta1b).to_degrees();
+            let [psi, r1, u1, c1m, tau1, beta_flow, beta1b] = inlet.cells;
+            BladeRow {
+                label,
+                cells: [
+                    psi,
+                    r1,
+                    u1,
+                    c1m,
+                    tau1,
+                    beta_flow,
+                    beta1b,
+                    format!("{:.1}", first.beta.to_degrees()),
+                    signed_degrees(delta),
+                    format!("{:.1}", line.wrap.to_degrees()),
+                    format!("{:.1}", first.theta.to_degrees()),
+                    format!("{:.1}", line.length * MM_PER_M),
+                ],
+                flagged: delta.abs() > INLET_MISMATCH_WARN_DEG,
+            }
+        })
+        .collect())
+}
+
+/// «Gülich (p. 422): con Z = 5, envolvimiento de 130 a 160°.»; `None` si
+/// Gülich no da rango para ese Z.
+fn wrap_reference(blade_count: u32) -> Option<String> {
+    wrap_range_deg(blade_count).map(|(low, high)| {
+        format!("Gülich (p. 422): con Z = {blade_count}, envolvimiento de {low:.0} a {high:.0}°.")
+    })
+}
+
+/// El mayor desvío del borde de ataque de la reglada, en mm; `None` si el
+/// álabe no es reglado.
+fn max_edge_gap_mm(camber: &BladeCamber) -> Option<f64> {
+    camber
+        .lines
+        .iter()
+        .filter(|line| line.origin == CamberOrigin::Ruled)
+        .map(|line| line.edge_gap.abs() * MM_PER_M)
+        .max_by(f64::total_cmp)
+}
+
+/// La tabla del paso del álabe, con su ayuda, bajo un título que se pliega
+/// para devolver el sitio a la vista en planta: «Álabe por línea de corriente»
+/// con una forma 3D y «Entrada por línea de corriente» con una 2D. Si no se
+/// puede calcular, el mensaje en su lugar.
 pub(super) fn inlet_table(ui: &mut egui::Ui, outcome: &Outcome) {
-    egui::CollapsingHeader::new(egui::RichText::new("Entrada por línea de corriente").strong())
+    let three_d = outcome.inputs.blade.shape.family() == BladeFamily::ThreeD;
+    let title = if three_d {
+        "Álabe por línea de corriente"
+    } else {
+        "Entrada por línea de corriente"
+    };
+    egui::CollapsingHeader::new(egui::RichText::new(title).strong())
         .default_open(true)
-        .show(ui, |ui| match inlet_rows(outcome) {
-            Ok(rows) => inlet_grid(ui, &rows),
-            Err(message) => {
-                let warn = crate::theme::palette(ui.ctx()).warn;
+        .show(ui, |ui| {
+            let warn = crate::theme::palette(ui.ctx()).warn;
+            let shown = if three_d {
+                blade_rows(outcome).map(|rows| blade_grid(ui, &rows, outcome))
+            } else {
+                inlet_rows(outcome).map(|rows| inlet_grid(ui, &rows))
+            };
+            if let Err(message) = shown {
                 ui.label(egui::RichText::new(message).color(warn));
             }
         });
+}
+
+/// Las filas de la tabla 3D, rayadas, y la ayuda debajo.
+fn blade_grid(ui: &mut egui::Ui, rows: &[BladeRow], outcome: &Outcome) {
+    let warn = crate::theme::palette(ui.ctx()).warn;
+    egui::Grid::new("blade_camber_table")
+        .num_columns(BLADE_HEADERS.len())
+        .striped(true)
+        .spacing([16.0, 4.0])
+        .show(ui, |ui| {
+            for header in BLADE_HEADERS {
+                ui.label(egui::RichText::new(header).small().strong());
+            }
+            ui.end_row();
+            for row in rows {
+                ui.label(&row.label);
+                for (index, cell) in row.cells.iter().enumerate() {
+                    let text = egui::RichText::new(cell);
+                    // Δβ es la novena celda.
+                    ui.label(if index == 8 && row.flagged {
+                        text.color(warn)
+                    } else {
+                        text
+                    });
+                }
+                ui.end_row();
+            }
+        });
+    let mut small = |text: String| ui.label(egui::RichText::new(text).small().weak());
+    small(
+        "β álabe: el ángulo de la línea media en el borde de ataque, sobre la línea de \
+         corriente. En la libre es el β1B de la línea; en la reglada sale de las rectas de cubo \
+         a tapa. ε: envolvimiento. θ borde: posición del borde de ataque en planta; 0 es el \
+         punto más adelantado."
+            .to_string(),
+    );
+    if let Some(reference) = wrap_reference(outcome.result.selection.blade_count) {
+        small(reference);
+    }
+    if let Ok(Some(camber)) = camber_of(outcome)
+        && let Some(gap) = max_edge_gap_mm(&camber)
+    {
+        small(format!(
+            "Desvío máximo del borde de la reglada: {gap:.1} mm."
+        ));
+    }
 }
 
 /// Las filas, rayadas, y la ayuda debajo.
@@ -332,11 +506,12 @@ fn inlet_grid(ui: &mut egui::Ui, rows: &[InletRow]) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use hm_design::blade_setup::CamberBows;
 
     #[test]
     fn an_unavailable_shape_cannot_be_chosen() {
         for shape in BladeShape::ALL {
-            if shape == BladeShape::Free2D {
+            if shape.is_available() {
                 continue;
             }
             let mut setup = BladeSetup::default();
@@ -376,11 +551,15 @@ mod tests {
     }
 
     #[test]
-    fn the_hint_names_the_point_where_the_shape_arrives() {
-        assert_eq!(
-            arrival_hint(BladeShape::Free3D).as_deref(),
-            Some("Llega en el punto 2")
-        );
+    fn a_3d_shape_can_be_chosen_and_a_pending_2d_cannot() {
+        for shape in [BladeShape::Free3D, BladeShape::Ruled3D] {
+            let mut setup = BladeSetup::default();
+            assert!(choose_shape(&mut setup, shape), "{shape:?}");
+            assert_eq!(setup.shape, shape);
+            assert_eq!(arrival_hint(shape), None, "{shape:?}");
+        }
+        let mut setup = BladeSetup::default();
+        assert!(!choose_shape(&mut setup, BladeShape::Circular2D));
         assert_eq!(
             arrival_hint(BladeShape::Circular2D).as_deref(),
             Some("Llega en el punto 4")
@@ -609,5 +788,119 @@ mod tests {
         assert_eq!(nearest_cut(&cuts, [101.0, 104.0], 12.0), Some(0));
         assert_eq!(nearest_cut(&cuts, [200.0, 200.0], 12.0), None);
         assert_eq!(nearest_cut(&[], [0.0, 0.0], 12.0), None);
+    }
+
+    /// Un diseño con esa forma 3D (o 2D) y N líneas.
+    fn shaped(shape: BladeShape, streamlines: u8) -> Outcome {
+        let mut inputs = Inputs::default();
+        inputs.blade.shape = shape;
+        inputs.blade.streamlines = streamlines;
+        compute(&inputs, &Basis::default()).unwrap()
+    }
+
+    #[test]
+    fn the_3d_table_has_its_thirteen_columns() {
+        assert_eq!(
+            BLADE_HEADERS,
+            [
+                "Línea",
+                "ψ",
+                "r1 [mm]",
+                "u1 [m/s]",
+                "c1m [m/s]",
+                "τ1",
+                "β′1 [°]",
+                "β1B [°]",
+                "β álabe [°]",
+                "Δβ [°]",
+                "ε [°]",
+                "θ borde [°]",
+                "L [mm]",
+            ]
+        );
+        let rows = blade_rows(&shaped(BladeShape::Free3D, 5)).unwrap();
+        assert_eq!(rows.len(), 5);
+        assert_eq!(rows[0].cells.len() + 1, BLADE_HEADERS.len());
+    }
+
+    #[test]
+    fn in_the_free_shape_every_row_meets_the_flow() {
+        let outcome = shaped(BladeShape::Free3D, 5);
+        let rows = blade_rows(&outcome).unwrap();
+        for row in &rows {
+            assert_eq!(row.cells[8], "0.0", "{}", row.label);
+            assert!(!row.flagged, "{}", row.label);
+            // β álabe y β1B salen al mismo decimal.
+            assert_eq!(row.cells[6], row.cells[7], "{}", row.label);
+        }
+        assert_eq!(rows[0].label, "Cubo");
+        assert_eq!(rows[0].cells[9], "181.5");
+    }
+
+    #[test]
+    fn in_the_ruled_shape_the_inner_rows_show_what_it_costs() {
+        let outcome = shaped(BladeShape::Ruled3D, 5);
+        let rows = blade_rows(&outcome).unwrap();
+        assert_eq!(rows[0].cells[8], "0.0");
+        assert_eq!(rows[4].cells[8], "0.0");
+        assert!(!rows[0].flagged && !rows[4].flagged);
+        for row in &rows[1..4] {
+            let delta: f64 = row.cells[8].parse().unwrap();
+            assert!(delta < 0.0, "{}: {}", row.label, row.cells[8]);
+            assert_eq!(
+                row.flagged,
+                delta.abs() > INLET_MISMATCH_WARN_DEG,
+                "{}",
+                row.label
+            );
+        }
+        assert!(rows[1..4].iter().any(|row| row.flagged));
+    }
+
+    #[test]
+    fn with_the_2d_shape_the_table_is_todays() {
+        let outcome = outcome(5);
+        assert_eq!(outcome.inputs.blade.shape, BladeShape::Free2D);
+        assert!(inlet_rows(&outcome).is_ok());
+        assert_eq!(INLET_HEADERS.len(), 10);
+        assert_eq!(INLET_HEADERS[8], "β 2D actual [°]");
+        assert_eq!(camber_of(&outcome), Ok(None));
+    }
+
+    // Review Focus 3: una línea media que falla enseña su mensaje.
+    #[test]
+    fn a_failing_camber_shows_its_message() {
+        let mut outcome = shaped(BladeShape::Free3D, 5);
+        outcome.inputs.blade.bows = CamberBows {
+            hub: (-30.0, -30.0),
+            shroud: (-30.0, -30.0),
+        };
+        let message = blade_rows(&outcome).unwrap_err();
+        assert!(message.contains("línea de corriente"), "{message}");
+        // La tabla de entrada de hoy sigue funcionando.
+        assert!(inlet_rows(&outcome).is_ok());
+    }
+
+    #[test]
+    fn the_footer_quotes_gulich_for_five_to_seven_blades() {
+        assert_eq!(
+            wrap_reference(5).as_deref(),
+            Some("Gülich (p. 422): con Z = 5, envolvimiento de 130 a 160°.")
+        );
+        assert_eq!(
+            wrap_reference(7).as_deref(),
+            Some("Gülich (p. 422): con Z = 7, envolvimiento de 100 a 130°.")
+        );
+        assert_eq!(wrap_reference(4), None);
+    }
+
+    #[test]
+    fn only_the_ruled_shape_reports_the_edge_gap() {
+        let ruled = camber_of(&shaped(BladeShape::Ruled3D, 5)).unwrap().unwrap();
+        let gap = max_edge_gap_mm(&ruled).expect("la reglada tiene desvío");
+        // Oráculo de la Tarea 2: 7,9 mm en la línea 2 de B1.
+        assert!((gap - 7.875_984).abs() < 1e-3, "{gap}");
+        let free = camber_of(&shaped(BladeShape::Free3D, 5)).unwrap().unwrap();
+        assert_eq!(max_edge_gap_mm(&free), None);
     }
 }

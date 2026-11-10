@@ -214,6 +214,19 @@ pub fn blade_camber(
     })
 }
 
+/// El envolvimiento que da Gülich como referencia para Z álabes, en grados:
+/// (mínimo, máximo). Solo para 5, 6 y 7 álabes (Gülich, *Centrifugal Pumps*,
+/// 4.ª ed., 2020, p. 422); `None` para los demás.
+#[must_use]
+pub fn wrap_range_deg(blade_count: u32) -> Option<(f64, f64)> {
+    match blade_count {
+        5 => Some((130.0, 160.0)),
+        6 => Some((120.0, 140.0)),
+        7 => Some((100.0, 130.0)),
+        _ => None,
+    }
+}
+
 /// La línea media 3D de un diseño: encadena las líneas de corriente, los
 /// triángulos de entrada y [`blade_camber`]. Es lo que usan la interfaz y la
 /// exportación, para que el visor y el archivo no puedan separarse. `None` si

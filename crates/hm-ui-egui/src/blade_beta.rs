@@ -525,7 +525,28 @@ pub(super) fn blade_beta_view(
     });
     match &camber {
         Ok(Some(camber)) => {
-            edited |= beta_3d_plot(ui, outcome, inputs, history, camber);
+            let mut chart = crate::blade_development::BladeChart::stored(ui.ctx());
+            ui.horizontal(|ui| {
+                ui.selectable_value(
+                    &mut chart,
+                    crate::blade_development::BladeChart::Beta,
+                    "β(x)",
+                );
+                ui.selectable_value(
+                    &mut chart,
+                    crate::blade_development::BladeChart::Development,
+                    "Desarrollo",
+                );
+            });
+            chart.store(ui.ctx());
+            match chart {
+                crate::blade_development::BladeChart::Beta => {
+                    edited |= beta_3d_plot(ui, outcome, inputs, history, camber);
+                }
+                crate::blade_development::BladeChart::Development => {
+                    crate::blade_development::development_view(ui, camber);
+                }
+            }
             edited |= bow_fields(ui, inputs, history);
         }
         Err(message) => {

@@ -9,6 +9,7 @@ use hm_design::meridian::{
     meridional_model_with,
 };
 use hm_design::plan::{PlanModel, plan_model_with};
+use hm_design::scene::{BladeSurfaceSource, PieceId, Scene, SceneNotice, scene_from};
 use hm_design::{DesignInput, DesignReport, LEGACY_METHODS, METHOD, design_with_options};
 use hm_formula::Registry;
 use hm_project::{Casing, Param, Project, Suction};
@@ -306,7 +307,7 @@ pub fn plan(project: &Project) -> Result<PlanModel, EngineError> {
     let camber = if setup.shape.family() == BladeFamily::ThreeD {
         // Un recorte del cubo que falle no cambia el perfil hidráulico: la
         // planta se arma con el meridiano sin recorte, como la dibuja el visor.
-        let model = meridian_or_uncut(project, &analysis.result)?;
+        let (model, _) = meridian_or_uncut(project, &analysis.result)?;
         let incidence_deg = case_from_project(project)?
             .design
             .incidence_deg
@@ -341,29 +342,62 @@ pub fn meridian(project: &Project) -> Result<MeridionalModel, EngineError> {
 }
 
 /// El meridiano del proyecto; si falla por el recorte del cubo, el mismo sin
-/// recorte. Un error que no es del recorte se devuelve tal cual. Es lo que hace
-/// la interfaz al dibujar (`model_or_uncut`), para que el visor y la
-/// exportación no se separen.
+/// recorte, con el error del recorte. Un error que no es del recorte se
+/// devuelve tal cual. Es lo que hace la interfaz al dibujar
+/// (`model_or_uncut`), para que el visor y la exportación no se separen.
 fn meridian_or_uncut(
     project: &Project,
     result: &hm_design::DesignResult,
-) -> Result<MeridionalModel, EngineError> {
+) -> Result<(MeridionalModel, Option<String>), EngineError> {
     let edits = meridian_edits(project);
     let stage = |source| EngineError::Stage {
         stage: Stage::Geometry,
         source,
     };
     match meridional_model_with(result, &edits) {
-        Ok(model) => Ok(model),
-        Err(_) if edits.hub_cut.is_active() => {
+        Ok(model) => Ok((model, None)),
+        Err(cut_error) if edits.hub_cut.is_active() => {
             let plain = MeridianEdits {
                 hub_cut: HubCutEdit::default(),
                 ..edits
             };
-            meridional_model_with(result, &plain).map_err(stage)
+            let model = meridional_model_with(result, &plain).map_err(stage)?;
+            Ok((model, Some(cut_error.to_string())))
         }
         Err(source) => Err(stage(source)),
     }
+}
+
+/// Escena 3D de un proyecto, en mm, con la tolerancia de cuerda acotada a
+/// [`SCENE_TOLERANCE_RANGE_MM`](hm_design::scene::SCENE_TOLERANCE_RANGE_MM).
+///
+/// Rechaza lo mismo que el meridiano: un proyecto que no pasa del 1D. Un
+/// recorte del cubo que falla no es error: el cubo sale sin recorte y la
+/// escena lleva el aviso. La superficie del álabe llega en una tarea
+/// posterior; hoy es un aviso.
+pub fn scene(project: &Project, tolerance: f64) -> Result<Scene, EngineError> {
+    let analysis = drawable(project)?;
+    let (model, cut_error) = meridian_or_uncut(project, &analysis.result)?;
+    let mut scene = scene_from(
+        &model,
+        BladeSurfaceSource::Unavailable(
+            "la superficie del álabe llega en una tarea posterior".to_string(),
+        ),
+        analysis.result.selection.blade_count,
+        tolerance,
+    );
+    if let Some(error) = cut_error {
+        scene.notices.insert(
+            0,
+            SceneNotice {
+                piece: PieceId::Hub,
+                message: format!(
+                    "el recorte del cubo no se pudo aplicar ({error}); se dibuja el cubo sin recorte"
+                ),
+            },
+        );
+    }
+    Ok(scene)
 }
 
 /// Los brazos de `[meridian]` en mm. Vacío o sin sección es automático. Un

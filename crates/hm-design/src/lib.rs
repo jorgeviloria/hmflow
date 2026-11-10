@@ -19,6 +19,7 @@ pub mod mechanics;
 pub mod meridian;
 pub mod plan;
 mod report;
+pub mod scene;
 pub mod streamlines;
 mod viscous;
 

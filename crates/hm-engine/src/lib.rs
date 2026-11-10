@@ -38,12 +38,13 @@ pub use fluid::{
     npsha, parse_temperature, viscosity_effect, viscosity_from_text, water_density_at,
 };
 pub use hm_core::PumpType;
+pub use hm_design::scene::{SCENE_TOLERANCE_DRAG_MM, SCENE_TOLERANCE_FINE_MM};
 pub use hm_design::{
     DesignOptions, DesignReport, METHOD, PARAM_SPECS, PREFERRED_OPERATING_REGION, REPORT_FORMAT,
 };
 pub use project_ops::{
     blade_section_of, blade_setup_of, lock_selection, meridian, meridian_edits, meridian_edits_of,
-    new_casing_project, new_project, plan, report,
+    new_casing_project, new_project, plan, report, scene,
 };
 pub use recalc::{Recalculated, recalc, redefines_eta_m, same_value};
 pub use validate::{design_input, validate_case};

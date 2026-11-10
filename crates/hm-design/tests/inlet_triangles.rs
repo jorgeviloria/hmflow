@@ -7,7 +7,7 @@
 use std::f64::consts::PI;
 
 use hm_design::geometry::{DEFAULT_INCIDENCE_DEG, ImpellerGeometry, geometry};
-use hm_design::inlet_triangles::{AXIAL_BETA_2D_DEG, Blade2dAngle, InletTriangle, inlet_triangles};
+use hm_design::inlet_triangles::{Blade2dAngle, InletTriangle, inlet_triangles};
 use hm_design::meridian::{
     EdgeMode, MeridianEdits, MeridionalModel, meridional_model, meridional_model_with,
 };
@@ -254,16 +254,27 @@ fn a_cut_below_d1_has_no_2d_blade() {
     assert_eq!(triangle.mismatch(), None);
 }
 
+/// En un tramo axial dr = 0: el ángulo en planta no dice qué ángulo tiene el
+/// álabe sobre la línea, así que no hay nada que comparar.
 #[test]
-fn an_axial_segment_reports_the_capped_angle() {
+fn an_axial_segment_is_not_comparable() {
     let case = case_of(&b1_input());
     let r = 1.1 * case.r1_mm();
     let line = synthetic([[0.0, r], [20.0, r]], [10.0, r]);
     let triangle = case.triangles(&[line], DEFAULT_INCIDENCE_DEG)[0].clone();
-    assert_eq!(
-        triangle.beta_2d,
-        Blade2dAngle::Angle(AXIAL_BETA_2D_DEG.to_radians())
-    );
+    assert_eq!(triangle.beta_2d, Blade2dAngle::Axial);
+    assert_eq!(triangle.mismatch(), None);
+}
+
+/// El corte de la tapa de B1 cae en el plano de entrada, donde la tapa es
+/// axial: no debe salir como un desajuste de 70°.
+#[test]
+fn the_shroud_cut_of_b1_is_on_an_axial_segment() {
+    let case = case_of(&b1_input());
+    let lines = streamlines(&case.model, 5).unwrap();
+    let shroud = case.triangles(&lines, DEFAULT_INCIDENCE_DEG)[4].clone();
+    assert_eq!(shroud.beta_2d, Blade2dAngle::Axial);
+    assert_eq!(shroud.mismatch(), None);
 }
 
 #[test]

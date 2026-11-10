@@ -6,7 +6,7 @@
 use eframe::egui;
 use hm_design::blade_setup::{BladeFamily, BladeSetup, BladeShape, STREAMLINE_COUNTS};
 use hm_design::inlet_triangles::{
-    AXIAL_BETA_2D_DEG, Blade2dAngle, INLET_MISMATCH_WARN_DEG, InletTriangle, inlet_triangles,
+    Blade2dAngle, INLET_MISMATCH_WARN_DEG, InletTriangle, inlet_triangles,
 };
 use hm_design::meridian::MeridionalModel;
 use hm_design::streamlines::{Streamline, streamlines};
@@ -101,9 +101,6 @@ pub(super) fn blade_setup_controls(ui: &mut egui::Ui, setup: &mut BladeSetup) ->
     changed
 }
 
-/// Holgura, en rad, con que un β 2D se considera el tope de un tramo axial.
-const AXIAL_CAP_SLACK: f64 = 1.0e-12;
-
 /// m → mm, para la columna r1.
 const MM_PER_M: f64 = 1.0e3;
 
@@ -128,7 +125,7 @@ pub(super) struct InletRow {
     pub label: String,
     /// ψ, r1, u1, c1m, τ1, β′1 y β1B.
     pub cells: [String; 7],
-    /// En grados, «≥ 89.9» o «sin álabe».
+    /// En grados, «sin álabe» o «tramo axial».
     pub beta_2d: String,
     /// El álabe 2D no llega al corte: `beta_2d` va con el color de aviso.
     pub no_blade: bool,
@@ -157,9 +154,7 @@ pub(super) fn row_labels(count: usize) -> Vec<String> {
 fn row_of(label: String, triangle: &InletTriangle) -> InletRow {
     let beta_2d = match triangle.beta_2d {
         Blade2dAngle::NoBlade => "sin álabe".to_string(),
-        Blade2dAngle::Angle(beta) if beta >= AXIAL_BETA_2D_DEG.to_radians() - AXIAL_CAP_SLACK => {
-            format!("≥ {AXIAL_BETA_2D_DEG:.1}")
-        }
+        Blade2dAngle::Axial => "tramo axial".to_string(),
         Blade2dAngle::Angle(beta) => format!("{:.1}", beta.to_degrees()),
     };
     let mismatch_deg = triangle.mismatch().map(f64::to_degrees);
@@ -326,7 +321,8 @@ fn inlet_grid(ui: &mut egui::Ui, rows: &[InletRow]) {
         egui::RichText::new(
             "β1B: lo que pide el flujo en cada línea con el i1 del proyecto. β 2D actual: el \
              ángulo del álabe de hoy en ese punto; \"sin álabe\" si el corte queda por debajo \
-             de d1/2, donde empieza el álabe 2D.",
+             de d1/2, donde empieza el álabe 2D; \"tramo axial\" si la línea es axial en el \
+             corte, donde el ángulo en planta no se puede comparar.",
         )
         .small()
         .weak(),
@@ -485,10 +481,21 @@ mod tests {
     }
 
     #[test]
-    fn an_axial_cut_shows_the_capped_angle() {
-        let row = row_of("Tapa".into(), &triangle(angle(AXIAL_BETA_2D_DEG)));
-        assert_eq!(row.beta_2d, "≥ 89.9");
-        assert!(!row.no_blade);
+    fn an_axial_cut_says_so_and_has_no_mismatch() {
+        let row = row_of("Tapa".into(), &triangle(Blade2dAngle::Axial));
+        assert_eq!(row.beta_2d, "tramo axial");
+        assert_eq!(row.mismatch, "—");
+        assert!(!row.no_blade && !row.flagged);
+    }
+
+    /// La fila de la tapa del diseño por defecto cae en un tramo axial: no
+    /// puede salir como un desajuste en color de aviso.
+    #[test]
+    fn the_shroud_row_of_the_default_design_is_not_flagged() {
+        let rows = inlet_rows(&outcome(5)).unwrap();
+        let shroud = &rows[rows.len() - 1];
+        assert_eq!(shroud.beta_2d, "tramo axial");
+        assert!(!shroud.flagged);
     }
 
     // Review Focus 5: sin geometría no hay álabe 2D con el que comparar.

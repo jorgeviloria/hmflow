@@ -20,7 +20,9 @@
 //! dθ = dr / (r·tan β). Sobre una línea inclinada γ con el eje, Δr = Δm·sen γ, y
 //! con Δu = Δm / tan β (ec. 7.7, p. 419) y Δu = r·Δθ queda
 //! tan β = tan β_planta(r_k) / sen γ_k. Esta relación es de hmflow. El álabe 2D
-//! empieza en d1/2: un corte por debajo no tiene álabe.
+//! empieza en d1/2: un corte por debajo no tiene álabe. En un tramo axial
+//! (sen γ → 0) dr = 0 y el ángulo en planta no dice qué ángulo tiene el álabe
+//! sobre la línea: no se compara.
 //!
 //! Supuestos declarados:
 //!
@@ -49,10 +51,6 @@ pub const INLET_MISMATCH_WARN_DEG: f64 = 4.0;
 /// sen γ por debajo del cual el tramo se trata como axial. De hmflow.
 pub const AXIAL_SIN_GAMMA: f64 = 1.0e-3;
 
-/// β 2D que se informa en un tramo axial, en grados. De hmflow: con sen γ → 0
-/// el ángulo tiende a 90° y se da este tope en su lugar.
-pub const AXIAL_BETA_2D_DEG: f64 = 89.9;
-
 /// Holgura, en m, con que un corte se considera en d1/2. De hmflow.
 pub const BLADE_START_TOLERANCE: f64 = 1.0e-9;
 
@@ -67,6 +65,9 @@ pub enum Blade2dAngle {
     Angle(f64),
     /// El corte queda por debajo de d1/2: el álabe 2D no llega.
     NoBlade,
+    /// La línea es axial en el corte (sen γ < [`AXIAL_SIN_GAMMA`]): el ángulo
+    /// en planta no se puede llevar a la línea y no hay nada que comparar.
+    Axial,
 }
 
 /// El triángulo de entrada de una línea de corriente.
@@ -92,12 +93,13 @@ pub struct InletTriangle {
 }
 
 impl InletTriangle {
-    /// Δβ = β 2D − β1B, rad. `None` si el álabe 2D no llega al corte.
+    /// Δβ = β 2D − β1B, rad. `None` si el álabe 2D no llega al corte o si
+    /// la línea es axial en él.
     #[must_use]
     pub fn mismatch(&self) -> Option<f64> {
         match self.beta_2d {
             Blade2dAngle::Angle(beta) => Some(beta - self.beta1b),
-            Blade2dAngle::NoBlade => None,
+            Blade2dAngle::NoBlade | Blade2dAngle::Axial => None,
         }
     }
 }
@@ -158,10 +160,10 @@ pub fn inlet_triangles(
             let beta_2d = if r1 < blade_start - BLADE_START_TOLERANCE {
                 Blade2dAngle::NoBlade
             } else {
-                Blade2dAngle::Angle(angle_on_line(
+                angle_on_line(
                     plan_angle(&impeller.blade, r1),
                     line.sin_gamma_at_leading_edge(),
-                ))
+                )
             };
             Ok(InletTriangle {
                 psi: line.psi,
@@ -195,11 +197,11 @@ fn plan_angle(blade: &[BladePoint], r: f64) -> f64 {
 }
 
 /// El β del plano radial visto sobre una línea de corriente con sen γ dado:
-/// tan β = tan β_planta / sen γ. En un tramo axial, [`AXIAL_BETA_2D_DEG`].
-fn angle_on_line(plan_beta: f64, sin_gamma: f64) -> f64 {
+/// tan β = tan β_planta / sen γ. En un tramo axial no hay ángulo que dar.
+fn angle_on_line(plan_beta: f64, sin_gamma: f64) -> Blade2dAngle {
     if sin_gamma < AXIAL_SIN_GAMMA {
-        AXIAL_BETA_2D_DEG.to_radians()
+        Blade2dAngle::Axial
     } else {
-        (plan_beta.tan() / sin_gamma).atan()
+        Blade2dAngle::Angle((plan_beta.tan() / sin_gamma).atan())
     }
 }

@@ -409,7 +409,10 @@ pub fn streamlines(model: &MeridionalModel, count: u8) -> Result<Vec<Streamline>
 /// punto: el índice del tramo de `line`, la fracción dentro de él y el punto.
 /// Si el borde corta dos veces la misma línea, gana el corte más cercano al
 /// principio de la línea.
-fn first_crossing(line: &[[f64; 2]], edge: &[[f64; 2]]) -> Option<(usize, f64, [f64; 2])> {
+pub(crate) fn first_crossing(
+    line: &[[f64; 2]],
+    edge: &[[f64; 2]],
+) -> Option<(usize, f64, [f64; 2])> {
     for (index, pair) in line.windows(2).enumerate() {
         let earliest = edge
             .windows(2)

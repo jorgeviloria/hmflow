@@ -496,3 +496,157 @@ fn errors_name_the_line() {
     );
     assert!(err.to_string().contains("95"), "{err}");
 }
+
+// ---------------------------------------------------------------------------
+// Reglada 3D
+// ---------------------------------------------------------------------------
+
+/// B1 con `count` líneas: las dos formas con las mismas entradas.
+fn b1_both(count: u8, bows: &CamberBows) -> (Vec<Streamline>, BladeCamber, BladeCamber) {
+    let (result, lines, triangles) = b1(count);
+    let beta2b = result.selection.beta2_deg.to_radians();
+    let free = blade_camber(BladeShape::Free3D, &lines, &triangles, beta2b, bows).unwrap();
+    let ruled = blade_camber(BladeShape::Ruled3D, &lines, &triangles, beta2b, bows).unwrap();
+    (lines, free, ruled)
+}
+
+/// Distancia (m) de un punto (z, r) a la polilínea de una línea en mm.
+fn distance_to_line(line: &Streamline, z: f64, r: f64) -> f64 {
+    let mut best = f64::INFINITY;
+    for pair in line.points.windows(2) {
+        let a = [pair[0][0] / 1000.0, pair[0][1] / 1000.0];
+        let b = [pair[1][0] / 1000.0, pair[1][1] / 1000.0];
+        let d = [b[0] - a[0], b[1] - a[1]];
+        let len2 = d[0] * d[0] + d[1] * d[1];
+        let t = (((z - a[0]) * d[0] + (r - a[1]) * d[1]) / len2).clamp(0.0, 1.0);
+        let q = [a[0] + t * d[0], a[1] + t * d[1]];
+        best = best.min((z - q[0]).hypot(r - q[1]));
+    }
+    best
+}
+
+#[test]
+fn between_parallel_walls_ruled_is_free() {
+    let (r1, r2) = (0.08, 0.21);
+    let wall = |psi: f64, z_mm: f64| line(psi, &[[z_mm, r1 * 1000.0], [z_mm, r2 * 1000.0]], 0.0);
+    let lines = [wall(0.0, 0.0), wall(0.5, 10.0), wall(1.0, 20.0)];
+    let b = 22_f64.to_radians();
+    let triangles: Vec<InletTriangle> = lines.iter().map(|l| triangle(l.psi, b)).collect();
+    let beta2b = 25_f64.to_radians();
+    let free = blade_camber(BladeShape::Free3D, &lines, &triangles, beta2b, &NO_BOWS).unwrap();
+    let ruled = blade_camber(BladeShape::Ruled3D, &lines, &triangles, beta2b, &NO_BOWS).unwrap();
+    assert_eq!(ruled.lines.len(), 3);
+    for (a, c) in ruled.lines.iter().zip(&free.lines) {
+        assert_eq!(a.points.len(), c.points.len());
+        for (p, q) in a.points.iter().zip(&c.points) {
+            close(p.theta, q.theta, 1e-9);
+            close(p.r, q.r, 1e-9);
+        }
+        close(a.edge_gap, 0.0, 1e-9);
+    }
+    assert_eq!(ruled.lines[1].origin, CamberOrigin::Ruled);
+}
+
+#[test]
+fn b1_rulings_are_straight() {
+    let (_, _, ruled) = b1_both(5, &NO_BOWS);
+    let cartesian =
+        |p: &hm_design::blade_camber::CamberPoint| [p.r * p.theta.cos(), p.r * p.theta.sin(), p.z];
+    for j in 0..=CAMBER_STEPS {
+        let hub = cartesian(&ruled.lines[0].points[j]);
+        let shroud = cartesian(&ruled.lines.last().unwrap().points[j]);
+        let axis = [shroud[0] - hub[0], shroud[1] - hub[1], shroud[2] - hub[2]];
+        let norm = (axis[0].powi(2) + axis[1].powi(2) + axis[2].powi(2)).sqrt();
+        for line in &ruled.lines {
+            let p = cartesian(&line.points[j]);
+            let v = [p[0] - hub[0], p[1] - hub[1], p[2] - hub[2]];
+            let cross = [
+                v[1] * axis[2] - v[2] * axis[1],
+                v[2] * axis[0] - v[0] * axis[2],
+                v[0] * axis[1] - v[1] * axis[0],
+            ];
+            let distance = (cross[0].powi(2) + cross[1].powi(2) + cross[2].powi(2)).sqrt() / norm;
+            assert!(distance < 1e-8, "estación {j}: {distance} m");
+        }
+    }
+}
+
+#[test]
+fn ruled_hub_and_shroud_are_the_free_ones() {
+    let (_, free, ruled) = b1_both(5, &NO_BOWS);
+    assert_eq!(ruled.wrap_max, free.wrap_max);
+    assert_eq!(ruled.lines[0], free.lines[0]);
+    assert_eq!(ruled.lines[4], free.lines[4]);
+    assert_eq!(ruled.lines[0].origin, CamberOrigin::Integrated);
+}
+
+#[test]
+fn ruled_nodes_lie_on_their_streamline() {
+    let (lines, _, ruled) = b1_both(5, &NO_BOWS);
+    for (k, (streamline, camber)) in lines.iter().zip(&ruled.lines).enumerate().take(4).skip(1) {
+        for p in &camber.points {
+            let d = distance_to_line(streamline, p.z, p.r);
+            assert!(d < 1e-9, "línea {k}: {d} m");
+        }
+    }
+}
+
+#[test]
+fn ruled_lines_report_gap_and_measured_angle() {
+    let (result, lines, triangles) = b1(5);
+    let beta2b = result.selection.beta2_deg.to_radians();
+    let ruled = blade_camber(BladeShape::Ruled3D, &lines, &triangles, beta2b, &NO_BOWS).unwrap();
+    // Oráculo propio de la primera pasada: desvío del borde (m, positivo si el
+    // álabe empieza aguas abajo del corte) y Δβ = β medido − β1B (°).
+    let oracle = [
+        (0.0, 0.0),
+        (0.005_825_508, -4.338_589_399),
+        (0.007_875_984, -6.056_881_933),
+        (0.006_447_422, -5.733_365_636),
+        (0.0, 0.0),
+    ];
+    for (k, c) in ruled.lines.iter().enumerate() {
+        let delta = c.points[0].beta - triangles[k].beta1b;
+        assert!(c.points[0].beta > 0.0 && c.points[0].beta < std::f64::consts::PI);
+        close(c.edge_gap, oracle[k].0, 1e-6);
+        close(delta.to_degrees(), oracle[k].1, 1e-6);
+        if k == 0 || k == 4 {
+            assert_eq!(c.origin, CamberOrigin::Integrated);
+            assert_eq!(c.edge_gap, 0.0);
+        } else {
+            assert_eq!(c.origin, CamberOrigin::Ruled);
+        }
+    }
+}
+
+#[test]
+fn ruled_works_for_every_line_count() {
+    for count in [3, 5, 7, 9] {
+        let (_, free, ruled) = b1_both(count, &NO_BOWS);
+        assert_eq!(ruled.lines.len(), count as usize);
+        for line in &ruled.lines {
+            assert_eq!(line.points.len(), CAMBER_STEPS + 1);
+        }
+        assert_eq!(ruled.lines[0], free.lines[0]);
+        assert_eq!(ruled.lines.last(), free.lines.last());
+    }
+}
+
+#[test]
+fn a_ruling_that_misses_is_an_error() {
+    let (r1, r2) = (0.08, 0.21);
+    let b = 22_f64.to_radians();
+    let lines = [
+        line(0.0, &[[0.0, r1 * 1000.0], [0.0, r2 * 1000.0]], 0.0),
+        // La intermedia acaba en 150 mm, antes de la salida.
+        line(0.5, &[[10.0, r1 * 1000.0], [10.0, 150.0]], 0.0),
+        line(1.0, &[[20.0, r1 * 1000.0], [20.0, r2 * 1000.0]], 0.0),
+    ];
+    let triangles: Vec<InletTriangle> = lines.iter().map(|l| triangle(l.psi, b)).collect();
+    let err = blade_camber(BladeShape::Ruled3D, &lines, &triangles, b, &NO_BOWS).unwrap_err();
+    assert!(
+        matches!(err, CamberError::RulingMisses { line: 1, .. }),
+        "{err:?}"
+    );
+    assert!(err.to_string().contains("línea de corriente 1"), "{err}");
+}

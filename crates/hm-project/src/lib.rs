@@ -20,10 +20,34 @@ use thiserror::Error;
 /// - 3: añade la sección opcional `[casing]`.
 /// - 4: añade la sección opcional `[meridian]`, con P2 y las fracciones de P1
 ///   y P3 de cada tapa.
-pub const SCHEMA_VERSION: u32 = 4;
+/// - 5: añade la sección opcional `[blade]`, con la forma del álabe y el
+///   número de líneas de corriente.
+pub const SCHEMA_VERSION: u32 = 5;
 
 /// Esquemas anteriores que se migran al cargar.
-pub const MIGRATABLE_SCHEMAS: &[u32] = &[1, 2, 3];
+pub const MIGRATABLE_SCHEMAS: &[u32] = &[1, 2, 3, 4];
+
+/// Las formas de álabe que admite `[blade]`, con el nombre que llevan en el
+/// archivo.
+pub const BLADE_SHAPES: [&str; 7] = [
+    "free_3d",
+    "ruled_3d",
+    "free_2d",
+    "circular_2d",
+    "straight_2d",
+    "circular_free_2d",
+    "log_spiral_straight_2d",
+];
+
+/// La forma de un proyecto sin `[blade]`: el álabe 2D libre.
+pub const DEFAULT_BLADE_SHAPE: &str = "free_2d";
+
+/// Los números de líneas de corriente que admite `[blade]`: impares, para
+/// que siempre haya una línea media.
+pub const STREAMLINE_COUNTS: [u8; 4] = [3, 5, 7, 9];
+
+/// Las líneas de corriente de un proyecto sin `[blade]`.
+pub const DEFAULT_STREAMLINES: u8 = 5;
 
 #[derive(Debug, Error)]
 pub enum ProjectError {
@@ -57,8 +81,80 @@ pub struct Project {
     /// Brazos editados del corte meridional (esquema 4).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub meridian: Option<Meridian>,
+    /// Forma del álabe y líneas de corriente (esquema 5). La de por defecto
+    /// no se escribe.
+    #[serde(default, skip_serializing_if = "blade_is_default")]
+    pub blade: Option<Blade>,
     #[serde(default)]
     pub params: BTreeMap<String, Param>,
+}
+
+/// La forma del álabe y en cuántas líneas de corriente se reparte el canal.
+/// No va en `[params]`: no es una entrada del 1D ni mueve ningún número del
+/// diseño.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct Blade {
+    /// Una de [`BLADE_SHAPES`].
+    #[serde(default = "default_blade_shape", deserialize_with = "blade_shape")]
+    pub shape: String,
+    /// Uno de [`STREAMLINE_COUNTS`].
+    #[serde(default = "default_streamlines", deserialize_with = "streamline_count")]
+    pub streamlines: u8,
+}
+
+impl Default for Blade {
+    fn default() -> Self {
+        Self {
+            shape: default_blade_shape(),
+            streamlines: default_streamlines(),
+        }
+    }
+}
+
+impl Blade {
+    /// Si es la de un proyecto sin `[blade]`.
+    pub fn is_default(&self) -> bool {
+        self.shape == DEFAULT_BLADE_SHAPE && self.streamlines == DEFAULT_STREAMLINES
+    }
+}
+
+fn default_blade_shape() -> String {
+    DEFAULT_BLADE_SHAPE.to_string()
+}
+
+fn default_streamlines() -> u8 {
+    DEFAULT_STREAMLINES
+}
+
+fn blade_is_default(blade: &Option<Blade>) -> bool {
+    blade.as_ref().is_none_or(Blade::is_default)
+}
+
+/// Una forma que no está en [`BLADE_SHAPES`] es un error de carga: no se
+/// cambia por la de por defecto sin avisar.
+fn blade_shape<'de, D: serde::Deserializer<'de>>(deserializer: D) -> Result<String, D::Error> {
+    let text = String::deserialize(deserializer)?;
+    if BLADE_SHAPES.contains(&text.as_str()) {
+        Ok(text)
+    } else {
+        Err(serde::de::Error::custom(format!(
+            "forma de álabe desconocida «{text}»; las válidas son: {}",
+            BLADE_SHAPES.join(", ")
+        )))
+    }
+}
+
+/// Un número de líneas que no está en [`STREAMLINE_COUNTS`] es un error de
+/// carga.
+fn streamline_count<'de, D: serde::Deserializer<'de>>(deserializer: D) -> Result<u8, D::Error> {
+    let count = i64::deserialize(deserializer)?;
+    match u8::try_from(count) {
+        Ok(count) if STREAMLINE_COUNTS.contains(&count) => Ok(count),
+        _ => Err(serde::de::Error::custom(format!(
+            "«streamlines» = {count} no es válido; debe ser 3, 5, 7 o 9"
+        ))),
+    }
 }
 
 /// Lo editado del corte meridional: cada tapa es una Bézier de 5 puntos. Lo
@@ -753,13 +849,14 @@ impl Project {
             suction: None,
             casing: None,
             meridian: None,
+            blade: None,
             params: BTreeMap::new(),
         }
     }
 
     /// Lleva un proyecto de un esquema anterior al actual.
     ///
-    /// Los esquemas 2, 3 y 4 solo añaden campos opcionales, así que basta con
+    /// Los esquemas 2 a 5 solo añaden campos opcionales, así que basta con
     /// cambiar el número. Un esquema desconocido se deja como está y lo
     /// señala `validate` con `HM-PROJ-001`.
     fn migrated(mut self) -> Self {

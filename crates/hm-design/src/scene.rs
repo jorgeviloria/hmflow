@@ -207,7 +207,10 @@ pub fn scene_from(
     };
     match blade {
         BladeSurfaceSource::Camber(camber) => match camber_pieces(camber, blade_count, tolerance) {
-            Ok(blades) => pieces.extend(blades),
+            Ok((blades, missed)) => {
+                pieces.extend(blades);
+                notices.extend(missed.map(blade_notice));
+            }
             Err(message) => notices.push(blade_notice(message)),
         },
         BladeSurfaceSource::Planar(blade) => {
@@ -274,11 +277,13 @@ fn circle(z: f64, r: f64, tolerance: f64) -> Option<Polyline3> {
 /// Los `blade_count` álabes de una línea media 3D: el álabe 0 con
 /// `offset = 0` y los demás, girados `−2π·k/Z`, que es el álabe k + 1 de la
 /// planta. Cada uno lleva sus cuatro bordes: ataque, salida, cubo y tapa.
+/// Con la forma libre devuelve también el aviso si ni con las columnas
+/// máximas se alcanza la tolerancia.
 fn camber_pieces(
     camber: &BladeCamber,
     blade_count: u32,
     tolerance: f64,
-) -> Result<Vec<Piece>, String> {
+) -> Result<(Vec<Piece>, Option<String>), String> {
     if blade_count == 0 {
         return Err("el rodete no tiene álabes".to_string());
     }
@@ -305,11 +310,20 @@ fn camber_pieces(
         .map(|line| line.points.iter().map(cartesian).collect())
         .collect();
     let stations = kept_stations(&along, tolerance);
-    let (cols, points) = match camber.shape {
-        BladeShape::Ruled3D => (RULED_COLUMNS, ruled_grid(&along, &stations)),
+    let (cols, points, missed) = match camber.shape {
+        BladeShape::Ruled3D => (RULED_COLUMNS, ruled_grid(&along, &stations), None),
         _ => free_grid(camber, &stations, tolerance),
     };
-    woven_blades(stations.len(), cols, &points, blade_count)
+    let notice = missed.map(|deviation| {
+        format!(
+            "la superficie del álabe no alcanza la tolerancia de {tolerance} mm con {cols} \
+             columnas a lo ancho: se aparta hasta {deviation:.3} mm"
+        )
+    });
+    Ok((
+        woven_blades(stations.len(), cols, &points, blade_count)?,
+        notice,
+    ))
 }
 
 /// Los `blade_count` álabes de una forma 2D: en cada punto de la línea, el z
@@ -484,7 +498,11 @@ fn ruled_grid(lines: &[Vec<[f64; 3]>], stations: &[usize]) -> Vec<[f64; 3]> {
 /// cada estación. Columnas: la menor de [`FREE_COLUMNS`] en la que el punto
 /// medio de cada tramo dista de su cuerda menos que `tolerance`. La primera y
 /// la última columna son los nodos del cubo y de la tapa, sin interpolar.
-fn free_grid(camber: &BladeCamber, stations: &[usize], tolerance: f64) -> (usize, Vec<[f64; 3]>) {
+fn free_grid(
+    camber: &BladeCamber,
+    stations: &[usize],
+    tolerance: f64,
+) -> (usize, Vec<[f64; 3]>, Option<f64>) {
     let lines = &camber.lines;
     let psi: Vec<f64> = lines.iter().map(|line| line.psi).collect();
     let (first, last) = (psi[0], psi[psi.len() - 1]);
@@ -513,25 +531,31 @@ fn free_grid(camber: &BladeCamber, stations: &[usize], tolerance: f64) -> (usize
         let [z, r, theta] = &splines[row];
         polar_to_mm(z.at(s), r.at(s), theta.at(s))
     };
-    let fits = |cols: usize| {
-        (0..stations.len()).all(|row| {
-            (0..cols - 1).all(|col| {
+    // El mayor desvío entre la cuerda y el punto medio de cada tramo.
+    let deviation = |cols: usize| {
+        (0..stations.len())
+            .flat_map(|row| (0..cols - 1).map(move |col| (row, col)))
+            .map(|(row, col)| {
                 let middle = at(row, cols, col as f64 + 0.5);
                 let (a, b) = (at(row, cols, col as f64), at(row, cols, col as f64 + 1.0));
-                distance_to_segment(middle, a, b) < tolerance
+                distance_to_segment(middle, a, b)
             })
-        })
+            .fold(0.0, f64::max)
     };
-    let cols = FREE_COLUMNS
+    let most = FREE_COLUMNS[FREE_COLUMNS.len() - 1];
+    let (cols, missed) = match FREE_COLUMNS
         .iter()
         .copied()
-        .find(|&cols| fits(cols))
-        .unwrap_or(FREE_COLUMNS[FREE_COLUMNS.len() - 1]);
+        .find(|&cols| deviation(cols) < tolerance)
+    {
+        Some(cols) => (cols, None),
+        None => (most, Some(deviation(most))),
+    };
     let points = (0..stations.len())
         .flat_map(|row| (0..cols).map(move |col| (row, col)))
         .map(|(row, col)| at(row, cols, col as f64))
         .collect();
-    (cols, points)
+    (cols, points, missed)
 }
 
 /// Distancia de `point` al segmento `a`–`b`.

@@ -267,6 +267,32 @@ mod blades {
         }
     }
 
+    /// Una superficie tan doblada a lo ancho que ni con 64 columnas cumple
+    /// la tolerancia sale igual, pero con un aviso: no se calla.
+    #[test]
+    fn a_blade_that_misses_the_tolerance_says_so() {
+        let mut warped = case(BladeShape::Free3D, 3);
+        for point in &mut warped.camber.lines[1].points {
+            point.theta += 1.0;
+        }
+        let scene = scene(&warped, 0.005);
+        assert!(scene.piece(PieceId::BladeMean { index: 0 }).is_some());
+        assert!(
+            scene.notices.iter().any(|notice| notice
+                .message
+                .contains("no alcanza la tolerancia de 0.005 mm")),
+            "{:?}",
+            scene.notices
+        );
+        let fine = scene_from(
+            &warped.model,
+            BladeSurfaceSource::Camber(&case(BladeShape::Free3D, 3).camber),
+            warped.blades,
+            0.05,
+        );
+        assert!(fine.notices.is_empty(), "{:?}", fine.notices);
+    }
+
     #[test]
     fn the_blade_edges_lie_on_hub_and_shroud() {
         let case = case(BladeShape::Free3D, 5);

@@ -26,11 +26,19 @@ pub(crate) fn scene_of(outcome: &Outcome, tolerance_mm: f64) -> Result<Scene, St
     let edits = hm_engine::meridian_edits_of(&outcome.inputs.meridian);
     let (model, cut_error) = crate::meridian::model_or_uncut(&outcome.result, &edits)
         .map_err(|error| format!("no hay meridiano: {error}"))?;
+    // Los textos son los de `hm_engine::scene`: la huella incluye los avisos.
+    let camber = match crate::blade_inlet::camber_of(outcome) {
+        Ok(Some(camber)) => Ok(camber),
+        Ok(None) => Err("la superficie de la forma 2D llega en la tarea siguiente".to_string()),
+        Err(error) => Err(format!("la línea media del álabe no sale: {error}")),
+    };
+    let blade = match &camber {
+        Ok(camber) => BladeSurfaceSource::Camber(camber),
+        Err(message) => BladeSurfaceSource::Unavailable(message.clone()),
+    };
     let mut scene = scene_from(
         &model,
-        BladeSurfaceSource::Unavailable(
-            "la superficie del álabe llega en una tarea posterior".to_string(),
-        ),
+        blade,
         outcome.result.selection.blade_count,
         tolerance_mm,
     );
@@ -264,6 +272,29 @@ mod tests {
         assert!(scene.piece(PieceId::Hub).is_some());
         assert!(scene.piece(PieceId::Shroud).is_some());
         assert_eq!(scene.tolerance, SCENE_TOLERANCE_FINE_MM);
+    }
+
+    /// La vista y el motor (lo que se exportaría) arman la misma escena, con
+    /// álabes libres y reglados.
+    #[test]
+    fn the_view_and_the_engine_build_the_same_scene() {
+        use hm_design::blade_setup::BladeShape;
+        for shape in [BladeShape::Free3D, BladeShape::Ruled3D] {
+            let mut inputs = Inputs::default();
+            inputs.blade.shape = shape;
+            inputs.blade.streamlines = 5;
+            let basis = Basis::default();
+            let outcome = compute(&inputs, &basis).unwrap();
+            let view = scene_of(&outcome, SCENE_TOLERANCE_FINE_MM).unwrap();
+            assert!(
+                view.piece(PieceId::BladeMean { index: 0 }).is_some(),
+                "{shape:?}: {:?}",
+                view.notices
+            );
+            let built = crate::model::build_project(&inputs, &basis, None, "rodete").unwrap();
+            let engine = hm_engine::scene(&built.project, SCENE_TOLERANCE_FINE_MM).unwrap();
+            assert_eq!(view.fingerprint(), engine.fingerprint(), "{shape:?}");
+        }
     }
 
     #[test]

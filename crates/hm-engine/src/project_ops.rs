@@ -1,7 +1,7 @@
 //! Crear un proyecto y pedir su informe, sin imprimir ni guardar.
 
 use hm_core::PumpType;
-use hm_design::blade_camber::camber_for_design;
+use hm_design::blade_camber::{BladeCamber, camber_for_design};
 use hm_design::blade_setup::{BladeFamily, BladeSetup, BladeShape, CamberBows, STREAMLINE_COUNTS};
 use hm_design::geometry::DEFAULT_INCIDENCE_DEG;
 use hm_design::meridian::{
@@ -373,16 +373,21 @@ fn meridian_or_uncut(
 ///
 /// Rechaza lo mismo que el meridiano: un proyecto que no pasa del 1D. Un
 /// recorte del cubo que falla no es error: el cubo sale sin recorte y la
-/// escena lleva el aviso. La superficie del álabe llega en una tarea
-/// posterior; hoy es un aviso.
+/// escena lleva el aviso. Con forma 3D, los álabes son la superficie media
+/// de [`camber_for_design`], la misma cadena que la planta; si la línea media
+/// falla, la escena sale sin álabes y con el motivo. La forma 2D llega en una
+/// tarea posterior.
 pub fn scene(project: &Project, tolerance: f64) -> Result<Scene, EngineError> {
     let analysis = drawable(project)?;
     let (model, cut_error) = meridian_or_uncut(project, &analysis.result)?;
+    let camber = scene_camber(project, &analysis, &model);
+    let blade = match &camber {
+        Ok(camber) => BladeSurfaceSource::Camber(camber),
+        Err(message) => BladeSurfaceSource::Unavailable(message.clone()),
+    };
     let mut scene = scene_from(
         &model,
-        BladeSurfaceSource::Unavailable(
-            "la superficie del álabe llega en una tarea posterior".to_string(),
-        ),
+        blade,
         analysis.result.selection.blade_count,
         tolerance,
     );
@@ -661,4 +666,34 @@ pub(crate) fn rho_text(case: &Case, analysis: &Analysis) -> String {
         | DensitySource::WaterAtDefaultTemperature
         | DensitySource::Fallback => format!("{:.3} kg/m3", analysis.input.rho.si),
     }
+}
+
+/// La línea media 3D de la escena, o el motivo de que no haya álabes.
+fn scene_camber(
+    project: &Project,
+    analysis: &Analysis,
+    model: &MeridionalModel,
+) -> Result<BladeCamber, String> {
+    let geometry = analysis
+        .geometry
+        .as_ref()
+        .map_err(|error| format!("sin geometría no hay álabes: {error}"))?;
+    let setup = blade_setup_of(project.blade.as_ref())?;
+    if setup.shape.family() != BladeFamily::ThreeD {
+        return Err("la superficie de la forma 2D llega en la tarea siguiente".to_string());
+    }
+    let incidence_deg = case_from_project(project)
+        .map_err(|error| error.to_string())?
+        .design
+        .incidence_deg
+        .unwrap_or(DEFAULT_INCIDENCE_DEG);
+    camber_for_design(
+        &analysis.result,
+        &geometry.impeller,
+        model,
+        &setup,
+        incidence_deg,
+    )
+    .map_err(|error| format!("la línea media del álabe no sale: {error}"))?
+    .ok_or_else(|| "la forma del álabe no es 3D".to_string())
 }

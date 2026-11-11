@@ -131,3 +131,24 @@ fn a_failing_hub_cut_draws_the_uncut_hub_with_a_notice() {
         notice.message
     );
 }
+
+/// Con forma 3D, libre o reglada, la escena lleva los Z álabes y ningún aviso.
+#[test]
+fn a_3d_blade_gives_z_blades_in_the_scene() {
+    for shape in ["free_3d", "ruled_3d"] {
+        let mut project = b1_project();
+        project.blade = Some(hm_project::Blade {
+            shape: shape.into(),
+            streamlines: 5,
+            ..hm_project::Blade::default()
+        });
+        let scene = hm_engine::scene(&project, SCENE_TOLERANCE_FINE_MM).unwrap();
+        assert!(scene.notices.is_empty(), "{shape}: {:?}", scene.notices);
+        let blades = scene
+            .pieces
+            .iter()
+            .filter(|piece| matches!(piece.id, PieceId::BladeMean { .. }))
+            .count();
+        assert_eq!(blades, 5, "{shape}");
+    }
+}

@@ -172,3 +172,239 @@ fn labels_are_in_spanish() {
     assert_eq!(PieceId::Shroud.label(), "Tapa");
     assert_eq!(PieceId::BladeMean { index: 2 }.label(), "Álabe 3");
 }
+
+// ---- Superficie media de los álabes (formas 3D) ----
+
+mod blades {
+    use hm_design::blade_camber::{BladeCamber, camber_for_design};
+    use hm_design::blade_setup::{BladeSetup, BladeShape};
+    use hm_design::geometry::{DEFAULT_INCIDENCE_DEG, geometry};
+    use hm_design::meridian::{MeridionalModel, Wall, meridional_model};
+    use hm_design::plan::plan_model_with;
+    use hm_design::scene::{BladeSurfaceSource, PieceId, Scene, scene_from};
+    use hm_design::{DesignInput, DesignResult, default_mechanical_efficiency, design};
+    use hm_units::parse_quantity;
+
+    use super::distance_to;
+
+    /// El punto de máximo rendimiento de B1, como en `tests/plan.rs`.
+    fn b1_input() -> DesignInput {
+        let q = parse_quantity("1060 gpm").unwrap();
+        let n = parse_quantity("1750 rpm").unwrap();
+        DesignInput {
+            h: parse_quantity("83 m").unwrap(),
+            rho: parse_quantity("998.2 kg/m3").unwrap(),
+            eta_m: default_mechanical_efficiency(&q, &n).unwrap(),
+            npsha: None,
+            nu: None,
+            q,
+            n,
+        }
+    }
+
+    struct Case {
+        result: DesignResult,
+        model: MeridionalModel,
+        camber: BladeCamber,
+        blades: u32,
+    }
+
+    fn case(shape: BladeShape, streamlines: u8) -> Case {
+        let input = b1_input();
+        let result = design(&input).unwrap();
+        let shape_geometry = geometry(&input, &result).unwrap();
+        let model = meridional_model(&result).unwrap();
+        let setup = BladeSetup {
+            shape,
+            streamlines,
+            ..BladeSetup::default()
+        };
+        let camber = camber_for_design(
+            &result,
+            &shape_geometry.impeller,
+            &model,
+            &setup,
+            DEFAULT_INCIDENCE_DEG,
+        )
+        .unwrap()
+        .expect("forma 3D");
+        let blades = result.selection.blade_count;
+        Case {
+            result,
+            model,
+            camber,
+            blades,
+        }
+    }
+
+    fn scene(case: &Case, tolerance: f64) -> Scene {
+        scene_from(
+            &case.model,
+            BladeSurfaceSource::Camber(&case.camber),
+            case.blades,
+            tolerance,
+        )
+    }
+
+    fn blade(scene: &Scene, index: u32) -> &hm_design::scene::Piece {
+        scene
+            .piece(PieceId::BladeMean { index })
+            .unwrap_or_else(|| panic!("falta el álabe {index}: {:?}", scene.notices))
+    }
+
+    #[test]
+    fn a_free_blade_gives_z_mean_surfaces() {
+        let case = case(BladeShape::Free3D, 5);
+        let scene = scene(&case, 0.05);
+        assert!(scene.notices.is_empty(), "{:?}", scene.notices);
+        assert!(scene.piece(PieceId::Hub).is_some());
+        assert!(scene.piece(PieceId::Shroud).is_some());
+        assert_eq!(scene.pieces.len(), 2 + case.blades as usize);
+        for index in 0..case.blades {
+            let piece = blade(&scene, index);
+            assert!(!piece.surface.triangles.is_empty());
+            assert_eq!(piece.curves.len(), 4);
+        }
+    }
+
+    #[test]
+    fn the_blade_edges_lie_on_hub_and_shroud() {
+        let case = case(BladeShape::Free3D, 5);
+        let scene = scene(&case, 0.05);
+        let piece = blade(&scene, 0);
+        for (curve, wall) in [
+            (&piece.curves[2], Wall::Hub),
+            (&piece.curves[3], Wall::Shroud),
+        ] {
+            let line = &case.model.curve(wall.name()).unwrap().points;
+            for point in &curve.points {
+                let gap = distance_to(line, [point[2], point[0].hypot(point[1])]);
+                assert!(gap <= 0.01, "{} a {gap} mm", wall.name());
+            }
+        }
+    }
+
+    #[test]
+    fn the_hub_edge_seen_from_suction_is_the_plan_curve() {
+        let case = case(BladeShape::Free3D, 5);
+        let scene = scene(&case, 0.05);
+        let geometry = geometry(&b1_input(), &case.result).unwrap();
+        let plan = plan_model_with(&case.result, &geometry, Some(&case.camber)).unwrap();
+        for k in 0..2u32 {
+            let plan_hub = &plan
+                .curve(&format!("Álabe {} · cubo", k + 1))
+                .unwrap()
+                .points;
+            let hub = &blade(&scene, k).curves[2].points;
+            for point in hub {
+                let seen = [-point[0], point[1]];
+                let gap = plan_hub
+                    .iter()
+                    .map(|p| (p[0] - seen[0]).hypot(p[1] - seen[1]))
+                    .fold(f64::INFINITY, f64::min);
+                assert!(gap <= 1e-6, "álabe {k}: {gap} mm");
+            }
+            // Los extremos son los de la planta.
+            for (scene_end, plan_end) in [
+                (hub.first().unwrap(), plan_hub.first().unwrap()),
+                (hub.last().unwrap(), plan_hub.last().unwrap()),
+            ] {
+                assert!((-scene_end[0] - plan_end[0]).hypot(scene_end[1] - plan_end[1]) <= 1e-6);
+            }
+        }
+    }
+
+    #[test]
+    fn the_blade_goes_clockwise_seen_from_suction() {
+        let case = case(BladeShape::Free3D, 5);
+        let scene = scene(&case, 0.05);
+        let hub = &blade(&scene, 0).curves[2].points;
+        let mut previous = hub[0][1].atan2(-hub[0][0]);
+        let mut total = 0.0;
+        for point in &hub[1..] {
+            let angle = point[1].atan2(-point[0]);
+            let mut step = angle - previous;
+            while step > std::f64::consts::PI {
+                step -= std::f64::consts::TAU;
+            }
+            while step < -std::f64::consts::PI {
+                step += std::f64::consts::TAU;
+            }
+            assert!(step < 0.0, "paso {step}");
+            total += step;
+            previous = angle;
+        }
+        let wrap = case.camber.lines[0].wrap;
+        assert!((total + wrap).abs() <= 1e-6, "total {total}, wrap {wrap}");
+    }
+
+    #[test]
+    fn a_ruled_blade_is_straight_from_hub_to_shroud() {
+        let case = case(BladeShape::Ruled3D, 5);
+        let scene = scene(&case, 0.05);
+        assert!(scene.notices.is_empty(), "{:?}", scene.notices);
+        let piece = blade(&scene, 0);
+        let hub = &piece.curves[2].points;
+        let shroud = &piece.curves[3].points;
+        let mesh = &piece.surface;
+        let cols = mesh.vertices.len() / hub.len();
+        assert_eq!(cols * hub.len(), mesh.vertices.len());
+        assert!(cols >= 8);
+        for (row, (a, b)) in hub.iter().zip(shroud).enumerate() {
+            let d = [b[0] - a[0], b[1] - a[1], b[2] - a[2]];
+            let length2 = d[0] * d[0] + d[1] * d[1] + d[2] * d[2];
+            for vertex in &mesh.vertices[row * cols..(row + 1) * cols] {
+                let v = [vertex[0] - a[0], vertex[1] - a[1], vertex[2] - a[2]];
+                let t = ((v[0] * d[0] + v[1] * d[1] + v[2] * d[2]) / length2).clamp(0.0, 1.0);
+                let gap = (0..3)
+                    .map(|axis| (v[axis] - t * d[axis]).powi(2))
+                    .sum::<f64>()
+                    .sqrt();
+                assert!(gap <= 1e-9, "fila {row}: {gap} mm");
+            }
+        }
+    }
+
+    #[test]
+    fn blade_k_is_blade_0_turned() {
+        let case = case(BladeShape::Free3D, 5);
+        let scene = scene(&case, 0.05);
+        let first = &blade(&scene, 0).surface;
+        for k in 1..case.blades {
+            let angle = -std::f64::consts::TAU * f64::from(k) / f64::from(case.blades);
+            let turned = first.rotated_z(angle);
+            let piece = &blade(&scene, k).surface;
+            assert_eq!(piece.triangles, turned.triangles);
+            for (a, b) in piece.vertices.iter().zip(&turned.vertices) {
+                for axis in 0..3 {
+                    assert!((a[axis] - b[axis]).abs() <= 1e-9, "álabe {k}");
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn a_coarser_tolerance_keeps_the_edges() {
+        let case = case(BladeShape::Free3D, 5);
+        let fine = scene(&case, 0.05);
+        let coarse = scene(&case, 0.5);
+        let (fine, coarse) = (blade(&fine, 0), blade(&coarse, 0));
+        assert!(coarse.surface.triangles.len() < fine.surface.triangles.len());
+        for (a, b) in fine.curves.iter().zip(&coarse.curves) {
+            assert_eq!(a.points.first(), b.points.first());
+            assert_eq!(a.points.last(), b.points.last());
+        }
+    }
+
+    #[test]
+    fn two_streamlines_are_enough() {
+        let mut case = case(BladeShape::Free3D, 3);
+        // Solo cubo y tapa: la spline se queda en recta.
+        let last = case.camber.lines.pop().unwrap();
+        case.camber.lines.truncate(1);
+        case.camber.lines.push(last);
+        let scene = scene(&case, 0.05);
+        assert!(scene.notices.is_empty(), "{:?}", scene.notices);
+        assert!(!blade(&scene, 0).surface.triangles.is_empty());
+    }
+}

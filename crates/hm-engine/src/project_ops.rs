@@ -3,6 +3,7 @@
 use hm_core::PumpType;
 use hm_design::blade_camber::{BladeCamber, camber_for_design};
 use hm_design::blade_setup::{BladeFamily, BladeSetup, BladeShape, CamberBows, STREAMLINE_COUNTS};
+use hm_design::blade_solid::{BladeSolid, blade_solid_for_design};
 use hm_design::blade_thickness::{BladeThickness, EditedThickness, ThicknessCurve, ThicknessNode};
 use hm_design::geometry::DEFAULT_INCIDENCE_DEG;
 use hm_design::meridian::{
@@ -382,8 +383,21 @@ pub fn scene(project: &Project, tolerance: f64) -> Result<Scene, EngineError> {
     let analysis = drawable(project)?;
     let (model, cut_error) = meridian_or_uncut(project, &analysis.result)?;
     let camber = scene_camber(project, &analysis, &model);
+    // Con línea media 3D, el álabe con espesor: sale por la misma cadena, o el
+    // motivo, que la escena enseña como aviso y con las superficies medias.
+    let solid = match &camber {
+        Ok(Some(_)) => Some(scene_solid(project, &analysis, &model)),
+        _ => None,
+    };
     let blade = match (&camber, &analysis.geometry) {
-        (Ok(Some(camber)), _) => BladeSurfaceSource::Camber(camber),
+        (Ok(Some(camber)), _) => BladeSurfaceSource::Solid {
+            camber,
+            solid: solid
+                .as_ref()
+                .expect("con línea media hay sólido o motivo")
+                .as_ref()
+                .map_err(Clone::clone),
+        },
         (Ok(None), Ok(geometry)) => BladeSurfaceSource::Planar(&geometry.impeller.blade),
         (Ok(None), Err(error)) => {
             BladeSurfaceSource::Unavailable(format!("sin geometría no hay álabes: {error}"))
@@ -731,6 +745,33 @@ pub(crate) fn rho_text(case: &Case, analysis: &Analysis) -> String {
         | DensitySource::WaterAtDefaultTemperature
         | DensitySource::Fallback => format!("{:.3} kg/m3", analysis.input.rho.si),
     }
+}
+
+/// El álabe con espesor de la escena, por la misma cadena que la línea media
+/// ([`blade_solid_for_design`]); el error pasa a texto.
+fn scene_solid(
+    project: &Project,
+    analysis: &Analysis,
+    model: &MeridionalModel,
+) -> Result<BladeSolid, String> {
+    let geometry = analysis
+        .geometry
+        .as_ref()
+        .map_err(|error| format!("sin geometría no hay álabes: {error}"))?;
+    let setup = blade_setup_of(project.blade.as_ref())?;
+    let incidence_deg = case_from_project(project)
+        .map_err(|error| error.to_string())?
+        .design
+        .incidence_deg
+        .unwrap_or(DEFAULT_INCIDENCE_DEG);
+    blade_solid_for_design(
+        &analysis.result,
+        &geometry.impeller,
+        model,
+        &setup,
+        incidence_deg,
+    )
+    .map_err(|error| error.to_string())
 }
 
 /// La línea media 3D de la escena; `None` con forma 2D, o el motivo de que

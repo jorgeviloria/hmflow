@@ -29,8 +29,20 @@ pub(crate) fn scene_of(outcome: &Outcome, tolerance_mm: f64) -> Result<Scene, St
         .map_err(|error| format!("no hay meridiano: {error}"))?;
     // Los textos son los de `hm_engine::scene`: la huella incluye los avisos.
     let camber = crate::blade_inlet::camber_of(outcome);
+    // Con línea media 3D, el álabe con espesor (o el motivo de que no salga).
+    let solid = match &camber {
+        Ok(Some(_)) => Some(crate::blade_inlet::solid_of(outcome).map_err(|e| e.to_string())),
+        _ => None,
+    };
     let blade = match (&camber, &outcome.geometry) {
-        (Ok(Some(camber)), _) => BladeSurfaceSource::Camber(camber),
+        (Ok(Some(camber)), _) => BladeSurfaceSource::Solid {
+            camber,
+            solid: solid
+                .as_ref()
+                .expect("con línea media hay sólido o motivo")
+                .as_ref()
+                .map_err(Clone::clone),
+        },
         (Ok(None), Ok(geometry)) => BladeSurfaceSource::Planar(&geometry.impeller.blade),
         (Ok(None), Err(error)) => {
             BladeSurfaceSource::Unavailable(format!("sin geometría no hay álabes: {error}"))
@@ -82,7 +94,7 @@ impl Visibility {
         match id {
             PieceId::Hub => self.hub,
             PieceId::Shroud => self.shroud,
-            PieceId::BladeMean { .. } => self.blades,
+            PieceId::BladeMean { .. } | PieceId::Blade { .. } => self.blades,
         }
     }
 }
@@ -472,7 +484,7 @@ fn style_of(styles: &Styles, id: PieceId) -> PieceStyle {
     match id {
         PieceId::Hub => styles.pieces[0],
         PieceId::Shroud => styles.pieces[1],
-        PieceId::BladeMean { .. } => styles.pieces[2],
+        PieceId::BladeMean { .. } | PieceId::Blade { .. } => styles.pieces[2],
     }
 }
 
@@ -622,6 +634,7 @@ mod tests {
                 triangles: vec![[0, 1, 2]],
             },
             curves: Vec::new(),
+            faces: Vec::new(),
         }
     }
 
@@ -672,7 +685,7 @@ mod tests {
             tolerance: SCENE_TOLERANCE_FINE_MM,
         };
         let lines = notice_lines(Some(&scene), None);
-        assert_eq!(lines, ["Cubo: uno", "Álabe 2: dos"]);
+        assert_eq!(lines, ["Cubo: uno", "Superficie media 2: dos"]);
         let mut title = None;
         egui::__run_test_ui(|ui| title = notice_strip(ui, &lines));
         assert_eq!(title.as_deref(), Some("Avisos (2)"));

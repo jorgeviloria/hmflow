@@ -164,3 +164,84 @@ fn a_2d_blade_gives_z_blades_in_the_scene() {
         .count();
     assert_eq!(blades, 5);
 }
+
+fn count(scene: &hm_design::scene::Scene, pick: fn(PieceId) -> bool) -> usize {
+    scene.pieces.iter().filter(|piece| pick(piece.id)).count()
+}
+
+/// Con forma 3D, libre o reglada, además de las superficies medias, Z álabes
+/// con espesor, cerrados, y ningún aviso.
+#[test]
+fn a_3d_blade_gives_z_thick_pieces_in_the_scene() {
+    for shape in ["free_3d", "ruled_3d"] {
+        let mut project = b1_project();
+        project.blade = Some(hm_project::Blade {
+            shape: shape.into(),
+            streamlines: 5,
+            ..hm_project::Blade::default()
+        });
+        let scene = hm_engine::scene(&project, SCENE_TOLERANCE_FINE_MM).unwrap();
+        assert!(scene.notices.is_empty(), "{shape}: {:?}", scene.notices);
+        assert_eq!(
+            count(&scene, |id| matches!(id, PieceId::Blade { .. })),
+            5,
+            "{shape}"
+        );
+        assert_eq!(
+            count(&scene, |id| matches!(id, PieceId::BladeMean { .. })),
+            5,
+            "{shape}"
+        );
+        let piece = scene.piece(PieceId::Blade { index: 0 }).unwrap();
+        assert_eq!(piece.surface.open_edges(1e-6), 0, "{shape}");
+        assert!(piece.surface.signed_volume() > 0.0, "{shape}");
+    }
+}
+
+/// Una curva de espesor con la que el álabe no se construye (60 mm en el
+/// nodo central): sin álabes con espesor, las superficies medias de siempre
+/// y el motivo en el aviso.
+#[test]
+fn a_blade_that_does_not_build_keeps_the_mean_surfaces_and_says_why() {
+    let mut project = b1_project();
+    project.blade = Some(hm_project::Blade {
+        shape: "free_3d".into(),
+        streamlines: 5,
+        thickness_hub: vec![[0.0, 6.0], [0.5, 60.0], [1.0, 3.0]],
+        ..hm_project::Blade::default()
+    });
+    let scene = hm_engine::scene(&project, SCENE_TOLERANCE_FINE_MM).unwrap();
+    assert_eq!(count(&scene, |id| matches!(id, PieceId::Blade { .. })), 0);
+    assert_eq!(
+        count(&scene, |id| matches!(id, PieceId::BladeMean { .. })),
+        5
+    );
+    let notice = scene
+        .notices
+        .iter()
+        .find(|notice| notice.piece == PieceId::Blade { index: 0 })
+        .unwrap_or_else(|| panic!("falta el aviso: {:?}", scene.notices));
+    assert!(
+        notice.message.starts_with("el álabe con espesor no sale ("),
+        "{}",
+        notice.message
+    );
+    assert!(
+        notice.message.ends_with("); se dibuja la superficie media"),
+        "{}",
+        notice.message
+    );
+    assert!(
+        notice.message.contains("(0 es el cubo)"),
+        "{}",
+        notice.message
+    );
+}
+
+/// Una forma 2D sale como siempre: sin piezas con espesor ni aviso.
+#[test]
+fn a_2d_shape_has_no_thick_pieces() {
+    let scene = hm_engine::scene(&b1_project(), SCENE_TOLERANCE_FINE_MM).unwrap();
+    assert_eq!(count(&scene, |id| matches!(id, PieceId::Blade { .. })), 0);
+    assert!(scene.notices.is_empty(), "{:?}", scene.notices);
+}

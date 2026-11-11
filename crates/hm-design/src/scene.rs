@@ -7,11 +7,13 @@
 //! lleva su motivo en `notices`.
 
 use std::f64::consts::TAU;
+use std::ops::Range;
 
 use hm_geometry::mesh::{Polyline3, TriangleMesh, grid_surface, revolve, revolve_segments};
 
 use crate::blade_camber::{BladeCamber, CamberPoint};
 use crate::blade_setup::BladeShape;
+use crate::blade_solid::{BladeSolid, SolidLine, SolidPoint};
 use crate::geometry::BladePoint;
 use crate::meridian::{MeridionalModel, Wall};
 
@@ -38,6 +40,10 @@ pub enum PieceId {
     BladeMean {
         index: u32,
     },
+    /// El álabe `index` con espesor: una pieza cerrada de seis caras.
+    Blade {
+        index: u32,
+    },
 }
 
 impl PieceId {
@@ -47,7 +53,8 @@ impl PieceId {
         match self {
             Self::Hub => "Cubo".to_string(),
             Self::Shroud => "Tapa".to_string(),
-            Self::BladeMean { index } => format!("Álabe {}", u64::from(index) + 1),
+            Self::BladeMean { index } => format!("Superficie media {}", u64::from(index) + 1),
+            Self::Blade { index } => format!("Álabe {}", u64::from(index) + 1),
         }
     }
 
@@ -57,6 +64,46 @@ impl PieceId {
             Self::Hub => 0,
             Self::Shroud => 1,
             Self::BladeMean { index } => 2 + u64::from(index),
+            // Otro espacio de claves: la huella de una escena sin álabes con
+            // espesor no cambia.
+            Self::Blade { index } => (1 << 32) + u64::from(index),
+        }
+    }
+}
+
+/// Las seis caras de un álabe con espesor, en el orden en que se tejen y se
+/// unen en la pieza.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum BladeFace {
+    Pressure,
+    Suction,
+    HubBand,
+    ShroudBand,
+    LeadingEdge,
+    TrailingEdge,
+}
+
+impl BladeFace {
+    /// Las seis, en el orden de la pieza.
+    pub const ALL: [Self; 6] = [
+        Self::Pressure,
+        Self::Suction,
+        Self::HubBand,
+        Self::ShroudBand,
+        Self::LeadingEdge,
+        Self::TrailingEdge,
+    ];
+
+    /// Su nombre en la interfaz.
+    #[must_use]
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::Pressure => "Cara de presión",
+            Self::Suction => "Cara de succión",
+            Self::HubBand => "Banda del cubo",
+            Self::ShroudBand => "Banda de la tapa",
+            Self::LeadingEdge => "Canto de entrada",
+            Self::TrailingEdge => "Canto de salida",
         }
     }
 }
@@ -67,6 +114,45 @@ pub struct Piece {
     pub id: PieceId,
     pub surface: TriangleMesh,
     pub curves: Vec<Polyline3>,
+    /// Los triángulos de `surface` de cada cara, en el orden de
+    /// [`BladeFace::ALL`]; vacío en las piezas que no son un álabe con
+    /// espesor.
+    pub faces: Vec<(BladeFace, Range<u32>)>,
+}
+
+impl Piece {
+    /// Una cara del álabe como malla propia, con solo sus vértices; `None` si
+    /// la pieza no la tiene.
+    #[must_use]
+    pub fn face(&self, face: BladeFace) -> Option<TriangleMesh> {
+        let (_, range) = self.faces.iter().find(|(named, _)| *named == face)?;
+        let triangles = &self.surface.triangles[range.start as usize..range.end as usize];
+        // Los vértices de la cara, en el orden de la pieza (el de su rejilla).
+        let mut used: Vec<u32> = triangles.iter().flatten().copied().collect();
+        used.sort_unstable();
+        used.dedup();
+        let remap: std::collections::HashMap<u32, u32> = used
+            .iter()
+            .enumerate()
+            .map(|(new, old)| (*old, new as u32))
+            .collect();
+        let mut mesh = TriangleMesh {
+            vertices: used
+                .iter()
+                .map(|&index| self.surface.vertices[index as usize])
+                .collect(),
+            normals: used
+                .iter()
+                .map(|&index| self.surface.normals[index as usize])
+                .collect(),
+            triangles: Vec::with_capacity(triangles.len()),
+        };
+        mesh.triangles = triangles
+            .iter()
+            .map(|triangle| triangle.map(|index| remap[&index]))
+            .collect();
+        Some(mesh)
+    }
 }
 
 /// Por qué una pieza no sale, o sale distinta de lo pedido.
@@ -170,6 +256,13 @@ pub enum BladeSurfaceSource<'a> {
     /// La línea media de una forma 2D (`r`, `θ` en m y rad), tendida en z
     /// entre cubo y tapa: un álabe cilíndrico.
     Planar(&'a [BladePoint]),
+    /// El álabe con espesor: la línea media (para la superficie media, que se
+    /// conserva) y el sólido, o el motivo de que no salga. Con `Err`, solo
+    /// las superficies medias y un aviso.
+    Solid {
+        camber: &'a BladeCamber,
+        solid: Result<&'a BladeSolid, String>,
+    },
     /// No hay superficie: el motivo va al aviso.
     Unavailable(String),
 }
@@ -219,6 +312,34 @@ pub fn scene_from(
                 Err(message) => notices.push(blade_notice(message)),
             }
         }
+        BladeSurfaceSource::Solid { camber, solid } => {
+            match camber_pieces(camber, blade_count, tolerance) {
+                Ok((blades, missed)) => {
+                    pieces.extend(blades);
+                    notices.extend(missed.map(blade_notice));
+                }
+                Err(message) => notices.push(blade_notice(message)),
+            }
+            let thick_notice = |message| SceneNotice {
+                piece: PieceId::Blade { index: 0 },
+                message,
+            };
+            let fallback = |reason: &str| {
+                thick_notice(format!(
+                    "el álabe con espesor no sale ({reason}); se dibuja la superficie media"
+                ))
+            };
+            match solid {
+                Ok(solid) => match thick_pieces(camber, solid, blade_count, tolerance) {
+                    Ok((blades, missed)) => {
+                        pieces.extend(blades);
+                        notices.extend(missed.map(thick_notice));
+                    }
+                    Err(message) => notices.push(fallback(&message)),
+                },
+                Err(reason) => notices.push(fallback(&reason)),
+            }
+        }
         BladeSurfaceSource::Unavailable(message) => notices.push(blade_notice(message)),
     }
     Scene {
@@ -253,6 +374,7 @@ fn wall_piece(
         id,
         surface,
         curves,
+        faces: Vec::new(),
     })
 }
 
@@ -426,6 +548,7 @@ fn woven_blades(
                     id,
                     surface: surface.clone(),
                     curves: curves.clone(),
+                    faces: Vec::new(),
                 };
             }
             let angle = -TAU * f64::from(index) / f64::from(blade_count);
@@ -433,9 +556,362 @@ fn woven_blades(
                 id,
                 surface: surface.rotated_z(angle),
                 curves: curves.iter().map(|curve| curve.rotated_z(angle)).collect(),
+                faces: Vec::new(),
             }
         })
         .collect())
+}
+
+/// Los `blade_count` álabes con espesor: cada uno, una pieza cerrada de seis
+/// caras tejidas por separado (presión, succión, banda del cubo, banda de la
+/// tapa, canto de entrada y canto de salida) y unidas sin fundirse: ningún
+/// triángulo cruza la arista entre una cara y otra, y la etapa 2 puede
+/// cambiar el canto de entrada sin rehacer las otras cinco. El álabe 0 sale
+/// con `offset = 0` y los demás, girados `−2π·k/Z`.
+///
+/// Las seis rejillas comparten estaciones y columnas, y sus puntos de borde,
+/// bit a bit: la malla resultante es cerrada. Las estaciones son las de
+/// [`kept_stations`] sobre las dos caras a la vez; las columnas a lo ancho,
+/// las de la superficie media (8 en la reglada, rectas entre cubo y tapa de
+/// cada cara; en la libre, spline en ψ con las columnas que cumplan la
+/// tolerancia en las dos caras). Cada rejilla se orienta para que su normal
+/// mire hacia fuera.
+fn thick_pieces(
+    camber: &BladeCamber,
+    solid: &BladeSolid,
+    blade_count: u32,
+    tolerance: f64,
+) -> Result<(Vec<Piece>, Option<String>), String> {
+    if blade_count == 0 {
+        return Err("el rodete no tiene álabes".to_string());
+    }
+    let lines = &solid.lines;
+    let nodes = lines.first().map_or(0, |line| line.pressure.len());
+    if lines.len() < 2
+        || lines.len() != camber.lines.len()
+        || nodes < 2
+        || lines
+            .iter()
+            .any(|line| [line.pressure.len(), line.middle.len(), line.suction.len()] != [nodes; 3])
+    {
+        return Err("las caras del álabe no tienen las mismas estaciones".to_string());
+    }
+    if lines.windows(2).any(|pair| pair[1].psi <= pair[0].psi) {
+        return Err(
+            "las líneas de corriente no van del cubo a la tapa con ψ creciente".to_string(),
+        );
+    }
+
+    // [z, r, θ] en m y rad de cada cara, por línea de corriente.
+    let polar = |pick: fn(&SolidLine) -> &Vec<SolidPoint>| -> Vec<Vec<[f64; 3]>> {
+        lines
+            .iter()
+            .map(|line| pick(line).iter().map(|p| [p.z, p.r, p.theta]).collect())
+            .collect()
+    };
+    let faces = [
+        polar(|line| &line.pressure),
+        polar(|line| &line.middle),
+        polar(|line| &line.suction),
+    ];
+    let millimetres: Vec<Vec<Vec<[f64; 3]>>> = faces
+        .iter()
+        .map(|face| {
+            face.iter()
+                .map(|line| line.iter().map(|p| polar_to_mm(p[0], p[1], p[2])).collect())
+                .collect()
+        })
+        .collect();
+    // Las estaciones valen para las dos caras laterales a la vez.
+    let both: Vec<Vec<[f64; 3]>> = millimetres[0]
+        .iter()
+        .chain(&millimetres[2])
+        .cloned()
+        .collect();
+    let stations = kept_stations(&both, tolerance);
+    let (cols, grids, missed) = match camber.shape {
+        BladeShape::Ruled3D => (
+            RULED_COLUMNS,
+            millimetres
+                .iter()
+                .map(|face| ruled_exact(face, &stations))
+                .collect::<Vec<_>>(),
+            None,
+        ),
+        _ => {
+            let psi: Vec<f64> = lines.iter().map(|line| line.psi).collect();
+            free_columns(&psi, &faces, &[0, 2], &stations, tolerance)
+        }
+    };
+    let notice = missed.map(|deviation| {
+        format!(
+            "la superficie del álabe con espesor no alcanza la tolerancia de {tolerance} mm con \
+             {cols} columnas a lo ancho: se aparta hasta {deviation:.3} mm"
+        )
+    });
+    let rows = stations.len();
+    let (pressure, middle, suction) = (&grids[0], &grids[1], &grids[2]);
+
+    // Una rejilla de `rows × cols` puntos escogidos por `pick(fila, columna)`.
+    let weave = |rows: usize, cols: usize, pick: &dyn Fn(usize, usize) -> [f64; 3]| {
+        let points: Vec<[f64; 3]> = (0..rows)
+            .flat_map(|row| (0..cols).map(move |col| (row, col)))
+            .map(|(row, col)| pick(row, col))
+            .collect();
+        grid_surface(rows, cols, &points)
+            .map_err(|error| format!("el álabe con espesor no se pudo tejer: {error}"))
+    };
+    let side = |grid: &[[f64; 3]]| weave(rows, cols, &|row, col| grid[row * cols + col]);
+    let band = |col: usize| {
+        weave(rows, 3, &|row, k| {
+            [pressure, middle, suction][k][row * cols + col]
+        })
+    };
+    let edge = |row: usize| {
+        weave(3, cols, &|k, col| {
+            [pressure, middle, suction][k][row * cols + col]
+        })
+    };
+    let meshes = [
+        side(pressure)?,
+        side(suction)?,
+        band(0)?,
+        band(cols - 1)?,
+        edge(0)?,
+        edge(rows - 1)?,
+    ];
+
+    // Hacia fuera, con una referencia local de cada cara (no «desde el centro
+    // del álabe», que un álabe muy enrollado desmiente): la presión mira de la
+    // succión a la presión y al revés; las bandas, del interior de la
+    // superficie media hacia el cubo y la tapa; los cantos, de la estación
+    // vecina hacia la primera y la última. Todas se emparejan por estación.
+    let mean = |points: &mut dyn Iterator<Item = [f64; 3]>| -> [f64; 3] {
+        let (sum, count) = points.fold(([0.0; 3], 0.0), |(sum, count), p| {
+            (std::array::from_fn(|axis| sum[axis] + p[axis]), count + 1.0)
+        });
+        sum.map(|value| value / count)
+    };
+    let minus =
+        |a: [f64; 3], b: [f64; 3]| -> [f64; 3] { std::array::from_fn(|axis| a[axis] - b[axis]) };
+    let column =
+        |grid: &[[f64; 3]], col: usize| mean(&mut (0..rows).map(|row| grid[row * cols + col]));
+    let row_of =
+        |grid: &[[f64; 3]], row: usize| mean(&mut (0..cols).map(|col| grid[row * cols + col]));
+    let toward_pressure = minus(
+        mean(&mut pressure.iter().copied()),
+        mean(&mut suction.iter().copied()),
+    );
+    let references = [
+        toward_pressure,
+        toward_pressure.map(|value| -value),
+        minus(column(middle, 0), column(middle, 1)),
+        minus(column(middle, cols - 1), column(middle, cols - 2)),
+        minus(row_of(middle, 0), row_of(middle, 1)),
+        minus(row_of(middle, rows - 1), row_of(middle, rows - 2)),
+    ];
+    let meshes: Vec<TriangleMesh> = meshes
+        .into_iter()
+        .zip(references)
+        .map(|(mesh, reference)| outwards(mesh, reference))
+        .collect();
+
+    let mut faces_ranges = Vec::with_capacity(6);
+    let mut start = 0u32;
+    for (face, mesh) in BladeFace::ALL.into_iter().zip(&meshes) {
+        let end = start + mesh.triangles.len() as u32;
+        faces_ranges.push((face, start..end));
+        start = end;
+    }
+    let surface = TriangleMesh::merged(&meshes);
+
+    // Las 12 aristas: cuatro a lo largo (presión–cubo, presión–tapa,
+    // succión–cubo, succión–tapa), cuatro del canto de entrada y cuatro del
+    // de salida (presión, succión, cubo y tapa).
+    let open = |points: Vec<[f64; 3]>| Polyline3 {
+        points,
+        closed: false,
+    };
+    let along = |grid: &[[f64; 3]], col: usize| -> Vec<[f64; 3]> {
+        (0..rows).map(|row| grid[row * cols + col]).collect()
+    };
+    let across = |grid: &[[f64; 3]], row: usize| grid[row * cols..(row + 1) * cols].to_vec();
+    let thickness = |row: usize, col: usize| -> Vec<[f64; 3]> {
+        vec![
+            pressure[row * cols + col],
+            middle[row * cols + col],
+            suction[row * cols + col],
+        ]
+    };
+    let mut curves = vec![
+        open(along(pressure, 0)),
+        open(along(pressure, cols - 1)),
+        open(along(suction, 0)),
+        open(along(suction, cols - 1)),
+    ];
+    for row in [0, rows - 1] {
+        curves.extend([
+            open(across(pressure, row)),
+            open(across(suction, row)),
+            open(thickness(row, 0)),
+            open(thickness(row, cols - 1)),
+        ]);
+    }
+
+    let blades = (0..blade_count)
+        .map(|index| {
+            let id = PieceId::Blade { index };
+            if index == 0 {
+                return Piece {
+                    id,
+                    surface: surface.clone(),
+                    curves: curves.clone(),
+                    faces: faces_ranges.clone(),
+                };
+            }
+            let angle = -TAU * f64::from(index) / f64::from(blade_count);
+            Piece {
+                id,
+                surface: surface.rotated_z(angle),
+                curves: curves.iter().map(|curve| curve.rotated_z(angle)).collect(),
+                faces: faces_ranges.clone(),
+            }
+        })
+        .collect();
+    Ok((blades, notice))
+}
+
+/// La malla con la normal del lado de `reference`: si la suma de las normales
+/// de sus triángulos mira al contrario, se invierte el orden de cada triángulo
+/// y se cambia el signo de las normales.
+fn outwards(mut mesh: TriangleMesh, reference: [f64; 3]) -> TriangleMesh {
+    let mut normal = [0.0; 3];
+    for triangle in &mesh.triangles {
+        let [a, b, c] = triangle.map(|index| mesh.vertices[index as usize]);
+        let (u, v): ([f64; 3], [f64; 3]) = (
+            std::array::from_fn(|axis| b[axis] - a[axis]),
+            std::array::from_fn(|axis| c[axis] - a[axis]),
+        );
+        normal[0] += u[1] * v[2] - u[2] * v[1];
+        normal[1] += u[2] * v[0] - u[0] * v[2];
+        normal[2] += u[0] * v[1] - u[1] * v[0];
+    }
+    let towards: f64 = (0..3).map(|axis| normal[axis] * reference[axis]).sum();
+    if towards < 0.0 {
+        for triangle in &mut mesh.triangles {
+            triangle.swap(1, 2);
+        }
+        for normal in &mut mesh.normals {
+            *normal = normal.map(|value| -value);
+        }
+    }
+    mesh
+}
+
+/// Reglada: en cada estación, la recta entre el nodo del cubo y el de la tapa,
+/// con los dos extremos exactos (no `a + 1·(b − a)`), para que las caras
+/// compartan sus puntos de borde bit a bit.
+fn ruled_exact(lines: &[Vec<[f64; 3]>], stations: &[usize]) -> Vec<[f64; 3]> {
+    let (hub, shroud) = (&lines[0], &lines[lines.len() - 1]);
+    let mut points = Vec::with_capacity(stations.len() * RULED_COLUMNS);
+    for &j in stations {
+        for col in 0..RULED_COLUMNS {
+            points.push(if col == 0 {
+                hub[j]
+            } else if col == RULED_COLUMNS - 1 {
+                shroud[j]
+            } else {
+                let t = col as f64 / (RULED_COLUMNS - 1) as f64;
+                std::array::from_fn(|axis| hub[j][axis] + t * (shroud[j][axis] - hub[j][axis]))
+            });
+        }
+    }
+    points
+}
+
+/// Libre, para varias caras a la vez: spline cúbica natural de `z`, `r` y `θ`
+/// frente a ψ por los nodos de cada estación, con las mismas columnas en
+/// todas. Columnas: la menor de [`FREE_COLUMNS`] en la que el punto medio de
+/// cada tramo dista de su cuerda menos que `tolerance` en las caras
+/// `checked`. La primera y la última columna son los nodos del cubo y de la
+/// tapa, sin interpolar. `faces[f][línea][nodo]` es `[z, r, θ]` en m y rad.
+fn free_columns(
+    psi: &[f64],
+    faces: &[Vec<Vec<[f64; 3]>>],
+    checked: &[usize],
+    stations: &[usize],
+    tolerance: f64,
+) -> (usize, Vec<Vec<[f64; 3]>>, Option<f64>) {
+    let (first, last) = (psi[0], psi[psi.len() - 1]);
+    let splines: Vec<Vec<[Spline; 3]>> = faces
+        .iter()
+        .map(|lines| {
+            stations
+                .iter()
+                .map(|&j| {
+                    let values = |axis: usize| -> Vec<f64> {
+                        lines.iter().map(|line| line[j][axis]).collect()
+                    };
+                    [
+                        Spline::natural(psi, values(0)),
+                        Spline::natural(psi, values(1)),
+                        Spline::natural(psi, values(2)),
+                    ]
+                })
+                .collect()
+        })
+        .collect();
+    let at = |face: usize, row: usize, cols: usize, col: f64| -> [f64; 3] {
+        let station = stations[row];
+        let lines = &faces[face];
+        if col <= 0.0 {
+            let p = lines[0][station];
+            return polar_to_mm(p[0], p[1], p[2]);
+        }
+        if col >= (cols - 1) as f64 {
+            let p = lines[lines.len() - 1][station];
+            return polar_to_mm(p[0], p[1], p[2]);
+        }
+        let s = first + (last - first) * col / (cols - 1) as f64;
+        let [z, r, theta] = &splines[face][row];
+        polar_to_mm(z.at(s), r.at(s), theta.at(s))
+    };
+    let deviation = |cols: usize| {
+        checked
+            .iter()
+            .flat_map(|&face| {
+                (0..stations.len())
+                    .flat_map(|row| (0..cols - 1).map(move |col| (row, col)))
+                    .map(move |(row, col)| (face, row, col))
+            })
+            .map(|(face, row, col)| {
+                let middle = at(face, row, cols, col as f64 + 0.5);
+                let (a, b) = (
+                    at(face, row, cols, col as f64),
+                    at(face, row, cols, col as f64 + 1.0),
+                );
+                distance_to_segment(middle, a, b)
+            })
+            .fold(0.0, f64::max)
+    };
+    let most = FREE_COLUMNS[FREE_COLUMNS.len() - 1];
+    let (cols, missed) = match FREE_COLUMNS
+        .iter()
+        .copied()
+        .find(|&cols| deviation(cols) < tolerance)
+    {
+        Some(cols) => (cols, None),
+        None => (most, Some(deviation(most))),
+    };
+    let grids = (0..faces.len())
+        .map(|face| {
+            (0..stations.len())
+                .flat_map(|row| (0..cols).map(move |col| (row, col)))
+                .map(|(row, col)| at(face, row, cols, col as f64))
+                .collect()
+        })
+        .collect();
+    (cols, grids, missed)
 }
 
 /// Un nodo de la línea media en mm, con `offset = 0`:

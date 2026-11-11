@@ -382,3 +382,98 @@ fn bounds_enclose_the_vertices_and_an_empty_mesh_has_none() {
     };
     assert_eq!(mesh.bounds(), Some(([-3.0, -2.0, 0.5], [1.0, 4.0, 5.0])));
 }
+
+// ------------------------------------------------- mallas cerradas y su volumen
+
+/// Una cara plana de una caja como rejilla de 2×2 puntos: `origin`, y los
+/// pasos a lo largo de las columnas y de las filas. Su normal, hacia fuera,
+/// es `columnas × filas`.
+fn quad(origin: [f64; 3], columns: [f64; 3], rows: [f64; 3]) -> TriangleMesh {
+    let at = |c: f64, r: f64| -> [f64; 3] {
+        std::array::from_fn(|axis| origin[axis] + c * columns[axis] + r * rows[axis])
+    };
+    grid_surface(
+        2,
+        2,
+        &[at(0.0, 0.0), at(1.0, 0.0), at(0.0, 1.0), at(1.0, 1.0)],
+    )
+    .unwrap()
+}
+
+/// Las seis caras de la caja [0, 2] × [0, 3] × [0, 4], con la normal hacia
+/// fuera.
+fn box_faces() -> Vec<TriangleMesh> {
+    let (x, y, z) = ([2.0, 0.0, 0.0], [0.0, 3.0, 0.0], [0.0, 0.0, 4.0]);
+    vec![
+        quad([0.0, 0.0, 4.0], x, y), // z = 4, hacia +z
+        quad([0.0, 0.0, 0.0], y, x), // z = 0, hacia −z
+        quad([2.0, 0.0, 0.0], y, z), // x = 2, hacia +x
+        quad([0.0, 0.0, 0.0], z, y), // x = 0, hacia −x
+        quad([0.0, 3.0, 0.0], z, x), // y = 3, hacia +y
+        quad([0.0, 0.0, 0.0], x, z), // y = 0, hacia −y
+    ]
+}
+
+#[test]
+fn a_box_of_six_grids_is_closed_and_has_its_volume() {
+    let closed = TriangleMesh::merged(&box_faces());
+    assert_eq!(closed.vertices.len(), 24);
+    assert_eq!(closed.triangles.len(), 12);
+    assert_eq!(closed.open_edges(1e-9), 0);
+    assert!((closed.signed_volume() - 24.0).abs() < 1e-9);
+}
+
+#[test]
+fn a_missing_face_leaves_open_edges() {
+    let mut faces = box_faces();
+    faces.pop();
+    let open = TriangleMesh::merged(&faces);
+    assert_eq!(open.open_edges(1e-9), 4);
+}
+
+#[test]
+fn a_flipped_face_is_not_closed() {
+    let mut faces = box_faces();
+    for triangle in &mut faces[0].triangles {
+        triangle.swap(1, 2);
+    }
+    let flipped = TriangleMesh::merged(&faces);
+    assert!(flipped.open_edges(1e-9) > 0);
+    // Y su volumen ya no es el de la caja.
+    assert!((flipped.signed_volume() - 24.0).abs() > 1e-3);
+}
+
+#[test]
+fn merged_keeps_every_triangle_and_shifts_the_indices() {
+    let faces = box_faces();
+    let merged = TriangleMesh::merged(&faces);
+    let total: usize = faces.iter().map(|mesh| mesh.triangles.len()).sum();
+    assert_eq!(merged.triangles.len(), total);
+    assert_eq!(merged.normals.len(), merged.vertices.len());
+    let mut shift = 0u32;
+    let mut at = 0;
+    for mesh in &faces {
+        for triangle in &mesh.triangles {
+            let expected = triangle.map(|index| index + shift);
+            assert_eq!(merged.triangles[at], expected);
+            at += 1;
+        }
+        for (i, vertex) in mesh.vertices.iter().enumerate() {
+            assert_eq!(merged.vertices[shift as usize + i], *vertex);
+            assert_eq!(merged.normals[shift as usize + i], mesh.normals[i]);
+        }
+        shift += mesh.vertices.len() as u32;
+    }
+    assert_eq!(TriangleMesh::merged(&[]), TriangleMesh::default());
+}
+
+#[test]
+fn vertices_closer_than_the_weld_count_as_one() {
+    // Dos caras con un vértice casi coincidente se sueldan con una tolerancia
+    // mayor que la separación, y no con una menor.
+    let mut faces = box_faces();
+    faces[0].vertices[0][0] += 1e-7;
+    let merged = TriangleMesh::merged(&faces);
+    assert_eq!(merged.open_edges(1e-6), 0);
+    assert!(merged.open_edges(1e-9) > 0);
+}

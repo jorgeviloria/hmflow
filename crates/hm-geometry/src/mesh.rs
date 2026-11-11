@@ -3,6 +3,7 @@
 //! Este módulo no sabe de bombas ni elige unidades. Cada vértice lleva su normal unitaria, y los
 //! triángulos van en sentido antihorario vistos desde el lado al que apuntan las normales.
 
+use std::collections::{HashMap, HashSet};
 use std::f64::consts::{PI, TAU};
 
 use crate::GeometryError;
@@ -44,6 +45,89 @@ impl TriangleMesh {
                 .collect(),
             triangles: self.triangles.clone(),
         }
+    }
+
+    /// Las mallas una detrás de otra en una sola: los vértices y las normales
+    /// se concatenan y los índices de cada una se desplazan lo que ocupan las
+    /// anteriores. Los vértices no se sueldan.
+    #[must_use]
+    pub fn merged(parts: &[TriangleMesh]) -> Self {
+        let mut merged = Self::default();
+        for part in parts {
+            let shift = merged.vertices.len() as u32;
+            merged.vertices.extend_from_slice(&part.vertices);
+            merged.normals.extend_from_slice(&part.normals);
+            merged.triangles.extend(
+                part.triangles
+                    .iter()
+                    .map(|triangle| triangle.map(|i| i + shift)),
+            );
+        }
+        merged
+    }
+
+    /// Cuántas aristas no están en exactamente dos triángulos, una vez en cada
+    /// sentido, al soldar los vértices que distan menos de `weld`: 0 es una
+    /// malla cerrada y orientada. Los vértices se sueldan por su posición,
+    /// redondeada a múltiplos de `weld`; un `weld` que no es positivo suelda
+    /// solo los idénticos.
+    #[must_use]
+    pub fn open_edges(&self, weld: f64) -> usize {
+        let key = |vertex: [f64; 3]| -> [i64; 3] {
+            vertex.map(|value| {
+                if weld.is_finite() && weld > 0.0 {
+                    (value / weld).round() as i64
+                } else {
+                    value.to_bits() as i64
+                }
+            })
+        };
+        let mut ids: HashMap<[i64; 3], u32> = HashMap::new();
+        let welded: Vec<u32> = self
+            .vertices
+            .iter()
+            .map(|vertex| {
+                let next = ids.len() as u32;
+                *ids.entry(key(*vertex)).or_insert(next)
+            })
+            .collect();
+        let mut directed: HashMap<(u32, u32), u32> = HashMap::new();
+        for triangle in &self.triangles {
+            let corners = triangle.map(|index| welded[index as usize]);
+            for (a, b) in [
+                (corners[0], corners[1]),
+                (corners[1], corners[2]),
+                (corners[2], corners[0]),
+            ] {
+                // Un triángulo colapsado por la soldadura no aporta aristas.
+                if a != b {
+                    *directed.entry((a, b)).or_insert(0) += 1;
+                }
+            }
+        }
+        let undirected: HashSet<(u32, u32)> = directed
+            .keys()
+            .map(|&(a, b)| (a.min(b), a.max(b)))
+            .collect();
+        let count = |a: u32, b: u32| directed.get(&(a, b)).copied().unwrap_or(0);
+        undirected
+            .into_iter()
+            .filter(|&(a, b)| count(a, b) != 1 || count(b, a) != 1)
+            .count()
+    }
+
+    /// El volumen con signo de la malla, Σ a·(b × c)/6 sobre sus triángulos:
+    /// positivo si las normales miran hacia fuera, para una malla cerrada.
+    #[must_use]
+    pub fn signed_volume(&self) -> f64 {
+        self.triangles
+            .iter()
+            .map(|triangle| {
+                let [a, b, c] = triangle.map(|index| self.vertices[index as usize]);
+                let n = cross(b, c);
+                (a[0] * n[0] + a[1] * n[1] + a[2] * n[2]) / 6.0
+            })
+            .sum()
     }
 
     /// Esquinas mínima y máxima de la caja que encierra los vértices. `None` si no hay ninguno.

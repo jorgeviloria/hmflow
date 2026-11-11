@@ -113,6 +113,11 @@ pub struct Mechanics {
     pub trailing_edge_thickness: f64,
     /// Espesor de las tapas, m (1,25·e).
     pub shroud_thickness: f64,
+    /// e(0) de la curva de espesor editada, m, el que usa el bloqueo del 1D.
+    /// `None` en «Gülich».
+    pub edited_inlet_thickness: Option<f64>,
+    /// e(1) de la curva editada, m. `None` en «Gülich».
+    pub edited_exit_thickness: Option<f64>,
     /// Anchura con tapas usada en el empuje radial, b2 + 2·eRS, m.
     pub radial_width: f64,
     /// Empuje radial a válvula cerrada, N.
@@ -461,6 +466,8 @@ pub fn mechanics(
         blade_thickness,
         trailing_edge_thickness,
         shroud_thickness,
+        edited_inlet_thickness: result.blade_edge_thickness.map(|(inlet, _)| inlet),
+        edited_exit_thickness: result.blade_edge_thickness.map(|(_, exit)| exit),
         radial_width,
         radial_thrust_shutoff: radial(0.0)?,
         radial_thrust_design: radial(1.0)?,

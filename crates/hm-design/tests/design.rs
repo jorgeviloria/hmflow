@@ -1977,3 +1977,141 @@ fn invalid_bow_names_its_parameter() {
         }
     }
 }
+
+/// Las selecciones de D1.A1 sin β2 fijo: con β2 manual el espesor del borde de
+/// salida no entra en nada. Z fijo para que el espesor nominal no se mueva.
+fn free_beta2_options() -> DesignOptions {
+    DesignOptions {
+        beta2_rad: None,
+        ..d1a1_selections()
+    }
+}
+
+fn d1a1_input() -> DesignInput {
+    input("0.016 m3/s", "13.8 m", "1800 rpm")
+}
+
+/// (e, e/2) de Gülich para ese resultado, m.
+fn gulich_edges(result: &hm_design::DesignResult) -> (f64, f64) {
+    let (_, thickness, trailing) = hm_design::mechanics::blade_thicknesses(
+        result.selection.blade_count,
+        result.u2.si,
+        result.nq,
+        result.d2.si,
+    )
+    .unwrap();
+    (thickness, trailing)
+}
+
+#[test]
+fn the_gulich_edges_as_data_give_the_same_design() {
+    let input = d1a1_input();
+    let base = design_with_options(&input, &free_beta2_options()).unwrap();
+    let edges = gulich_edges(&base);
+    let given = design_with_options(
+        &input,
+        &DesignOptions {
+            blade_edge_thickness: Some(edges),
+            ..free_beta2_options()
+        },
+    )
+    .unwrap();
+
+    // Bit a bit: pasar a «editada» sin tocar la curva no mueve nada.
+    assert_eq!(
+        given.selection.beta2_deg.to_bits(),
+        base.selection.beta2_deg.to_bits()
+    );
+    assert_eq!(given.b2.si.to_bits(), base.b2.si.to_bits());
+    assert_eq!(given.beta1b.to_bits(), base.beta1b.to_bits());
+    assert_eq!(given.cm2.si.to_bits(), base.cm2.si.to_bits());
+    assert_eq!(base.blade_edge_thickness, None);
+    assert_eq!(given.blade_edge_thickness, Some(edges));
+}
+
+#[test]
+fn a_thicker_exit_edge_raises_the_outlet_blockage() {
+    let input = d1a1_input();
+    let base = design_with_options(&input, &free_beta2_options()).unwrap();
+    let (thickness, trailing) = gulich_edges(&base);
+    let thick = design_with_options(
+        &input,
+        &DesignOptions {
+            blade_edge_thickness: Some((thickness, thickness)),
+            ..free_beta2_options()
+        },
+    )
+    .unwrap();
+
+    let z = base.selection.blade_count;
+    let tau_base = hm_design::blade_blockage(
+        z,
+        trailing,
+        base.d2.si,
+        base.selection.beta2_deg.to_radians(),
+    );
+    let tau_thick = hm_design::blade_blockage(
+        z,
+        thickness,
+        thick.d2.si,
+        thick.selection.beta2_deg.to_radians(),
+    );
+    assert!(tau_thick > tau_base, "{tau_thick} frente a {tau_base}");
+    assert!(
+        (thick.selection.beta2_deg - base.selection.beta2_deg).abs() > 1.0e-6,
+        "β2 no se movió: {}",
+        thick.selection.beta2_deg
+    );
+}
+
+#[test]
+fn a_thicker_inlet_edge_raises_beta1b() {
+    let input = d1a1_input();
+    let base = design_with_options(&input, &free_beta2_options()).unwrap();
+    let (thickness, trailing) = gulich_edges(&base);
+    let thick = design_with_options(
+        &input,
+        &DesignOptions {
+            blade_edge_thickness: Some((2.0 * thickness, trailing)),
+            ..free_beta2_options()
+        },
+    )
+    .unwrap();
+
+    assert!(
+        thick.beta1b > base.beta1b,
+        "{} frente a {}",
+        thick.beta1b,
+        base.beta1b
+    );
+    // La salida no cambió: β2 es el mismo.
+    assert_eq!(
+        thick.selection.beta2_deg.to_bits(),
+        base.selection.beta2_deg.to_bits()
+    );
+}
+
+#[test]
+fn bad_edge_thickness_is_a_field_error() {
+    let input = d1a1_input();
+    for edges in [
+        (0.0, 0.002),
+        (0.004, 0.0),
+        (-0.004, 0.002),
+        (0.004, -0.002),
+        (f64::NAN, 0.002),
+        (0.004, f64::NAN),
+        (f64::INFINITY, 0.002),
+    ] {
+        let options = DesignOptions {
+            blade_edge_thickness: Some(edges),
+            ..free_beta2_options()
+        };
+        let error = options.validate().expect_err("se aceptó");
+        assert_eq!(error.name, "blade_edge_thickness", "{edges:?}");
+        assert!(
+            design_with_options(&input, &options).is_err(),
+            "se aceptó {edges:?}"
+        );
+    }
+}

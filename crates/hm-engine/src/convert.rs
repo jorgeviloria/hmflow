@@ -17,6 +17,7 @@ use crate::case::{
 };
 use crate::error::{CaseField, EngineError, input_error};
 use crate::fluid::{self, viscosity_from_text};
+use crate::project_ops::blade_setup_of;
 
 /// Mayor conteo entero aceptado (álabes, canales de voluta). Lo usan la
 /// lectura del caso y la auditoría.
@@ -512,6 +513,13 @@ pub(crate) fn design_options(project: &Project) -> Result<DesignOptions, EngineE
     if let Some(casing) = &project.casing {
         options.casing = Some(casing_fit(casing)?);
     }
+
+    // La curva de espesor editada manda en el bloqueo del 1D. Una sección
+    // hecha a mano que no se sostiene es un error con el texto de la carga.
+    options.blade_edge_thickness = blade_setup_of(project.blade.as_ref())
+        .map_err(|message| EngineError::Design(hm_design::DesignError::Input(message)))?
+        .thickness
+        .edges();
 
     Ok(options)
 }

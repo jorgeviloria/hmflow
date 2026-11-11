@@ -307,3 +307,46 @@ fn no_lines_give_no_triangles() {
     let case = case_of(&b1_input());
     assert!(case.triangles(&[], DEFAULT_INCIDENCE_DEG).is_empty());
 }
+
+#[test]
+fn the_line_triangles_use_the_same_inlet_thickness() {
+    let input = b1_input();
+    let base = case_of(&input);
+    let (_, thickness, trailing) = hm_design::mechanics::blade_thicknesses(
+        base.result.selection.blade_count,
+        base.result.u2.si,
+        base.result.nq,
+        base.result.d2.si,
+    )
+    .unwrap();
+    // Un borde de ataque el doble de grueso; la salida queda como estaba.
+    let options = hm_design::DesignOptions {
+        blade_edge_thickness: Some((2.0 * thickness, trailing)),
+        ..Default::default()
+    };
+    let result = hm_design::design_with_options(&input, &options).unwrap();
+    let impeller = geometry(&input, &result).unwrap().impeller;
+    let thick = Case {
+        model: meridional_model(&result).unwrap(),
+        impeller,
+        result,
+    };
+
+    let lines = streamlines(&base.model, 5).unwrap();
+    let plain = base.triangles(&lines, DEFAULT_INCIDENCE_DEG);
+    let lines = streamlines(&thick.model, 5).unwrap();
+    let edited = thick.triangles(&lines, DEFAULT_INCIDENCE_DEG);
+
+    assert_eq!(plain.len(), edited.len());
+    for (before, after) in plain.iter().zip(&edited) {
+        assert!(
+            after.tau1 > before.tau1 && after.beta1b > before.beta1b,
+            "ψ = {}: τ1 {} → {}, β1B {} → {}",
+            before.psi,
+            before.tau1,
+            after.tau1,
+            before.beta1b,
+            after.beta1b
+        );
+    }
+}

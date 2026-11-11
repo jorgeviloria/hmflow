@@ -5,8 +5,9 @@ use hm_design::blade_thickness::{
     self, BladeThickness, EditedThickness, THICKNESS_NODES, ThicknessNode, node_floor,
 };
 use hm_engine::{
-    Case, CurvePoints, Density, DensitySource, Duty, Entered, Fluid, FluidKind, Intake, PumpType,
-    analyze, blade_section_of, blade_setup_of, new_project, parse_temperature, recalc,
+    Case, CurvePoints, Density, DensitySource, DesignEdits, Duty, Entered, Fluid, FluidKind,
+    Intake, PumpType, analyze, blade_section_of, blade_setup_of, case_from_project, design_edits,
+    edited_options, new_project, parse_temperature, recalc, reselect_design, reselected_options,
 };
 use hm_project::{Blade, Project};
 use hm_units::parse_quantity;
@@ -329,4 +330,99 @@ fn the_project_limits_match_the_design_ones() {
         hm_project::BLADE_THICKNESS_EXIT_FLOOR_MM / 1000.0,
         node_floor(1.0)
     );
+}
+
+/// El B1 como proyecto, con la sección `[blade]` dada.
+fn b1_project(blade: Option<Blade>) -> Project {
+    let case = b1();
+    let mut project = new_project(
+        "b1",
+        &case,
+        &analyze(&case, CurvePoints::new(11).unwrap()).unwrap(),
+    )
+    .unwrap();
+    project.blade = blade;
+    project
+}
+
+/// Una curva editada: e(0) = 6 mm y e(1) = 3 mm, las dos paredes iguales.
+fn edited_section() -> Blade {
+    Blade {
+        shape: "free_3d".into(),
+        thickness_hub: vec![[0.0, 6.0], [1.0, 3.0]],
+        ..Blade::default()
+    }
+}
+
+#[test]
+fn an_edited_curve_reaches_the_design_options() {
+    let project = b1_project(Some(edited_section()));
+    let options = case_from_project(&project).unwrap().design;
+    assert_eq!(options.blade_edge_thickness, Some((0.006, 0.003)));
+
+    // Con las dos paredes distintas, el 1D usa la línea central: la media.
+    let split = Blade {
+        thickness_same: false,
+        thickness_hub: vec![[0.0, 6.0], [1.0, 3.0]],
+        thickness_shroud: vec![[0.0, 4.0], [1.0, 3.0]],
+        ..Blade::default()
+    };
+    let options = case_from_project(&b1_project(Some(split))).unwrap().design;
+    assert_eq!(options.blade_edge_thickness, Some((0.005, 0.003)));
+}
+
+#[test]
+fn a_hand_made_blade_that_does_not_hold_is_an_input_error_with_its_text() {
+    let broken = Blade {
+        thickness_hub: vec![[0.0, 6.0], [0.0, 3.0]],
+        ..Blade::default()
+    };
+    let expected = blade_setup_of(Some(&broken)).expect_err("la x se repite");
+    let error = case_from_project(&b1_project(Some(broken))).expect_err("se aceptó");
+    assert!(error.to_string().contains(&expected), "{error}");
+}
+
+#[test]
+fn a_gulich_project_has_no_edge_data() {
+    for blade in [
+        None,
+        Some(Blade {
+            shape: "free_3d".into(),
+            ..Blade::default()
+        }),
+        // «Cubo = tapa» apagado y sin nodos sigue siendo «Gülich».
+        Some(Blade {
+            thickness_same: false,
+            ..Blade::default()
+        }),
+    ] {
+        let options = case_from_project(&b1_project(blade)).unwrap().design;
+        assert_eq!(options.blade_edge_thickness, None);
+    }
+}
+
+#[test]
+fn reselecting_keeps_the_edited_edges() {
+    let project = b1_project(Some(edited_section()));
+    // Lo que muestra la ventana incluye la sección `[blade]`.
+    let edits = design_edits(&project);
+    assert_eq!(edits.blade, project.blade);
+
+    let options = reselected_options(&project, &edits).unwrap();
+    assert_eq!(options.blade_edge_thickness, Some((0.006, 0.003)));
+    let options = edited_options(Some(&project), &edits).unwrap();
+    assert_eq!(options.blade_edge_thickness, Some((0.006, 0.003)));
+
+    // Reelegir rehace las selecciones y deja la curva como estaba.
+    let reselected = reselect_design(project.clone(), &edits).unwrap();
+    assert_eq!(reselected.project.blade, project.blade);
+
+    // Quitar la sección de las ediciones vuelve a «Gülich».
+    let none = DesignEdits {
+        blade: None,
+        ..edits
+    };
+    let options = edited_options(Some(&project), &none).unwrap();
+    assert_eq!(options.blade_edge_thickness, None);
+    assert_eq!(reselect_design(project, &none).unwrap().project.blade, None);
 }

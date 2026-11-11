@@ -193,6 +193,19 @@ pub(super) fn thickness_view(
         .weak(),
     );
     edited |= thickness_plot(ui, &graph, inputs, history);
+    if graph.setup.is_edited()
+        && let Some((inlet, exit)) = outcome.result.blade_edge_thickness
+    {
+        ui.label(
+            egui::RichText::new(format!(
+                "El 1D usa e(0) = {} mm y e(1) = {} mm (línea central) para el bloqueo.",
+                mm_text(inlet * 1000.0),
+                mm_text(exit * 1000.0)
+            ))
+            .small()
+            .weak(),
+        );
+    }
     if !graph.warnings().is_empty() {
         ui.horizontal_wrapped(|ui| {
             for warning in graph.warnings() {
@@ -888,6 +901,64 @@ mod tests {
         let blade = built.project.blade.expect("[blade] con los nodos");
         assert!(!blade.thickness_hub.is_empty());
         assert!((blade.thickness_hub[0][1] - 6.0).abs() < 1e-9);
+    }
+
+    /// B1 con el nodo de salida (x = 1) de la curva puesto en `exit_mm`.
+    fn edited_exit(exit_mm: f64) -> Inputs {
+        let graph = graph_of(BladeThickness::default());
+        let mut inputs = Inputs::default();
+        inputs.blade.shape = BladeShape::Free3D;
+        inputs.blade.streamlines = 5;
+        inputs.blade.thickness = graph.setup.with_node_moved(
+            &graph.curves,
+            ThicknessWall::Hub,
+            2,
+            1.0,
+            exit_mm / 1000.0,
+        );
+        inputs
+    }
+
+    #[test]
+    fn what_is_shown_is_what_is_saved() {
+        let basis = Basis::default();
+        let (gulich, _) = b1_3d();
+        let inputs = edited_exit(6.0);
+        let shown = crate::model::compute(&inputs, &basis).unwrap();
+        // Un borde de salida más grueso mueve el 1D: β2 ya no es el de Gülich.
+        assert!(shown.result.blade_edge_thickness.is_some());
+        assert!(
+            (shown.result.selection.beta2_deg - gulich.result.selection.beta2_deg).abs() > 1.0e-3,
+            "β2 no se movió: {}",
+            shown.result.selection.beta2_deg
+        );
+
+        // Lo guardado, recalculado, da lo mismo que se ve.
+        let built = crate::model::build_project(&inputs, &basis, None, "B1").unwrap();
+        let case = hm_engine::case_from_project(&built.project).unwrap();
+        assert_eq!(
+            case.design.blade_edge_thickness,
+            shown.result.blade_edge_thickness
+        );
+        let again = hm_engine::analyze(&case, hm_engine::CurvePoints::new(11).unwrap()).unwrap();
+        assert!(
+            (again.result.selection.beta2_deg - shown.result.selection.beta2_deg).abs() < 1.0e-3,
+            "{} frente a {}",
+            again.result.selection.beta2_deg,
+            shown.result.selection.beta2_deg
+        );
+        assert!(
+            (again.result.beta1b - shown.result.beta1b).abs() < 1.0e-9,
+            "{} frente a {}",
+            again.result.beta1b,
+            shown.result.beta1b
+        );
+    }
+
+    #[test]
+    fn gulich_gives_no_edge_data() {
+        let (outcome, _) = b1_3d();
+        assert_eq!(outcome.result.blade_edge_thickness, None);
     }
 
     #[test]

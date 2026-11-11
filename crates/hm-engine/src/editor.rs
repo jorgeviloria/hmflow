@@ -173,6 +173,9 @@ pub struct DesignEdits {
     /// Desviación de β(r) en las dos manijas (texto con unidad, vacío: recta).
     pub beta_bow1: String,
     pub beta_bow2: String,
+    /// La sección `[blade]`: la forma, las manijas y el espesor. El 1D lee de
+    /// ella el espesor de los bordes; `None` es la sección por defecto.
+    pub blade: Option<hm_project::Blade>,
 }
 
 /// Lo que hay que mostrar en las cajas: solo las decisiones y las medidas. Un φ
@@ -204,6 +207,7 @@ pub fn design_edits(project: &Project) -> DesignEdits {
         incidence: measure("incidence_deg", DEFAULT_INCIDENCE_DEG.to_radians()),
         beta_bow1: measure("beta_bow1_deg", 0.0),
         beta_bow2: measure("beta_bow2_deg", 0.0),
+        blade: project.blade.clone(),
     }
 }
 
@@ -229,6 +233,7 @@ fn apply_edits(project: &mut Project, edits: &DesignEdits) -> Result<(), EngineE
     write_measure(project, "incidence_deg", &edits.incidence);
     write_measure(project, "beta_bow1_deg", &edits.beta_bow1);
     write_measure(project, "beta_bow2_deg", &edits.beta_bow2);
+    project.blade = edits.blade.clone();
     Ok(())
 }
 

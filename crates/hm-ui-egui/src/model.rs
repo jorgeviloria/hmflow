@@ -370,6 +370,9 @@ fn edits_from(inputs: &Inputs) -> Result<DesignEdits, (Field, String)> {
         incidence: inputs.incidence.clone(),
         beta_bow1: inputs.beta_bow1.clone(),
         beta_bow2: inputs.beta_bow2.clone(),
+        // El espesor de los bordes entra en el bloqueo del 1D: lo que se ve y
+        // lo que se guarda salen de la misma sección.
+        blade: hm_engine::blade_section_of(&inputs.blade),
     })
 }
 

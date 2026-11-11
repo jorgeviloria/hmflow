@@ -167,6 +167,9 @@ pub struct DesignResult {
     pub w2: Quantity,
     /// Ángulo del álabe a la entrada, rad (`design.blade_inlet_angle`).
     pub beta1b: f64,
+    /// (e(0), e(1)) en m con que se calculó el bloqueo: los de
+    /// [`DesignOptions::blade_edge_thickness`]. `None`: e y e/2 de Gülich.
+    pub blade_edge_thickness: Option<(f64, f64)>,
     /// Caudal de entrada sin choque QSF (Gülich ec. 6.17).
     pub shockless_flow: Quantity,
     /// Caudal con w1 = w1q, QW (Gülich ec. 6.18).
@@ -930,6 +933,11 @@ pub struct DesignOptions {
     pub balance_holes: bool,
     /// Carcasa existente. Con ella, D2 es dato y ψ, resultado.
     pub casing: Option<CasingFit>,
+    /// (e(0), e(1)) de la curva de espesor editada, en m: el espesor de la
+    /// línea central del álabe en el borde de ataque y en el de salida. Sin
+    /// dato, e y e/2 de Gülich (tabla 14.3). Solo cambia el bloqueo del 1D
+    /// (τ1 en β1B, τ2 en β2); la mecánica sigue con los de Gülich.
+    pub blade_edge_thickness: Option<(f64, f64)>,
 }
 
 impl DesignOptions {
@@ -997,6 +1005,18 @@ impl DesignOptions {
                     ),
                 });
             }
+        }
+
+        if let Some((inlet, exit)) = self.blade_edge_thickness
+            && (!inlet.is_finite() || inlet <= 0.0 || !exit.is_finite() || exit <= 0.0)
+        {
+            return Err(FieldError {
+                name: "blade_edge_thickness",
+                message: format!(
+                    "`blade_edge_thickness` = ({inlet}, {exit}) m no es válido; los dos \
+                     espesores deben ser finitos y positivos"
+                ),
+            });
         }
 
         if self.volute_channels == Some(0) {
@@ -1536,6 +1556,9 @@ struct OutletRequest {
     /// Lenguas de la voluta, zLe.
     volute_channels: u32,
     casing_d2: Option<f64>,
+    /// Espesor del borde de salida dado por la curva editada, m. Sin dato,
+    /// e/2 de Gülich.
+    exit_thickness: Option<f64>,
 }
 
 /// Z y β2. Con Z manual se resuelve solo β2. Con β2 manual, Z se queda en
@@ -1555,8 +1578,11 @@ fn select_outlet(
         0.0
     };
     let solve = |z: u32| -> Result<OutletGeometry, DesignError> {
-        let (_, thickness, trailing) =
+        let (_, thickness, gulich_trailing) =
             mechanics::blade_thicknesses(z, request.u2, request.nq, request.d2)?;
+        // El bloqueo de la salida sigue a e(1) si hay dato; `thickness` queda
+        // como el nominal de Gülich.
+        let trailing = request.exit_thickness.unwrap_or(gulich_trailing);
         let beta2_deg = if let Some(beta2_rad) = request.beta2_rad {
             beta2_rad.to_degrees()
         } else {
@@ -2425,6 +2451,7 @@ fn design_once(
             blade_count: options.blade_count,
             beta2_rad: options.beta2_rad,
             volute_channels,
+            exit_thickness: options.blade_edge_thickness.map(|(_, exit)| exit),
         },
     )
     .map_err(|error| match error {
@@ -2674,7 +2701,10 @@ fn design_once(
         selection.cm0,
         u1.si,
         d1.si,
-        outlet.thickness,
+        // Con la curva editada, e(0); sin ella, el nominal de Gülich.
+        options
+            .blade_edge_thickness
+            .map_or(outlet.thickness, |(inlet, _)| inlet),
         selection.blade_count,
     )?;
     let beta1b_quantity = Quantity::from_si(beta1b, deg.clone());
@@ -2854,6 +2884,7 @@ fn design_once(
         w1,
         w2,
         beta1b,
+        blade_edge_thickness: options.blade_edge_thickness,
         shockless_flow: with_unit(shockless_flow, &m3s),
         throat_flow: with_unit(throat_flow, &m3s),
         inlet_deceleration,

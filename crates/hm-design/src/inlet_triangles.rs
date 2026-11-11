@@ -122,8 +122,13 @@ pub fn inlet_triangles(
 ) -> Result<Vec<InletTriangle>, DesignError> {
     let registry = Registry::all();
     let blade_count = result.selection.blade_count;
-    let (_, thickness, _) =
+    let (_, nominal, _) =
         mechanics::blade_thicknesses(blade_count, result.u2.si, result.nq, result.d2.si)?;
+    // El mismo espesor de entrada que el 1D: e(0) de la curva editada, o el
+    // nominal de Gülich.
+    let thickness = result
+        .blade_edge_thickness
+        .map_or(nominal, |(inlet, _)| inlet);
     let omega = 2.0 * result.u1.si / result.d1.si;
     let blade_start = result.d1.si / 2.0;
     let incidence = incidence_deg.to_radians();

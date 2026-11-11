@@ -456,16 +456,16 @@ fn a_3d_project_whose_camber_fails_has_no_plan() {
         shape: BladeShape::Free3D,
         ..BladeSetup::default()
     });
-    // Una manija fuera de rango la rechaza `blade_setup_of`.
+    // Una manija fuera de rango la rechaza `blade_setup_of`. Desde que el 1D
+    // lee el espesor de `[blade]`, el error sale ya al leer las opciones del
+    // diseño, con el mismo texto: una sección rota no da planta ni cálculo.
     project.blade.as_mut().unwrap().bow_hub = [90.0, 0.0];
+    let expected = hm_engine::blade_setup_of(project.blade.as_ref()).unwrap_err();
     let error = hm_engine::plan(&project).unwrap_err();
     assert!(
         matches!(
-            error,
-            EngineError::Stage {
-                stage: hm_engine::Stage::Geometry,
-                ..
-            }
+            &error,
+            EngineError::Design(hm_design::DesignError::Input(message)) if *message == expected
         ),
         "{error:?}"
     );

@@ -219,6 +219,12 @@ pub struct ReportMechanics {
     pub blade_thickness: Measure,
     pub trailing_edge_thickness: Measure,
     pub shroud_thickness: Measure,
+    /// e(0) y e(1) de la curva de espesor editada, con que se calculó el
+    /// bloqueo del 1D. Ausentes en «Gülich» y en un informe anterior.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub edited_inlet_thickness: Option<Measure>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub edited_exit_thickness: Option<Measure>,
     pub seal_clearance: Measure,
     pub rated_power: Measure,
     pub driver_margin: Measure,
@@ -528,6 +534,12 @@ impl DesignReport {
             blade_thickness: Measure::new(mechanics.blade_thickness, "m"),
             trailing_edge_thickness: Measure::new(mechanics.trailing_edge_thickness, "m"),
             shroud_thickness: Measure::new(mechanics.shroud_thickness, "m"),
+            edited_inlet_thickness: mechanics
+                .edited_inlet_thickness
+                .map(|metres| Measure::new(metres, "m")),
+            edited_exit_thickness: mechanics
+                .edited_exit_thickness
+                .map(|metres| Measure::new(metres, "m")),
             seal_clearance: Measure::new(mechanics.seal_clearance, "m"),
             rated_power: Measure::new(mechanics.rated_power, "W"),
             driver_margin: Measure::new(mechanics.driver_margin, "1"),

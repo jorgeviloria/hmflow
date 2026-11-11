@@ -306,3 +306,34 @@ fn blade_loading_is_left_out_above_the_cylindrical_blade_range() {
     assert!(hydraulics.blade_loading_allowable.is_none());
     assert!(hydraulics.inlet_deceleration.is_some());
 }
+
+#[test]
+fn the_report_adds_the_edited_edges_only_when_there_are() {
+    let input = input();
+    let plain = design(&input).unwrap();
+    let mech = mechanics(&input, &plain, DEFAULT_SHAFT_SHEAR_STRESS).unwrap();
+    let report = DesignReport::new(&input, &plain, 11, plain.diagnostics.clone().into_vec())
+        .with_mechanics(&mech);
+    let section = report.mechanics.as_ref().unwrap();
+    assert!(section.edited_inlet_thickness.is_none());
+    assert!(section.edited_exit_thickness.is_none());
+    let text = serde_json::to_string(&report).unwrap();
+    assert!(!text.contains("edited_inlet_thickness"), "{text}");
+    assert!(!text.contains("edited_exit_thickness"), "{text}");
+
+    let options = DesignOptions {
+        blade_edge_thickness: Some((0.006, 0.003)),
+        ..DesignOptions::default()
+    };
+    let edited = design_with_options(&input, &options).unwrap();
+    let mech = mechanics(&input, &edited, DEFAULT_SHAFT_SHEAR_STRESS).unwrap();
+    let report = DesignReport::new(&input, &edited, 11, edited.diagnostics.clone().into_vec())
+        .with_mechanics(&mech);
+    let section = report.mechanics.as_ref().unwrap();
+    let inlet = section.edited_inlet_thickness.as_ref().unwrap();
+    let exit = section.edited_exit_thickness.as_ref().unwrap();
+    assert_eq!((inlet.value, inlet.unit.as_str()), (0.006, "m"));
+    assert_eq!((exit.value, exit.unit.as_str()), (0.003, "m"));
+    let text = serde_json::to_string(&report).unwrap();
+    assert!(text.contains("edited_inlet_thickness"), "{text}");
+}

@@ -402,6 +402,8 @@ fn stale_selections(
         incidence_deg: case.design.incidence_deg,
         beta_bow1_deg: case.design.beta_bow1_deg,
         beta_bow2_deg: case.design.beta_bow2_deg,
+        // Un dato, no una selección: no se reelige.
+        blade_edge_thickness: case.design.blade_edge_thickness,
         casing: case.design.casing.clone(),
         ..DesignOptions::default()
     };

@@ -7,6 +7,7 @@ mod bar;
 mod blade_beta;
 mod blade_development;
 mod blade_inlet;
+mod blade_thickness;
 mod curves;
 mod diagnostics;
 mod inputs;
@@ -149,6 +150,12 @@ impl App {
             }
         }
         blade_beta::seed_from_env(&mut app.session.inputs);
+        // Solo para las capturas: `HMF_CHART=beta|thickness|profile`.
+        if let Some(chart) =
+            blade_development::BladeChart::from_env(std::env::var("HMF_CHART").ok().as_deref())
+        {
+            chart.store(&cc.egui_ctx);
+        }
         app.recompute();
         app
     }

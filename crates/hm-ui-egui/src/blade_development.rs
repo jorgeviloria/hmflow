@@ -13,10 +13,26 @@ use crate::curves::line;
 pub(super) enum BladeChart {
     #[default]
     Beta,
+    Thickness,
     Development,
 }
 
 impl BladeChart {
+    /// Solo para las capturas: `HMF_CHART=thickness|profile`. «profile» es hoy
+    /// el desarrollo; la Tarea 8 del espesor lo cambia por la vista «Perfil».
+    pub(super) fn from_env(text: Option<&str>) -> Option<Self> {
+        match text {
+            Some("thickness") => Some(Self::Thickness),
+            Some("profile") => Some(Self::Development),
+            Some("beta") => Some(Self::Beta),
+            Some(other) => {
+                eprintln!("HMF_CHART: se espera beta, thickness o profile; llegó {other:?}");
+                None
+            }
+            None => None,
+        }
+    }
+
     fn id() -> egui::Id {
         egui::Id::unique("blade_chart")
     }
@@ -134,6 +150,20 @@ mod tests {
     use crate::model::Basis;
     use crate::model::Inputs;
     use hm_design::blade_setup::BladeShape;
+
+    #[test]
+    fn the_capture_variable_picks_the_chart() {
+        assert_eq!(
+            BladeChart::from_env(Some("thickness")),
+            Some(BladeChart::Thickness)
+        );
+        assert_eq!(
+            BladeChart::from_env(Some("profile")),
+            Some(BladeChart::Development)
+        );
+        assert_eq!(BladeChart::from_env(Some("nada")), None);
+        assert_eq!(BladeChart::from_env(None), None);
+    }
 
     fn b1_camber() -> BladeCamber {
         let mut inputs = Inputs::default();

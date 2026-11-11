@@ -14,7 +14,7 @@ use crate::model::{Inputs, Outcome};
 const HANDLE_FRACTIONS: [f64; 2] = [1.0 / 3.0, 2.0 / 3.0];
 
 /// Radio, en píxeles, dentro del cual se agarra una manija.
-const GRAB_PIXELS: f32 = 14.0;
+pub(super) const GRAB_PIXELS: f32 = 14.0;
 
 /// La ley β(r) de un álabe: extremos y desviación (rad, m y grados).
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -527,10 +527,11 @@ pub(super) fn blade_beta_view(
         Ok(Some(camber)) => {
             let mut chart = crate::blade_development::BladeChart::stored(ui.ctx());
             ui.horizontal(|ui| {
+                ui.selectable_value(&mut chart, crate::blade_development::BladeChart::Beta, "β");
                 ui.selectable_value(
                     &mut chart,
-                    crate::blade_development::BladeChart::Beta,
-                    "β(x)",
+                    crate::blade_development::BladeChart::Thickness,
+                    "Espesor",
                 );
                 ui.selectable_value(
                     &mut chart,
@@ -543,6 +544,11 @@ pub(super) fn blade_beta_view(
                 crate::blade_development::BladeChart::Beta => {
                     edited |= beta_3d_plot(ui, outcome, inputs, history, camber);
                 }
+                crate::blade_development::BladeChart::Thickness => {
+                    edited |= crate::blade_thickness::thickness_view(
+                        ui, outcome, inputs, history, camber,
+                    );
+                }
                 crate::blade_development::BladeChart::Development => {
                     crate::blade_development::development_view(ui, camber);
                 }
@@ -553,7 +559,25 @@ pub(super) fn blade_beta_view(
             ui.label(format!("Sin línea media 3D: {message}."));
             edited |= bow_fields(ui, inputs, history);
         }
-        Ok(None) => edited |= beta_2d_plot(ui, outcome, inputs, history),
+        Ok(None) => {
+            // Mismo selector que en 3D, con «β» elegida: el espesor y el
+            // perfil de las formas 2D llegan en la etapa 3 del espesor.
+            ui.horizontal(|ui| {
+                let _ = ui.selectable_label(true, "β");
+                ui.add_enabled_ui(false, |ui| {
+                    let _ = ui.selectable_label(false, "Espesor");
+                    let _ = ui.selectable_label(false, "Perfil");
+                });
+                ui.label(
+                    egui::RichText::new(
+                        "El espesor y el perfil de las formas 2D llegan en la etapa 3.",
+                    )
+                    .small()
+                    .weak(),
+                );
+            });
+            edited |= beta_2d_plot(ui, outcome, inputs, history);
+        }
     }
     crate::blade_inlet::inlet_table(ui, outcome);
     edited
@@ -997,8 +1021,15 @@ impl Drag {
 }
 
 /// Solo para las capturas: `HMF_BLADE="8,-5"` pone la desviación de las dos
-/// manijas, en grados, y `HMF_STREAMLINES=7` el número de líneas de corriente.
+/// manijas, en grados, `HMF_STREAMLINES=7` el número de líneas de corriente y
+/// `HMF_SHAPE=free_3d` la forma del álabe.
 pub(super) fn seed_from_env(inputs: &mut Inputs) {
+    if let Ok(text) = std::env::var("HMF_SHAPE") {
+        match hm_design::blade_setup::BladeShape::from_id(text.trim()) {
+            Some(shape) => inputs.blade.shape = shape,
+            None => eprintln!("HMF_SHAPE: se espera free_3d, ruled_3d, free_2d…; llegó {text:?}"),
+        }
+    }
     if let Ok(text) = std::env::var("HMF_STREAMLINES") {
         match crate::blade_inlet::streamlines_from_text(&text) {
             Some(count) => inputs.blade.streamlines = count,

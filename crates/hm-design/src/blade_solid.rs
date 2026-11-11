@@ -34,10 +34,13 @@
 
 use thiserror::Error;
 
-use crate::blade_camber::{BladeCamber, CAMBER_MIN_RADIUS, CamberPoint};
-use crate::blade_thickness::ThicknessCurves;
-use crate::meridian::cumulative;
-use crate::streamlines::Streamline;
+use crate::blade_camber::{BladeCamber, CAMBER_MIN_RADIUS, CamberPoint, camber_for_design};
+use crate::blade_setup::BladeSetup;
+use crate::blade_thickness::{ThicknessCurves, thickness_curves_for_design};
+use crate::geometry::ImpellerGeometry;
+use crate::meridian::{MeridionalModel, cumulative};
+use crate::streamlines::{Streamline, streamlines};
+use crate::{DesignError, DesignResult};
 
 /// Pasos con que se prolonga el camino aguas arriba del borde de ataque y
 /// aguas abajo de la salida. De hmflow.
@@ -66,8 +69,8 @@ pub struct SolidLine {
     pub pressure: Vec<SolidPoint>,
     pub middle: Vec<SolidPoint>,
     pub suction: Vec<SolidPoint>,
-    /// Espesor real en cada nodo de la línea media, m. Lo rellena la lectura
-    /// del álabe; aquí va vacío.
+    /// Espesor real en cada nodo de la línea media (J + 1), m: la distancia
+    /// entre las dos caras medida sobre la normal a la superficie media.
     pub true_thickness: Vec<f64>,
 }
 
@@ -91,6 +94,8 @@ impl SolidLine {
 #[derive(Debug, Clone, PartialEq)]
 pub struct BladeSolid {
     pub lines: Vec<SolidLine>,
+    pub readings: SolidReadings,
+    pub notices: Vec<SolidNotice>,
 }
 
 /// Un radio en m como «45,1»: mm con un decimal y coma.
@@ -342,18 +347,39 @@ impl Along<'_> {
     }
 }
 
+/// Una cara muestreada y los puntos desplazados de cada nodo sin recortar.
+struct Face {
+    /// J + 1 puntos a pasos iguales de m′, cortados en la salida.
+    points: Vec<SolidPoint>,
+    /// La sección nominal (±e(x)/2) de cada uno de los J + 1 nodos.
+    at_nodes: Vec<SolidPoint>,
+}
+
+/// Cómo se desplaza un pie de la línea media.
+#[derive(Clone, Copy, PartialEq)]
+enum Mode {
+    /// ±(e/2)/r con el espesor y el r del pie: el nodo 0, para que el canto de
+    /// entrada quede perpendicular a la línea media.
+    Foot,
+    /// Con el espesor del pie y r a medio desplazamiento: la sección nominal
+    /// del nodo, de donde se lee el espesor real.
+    Section,
+    /// Con el espesor de la x del punto desplazado y r a medio desplazamiento:
+    /// las caras.
+    Face,
+}
+
 /// El punto de una cara que sale del pie `foot` de la línea media, de tangente
 /// `t`, espesor nominal `e` y radio `r`: ±(e/2)/r a lo largo de la normal
 /// (t_θ, −t_m′), con + hacia la presión.
 ///
-/// Con `symmetric` el desplazamiento es el simple, con el espesor y el r del
-/// pie: así el canto de entrada queda perpendicular a la línea media. Si no,
-/// (a) el espesor es el de la x del punto desplazado y no el de su pie, para
-/// que las dos caras lleguen al corte de la salida con e(1) y el canto mida
-/// e(1)/sen β, el valor del bloqueo del 1D; y (b) r se evalúa a medio
-/// desplazamiento, porque el desplazamiento solo se compensa entre las dos
-/// caras si el r es el mismo, y en la salida salen de nodos con r distinto.
-/// Donde el espesor es constante y r casi, no cambia nada.
+/// En las caras ([`Mode::Face`]), (a) el espesor es el de la x del punto
+/// desplazado y no el de su pie, para que las dos caras lleguen al corte de la
+/// salida con e(1) y el canto mida e(1)/sen β, el valor del bloqueo del 1D; y
+/// (b) r se evalúa a medio desplazamiento, porque el desplazamiento solo se
+/// compensa entre las dos caras si el r es el mismo, y en la salida salen de
+/// nodos con r distinto. Donde el espesor es constante y r casi, no cambia
+/// nada.
 #[allow(clippy::too_many_arguments)]
 fn offset(
     sign: f64,
@@ -361,7 +387,7 @@ fn offset(
     t: [f64; 2],
     e: f64,
     r: f64,
-    symmetric: bool,
+    mode: Mode,
     path: &Path,
     along: &Along,
 ) -> Plane {
@@ -373,10 +399,15 @@ fn offset(
         }
     };
     let mut point = displaced(e, r);
-    if !symmetric {
+    if mode != Mode::Foot {
         for _ in 0..FIXED_POINT_PASSES {
             let middle = 0.5 * (foot.conformal + point.conformal);
-            point = displaced(along.thickness(point.conformal), path.at(middle)[1]);
+            let e = if mode == Mode::Face {
+                along.thickness(point.conformal)
+            } else {
+                e
+            };
+            point = displaced(e, path.at(middle)[1]);
         }
     }
     point
@@ -394,7 +425,7 @@ fn face(
     along: &Along,
     sign: f64,
     steps: usize,
-) -> Result<Vec<SolidPoint>, BladeSolidError> {
+) -> Result<Face, BladeSolidError> {
     let shifted: Vec<Plane> = stations
         .iter()
         .zip(planes)
@@ -407,7 +438,7 @@ fn face(
                 *t,
                 station.e,
                 station.r,
-                index == 0,
+                if index == 0 { Mode::Foot } else { Mode::Face },
                 path,
                 along,
             )
@@ -464,7 +495,7 @@ fn face(
                 t,
                 e,
                 path.at(foot.conformal)[1],
-                false,
+                Mode::Face,
                 path,
                 along,
             )
@@ -512,7 +543,33 @@ fn face(
             m_conformal: target,
         });
     }
-    Ok(out)
+    // La sección nominal de cada nodo, sin recortar, para el espesor real.
+    let at_nodes = (0..=steps)
+        .map(|i| {
+            let mode = if i == 0 { Mode::Foot } else { Mode::Section };
+            let point = offset(
+                sign,
+                planes[i],
+                tangents[i],
+                stations[i].e,
+                stations[i].r,
+                mode,
+                path,
+                along,
+            );
+            let [z, r] = path.at(point.conformal);
+            SolidPoint {
+                z,
+                r,
+                theta: point.theta,
+                m_conformal: point.conformal,
+            }
+        })
+        .collect();
+    Ok(Face {
+        points: out,
+        at_nodes,
+    })
 }
 
 /// θ de una cara muestreada en la m′ dada (lineal; fuera, el extremo).
@@ -575,6 +632,7 @@ pub fn blade_solid(
     }
 
     let mut solid_lines = Vec::with_capacity(lines.len());
+    let mut node_faces: Vec<(Vec<SolidPoint>, Vec<SolidPoint>)> = Vec::with_capacity(lines.len());
     for (index, (line, path)) in camber.lines.iter().zip(paths).enumerate() {
         let thickness = |x: f64| curves.at(line.psi, x);
         let nodes = &line.points;
@@ -624,6 +682,8 @@ pub fn blade_solid(
         let suction = face(
             index, &path, &stations, &planes, &tangents, &along, -1.0, steps,
         )?;
+        node_faces.push((pressure.at_nodes, suction.at_nodes));
+        let (pressure, suction) = (pressure.points, suction.points);
         let middle = pressure
             .iter()
             .zip(&suction)
@@ -661,5 +721,284 @@ pub fn blade_solid(
             }
         }
     }
-    Ok(BladeSolid { lines: solid_lines })
+
+    // Lecturas y avisos.
+    for (index, line) in solid_lines.iter_mut().enumerate() {
+        line.true_thickness = true_thickness(camber, index, &node_faces[index]);
+    }
+    let readings = readings(camber, &solid_lines, blade_count);
+    let notices = notices(camber, &solid_lines);
+    Ok(BladeSolid {
+        lines: solid_lines,
+        readings,
+        notices,
+    })
+}
+
+/// (x, y, z) del punto, m.
+fn cartesian(point: &SolidPoint) -> [f64; 3] {
+    [
+        point.r * point.theta.cos(),
+        point.r * point.theta.sin(),
+        point.z,
+    ]
+}
+
+fn sub(a: [f64; 3], b: [f64; 3]) -> [f64; 3] {
+    [a[0] - b[0], a[1] - b[1], a[2] - b[2]]
+}
+
+fn dot(a: [f64; 3], b: [f64; 3]) -> f64 {
+    a[0] * b[0] + a[1] * b[1] + a[2] * b[2]
+}
+
+fn cross(a: [f64; 3], b: [f64; 3]) -> [f64; 3] {
+    [
+        a[1] * b[2] - a[2] * b[1],
+        a[2] * b[0] - a[0] * b[2],
+        a[0] * b[1] - a[1] * b[0],
+    ]
+}
+
+fn norm(a: [f64; 3]) -> f64 {
+    dot(a, a).sqrt()
+}
+
+/// El espesor real en cada nodo de la línea `index`, m: |(P⁺ − P⁻)·N| con P±
+/// los puntos desplazados del nodo antes del recorte, en cartesianas, y N la
+/// normal unitaria a la superficie media: el producto vectorial de la
+/// tangente a lo largo (diferencias de nodos) por la tangente a lo ancho (del
+/// nodo a su homólogo en la línea vecina; en la tapa, la anterior). Si no hay
+/// normal (tangentes paralelas), la distancia entre los dos puntos.
+fn true_thickness(
+    camber: &BladeCamber,
+    index: usize,
+    faces: &(Vec<SolidPoint>, Vec<SolidPoint>),
+) -> Vec<f64> {
+    let node = |line: usize, j: usize| {
+        let p = &camber.lines[line].points[j];
+        [p.r * p.theta.cos(), p.r * p.theta.sin(), p.z]
+    };
+    let neighbour = if index + 1 < camber.lines.len() {
+        index + 1
+    } else {
+        index - 1
+    };
+    let last = camber.lines[index].points.len() - 1;
+    (0..=last)
+        .map(|j| {
+            let gap = sub(cartesian(&faces.0[j]), cartesian(&faces.1[j]));
+            let along = sub(
+                node(index, (j + 1).min(last)),
+                node(index, j.saturating_sub(1)),
+            );
+            let across = sub(node(neighbour, j), node(index, j));
+            let normal = cross(along, across);
+            let length = norm(normal);
+            if length > 0.0 {
+                dot(gap, normal).abs() / length
+            } else {
+                norm(gap)
+            }
+        })
+        .collect()
+}
+
+/// Las x a que se lee el espesor real, el canto y la garganta: entrada, un
+/// tercio, dos tercios y salida.
+pub const READING_STATIONS: [f64; 4] = [0.0, 1.0 / 3.0, 2.0 / 3.0, 1.0];
+
+/// La garganta de entrada de una línea: la distancia más corta, en 3D, entre
+/// el borde de ataque de un álabe y la cara de succión del vecino.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Throat {
+    /// m.
+    pub width: f64,
+    /// El primer punto de la cara de presión del álabe vecino (θ + 2π/Z).
+    pub from: SolidPoint,
+    /// El punto de la cara de succión más cercano a `from`.
+    pub to: SolidPoint,
+}
+
+/// Lo que se lee del álabe con espesor. De geometría: sin criterio en esta
+/// etapa.
+#[derive(Debug, Clone, PartialEq)]
+pub struct SolidReadings {
+    /// Espesor real del cubo y de la tapa en [`READING_STATIONS`], m.
+    pub true_thickness_hub: [f64; 4],
+    pub true_thickness_shroud: [f64; 4],
+    /// Una por línea; `None` con un solo álabe, que no tiene vecino.
+    pub throats: Vec<Option<Throat>>,
+    /// El canto de salida de cada línea, r·(θ_succión − θ_presión), m.
+    pub exit_edges: Vec<f64>,
+    /// τ2 con el canto de la línea central: la forma de
+    /// [`crate::blade_blockage`].
+    pub exit_blockage: f64,
+}
+
+/// Un aviso: una lectura bajo el mínimo de fundición. `at` es (m′, θ) del
+/// nodo de la línea media.
+#[derive(Debug, Clone, PartialEq)]
+pub struct SolidNotice {
+    pub line: usize,
+    pub at: [f64; 2],
+    pub message: String,
+}
+
+/// El nodo de la línea más cercano a esa x.
+fn node_at(steps: usize, x: f64) -> usize {
+    ((x * steps as f64).round() as usize).min(steps)
+}
+
+/// Un número con coma decimal.
+fn comma(value: f64, decimals: usize) -> String {
+    format!("{value:.decimals$}").replace('.', ",")
+}
+
+fn readings(camber: &BladeCamber, lines: &[SolidLine], blade_count: u32) -> SolidReadings {
+    let steps = lines[0].pressure.len() - 1;
+    let at_stations =
+        |line: &SolidLine| READING_STATIONS.map(|x| line.true_thickness[node_at(steps, x)]);
+
+    let pitch = 2.0 * std::f64::consts::PI / f64::from(blade_count);
+    let throats = lines
+        .iter()
+        .map(|line| (blade_count > 1).then(|| throat(line, pitch)))
+        .collect();
+    let exit_edges: Vec<f64> = lines
+        .iter()
+        .map(|line| {
+            let [pressure, _, suction] = line.trailing_edge();
+            pressure.r * (suction.theta - pressure.theta)
+        })
+        .collect();
+
+    // La línea central: la de ψ más cercano a 0,5, la primera si hay empate.
+    let mid = (0..lines.len())
+        .min_by(|a, b| {
+            (camber.lines[*a].psi - 0.5)
+                .abs()
+                .total_cmp(&(camber.lines[*b].psi - 0.5).abs())
+        })
+        .unwrap_or(0);
+    let outlet_diameter = 2.0 * camber.lines[mid].points[steps].r;
+    let ratio = f64::from(blade_count) * exit_edges[mid] / (std::f64::consts::PI * outlet_diameter);
+    SolidReadings {
+        true_thickness_hub: at_stations(&lines[0]),
+        true_thickness_shroud: at_stations(&lines[lines.len() - 1]),
+        throats,
+        exit_edges,
+        exit_blockage: 1.0 / (1.0 - ratio.min(0.6)),
+    }
+}
+
+/// La garganta de entrada de `line`: del primer punto de la cara de presión
+/// del vecino a la polilínea de succión de ésta.
+fn throat(line: &SolidLine, pitch: f64) -> Throat {
+    let first = line.pressure[0];
+    let from = SolidPoint {
+        theta: first.theta + pitch,
+        ..first
+    };
+    let target = cartesian(&from);
+    let mut best: Option<(f64, SolidPoint)> = None;
+    for pair in line.suction.windows(2) {
+        let (a, b) = (cartesian(&pair[0]), cartesian(&pair[1]));
+        let d = sub(b, a);
+        let squared = dot(d, d);
+        let t = if squared > 0.0 {
+            (dot(sub(target, a), d) / squared).clamp(0.0, 1.0)
+        } else {
+            0.0
+        };
+        let foot = [a[0] + t * d[0], a[1] + t * d[1], a[2] + t * d[2]];
+        let distance = norm(sub(target, foot));
+        if best
+            .as_ref()
+            .is_none_or(|(shortest, _)| distance < *shortest)
+        {
+            best = Some((
+                distance,
+                SolidPoint {
+                    z: foot[2],
+                    r: foot[0].hypot(foot[1]),
+                    theta: foot[1].atan2(foot[0]),
+                    m_conformal: pair[0].m_conformal
+                        + t * (pair[1].m_conformal - pair[0].m_conformal),
+                },
+            ));
+        }
+    }
+    let (width, to) = best.expect("la cara de succión tiene al menos dos puntos");
+    // θ de `to` en la misma vuelta que la de `from`.
+    let turns = ((from.theta - to.theta) / (2.0 * std::f64::consts::PI)).round();
+    let to = SolidPoint {
+        theta: to.theta + turns * 2.0 * std::f64::consts::PI,
+        ..to
+    };
+    Throat { width, from, to }
+}
+
+/// Un aviso por cada lectura de espesor real, en cualquier línea, bajo el
+/// mínimo de fundición del nodo ([`crate::blade_thickness::node_floor`]).
+fn notices(camber: &BladeCamber, lines: &[SolidLine]) -> Vec<SolidNotice> {
+    let steps = lines[0].pressure.len() - 1;
+    let mut out = Vec::new();
+    for (index, line) in lines.iter().enumerate() {
+        for x in READING_STATIONS {
+            let node = node_at(steps, x);
+            let real = line.true_thickness[node];
+            let floor = crate::blade_thickness::node_floor(x);
+            if real < floor {
+                let point = &camber.lines[index].points[node];
+                // «3» y «1,5»: el mínimo sin ceros de sobra.
+                let minimum = comma(floor * 1000.0, 1).replace(",0", "");
+                out.push(SolidNotice {
+                    line: index,
+                    at: [point.m_conformal, point.theta],
+                    message: format!(
+                        "línea de corriente {index} (0 es el cubo): el espesor real en x = {} \
+                         es {} mm, menor que el mínimo de fundición de {minimum} mm",
+                        comma(x, 2),
+                        comma(real * 1000.0, 2),
+                    ),
+                });
+            }
+        }
+    }
+    out
+}
+
+/// El texto de un error del diseño, sin el «entrada inválida» de `Display`.
+fn reason(error: DesignError) -> String {
+    match error {
+        DesignError::Input(text) => text,
+        other => other.to_string(),
+    }
+}
+
+/// El álabe con espesor de un diseño: encadena la línea media
+/// ([`camber_for_design`], la misma que dibuja el visor y escribe el archivo),
+/// las líneas de corriente, las curvas de espesor del `setup` y
+/// [`blade_solid`]. Con una forma 2D, o si algo de lo anterior falla, no hay
+/// álabe con espesor y el error es [`BladeSolidError::NoCamber`] con su texto.
+pub fn blade_solid_for_design(
+    result: &DesignResult,
+    impeller: &ImpellerGeometry,
+    model: &MeridionalModel,
+    setup: &BladeSetup,
+    incidence_deg: f64,
+) -> Result<BladeSolid, BladeSolidError> {
+    let camber = camber_for_design(result, impeller, model, setup, incidence_deg)
+        .map_err(|error| BladeSolidError::NoCamber(reason(error)))?
+        .ok_or_else(|| {
+            BladeSolidError::NoCamber(
+                "la forma del álabe es 2D: su espesor llega en la etapa 3".to_string(),
+            )
+        })?;
+    let lines = streamlines(model, setup.streamlines)
+        .map_err(|error| BladeSolidError::NoCamber(error.to_string()))?;
+    let curves = thickness_curves_for_design(result, &camber, &setup.thickness)
+        .map_err(|error| BladeSolidError::NoCamber(reason(error)))?;
+    blade_solid(&camber, &lines, &curves, result.selection.blade_count)
 }

@@ -3,12 +3,14 @@
 //! salida y los errores que dicen la línea y el radio.
 
 use hm_design::blade_camber::{BladeCamber, CAMBER_STEPS, blade_camber};
-use hm_design::blade_setup::{BladeShape, CamberBows};
-use hm_design::blade_solid::{BladeSolidError, SolidPoint, blade_solid};
+use hm_design::blade_setup::{BladeSetup, BladeShape, CamberBows};
+use hm_design::blade_solid::{
+    BladeSolidError, READING_STATIONS, SolidPoint, blade_solid, blade_solid_for_design,
+};
 use hm_design::blade_thickness::{
     BladeThickness, ThicknessCurve, ThicknessCurves, ThicknessNode, thickness_curves_for_design,
 };
-use hm_design::geometry::{DEFAULT_INCIDENCE_DEG, geometry};
+use hm_design::geometry::{DEFAULT_INCIDENCE_DEG, ImpellerGeometry, geometry};
 use hm_design::inlet_triangles::{InletTriangle, inlet_triangles};
 use hm_design::meridian::{MeridionalModel, meridional_model};
 use hm_design::streamlines::{Streamline, streamlines};
@@ -43,6 +45,7 @@ fn b1(
     count: u8,
 ) -> (
     DesignResult,
+    ImpellerGeometry,
     MeridionalModel,
     Vec<Streamline>,
     Vec<InletTriangle>,
@@ -53,11 +56,12 @@ fn b1(
     let model = meridional_model(&result).unwrap();
     let lines = streamlines(&model, count).unwrap();
     let triangles = inlet_triangles(&result, &impeller, &lines, DEFAULT_INCIDENCE_DEG).unwrap();
-    (result, model, lines, triangles)
+    (result, impeller, model, lines, triangles)
 }
 
 struct Case {
     result: DesignResult,
+    impeller: ImpellerGeometry,
     model: MeridionalModel,
     lines: Vec<Streamline>,
     triangles: Vec<InletTriangle>,
@@ -66,12 +70,13 @@ struct Case {
 }
 
 fn case(shape: BladeShape, count: u8) -> Case {
-    let (result, model, lines, triangles) = b1(count);
+    let (result, impeller, model, lines, triangles) = b1(count);
     let beta2b = result.selection.beta2_deg.to_radians();
     let camber = blade_camber(shape, &lines, &triangles, beta2b, &CamberBows::default()).unwrap();
     let curves = thickness_curves_for_design(&result, &camber, &BladeThickness::default()).unwrap();
     Case {
         result,
+        impeller,
         model,
         lines,
         triangles,
@@ -333,7 +338,7 @@ fn every_face_has_j_plus_one_points() {
         for face in [&line.pressure, &line.middle, &line.suction] {
             assert_eq!(face.len(), CAMBER_STEPS + 1);
         }
-        assert!(line.true_thickness.is_empty());
+        assert_eq!(line.true_thickness.len(), CAMBER_STEPS + 1);
         for point in line
             .pressure
             .iter()
@@ -513,4 +518,253 @@ fn the_messages_name_the_line_and_the_radius_with_a_decimal_comma() {
         BladeSolidError::NoCamber("la forma no es 3D".into()).to_string(),
         "no hay línea media 3D y el álabe con espesor no se construye: la forma no es 3D"
     );
+}
+
+/// El `BladeSetup` de B1 con esa forma y esas líneas de corriente.
+fn setup(shape: BladeShape, streamlines: u8) -> BladeSetup {
+    BladeSetup {
+        shape,
+        streamlines,
+        ..BladeSetup::default()
+    }
+}
+
+#[test]
+fn the_true_thickness_is_close_to_the_curve_and_never_above_it() {
+    let case = b1_case();
+    let solid = blade_solid(&case.camber, &case.lines, &case.curves, case.z()).unwrap();
+    let readings = &solid.readings;
+    let last = solid.lines.len() - 1;
+    for (index, real) in [
+        (0, readings.true_thickness_hub),
+        (last, readings.true_thickness_shroud),
+    ] {
+        let psi = solid.lines[index].psi;
+        for (x, real) in READING_STATIONS.iter().zip(real) {
+            let e = case.curves.at(psi, *x);
+            assert!(
+                real >= 0.7 * e && real <= e + 1.0e-9,
+                "línea {index}, x = {x}: real {real} frente a e = {e}"
+            );
+        }
+    }
+}
+
+#[test]
+fn the_true_thickness_of_every_node_is_filled() {
+    let case = b1_case();
+    let solid = blade_solid(&case.camber, &case.lines, &case.curves, case.z()).unwrap();
+    for line in &solid.lines {
+        assert_eq!(line.true_thickness.len(), CAMBER_STEPS + 1);
+        assert!(
+            line.true_thickness
+                .iter()
+                .all(|e| e.is_finite() && *e > 0.0)
+        );
+    }
+}
+
+#[test]
+fn the_inlet_throat_is_shorter_than_the_pitch() {
+    let case = b1_case();
+    let solid = blade_solid(&case.camber, &case.lines, &case.curves, case.z()).unwrap();
+    let pitch = 2.0 * std::f64::consts::PI / f64::from(case.z());
+    for (line, throat) in solid.lines.iter().zip(&solid.readings.throats) {
+        let throat = throat.as_ref().expect("Z > 1 tiene garganta");
+        let r_le = line.pressure[0].r;
+        assert!(
+            throat.width > 0.0 && throat.width < pitch * r_le,
+            "ψ = {}: garganta {} frente al paso {}",
+            line.psi,
+            throat.width,
+            pitch * r_le
+        );
+        close(throat.from.theta - line.pressure[0].theta, pitch, 1.0e-12);
+    }
+}
+
+#[test]
+fn the_throat_ends_on_the_suction_face() {
+    let case = b1_case();
+    let solid = blade_solid(&case.camber, &case.lines, &case.curves, case.z()).unwrap();
+    for (line, throat) in solid.lines.iter().zip(&solid.readings.throats) {
+        let throat = throat.as_ref().unwrap();
+        let suction: Vec<[f64; 3]> = line.suction.iter().map(cartesian).collect();
+        let to = cartesian(&throat.to);
+        assert!(distance_to_polyline(&suction, to) <= 1.0e-9);
+        // El ancho es la distancia de `from` a `to`.
+        close(distance(cartesian(&throat.from), to), throat.width, 1.0e-9);
+    }
+}
+
+#[test]
+fn one_blade_has_no_throat() {
+    let case = b1_case();
+    let solid = blade_solid(&case.camber, &case.lines, &case.curves, 1).unwrap();
+    assert!(solid.readings.throats.iter().all(Option::is_none));
+    assert_eq!(solid.readings.throats.len(), solid.lines.len());
+}
+
+#[test]
+fn three_streamlines_build_and_read() {
+    let case = case(BladeShape::Free3D, 3);
+    let solid = blade_solid(&case.camber, &case.lines, &case.curves, case.z()).unwrap();
+    assert_eq!(solid.lines.len(), 3);
+    let readings = &solid.readings;
+    assert!(
+        readings
+            .true_thickness_hub
+            .iter()
+            .chain(&readings.true_thickness_shroud)
+            .chain(&readings.exit_edges)
+            .chain([&readings.exit_blockage])
+            .all(|v| v.is_finite() && *v > 0.0)
+    );
+    assert_eq!(readings.throats.len(), 3);
+}
+
+#[test]
+fn the_exit_edge_reading_is_e_over_sin_beta2() {
+    let case = b1_case();
+    let solid = blade_solid(&case.camber, &case.lines, &case.curves, case.z()).unwrap();
+    for (index, edge) in solid.readings.exit_edges.iter().enumerate() {
+        let outlet = case.camber.lines[index].points.last().unwrap();
+        let expected = case.curves.at(outlet_psi(&case, index), 1.0) / outlet.beta.sin();
+        close(*edge, expected, 5.0e-5);
+    }
+}
+
+fn outlet_psi(case: &Case, index: usize) -> f64 {
+    case.camber.lines[index].psi
+}
+
+#[test]
+fn the_exit_blockage_matches_the_1d() {
+    let case = b1_case();
+    let solid = blade_solid(&case.camber, &case.lines, &case.curves, case.z()).unwrap();
+    let mid = hm_design::blade_thickness::mid_line(&case.camber).unwrap();
+    let outlet = mid.points.last().unwrap();
+    let expected = hm_design::blade_blockage(
+        case.z(),
+        case.curves.at(mid.psi, 1.0),
+        2.0 * outlet.r,
+        outlet.beta,
+    );
+    let got = solid.readings.exit_blockage;
+    assert!(
+        ((got - expected) / expected).abs() < 1.0e-3,
+        "τ2 = {got} frente a {expected}"
+    );
+}
+
+#[test]
+fn a_thin_station_raises_a_notice() {
+    // Una curva plana de 3 mm, el mínimo, en una reglada: el espesor real
+    // queda por debajo en alguna estación.
+    let case = case(BladeShape::Ruled3D, 5);
+    let solid = blade_solid(&case.camber, &case.lines, &flat(3.0), case.z()).unwrap();
+    assert!(!solid.notices.is_empty(), "sin avisos");
+    for notice in &solid.notices {
+        assert!(
+            notice.message.contains("(0 es el cubo)"),
+            "{}",
+            notice.message
+        );
+        assert!(notice.message.contains("el espesor real en x = "));
+        assert!(notice.message.contains("mínimo de fundición de "));
+        assert!(!notice.message.contains('.'), "{}", notice.message);
+        assert!(notice.line < solid.lines.len());
+    }
+    // Con la curva de Gülich de B1, que está lejos del mínimo, no hay ninguno.
+    let thick = blade_solid(&case.camber, &case.lines, &case.curves, case.z()).unwrap();
+    assert!(thick.notices.is_empty(), "{:?}", thick.notices);
+}
+
+#[test]
+fn the_notice_names_the_line_the_station_and_the_minimum() {
+    // Un nodo de x = 1 no baja de 1,5 mm: el mínimo se dice sin ceros de sobra.
+    let case = b1_case();
+    let solid = blade_solid(&case.camber, &case.lines, &flat(3.0), case.z()).unwrap();
+    let messages: Vec<&str> = solid.notices.iter().map(|n| n.message.as_str()).collect();
+    assert!(
+        messages
+            .iter()
+            .all(|m| m.ends_with("de 3 mm") || m.ends_with("de 1,5 mm")),
+        "{messages:?}"
+    );
+}
+
+#[test]
+fn a_2d_shape_has_no_solid_and_says_why() {
+    let case = b1_case();
+    let error = blade_solid_for_design(
+        &case.result,
+        &case.impeller,
+        &case.model,
+        &setup(BladeShape::Free2D, 5),
+        DEFAULT_INCIDENCE_DEG,
+    )
+    .unwrap_err();
+    assert_eq!(
+        error,
+        BladeSolidError::NoCamber(
+            "la forma del álabe es 2D: su espesor llega en la etapa 3".into()
+        )
+    );
+}
+
+#[test]
+fn a_failed_camber_has_no_solid_and_says_why() {
+    let case = b1_case();
+    // Con estas manijas β baja de 5° en el cubo: no hay línea media.
+    let bows = CamberBows {
+        hub: (-30.0, -30.0),
+        shroud: (-30.0, -30.0),
+    };
+    let wrong = BladeSetup {
+        bows,
+        ..setup(BladeShape::Free3D, 5)
+    };
+    // El mismo error que da la línea media, con su texto.
+    let reason = hm_design::blade_camber::camber_for_design(
+        &case.result,
+        &case.impeller,
+        &case.model,
+        &wrong,
+        DEFAULT_INCIDENCE_DEG,
+    )
+    .expect_err("estas manijas no dan línea media")
+    .to_string();
+    let error = blade_solid_for_design(
+        &case.result,
+        &case.impeller,
+        &case.model,
+        &wrong,
+        DEFAULT_INCIDENCE_DEG,
+    )
+    .unwrap_err();
+    let BladeSolidError::NoCamber(text) = error else {
+        panic!("se esperaba NoCamber: {error:?}");
+    };
+    // El texto de la línea media, tal cual y sin el prefijo de `DesignError`.
+    assert!(reason.ends_with(&text), "{reason} frente a {text}");
+    assert!(
+        text.starts_with("línea de corriente 0 (0 es el cubo): β = "),
+        "{text}"
+    );
+}
+
+#[test]
+fn a_design_builds_the_same_solid_as_its_parts() {
+    let case = b1_case();
+    let for_design = blade_solid_for_design(
+        &case.result,
+        &case.impeller,
+        &case.model,
+        &setup(BladeShape::Free3D, 5),
+        DEFAULT_INCIDENCE_DEG,
+    )
+    .unwrap();
+    let by_parts = blade_solid(&case.camber, &case.lines, &case.curves, case.z()).unwrap();
+    assert_eq!(for_design, by_parts);
 }

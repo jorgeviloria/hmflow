@@ -753,3 +753,28 @@ fn segments_of(piece: &Piece) -> Vec<Segment> {
     }
     segments
 }
+
+#[cfg(test)]
+mod tests {
+    use eframe::egui_wgpu::wgpu::naga;
+
+    /// Los shaders solo se compilan al arrancar el visor: un error de WGSL
+    /// tumbaría la app sin que lo viera ninguna prueba.
+    #[test]
+    fn the_shaders_parse_and_validate() {
+        for (name, source) in [
+            ("mesh.wgsl", include_str!("shaders/mesh.wgsl")),
+            ("line.wgsl", include_str!("shaders/line.wgsl")),
+            ("composite.wgsl", include_str!("shaders/composite.wgsl")),
+        ] {
+            let module = naga::front::wgsl::parse_str(source)
+                .unwrap_or_else(|error| panic!("{name}: {}", error.emit_to_string(source)));
+            naga::valid::Validator::new(
+                naga::valid::ValidationFlags::all(),
+                naga::valid::Capabilities::default(),
+            )
+            .validate(&module)
+            .unwrap_or_else(|error| panic!("{name}: {error:?}"));
+        }
+    }
+}

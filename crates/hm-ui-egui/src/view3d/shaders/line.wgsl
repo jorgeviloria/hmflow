@@ -19,9 +19,23 @@ struct Piece {
 // superficie sin parpadear. En ortográfica son 0,2 mm.
 const DEPTH_BIAS: f32 = 1e-5;
 
-// Del recorte a píxeles con origen en el centro.
+// En perspectiva, w mínimo de un extremo: lo que queda detrás del ojo
+// (w ≤ 0) no se puede pasar a píxeles sin cambiar de signo.
+const NEAR_W: f32 = 1e-3;
+
+// Del recorte a píxeles con origen en el centro; `clip.w` ≥ NEAR_W.
 fn to_pixels(clip: vec4<f32>, size: vec2<f32>) -> vec2<f32> {
-    return clip.xy / max(clip.w, 1e-6) * 0.5 * size;
+    return clip.xy / clip.w * 0.5 * size;
+}
+
+// `point` llevado sobre el tramo hacia `other` hasta w = NEAR_W, si está
+// detrás.
+fn in_front(point: vec4<f32>, other: vec4<f32>) -> vec4<f32> {
+    if (point.w >= NEAR_W) {
+        return point;
+    }
+    let t = (NEAR_W - point.w) / (other.w - point.w);
+    return mix(point, other, t);
 }
 
 @vertex
@@ -34,8 +48,14 @@ fn vs_main(
     var at_b = array<bool, 6>(false, true, true, false, true, false);
     var sides = array<f32, 6>(-1.0, -1.0, 1.0, -1.0, 1.0, 1.0);
     let size = max(camera.viewport.xy, vec2<f32>(1.0, 1.0));
-    let clip_a = camera.view_proj * vec4<f32>(a, 1.0);
-    let clip_b = camera.view_proj * vec4<f32>(b, 1.0);
+    let raw_a = camera.view_proj * vec4<f32>(a, 1.0);
+    let raw_b = camera.view_proj * vec4<f32>(b, 1.0);
+    if (raw_a.w < NEAR_W && raw_b.w < NEAR_W) {
+        // Todo el tramo detrás del ojo: un punto fuera del volumen visible.
+        return vec4<f32>(0.0, 0.0, -1.0, 1.0);
+    }
+    let clip_a = in_front(raw_a, raw_b);
+    let clip_b = in_front(raw_b, raw_a);
     var along = to_pixels(clip_b, size) - to_pixels(clip_a, size);
     if (length(along) < 1e-6) {
         along = vec2<f32>(1.0, 0.0);

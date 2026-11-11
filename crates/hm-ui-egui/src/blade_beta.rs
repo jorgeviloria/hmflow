@@ -191,7 +191,7 @@ impl BetaSnapshot {
             bow2: inputs.beta_bow2.clone(),
             incidence: inputs.incidence.clone(),
             beta2: inputs.beta2.clone(),
-            blade: inputs.blade,
+            blade: inputs.blade.clone(),
         }
     }
 
@@ -200,7 +200,7 @@ impl BetaSnapshot {
         inputs.beta_bow2.clone_from(&self.bow2);
         inputs.incidence.clone_from(&self.incidence);
         inputs.beta2.clone_from(&self.beta2);
-        inputs.blade = self.blade;
+        inputs.blade.clone_from(&self.blade);
     }
 }
 
@@ -1162,7 +1162,7 @@ mod tests {
     fn undo_restores_the_previous_shape_and_count() {
         use hm_design::blade_setup::{BladeSetup, BladeShape};
         let mut inputs = Inputs::default();
-        let before = inputs.blade;
+        let before = inputs.blade.clone();
         let mut history = BetaHistory::default();
         history.follow(&BetaSnapshot::of(&inputs));
         inputs.blade = BladeSetup {
@@ -1170,7 +1170,7 @@ mod tests {
             streamlines: 9,
             ..BladeSetup::default()
         };
-        let after = inputs.blade;
+        let after = inputs.blade.clone();
         history.record(&BetaSnapshot::of(&inputs), 10.0);
         let back = history.undo(&BetaSnapshot::of(&inputs)).unwrap();
         back.apply(&mut inputs);

@@ -400,6 +400,7 @@ fn the_plan_of_a_3d_project_is_the_design_one() {
             hub: (2.0, -1.0),
             shroud: (0.0, 3.0),
         },
+        ..BladeSetup::default()
     };
     let project = b1_with_blade(&setup);
     let analysis = analyze(&case_from_project(&project).unwrap(), points()).unwrap();
@@ -437,6 +438,7 @@ fn back_to_2d_the_plan_ignores_the_handles() {
             hub: (4.0, -2.0),
             shroud: (1.0, 3.0),
         },
+        ..BladeSetup::default()
     };
     let project = b1_with_blade(&with_handles);
     assert!(project.blade.is_some(), "las manijas se guardan");

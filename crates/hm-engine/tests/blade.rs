@@ -85,6 +85,7 @@ fn handles_cross_the_engine_both_ways() {
             hub: (3.5, -2.0),
             shroud: (0.0, 1.25),
         },
+        ..BladeSetup::default()
     };
     let section = blade_section_of(&setup).expect("no es el de por defecto");
     assert_eq!(section.bow_hub, [3.5, -2.0]);

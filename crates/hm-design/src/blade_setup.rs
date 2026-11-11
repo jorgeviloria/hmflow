@@ -9,6 +9,8 @@
 //! diseño de rodetes (`oracle/notas/cfturbo.md`, «Formas de álabe del
 //! impulsor»); ningún algoritmo ni criterio sale de ahí.
 
+use crate::blade_thickness::BladeThickness;
+
 /// Los números de líneas de corriente que se pueden elegir. Impares, para que
 /// siempre haya una línea media. De hmflow.
 pub const STREAMLINE_COUNTS: [u8; 4] = [3, 5, 7, 9];
@@ -158,7 +160,7 @@ impl CamberBows {
 }
 
 /// Lo que el usuario elige del álabe antes de trazarlo.
-#[derive(Debug, Clone, Copy, PartialEq)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct BladeSetup {
     pub shape: BladeShape,
     /// Uno de [`STREAMLINE_COUNTS`].
@@ -166,6 +168,9 @@ pub struct BladeSetup {
     /// Manijas de cubo y tapa de los álabes 3D. Se guardan con cualquier
     /// forma, para cuando se vuelva a una 3D.
     pub bows: CamberBows,
+    /// La curva de espesor e(x) del álabe 3D: «Gülich» o los nodos editados.
+    /// Se guarda con cualquier forma.
+    pub thickness: BladeThickness,
 }
 
 impl Default for BladeSetup {
@@ -174,6 +179,7 @@ impl Default for BladeSetup {
             shape: BladeShape::default(),
             streamlines: DEFAULT_STREAMLINES,
             bows: CamberBows::default(),
+            thickness: BladeThickness::default(),
         }
     }
 }

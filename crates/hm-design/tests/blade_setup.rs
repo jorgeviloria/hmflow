@@ -3,6 +3,7 @@
 use hm_design::blade_setup::{
     BladeFamily, BladeSetup, BladeShape, CamberBows, DEFAULT_STREAMLINES, STREAMLINE_COUNTS,
 };
+use hm_design::blade_thickness::BladeThickness;
 
 #[test]
 fn the_default_is_free_2d_with_five_streamlines() {
@@ -13,6 +14,7 @@ fn the_default_is_free_2d_with_five_streamlines() {
             shape: BladeShape::Free2D,
             streamlines: 5,
             bows: CamberBows::default(),
+            thickness: BladeThickness::default(),
         }
     );
     assert_eq!(DEFAULT_STREAMLINES, 5);

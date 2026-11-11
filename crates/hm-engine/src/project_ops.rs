@@ -3,6 +3,7 @@
 use hm_core::PumpType;
 use hm_design::blade_camber::{BladeCamber, camber_for_design};
 use hm_design::blade_setup::{BladeFamily, BladeSetup, BladeShape, CamberBows, STREAMLINE_COUNTS};
+use hm_design::blade_thickness::BladeThickness;
 use hm_design::geometry::DEFAULT_INCIDENCE_DEG;
 use hm_design::meridian::{
     CutMode, EdgeEdit, EdgeMode, HubCutEdit, MeridianEdits, MeridionalModel, WallEdit,
@@ -461,6 +462,8 @@ pub fn blade_setup_of(section: Option<&hm_project::Blade>) -> Result<BladeSetup,
             hub: (section.bow_hub[0], section.bow_hub[1]),
             shroud: (section.bow_shroud[0], section.bow_shroud[1]),
         },
+        // El espesor de `[blade]` llega con el esquema 7.
+        thickness: BladeThickness::default(),
     })
 }
 

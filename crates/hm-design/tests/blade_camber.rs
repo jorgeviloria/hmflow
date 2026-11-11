@@ -7,6 +7,7 @@ use hm_design::blade_camber::{
     wrap_range_deg,
 };
 use hm_design::blade_setup::{BladeSetup, BladeShape, CamberBows};
+use hm_design::blade_thickness::BladeThickness;
 use hm_design::geometry::{DEFAULT_INCIDENCE_DEG, camber_line_shaped, geometry};
 use hm_design::inlet_triangles::{Blade2dAngle, InletTriangle, inlet_triangles};
 use hm_design::meridian::meridional_model;
@@ -698,6 +699,7 @@ fn the_design_chain_matches_the_pieces() {
             shape,
             streamlines: 5,
             bows,
+            thickness: BladeThickness::default(),
         };
         let chained = camber_for_design(&result, &impeller, &model, &setup, DEFAULT_INCIDENCE_DEG)
             .unwrap()
@@ -726,6 +728,7 @@ fn a_failing_line_is_a_design_error() {
             hub: (-30.0, -30.0),
             shroud: (-30.0, -30.0),
         },
+        thickness: BladeThickness::default(),
     };
     let error =
         camber_for_design(&result, &impeller, &model, &setup, DEFAULT_INCIDENCE_DEG).unwrap_err();

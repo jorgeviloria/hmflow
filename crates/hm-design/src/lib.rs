@@ -12,6 +12,7 @@ use std::collections::BTreeMap;
 
 pub mod blade_camber;
 pub mod blade_setup;
+pub mod blade_thickness;
 pub mod fluid;
 pub mod geometry;
 pub mod inlet_triangles;

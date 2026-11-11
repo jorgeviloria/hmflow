@@ -527,17 +527,9 @@ pub(super) fn blade_beta_view(
         Ok(Some(camber)) => {
             let mut chart = crate::blade_development::BladeChart::stored(ui.ctx());
             ui.horizontal(|ui| {
-                ui.selectable_value(&mut chart, crate::blade_development::BladeChart::Beta, "β");
-                ui.selectable_value(
-                    &mut chart,
-                    crate::blade_development::BladeChart::Thickness,
-                    "Espesor",
-                );
-                ui.selectable_value(
-                    &mut chart,
-                    crate::blade_development::BladeChart::Development,
-                    "Desarrollo",
-                );
+                for (value, label) in crate::blade_development::BladeChart::ALL {
+                    ui.selectable_value(&mut chart, value, label);
+                }
             });
             chart.store(ui.ctx());
             match chart {
@@ -549,8 +541,14 @@ pub(super) fn blade_beta_view(
                         ui, outcome, inputs, history, camber,
                     );
                 }
-                crate::blade_development::BladeChart::Development => {
-                    crate::blade_development::development_view(ui, camber);
+                crate::blade_development::BladeChart::Profile => {
+                    let solid = crate::blade_inlet::solid_of(outcome);
+                    crate::blade_development::profile_view(
+                        ui,
+                        camber,
+                        &solid,
+                        outcome.result.selection.blade_count,
+                    );
                 }
             }
             edited |= bow_fields(ui, inputs, history);

@@ -6,6 +6,7 @@
 use eframe::egui;
 use hm_design::blade_camber::{BladeCamber, CamberOrigin, camber_for_design, wrap_range_deg};
 use hm_design::blade_setup::{BladeFamily, BladeSetup, BladeShape, STREAMLINE_COUNTS};
+use hm_design::blade_solid::{BladeSolid, BladeSolidError, blade_solid_for_design};
 use hm_design::inlet_triangles::{
     Blade2dAngle, INLET_MISMATCH_WARN_DEG, InletTriangle, inlet_triangles,
 };
@@ -381,6 +382,28 @@ pub(super) fn camber_of(outcome: &Outcome) -> Result<Option<BladeCamber>, String
         crate::blade_beta::applied_incidence_deg(&outcome.inputs),
     )
     .map_err(|error| error.to_string())
+}
+
+/// El álabe con espesor de este diseño, por el mismo camino que
+/// [`camber_of`]: sobre el meridiano editado y con la incidencia aplicada.
+/// Con forma 2D, o si algo falla, el error dice por qué.
+pub(super) fn solid_of(outcome: &Outcome) -> Result<BladeSolid, BladeSolidError> {
+    let setup = &outcome.inputs.blade;
+    let no_solid = |text: String| BladeSolidError::NoCamber(text);
+    let geometry = outcome
+        .geometry
+        .as_ref()
+        .map_err(|error| no_solid(error.to_string()))?;
+    let edits = hm_engine::meridian_edits_of(&outcome.inputs.meridian);
+    let (model, _) = crate::meridian::model_or_uncut(&outcome.result, &edits)
+        .map_err(|error| no_solid(error.to_string()))?;
+    blade_solid_for_design(
+        &outcome.result,
+        &geometry.impeller,
+        &model,
+        setup,
+        crate::blade_beta::applied_incidence_deg(&outcome.inputs),
+    )
 }
 
 /// Las filas de la tabla 3D, del cubo a la tapa, o el mensaje del error.

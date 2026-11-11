@@ -1,9 +1,11 @@
-//! Desarrollo conforme del álabe 3D: cada línea de corriente en el plano
-//! (θ − Θ, m′), donde la pendiente es el β verdadero.
+//! Vistas del álabe 3D en el plano conforme (θ − Θ, m′), donde los ángulos son
+//! los verdaderos: el desarrollo de las líneas medias y la vista «Perfil», el
+//! álabe con su espesor, el vecino y la garganta de entrada.
 
 use eframe::egui;
-use egui_plot::{Plot, Points};
-use hm_design::blade_camber::BladeCamber;
+use egui_plot::{LineStyle, Plot, PlotPoint, Points, Polygon, Text};
+use hm_design::blade_camber::{BladeCamber, CamberLine};
+use hm_design::blade_solid::{BladeSolid, BladeSolidError};
 
 use crate::curves::line;
 
@@ -14,16 +16,22 @@ pub(super) enum BladeChart {
     #[default]
     Beta,
     Thickness,
-    Development,
+    Profile,
 }
 
 impl BladeChart {
-    /// Solo para las capturas: `HMF_CHART=thickness|profile`. «profile» es hoy
-    /// el desarrollo; la Tarea 8 del espesor lo cambia por la vista «Perfil».
+    /// Las gráficas con su rótulo, en el orden del selector.
+    pub(super) const ALL: [(Self, &'static str); 3] = [
+        (Self::Beta, "β"),
+        (Self::Thickness, "Espesor"),
+        (Self::Profile, "Perfil"),
+    ];
+
+    /// Solo para las capturas: `HMF_CHART=beta|thickness|profile`.
     pub(super) fn from_env(text: Option<&str>) -> Option<Self> {
         match text {
             Some("thickness") => Some(Self::Thickness),
-            Some("profile") => Some(Self::Development),
+            Some("profile") => Some(Self::Profile),
             Some("beta") => Some(Self::Beta),
             Some(other) => {
                 eprintln!("HMF_CHART: se espera beta, thickness o profile; llegó {other:?}");
@@ -69,75 +77,308 @@ pub(super) fn development_curves(camber: &BladeCamber) -> Vec<Vec<[f64; 2]>> {
         .collect()
 }
 
-/// El punto de las curvas más cercano al puntero: (línea, nodo).
-fn nearest(curves: &[Vec<[f64; 2]>], at: [f64; 2]) -> Option<(usize, usize)> {
-    curves
-        .iter()
-        .enumerate()
-        .flat_map(|(k, curve)| curve.iter().enumerate().map(move |(j, p)| (k, j, p)))
-        .min_by(|a, b| {
-            let d = |p: &[f64; 2]| (p[0] - at[0]).powi(2) + (p[1] - at[1]).powi(2);
-            d(a.2).total_cmp(&d(b.2))
-        })
-        .map(|(k, j, _)| (k, j))
+/// El plano del dibujo de una línea: [(θ − Θ)°, (m′ − m′ de la salida)·180/π],
+/// con Θ y m′ de la salida de esa línea. Todas acaban en y = 0.
+fn plane_of(line: &CamberLine) -> impl Fn(f64, f64) -> [f64; 2] {
+    let (theta_end, m_end) = line
+        .points
+        .last()
+        .map_or((0.0, 0.0), |p| (p.theta, p.m_conformal));
+    move |theta, conformal| {
+        [
+            (theta - theta_end).to_degrees(),
+            (conformal - m_end).to_degrees(),
+        ]
+    }
 }
 
-/// Solo lectura. Al pasar el ratón: línea, x y β del punto más cercano.
-pub(super) fn development_view(ui: &mut egui::Ui, camber: &BladeCamber) {
+/// Una línea de corriente del perfil, en el plano del dibujo.
+pub(super) struct ProfileLine {
+    pub pressure: Vec<[f64; 2]>,
+    pub suction: Vec<[f64; 2]>,
+    /// La línea media, remuestreada como las dos caras.
+    pub camber: Vec<[f64; 2]>,
+    /// Extremos de la garganta de entrada en el dibujo y su ancho en mm.
+    pub throat: Option<([[f64; 2]; 2], f64)>,
+}
+
+/// Las caras, la línea media y la garganta de cada línea, en el plano del
+/// dibujo ([`development_curves`] lo comparte).
+pub(super) fn profile_lines(camber: &BladeCamber, solid: &BladeSolid) -> Vec<ProfileLine> {
+    camber
+        .lines
+        .iter()
+        .zip(&solid.lines)
+        .zip(&solid.readings.throats)
+        .map(|((camber_line, solid_line), throat)| {
+            let plane = plane_of(camber_line);
+            let draw = |points: &[hm_design::blade_solid::SolidPoint]| -> Vec<[f64; 2]> {
+                points
+                    .iter()
+                    .map(|p| plane(p.theta, p.m_conformal))
+                    .collect()
+            };
+            ProfileLine {
+                pressure: draw(&solid_line.pressure),
+                suction: draw(&solid_line.suction),
+                camber: draw(&solid_line.middle),
+                throat: throat.as_ref().map(|throat| {
+                    (
+                        [
+                            plane(throat.from.theta, throat.from.m_conformal),
+                            plane(throat.to.theta, throat.to.m_conformal),
+                        ],
+                        throat.width * 1000.0,
+                    )
+                }),
+            }
+        })
+        .collect()
+}
+
+/// El paso entre álabes, en grados: 360/Z.
+pub(super) fn pitch_deg(blade_count: u32) -> f64 {
+    360.0 / f64::from(blade_count)
+}
+
+/// Las marcas del dibujo: un punto con su texto por cada aviso y, si el sólido
+/// falla donde se sabe (caras que se cruzan, vecinos que se tocan), en ese
+/// punto.
+pub(super) fn profile_marks(
+    camber: &BladeCamber,
+    solid: &Result<BladeSolid, BladeSolidError>,
+) -> Vec<([f64; 2], String)> {
+    let mark = |line: usize, at: [f64; 2], text: String| {
+        camber
+            .lines
+            .get(line)
+            .map(|camber_line| (plane_of(camber_line)(at[1], at[0]), text))
+    };
+    match solid {
+        Ok(solid) => solid
+            .notices
+            .iter()
+            .filter_map(|notice| mark(notice.line, notice.at, notice.message.clone()))
+            .collect(),
+        Err(
+            error @ (BladeSolidError::FacesCross { line, at, .. }
+            | BladeSolidError::NeighboursTouch { line, at, .. }),
+        ) => mark(*line, *at, error.to_string()).into_iter().collect(),
+        Err(_) => Vec::new(),
+    }
+}
+
+/// Qué líneas enseña el perfil. Se guarda en los datos temporales de egui.
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub(super) struct ProfileShown {
+    pub hub: bool,
+    pub shroud: bool,
+    pub inner: bool,
+}
+
+impl Default for ProfileShown {
+    /// Cubo y tapa.
+    fn default() -> Self {
+        Self {
+            hub: true,
+            shroud: true,
+            inner: false,
+        }
+    }
+}
+
+impl ProfileShown {
+    fn id() -> egui::Id {
+        egui::Id::unique("blade_profile_shown")
+    }
+
+    fn stored(ctx: &egui::Context) -> Self {
+        ctx.data(|data| data.get_temp::<Self>(Self::id()))
+            .unwrap_or_default()
+    }
+
+    fn store(self, ctx: &egui::Context) {
+        ctx.data_mut(|data| data.insert_temp(Self::id(), self));
+    }
+
+    fn shows(self, index: usize, count: usize) -> bool {
+        match index {
+            0 => self.hub,
+            i if i + 1 == count => self.shroud,
+            _ => self.inner,
+        }
+    }
+}
+
+/// Las líneas medias como hoy, cuando el álabe con espesor no sale.
+fn draw_camber_lines(plot_ui: &mut egui_plot::PlotUi, camber: &BladeCamber, shown: ProfileShown) {
+    let palette = crate::theme::palette(plot_ui.ctx());
     let curves = development_curves(camber);
+    let count = curves.len();
+    for (index, curve) in curves.into_iter().enumerate() {
+        if !shown.shows(index, count) {
+            continue;
+        }
+        let (name, color) = match index {
+            0 => ("Cubo", palette.hub),
+            i if i + 1 == count => ("Tapa", palette.shroud),
+            _ => ("Intermedias", palette.construction),
+        };
+        plot_ui.line(line(name, curve, color).width(2.0));
+    }
+}
+
+/// El álabe relleno (un cuadrilátero por tramo, porque egui solo rellena
+/// polígonos convexos), su contorno, la línea media a trazos, el vecino y la
+/// garganta de cada línea que se enseña.
+fn draw_solid(
+    plot_ui: &mut egui_plot::PlotUi,
+    lines: &[ProfileLine],
+    shown: ProfileShown,
+    pitch: f64,
+) {
+    let palette = crate::theme::palette(plot_ui.ctx());
+    let count = lines.len();
+    let shift = |points: &[[f64; 2]]| -> Vec<[f64; 2]> {
+        points.iter().map(|p| [p[0] + pitch, p[1]]).collect()
+    };
+    for (index, line) in lines.iter().enumerate() {
+        if !shown.shows(index, count) {
+            continue;
+        }
+        let color = match index {
+            0 => palette.hub,
+            i if i + 1 == count => palette.shroud,
+            _ => palette.construction,
+        };
+        for (p, s) in line.pressure.windows(2).zip(line.suction.windows(2)) {
+            plot_ui.polygon(
+                Polygon::new("", vec![p[0], p[1], s[1], s[0]])
+                    .fill_color(color.gamma_multiply(0.35))
+                    .stroke(egui::Stroke::NONE)
+                    .allow_hover(false),
+            );
+        }
+        for contour in [&line.pressure, &line.suction] {
+            plot_ui.line(line_of(contour.clone(), color, 1.5));
+        }
+        plot_ui.line(line_of(vec![line.pressure[0], line.suction[0]], color, 1.5));
+        plot_ui.line(line_of(
+            vec![
+                *line.pressure.last().unwrap(),
+                *line.suction.last().unwrap(),
+            ],
+            color,
+            1.5,
+        ));
+        plot_ui.line(line_of(line.camber.clone(), color, 1.0).style(LineStyle::dashed_loose()));
+
+        // El álabe vecino: el mismo contorno, +paso, sin relleno.
+        let faint = color.gamma_multiply(0.6);
+        for contour in [&line.pressure, &line.suction] {
+            plot_ui.line(line_of(shift(contour), faint, 1.0));
+        }
+        plot_ui.line(line_of(
+            shift(&[line.pressure[0], line.suction[0]]),
+            faint,
+            1.0,
+        ));
+        plot_ui.line(line_of(
+            shift(&[
+                *line.pressure.last().unwrap(),
+                *line.suction.last().unwrap(),
+            ]),
+            faint,
+            1.0,
+        ));
+
+        if let Some((ends, width)) = &line.throat {
+            plot_ui.line(line_of(ends.to_vec(), palette.dimension, 1.5));
+            let middle = PlotPoint::new(
+                0.5 * (ends[0][0] + ends[1][0]),
+                0.5 * (ends[0][1] + ends[1][1]),
+            );
+            plot_ui.text(
+                Text::new(
+                    "",
+                    middle,
+                    egui::RichText::new(format!(" {} mm", format!("{width:.1}").replace('.', ",")))
+                        .small()
+                        .color(palette.dimension_text),
+                )
+                .anchor(egui::Align2::LEFT_BOTTOM),
+            );
+        }
+    }
+}
+
+fn line_of(points: Vec<[f64; 2]>, color: egui::Color32, width: f32) -> egui_plot::Line<'static> {
+    line("", points, color).width(width)
+}
+
+/// Solo lectura: zoom con la rueda, desplazamiento arrastrando y doble clic
+/// para reencuadrar. Con el álabe con espesor, el vecino y la garganta; si no
+/// sale, las líneas medias y el motivo bajo la vista.
+pub(super) fn profile_view(
+    ui: &mut egui::Ui,
+    camber: &BladeCamber,
+    solid: &Result<BladeSolid, BladeSolidError>,
+    blade_count: u32,
+) {
     let palette = crate::theme::palette(ui.ctx());
-    let last = curves.len().saturating_sub(1);
-    let mut hover = None;
-    Plot::new("blade_development")
-        .height(190.0)
+    let mut shown = ProfileShown::stored(ui.ctx());
+    ui.horizontal(|ui| {
+        ui.checkbox(&mut shown.hub, "Cubo");
+        ui.checkbox(&mut shown.shroud, "Tapa");
+        ui.checkbox(&mut shown.inner, "Intermedias");
+    });
+    shown.store(ui.ctx());
+
+    let lines = solid
+        .as_ref()
+        .ok()
+        .map(|solid| profile_lines(camber, solid));
+    let marks = profile_marks(camber, solid);
+    Plot::new("blade_profile")
+        .height(260.0)
         .data_aspect(1.0)
-        .allow_drag(false)
-        .allow_zoom(false)
+        .allow_drag(true)
+        .allow_zoom(true)
         .allow_scroll(false)
         .allow_boxed_zoom(false)
+        .allow_double_click_reset(true)
         .x_axis_label("θ − θ salida [°]")
         .y_axis_label("m′ [°]")
         .show(ui, |plot_ui| {
-            if let Some(pointer) = plot_ui.pointer_coordinate() {
-                hover = nearest(&curves, [pointer.x, pointer.y]);
+            match &lines {
+                Some(lines) => draw_solid(plot_ui, lines, shown, pitch_deg(blade_count)),
+                None => draw_camber_lines(plot_ui, camber, shown),
             }
-            for (index, curve) in curves.iter().enumerate() {
-                let (name, color, width) = match index {
-                    0 => ("Cubo", palette.hub, 2.5),
-                    i if i == last => ("Tapa", palette.shroud, 2.5),
-                    _ => ("Intermedias", palette.construction, 1.0),
-                };
-                plot_ui.line(line(name, curve.clone(), color).width(width));
+            for (at, text) in &marks {
+                plot_ui.points(Points::new("", vec![*at]).color(palette.error).radius(5.0));
+                plot_ui.text(
+                    Text::new(
+                        "",
+                        PlotPoint::new(at[0], at[1]),
+                        egui::RichText::new(format!(" {text}"))
+                            .small()
+                            .color(palette.error),
+                    )
+                    .anchor(egui::Align2::LEFT_BOTTOM),
+                );
             }
-            let edges: Vec<[f64; 2]> = curves.iter().filter_map(|c| c.first().copied()).collect();
-            plot_ui.points(
-                Points::new("Borde de ataque", edges)
-                    .color(palette.blade)
-                    .radius(4.0),
-            );
         });
-    if let Some((k, j)) = hover
-        && let Some(point) = camber.lines.get(k).and_then(|l| l.points.get(j))
-    {
-        let wall = match k {
-            0 => " (cubo)",
-            i if i == last => " (tapa)",
-            _ => "",
-        };
+    if let Err(error) = solid {
         ui.label(
-            egui::RichText::new(format!(
-                "Línea {}{wall} · x = {:.3} · β = {:.1}°",
-                k + 1,
-                point.x,
-                point.beta.to_degrees()
-            ))
-            .small(),
+            egui::RichText::new(format!("Sin álabe con espesor: {error}."))
+                .small()
+                .color(palette.error),
         );
     }
     ui.label(
         egui::RichText::new(
-            "Desarrollo conforme: la pendiente de cada línea es su β verdadero. Todas \
-             acaban en la salida (0, 0).",
+            "Perfil: el álabe con su espesor en el plano conforme, donde los ángulos son los \
+             verdaderos. A trazos, la línea media.",
         )
         .small()
         .weak(),
@@ -150,6 +391,7 @@ mod tests {
     use crate::model::Basis;
     use crate::model::Inputs;
     use hm_design::blade_setup::BladeShape;
+    use hm_design::blade_solid::BladeSolidError;
 
     #[test]
     fn the_capture_variable_picks_the_chart() {
@@ -159,7 +401,7 @@ mod tests {
         );
         assert_eq!(
             BladeChart::from_env(Some("profile")),
-            Some(BladeChart::Development)
+            Some(BladeChart::Profile)
         );
         assert_eq!(BladeChart::from_env(Some("nada")), None);
         assert_eq!(BladeChart::from_env(None), None);
@@ -222,5 +464,128 @@ mod tests {
             BladeChart::stored(&egui::Context::default()),
             BladeChart::Beta
         );
+    }
+
+    /// B1 con forma libre 3D y cinco líneas de corriente: la línea media y el
+    /// álabe con espesor.
+    fn b1_solid() -> (BladeCamber, BladeSolid, u32) {
+        let mut inputs = Inputs::default();
+        inputs.blade.shape = BladeShape::Free3D;
+        inputs.blade.streamlines = 5;
+        let outcome = crate::model::compute(&inputs, &Basis::default()).unwrap();
+        let camber = crate::blade_inlet::camber_of(&outcome)
+            .unwrap()
+            .expect("forma 3D");
+        let solid = crate::blade_inlet::solid_of(&outcome).unwrap();
+        (camber, solid, outcome.result.selection.blade_count)
+    }
+
+    #[test]
+    fn both_faces_end_on_the_exit_line() {
+        let (camber, solid, _) = b1_solid();
+        let lines = profile_lines(&camber, &solid);
+        assert_eq!(lines.len(), camber.lines.len());
+        for line in &lines {
+            for face in [&line.pressure, &line.suction, &line.camber] {
+                assert!(face.last().unwrap()[1].abs() < 1e-9, "{face:?}");
+            }
+        }
+    }
+
+    #[test]
+    fn the_camber_line_runs_between_the_faces() {
+        let (camber, solid, _) = b1_solid();
+        for line in profile_lines(&camber, &solid) {
+            let half = line.pressure.len() / 2;
+            assert!(line.pressure[half][0] < line.camber[half][0]);
+            assert!(line.camber[half][0] < line.suction[half][0]);
+        }
+    }
+
+    #[test]
+    fn the_pitch_is_360_over_z() {
+        assert!((pitch_deg(6) - 60.0).abs() < 1e-12);
+        assert!((pitch_deg(1) - 360.0).abs() < 1e-12);
+    }
+
+    #[test]
+    fn the_throat_joins_the_neighbour_nose_and_the_suction_face() {
+        let (camber, solid, z) = b1_solid();
+        let lines = profile_lines(&camber, &solid);
+        for (index, line) in lines.iter().enumerate() {
+            let (ends, width) = line.throat.expect("Z > 1 tiene garganta");
+            let throat = solid.readings.throats[index].as_ref().unwrap();
+            let plane = plane_of(&camber.lines[index]);
+            assert_eq!(ends[0], plane(throat.from.theta, throat.from.m_conformal));
+            assert_eq!(ends[1], plane(throat.to.theta, throat.to.m_conformal));
+            assert!((width - 1000.0 * throat.width).abs() < 1e-9);
+            // El extremo del vecino ya lleva el paso: es la nariz de este
+            // álabe, un paso más allá y a la misma m′.
+            let nose = line.pressure[0];
+            assert!((ends[0][0] - nose[0] - pitch_deg(z)).abs() < 1e-9);
+            assert!((ends[0][1] - nose[1]).abs() < 1e-9);
+        }
+    }
+
+    #[test]
+    fn an_error_is_marked_where_it_happens() {
+        let (camber, _, _) = b1_solid();
+        let error = BladeSolidError::FacesCross {
+            line: 1,
+            radius: 0.05,
+            at: [0.3, 1.2],
+        };
+        let marks = profile_marks(&camber, &Err(error.clone()));
+        assert_eq!(marks.len(), 1);
+        let plane = plane_of(&camber.lines[1]);
+        assert_eq!(marks[0].0, plane(1.2, 0.3));
+        assert_eq!(marks[0].1, error.to_string());
+        // Un error sin lugar no marca nada.
+        assert!(profile_marks(&camber, &Err(BladeSolidError::LineMismatch)).is_empty());
+    }
+
+    #[test]
+    fn notices_are_marked_too() {
+        let (camber, mut solid, _) = b1_solid();
+        solid.notices.push(hm_design::blade_solid::SolidNotice {
+            line: 2,
+            at: [0.4, 0.9],
+            message: "poco espesor".into(),
+        });
+        let marks = profile_marks(&camber, &Ok(solid));
+        assert_eq!(marks.len(), 1);
+        assert_eq!(marks[0].0, plane_of(&camber.lines[2])(0.9, 0.4));
+        assert_eq!(marks[0].1, "poco espesor");
+    }
+
+    #[test]
+    fn the_selector_says_profile() {
+        let labels: Vec<&str> = BladeChart::ALL.iter().map(|(_, label)| *label).collect();
+        assert_eq!(labels, ["β", "Espesor", "Perfil"]);
+        assert_eq!(BladeChart::ALL[2].0, BladeChart::Profile);
+    }
+
+    #[test]
+    fn the_view_draws_with_a_solid_and_with_an_error() {
+        let (camber, solid, z) = b1_solid();
+        let marked = BladeSolidError::NeighboursTouch {
+            line: 0,
+            radius: 0.07,
+            at: [0.1, 0.2],
+        };
+        for result in [Ok(solid), Err(marked)] {
+            egui::__run_test_ui(|ui| profile_view(ui, &camber, &result, z));
+        }
+    }
+
+    #[test]
+    fn a_2d_shape_has_no_solid_and_says_why() {
+        let mut inputs = Inputs::default();
+        inputs.blade.shape = BladeShape::Free2D;
+        let outcome = crate::model::compute(&inputs, &Basis::default()).unwrap();
+        assert!(matches!(
+            crate::blade_inlet::solid_of(&outcome),
+            Err(BladeSolidError::NoCamber(_))
+        ));
     }
 }

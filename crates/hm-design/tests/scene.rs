@@ -396,6 +396,115 @@ mod blades {
         }
     }
 
+    // ---- Forma 2D: la línea media de siempre, tendida entre cubo y tapa ----
+
+    struct Planar {
+        result: DesignResult,
+        model: MeridionalModel,
+        blade: Vec<hm_design::geometry::BladePoint>,
+        blades: u32,
+    }
+
+    fn planar_case() -> Planar {
+        let input = b1_input();
+        let result = design(&input).unwrap();
+        let shape = geometry(&input, &result).unwrap();
+        let model = meridional_model(&result).unwrap();
+        let blades = result.selection.blade_count;
+        Planar {
+            blade: shape.impeller.blade.clone(),
+            result,
+            model,
+            blades,
+        }
+    }
+
+    fn planar_scene(case: &Planar) -> Scene {
+        scene_from(
+            &case.model,
+            BladeSurfaceSource::Planar(&case.blade),
+            case.blades,
+            0.05,
+        )
+    }
+
+    #[test]
+    fn a_planar_blade_is_cylindrical() {
+        let case = planar_case();
+        let scene = planar_scene(&case);
+        assert!(scene.notices.is_empty(), "{:?}", scene.notices);
+        assert_eq!(scene.pieces.len(), 2 + case.blades as usize);
+        let piece = blade(&scene, 0);
+        assert_eq!(piece.curves.len(), 4);
+        for (hub, shroud) in piece.curves[2].points.iter().zip(&piece.curves[3].points) {
+            assert!((hub[0] - shroud[0]).abs() <= 1e-9 && (hub[1] - shroud[1]).abs() <= 1e-9);
+        }
+    }
+
+    #[test]
+    fn the_planar_blade_seen_from_suction_is_the_plan_curve() {
+        let case = planar_case();
+        let scene = planar_scene(&case);
+        let shape = geometry(&b1_input(), &case.result).unwrap();
+        let plan = hm_design::plan::plan_model(&case.result, &shape).unwrap();
+        let plan_blade = &plan.curve("Álabe 1").unwrap().points;
+        let hub = &blade(&scene, 0).curves[2].points;
+        assert_eq!(hub.len(), plan_blade.len());
+        for (point, expected) in hub.iter().zip(plan_blade) {
+            let gap = (-point[0] - expected[0]).hypot(point[1] - expected[1]);
+            assert!(gap <= 1e-6, "{gap} mm");
+        }
+    }
+
+    #[test]
+    fn the_planar_blade_edges_lie_on_the_walls() {
+        let case = planar_case();
+        let scene = planar_scene(&case);
+        let piece = blade(&scene, 0);
+        for (curve, wall) in [
+            (&piece.curves[2], Wall::Hub),
+            (&piece.curves[3], Wall::Shroud),
+        ] {
+            let line = &case.model.curve(wall.name()).unwrap().points;
+            for point in &curve.points {
+                let gap = distance_to(line, [point[2], point[0].hypot(point[1])]);
+                assert!(gap <= 0.01, "{} a {gap} mm", wall.name());
+            }
+        }
+    }
+
+    #[test]
+    fn a_wall_without_a_single_z_leaves_no_blades_and_says_why() {
+        let mut case = planar_case();
+        // Una tapa sintética que se dobla sobre sí misma en todo el álabe.
+        let shroud = case
+            .model
+            .curves
+            .iter_mut()
+            .find(|curve| curve.name == Wall::Shroud.name())
+            .unwrap();
+        shroud.points = vec![[0.0, 1.0], [100.0, 400.0], [200.0, 1.0], [300.0, 400.0]];
+        let scene = planar_scene(&case);
+        assert!(scene.piece(PieceId::Hub).is_some());
+        assert!(scene.piece(PieceId::Shroud).is_some());
+        assert!(
+            !scene
+                .pieces
+                .iter()
+                .any(|piece| matches!(piece.id, PieceId::BladeMean { .. }))
+        );
+        assert_eq!(scene.notices.len(), 1, "{:?}", scene.notices);
+        let notice = &scene.notices[0];
+        assert_eq!(notice.piece, PieceId::BladeMean { index: 0 });
+        let r1 = case.blade[0].r * 1000.0;
+        assert_eq!(
+            notice.message,
+            format!(
+                "la forma 2D no se puede tender entre cubo y tapa: la tapa no tiene un único z en r = {r1:.1} mm"
+            )
+        );
+    }
+
     #[test]
     fn two_streamlines_are_enough() {
         let mut case = case(BladeShape::Free3D, 3);

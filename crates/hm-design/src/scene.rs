@@ -12,6 +12,7 @@ use hm_geometry::mesh::{Polyline3, TriangleMesh, grid_surface, revolve, revolve_
 
 use crate::blade_camber::{BladeCamber, CamberPoint};
 use crate::blade_setup::BladeShape;
+use crate::geometry::BladePoint;
 use crate::meridian::{MeridionalModel, Wall};
 
 /// Tolerancia de cuerda de la escena en reposo, en mm.
@@ -25,6 +26,8 @@ pub const SCENE_TOLERANCE_RANGE_MM: (f64, f64) = (0.005, 5.0);
 /// Radio por debajo del cual el extremo de un perfil está en el eje y no da
 /// círculo.
 const AXIS_RADIUS_MM: f64 = 1e-9;
+/// Un tramo de pared con |Δr| menor que esto es axial: no da un z por radio.
+const AXIAL_RUN_MM: f64 = 1e-9;
 
 /// Qué pieza es.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -159,12 +162,14 @@ const RULED_COLUMNS: usize = 8;
 /// Columnas que se prueban a lo ancho del álabe libre, de menos a más.
 const FREE_COLUMNS: [usize; 4] = [8, 16, 32, 64];
 
-/// De dónde sale la superficie media del álabe. La forma 2D llega en una
-/// tarea posterior.
+/// De dónde sale la superficie media del álabe.
 #[derive(Debug, Clone, PartialEq)]
 pub enum BladeSurfaceSource<'a> {
     /// La línea media 3D por línea de corriente, en m y rad.
     Camber(&'a BladeCamber),
+    /// La línea media de una forma 2D (`r`, `θ` en m y rad), tendida en z
+    /// entre cubo y tapa: un álabe cilíndrico.
+    Planar(&'a [BladePoint]),
     /// No hay superficie: el motivo va al aviso.
     Unavailable(String),
 }
@@ -205,6 +210,12 @@ pub fn scene_from(
             Ok(blades) => pieces.extend(blades),
             Err(message) => notices.push(blade_notice(message)),
         },
+        BladeSurfaceSource::Planar(blade) => {
+            match planar_pieces(model, blade, blade_count, tolerance) {
+                Ok(blades) => pieces.extend(blades),
+                Err(message) => notices.push(blade_notice(message)),
+            }
+        }
         BladeSurfaceSource::Unavailable(message) => notices.push(blade_notice(message)),
     }
     Scene {
@@ -298,9 +309,89 @@ fn camber_pieces(
         BladeShape::Ruled3D => (RULED_COLUMNS, ruled_grid(&along, &stations)),
         _ => free_grid(camber, &stations, tolerance),
     };
-    let surface = grid_surface(stations.len(), cols, &points)
+    woven_blades(stations.len(), cols, &points, blade_count)
+}
+
+/// Los `blade_count` álabes de una forma 2D: en cada punto de la línea, el z
+/// del cubo y el de la tapa en su radio; dos columnas, cubo y tapa.
+fn planar_pieces(
+    model: &MeridionalModel,
+    blade: &[BladePoint],
+    blade_count: u32,
+    tolerance: f64,
+) -> Result<Vec<Piece>, String> {
+    if blade_count == 0 {
+        return Err("el rodete no tiene álabes".to_string());
+    }
+    if blade.len() < 2 {
+        return Err("la línea media 2D tiene menos de dos puntos".to_string());
+    }
+    let wall = |wall: Wall| {
+        model
+            .curve(wall.name())
+            .map(|curve| curve.points.as_slice())
+            .ok_or_else(|| format!("falta la curva «{}» en el meridiano", wall.name()))
+    };
+    let (hub, shroud) = (wall(Wall::Hub)?, wall(Wall::Shroud)?);
+    let mut points = Vec::with_capacity(blade.len() * 2);
+    for point in blade {
+        let r = point.r * 1000.0;
+        let z_of = |profile: &[[f64; 2]], what: &str| {
+            wall_z_at(profile, r, tolerance).ok_or_else(|| {
+                format!(
+                    "la forma 2D no se puede tender entre cubo y tapa: {what} no tiene un único z en r = {r:.1} mm"
+                )
+            })
+        };
+        let (z_hub, z_shroud) = (z_of(hub, "el cubo")?, z_of(shroud, "la tapa")?);
+        let [x, y, _] = polar_to_mm(0.0, point.r, point.theta);
+        points.push([x, y, z_hub]);
+        points.push([x, y, z_shroud]);
+    }
+    woven_blades(blade.len(), 2, &points, blade_count)
+}
+
+/// El z de la pared `profile` (`[z, r]` en mm) en el radio `r`: interpolado
+/// en el único tramo que cruza `r`. `None` si `r` queda fuera, si lo cruzan
+/// tramos con z distintos (más de `tolerance`) o si cae en un tramo axial.
+fn wall_z_at(profile: &[[f64; 2]], r: f64, tolerance: f64) -> Option<f64> {
+    let mut found: Option<f64> = None;
+    for pair in profile.windows(2) {
+        let ([za, ra], [zb, rb]) = (pair[0], pair[1]);
+        let z = if (rb - ra).abs() < AXIAL_RUN_MM {
+            if (r - ra).abs() > AXIAL_RUN_MM {
+                continue;
+            }
+            if (zb - za).abs() > tolerance {
+                return None;
+            }
+            za
+        } else {
+            if r < ra.min(rb) || r > ra.max(rb) {
+                continue;
+            }
+            za + (r - ra) / (rb - ra) * (zb - za)
+        };
+        match found {
+            Some(previous) if (previous - z).abs() > tolerance => return None,
+            Some(_) => {}
+            None => found = Some(z),
+        }
+    }
+    found
+}
+
+/// Teje la rejilla del álabe 0 (`rows` × `cols`, por filas) y la gira para
+/// los demás. Bordes: ataque (fila 0), salida (última fila), cubo (columna 0)
+/// y tapa (última columna).
+fn woven_blades(
+    rows: usize,
+    cols: usize,
+    points: &[[f64; 3]],
+    blade_count: u32,
+) -> Result<Vec<Piece>, String> {
+    let surface = grid_surface(rows, cols, points)
         .map_err(|error| format!("la superficie del álabe no se pudo tejer: {error}"))?;
-    let rows = stations.len();
     let row = |r: usize| points[r * cols..(r + 1) * cols].to_vec();
     let column = |c: usize| (0..rows).map(|r| points[r * cols + c]).collect::<Vec<_>>();
     let open = |points| Polyline3 {
@@ -523,7 +614,40 @@ impl Spline {
 
 #[cfg(test)]
 mod tests {
-    use super::Spline;
+    use super::{Spline, wall_z_at};
+
+    const TOL: f64 = 0.05;
+
+    #[test]
+    fn wall_z_is_interpolated_on_a_monotone_wall() {
+        assert_eq!(
+            wall_z_at(&[[0.0, 10.0], [10.0, 20.0]], 15.0, TOL),
+            Some(5.0)
+        );
+    }
+
+    #[test]
+    fn an_axial_run_has_no_single_z() {
+        let wall = [[0.0, 10.0], [5.0, 10.0], [10.0, 20.0]];
+        assert_eq!(wall_z_at(&wall, 10.0, TOL), None);
+    }
+
+    #[test]
+    fn a_radius_outside_the_wall_has_no_z() {
+        assert_eq!(wall_z_at(&[[0.0, 10.0], [10.0, 20.0]], 25.0, TOL), None);
+    }
+
+    #[test]
+    fn a_wall_that_folds_back_has_no_single_z() {
+        let wall = [[0.0, 10.0], [10.0, 20.0], [20.0, 15.0], [30.0, 25.0]];
+        assert_eq!(wall_z_at(&wall, 17.0, TOL), None);
+    }
+
+    #[test]
+    fn a_shared_vertex_gives_one_z() {
+        let wall = [[0.0, 10.0], [10.0, 20.0], [15.0, 30.0]];
+        assert_eq!(wall_z_at(&wall, 20.0, TOL), Some(10.0));
+    }
 
     #[test]
     fn the_natural_spline_goes_through_its_nodes_and_is_straight_with_two() {

@@ -53,9 +53,8 @@ fn the_scene_of_b1_has_hub_and_shroud() {
     assert!(scene.piece(PieceId::Hub).is_some());
     assert!(scene.piece(PieceId::Shroud).is_some());
     assert_eq!(scene.tolerance, SCENE_TOLERANCE_FINE_MM);
-    // Sin recorte que falle, el único aviso es el del álabe.
-    assert_eq!(scene.notices.len(), 1, "{:?}", scene.notices.len());
-    assert_eq!(scene.notices[0].piece, PieceId::BladeMean { index: 0 });
+    // Sin recorte que falle y con la forma 2D de siempre, ningún aviso.
+    assert!(scene.notices.is_empty(), "{:?}", scene.notices);
 }
 
 #[test]
@@ -151,4 +150,17 @@ fn a_3d_blade_gives_z_blades_in_the_scene() {
             .count();
         assert_eq!(blades, 5, "{shape}");
     }
+}
+
+/// Con la forma 2D de siempre, los Z álabes cilíndricos y ningún aviso.
+#[test]
+fn a_2d_blade_gives_z_blades_in_the_scene() {
+    let scene = hm_engine::scene(&b1_project(), SCENE_TOLERANCE_FINE_MM).unwrap();
+    assert!(scene.notices.is_empty(), "{:?}", scene.notices);
+    let blades = scene
+        .pieces
+        .iter()
+        .filter(|piece| matches!(piece.id, PieceId::BladeMean { .. }))
+        .count();
+    assert_eq!(blades, 5);
 }

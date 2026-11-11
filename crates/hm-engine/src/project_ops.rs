@@ -375,15 +375,19 @@ fn meridian_or_uncut(
 /// recorte del cubo que falla no es error: el cubo sale sin recorte y la
 /// escena lleva el aviso. Con forma 3D, los álabes son la superficie media
 /// de [`camber_for_design`], la misma cadena que la planta; si la línea media
-/// falla, la escena sale sin álabes y con el motivo. La forma 2D llega en una
-/// tarea posterior.
+/// falla, la escena sale sin álabes y con el motivo. Con forma 2D, la línea
+/// media de siempre tendida entre cubo y tapa.
 pub fn scene(project: &Project, tolerance: f64) -> Result<Scene, EngineError> {
     let analysis = drawable(project)?;
     let (model, cut_error) = meridian_or_uncut(project, &analysis.result)?;
     let camber = scene_camber(project, &analysis, &model);
-    let blade = match &camber {
-        Ok(camber) => BladeSurfaceSource::Camber(camber),
-        Err(message) => BladeSurfaceSource::Unavailable(message.clone()),
+    let blade = match (&camber, &analysis.geometry) {
+        (Ok(Some(camber)), _) => BladeSurfaceSource::Camber(camber),
+        (Ok(None), Ok(geometry)) => BladeSurfaceSource::Planar(&geometry.impeller.blade),
+        (Ok(None), Err(error)) => {
+            BladeSurfaceSource::Unavailable(format!("sin geometría no hay álabes: {error}"))
+        }
+        (Err(message), _) => BladeSurfaceSource::Unavailable(message.clone()),
     };
     let mut scene = scene_from(
         &model,
@@ -668,19 +672,20 @@ pub(crate) fn rho_text(case: &Case, analysis: &Analysis) -> String {
     }
 }
 
-/// La línea media 3D de la escena, o el motivo de que no haya álabes.
+/// La línea media 3D de la escena; `None` con forma 2D, o el motivo de que
+/// no haya álabes.
 fn scene_camber(
     project: &Project,
     analysis: &Analysis,
     model: &MeridionalModel,
-) -> Result<BladeCamber, String> {
+) -> Result<Option<BladeCamber>, String> {
     let geometry = analysis
         .geometry
         .as_ref()
         .map_err(|error| format!("sin geometría no hay álabes: {error}"))?;
     let setup = blade_setup_of(project.blade.as_ref())?;
     if setup.shape.family() != BladeFamily::ThreeD {
-        return Err("la superficie de la forma 2D llega en la tarea siguiente".to_string());
+        return Ok(None);
     }
     let incidence_deg = case_from_project(project)
         .map_err(|error| error.to_string())?
@@ -694,6 +699,5 @@ fn scene_camber(
         &setup,
         incidence_deg,
     )
-    .map_err(|error| format!("la línea media del álabe no sale: {error}"))?
-    .ok_or_else(|| "la forma del álabe no es 3D".to_string())
+    .map_err(|error| format!("la línea media del álabe no sale: {error}"))
 }

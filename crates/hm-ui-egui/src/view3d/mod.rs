@@ -27,14 +27,16 @@ pub(crate) fn scene_of(outcome: &Outcome, tolerance_mm: f64) -> Result<Scene, St
     let (model, cut_error) = crate::meridian::model_or_uncut(&outcome.result, &edits)
         .map_err(|error| format!("no hay meridiano: {error}"))?;
     // Los textos son los de `hm_engine::scene`: la huella incluye los avisos.
-    let camber = match crate::blade_inlet::camber_of(outcome) {
-        Ok(Some(camber)) => Ok(camber),
-        Ok(None) => Err("la superficie de la forma 2D llega en la tarea siguiente".to_string()),
-        Err(error) => Err(format!("la línea media del álabe no sale: {error}")),
-    };
-    let blade = match &camber {
-        Ok(camber) => BladeSurfaceSource::Camber(camber),
-        Err(message) => BladeSurfaceSource::Unavailable(message.clone()),
+    let camber = crate::blade_inlet::camber_of(outcome);
+    let blade = match (&camber, &outcome.geometry) {
+        (Ok(Some(camber)), _) => BladeSurfaceSource::Camber(camber),
+        (Ok(None), Ok(geometry)) => BladeSurfaceSource::Planar(&geometry.impeller.blade),
+        (Ok(None), Err(error)) => {
+            BladeSurfaceSource::Unavailable(format!("sin geometría no hay álabes: {error}"))
+        }
+        (Err(error), _) => {
+            BladeSurfaceSource::Unavailable(format!("la línea media del álabe no sale: {error}"))
+        }
     };
     let mut scene = scene_from(
         &model,
@@ -275,11 +277,11 @@ mod tests {
     }
 
     /// La vista y el motor (lo que se exportaría) arman la misma escena, con
-    /// álabes libres y reglados.
+    /// álabes libres, reglados y 2D.
     #[test]
     fn the_view_and_the_engine_build_the_same_scene() {
         use hm_design::blade_setup::BladeShape;
-        for shape in [BladeShape::Free3D, BladeShape::Ruled3D] {
+        for shape in [BladeShape::Free3D, BladeShape::Ruled3D, BladeShape::Free2D] {
             let mut inputs = Inputs::default();
             inputs.blade.shape = shape;
             inputs.blade.streamlines = 5;

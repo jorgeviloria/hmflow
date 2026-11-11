@@ -13,7 +13,7 @@ use hm_design::scene::{
 
 use crate::model::{Inputs, Outcome};
 use crate::theme;
-use camera::{Camera, StandardView};
+use camera::{Camera, Projection, StandardView};
 use input::{Gesture, PointerState, gesture};
 use renderer::{PieceStyle, Renderer3d};
 
@@ -58,6 +58,104 @@ pub(crate) fn scene_of(outcome: &Outcome, tolerance_mm: f64) -> Result<Scene, St
     Ok(scene)
 }
 
+/// Qué piezas se ven: las tres casillas provisionales de la barra.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct Visibility {
+    pub hub: bool,
+    pub shroud: bool,
+    pub blades: bool,
+}
+
+impl Default for Visibility {
+    fn default() -> Self {
+        Self {
+            hub: true,
+            shroud: true,
+            blades: true,
+        }
+    }
+}
+
+impl Visibility {
+    pub(crate) fn shows(&self, id: PieceId) -> bool {
+        match id {
+            PieceId::Hub => self.hub,
+            PieceId::Shroud => self.shroud,
+            PieceId::BladeMean { .. } => self.blades,
+        }
+    }
+}
+
+/// Ancho de las curvas de borde, en puntos de egui.
+pub(crate) const CURVE_WIDTH_PX: f32 = 1.5;
+/// Lado del triedro, en puntos de egui.
+const TRIAD_SIZE_PX: f32 = 48.0;
+
+/// Ejes x, y, z proyectados a la pantalla (y hacia abajo), para el triedro.
+/// Un eje que apunta al ojo queda en (0, 0).
+pub(crate) fn triad_axes(camera: &Camera) -> [[f32; 2]; 3] {
+    let (right, up) = (camera.right(), camera.up());
+    [glam::Vec3::X, glam::Vec3::Y, glam::Vec3::Z].map(|axis| [axis.dot(right), -axis.dot(up)])
+}
+
+/// La caja de las piezas que se ven, en f32 para la cámara.
+fn visible_bounds(scene: &Scene, visibility: &Visibility) -> Option<([f32; 3], [f32; 3])> {
+    scene
+        .pieces
+        .iter()
+        .filter(|piece| visibility.shows(piece.id))
+        .filter_map(|piece| piece.surface.bounds())
+        .reduce(|(low, high), (piece_low, piece_high)| {
+            (
+                std::array::from_fn(|axis| low[axis].min(piece_low[axis])),
+                std::array::from_fn(|axis| high[axis].max(piece_high[axis])),
+            )
+        })
+        .map(|(low, high)| {
+            (
+                low.map(|value| value as f32),
+                high.map(|value| value as f32),
+            )
+        })
+}
+
+/// Una línea por aviso: «{pieza}: {mensaje}». Sin meridiano, su motivo.
+fn notice_lines(scene: Option<&Result<Scene, String>>) -> Vec<String> {
+    match scene {
+        Some(Ok(scene)) => scene
+            .notices
+            .iter()
+            .map(|notice| format!("{}: {}", notice.piece.label(), notice.message))
+            .collect(),
+        Some(Err(error)) => vec![error.clone()],
+        None => Vec::new(),
+    }
+}
+
+/// Franja plegable «Avisos (n)»; no se pinta sin avisos. Devuelve su título.
+fn notice_strip(ui: &mut egui::Ui, lines: &[String]) -> Option<String> {
+    if lines.is_empty() {
+        return None;
+    }
+    let title = format!("Avisos ({})", lines.len());
+    egui::CollapsingHeader::new(&title)
+        .id_salt("visor 3D: avisos")
+        .default_open(false)
+        .show(ui, |ui| {
+            for line in lines {
+                ui.label(line);
+            }
+        });
+    Some(title)
+}
+
+/// Lo que se pide desde la barra y se aplica cuando ya se sabe el cuadro.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum BarAction {
+    View(StandardView),
+    Fit,
+}
+
 /// El visor: estado de cámara, escena vigente y el dibujo.
 pub(crate) struct View3d {
     renderer: Option<Renderer3d>,
@@ -69,8 +167,12 @@ pub(crate) struct View3d {
     scene: Option<Result<Scene, String>>,
     /// Las entradas de las que salió `scene`.
     inputs: Option<Inputs>,
-    /// Los estilos con que se subió la escena; cambian con el tema.
-    styles: Option<[PieceStyle; 3]>,
+    /// Los estilos con que se subió la escena; cambian con el tema y el fondo.
+    styles: Option<Styles>,
+    visibility: Visibility,
+    /// Fondo blanco en vez del del tema; el visor usa entonces los colores
+    /// del tema claro.
+    white_background: bool,
 }
 
 impl View3d {
@@ -90,6 +192,8 @@ impl View3d {
             scene: None,
             inputs: None,
             styles: None,
+            visibility: Visibility::default(),
+            white_background: false,
         }
     }
 
@@ -108,7 +212,25 @@ impl View3d {
             self.inputs = Some(outcome.inputs.clone());
             upload = true;
         }
-        let palette = theme::palette(ui.ctx());
+
+        let action = bar(
+            ui,
+            &mut self.camera,
+            &mut self.visibility,
+            &mut self.white_background,
+        );
+        notice_strip(ui, &notice_lines(self.scene.as_ref()));
+
+        let palette = if self.white_background {
+            &theme::LIGHT
+        } else {
+            theme::palette(ui.ctx())
+        };
+        let background = if self.white_background {
+            theme::LIGHT.paper
+        } else {
+            palette.background
+        };
         let styles = styles_of(palette);
         if self.styles != Some(styles) {
             self.styles = Some(styles);
@@ -124,24 +246,24 @@ impl View3d {
                 Some(Ok(scene)) => scene,
                 _ => &empty,
             };
-            renderer.set_scene(scene, &|id| style_of(&styles, id));
+            renderer.set_scene(scene, &|id| style_of(&styles, id), styles.curve);
         }
 
         let (rect, response) =
             ui.allocate_exact_size(ui.available_size(), egui::Sense::click_and_drag());
         let viewport = [rect.width(), rect.height()];
         let bounds = match &self.scene {
-            Some(Ok(scene)) => scene.bounds().map(|(low, high)| {
-                (
-                    low.map(|value| value as f32),
-                    high.map(|value| value as f32),
-                )
-            }),
+            Some(Ok(scene)) => visible_bounds(scene, &self.visibility),
             _ => None,
         };
         if !self.fitted && bounds.is_some() {
             self.camera.fit(bounds, viewport);
             self.fitted = true;
+        }
+        match action {
+            Some(BarAction::View(view)) => self.camera.set_view(view),
+            Some(BarAction::Fit) => self.camera.fit(bounds, viewport),
+            None => {}
         }
         apply_gesture(ui, &response, rect, &mut self.camera, bounds);
 
@@ -150,8 +272,14 @@ impl View3d {
             (rect.width() * pixels_per_point).round().max(0.0) as u32,
             (rect.height() * pixels_per_point).round().max(0.0) as u32,
         ];
-        let background = egui::Rgba::from(palette.background).to_array();
-        if let Some(texture) = renderer.paint(size_px, &self.camera, &|_| true, background) {
+        let visibility = self.visibility;
+        if let Some(texture) = renderer.paint(
+            size_px,
+            &self.camera,
+            &|id| visibility.shows(id),
+            egui::Rgba::from(background).to_array(),
+            CURVE_WIDTH_PX * pixels_per_point,
+        ) {
             ui.painter().image(
                 texture,
                 rect,
@@ -159,48 +287,111 @@ impl View3d {
                 egui::Color32::WHITE,
             );
         }
-        let messages: Vec<String> = match &self.scene {
-            Some(Ok(scene)) => scene
-                .notices
-                .iter()
-                .map(|notice| format!("{}: {}", notice.piece.label(), notice.message))
-                .collect(),
-            Some(Err(error)) => vec![error.clone()],
-            None => Vec::new(),
-        };
-        let mut at = rect.left_bottom() + egui::vec2(8.0, -8.0);
-        for message in messages.iter().rev() {
-            let galley = ui.painter().layout_no_wrap(
-                message.clone(),
-                egui::FontId::proportional(12.0),
-                palette.text_weak,
-            );
-            at.y -= galley.size().y;
-            ui.painter().galley(at, galley, palette.text_weak);
-        }
+        paint_triad(ui.painter(), rect, &self.camera, palette);
     }
 }
 
-/// Colores lineales de cubo, tapa y álabes con el tema vigente.
-fn styles_of(palette: &theme::Palette) -> [PieceStyle; 3] {
-    let linear = |color: egui::Color32, alpha: f32| {
-        let [r, g, b, _] = egui::Rgba::from(color).to_array();
-        PieceStyle {
-            color: [r, g, b, alpha],
+/// La barra encima de la vista. Las vistas y «Encuadrar» se devuelven para
+/// aplicarlas cuando ya se sabe el cuadro.
+fn bar(
+    ui: &mut egui::Ui,
+    camera: &mut Camera,
+    visibility: &mut Visibility,
+    white_background: &mut bool,
+) -> Option<BarAction> {
+    let mut action = None;
+    ui.horizontal_wrapped(|ui| {
+        for (label, view) in [
+            ("Desde la aspiración", StandardView::FromSuction),
+            ("Desde el cubo", StandardView::FromHub),
+            ("Lateral", StandardView::Lateral),
+            ("Isométrica", StandardView::Isometric),
+        ] {
+            if ui.button(label).clicked() {
+                action = Some(BarAction::View(view));
+            }
         }
-    };
-    [
-        linear(palette.text_weak, 1.0),
-        linear(palette.text_weak, 0.35),
-        linear(palette.accent, 1.0),
-    ]
+        if ui.button("Encuadrar").clicked() {
+            action = Some(BarAction::Fit);
+        }
+        ui.separator();
+        let mut perspective = camera.projection == Projection::Perspective;
+        if ui.toggle_value(&mut perspective, "Perspectiva").changed() {
+            camera.projection = if perspective {
+                Projection::Perspective
+            } else {
+                Projection::Orthographic
+            };
+        }
+        ui.separator();
+        ui.checkbox(&mut visibility.hub, "Cubo");
+        ui.checkbox(&mut visibility.shroud, "Tapa");
+        ui.checkbox(&mut visibility.blades, "Álabes");
+        ui.separator();
+        ui.toggle_value(white_background, "Fondo blanco");
+    });
+    action
 }
 
-fn style_of(styles: &[PieceStyle; 3], id: PieceId) -> PieceStyle {
+/// El triedro abajo a la izquierda: x rojo, y verde, z azul, con su letra.
+fn paint_triad(
+    painter: &egui::Painter,
+    rect: egui::Rect,
+    camera: &Camera,
+    palette: &theme::Palette,
+) {
+    let half = 0.5 * TRIAD_SIZE_PX;
+    let centre = rect.left_bottom() + egui::vec2(8.0 + half, -8.0 - half);
+    let length = half - 8.0;
+    let colours = [palette.axis_x, palette.axis_y, palette.axis_z];
+    let letters = ["x", "y", "z"];
+    for ((axis, colour), letter) in triad_axes(camera).into_iter().zip(colours).zip(letters) {
+        let direction = egui::vec2(axis[0], axis[1]);
+        let tip = centre + direction * length;
+        painter.line_segment([centre, tip], egui::Stroke::new(2.0, colour));
+        painter.text(
+            centre + direction * (length + 6.0),
+            egui::Align2::CENTER_CENTER,
+            letter,
+            egui::FontId::proportional(11.0),
+            colour,
+        );
+    }
+}
+
+/// Colores lineales de cubo, tapa, álabes y curvas con una paleta.
+#[derive(Debug, Clone, Copy, PartialEq)]
+struct Styles {
+    pieces: [PieceStyle; 3],
+    curve: [f32; 4],
+}
+
+fn styles_of(palette: &theme::Palette) -> Styles {
+    let linear = |color: egui::Color32, alpha: f32| {
+        let [r, g, b, _] = egui::Rgba::from(color).to_array();
+        [r, g, b, alpha]
+    };
+    Styles {
+        pieces: [
+            PieceStyle {
+                color: linear(palette.text_weak, 1.0),
+            },
+            PieceStyle {
+                color: linear(palette.text_weak, 0.35),
+            },
+            PieceStyle {
+                color: linear(palette.accent, 1.0),
+            },
+        ],
+        curve: linear(palette.text, 1.0),
+    }
+}
+
+fn style_of(styles: &Styles, id: PieceId) -> PieceStyle {
     match id {
-        PieceId::Hub => styles[0],
-        PieceId::Shroud => styles[1],
-        PieceId::BladeMean { .. } => styles[2],
+        PieceId::Hub => styles.pieces[0],
+        PieceId::Shroud => styles.pieces[1],
+        PieceId::BladeMean { .. } => styles.pieces[2],
     }
 }
 
@@ -297,6 +488,116 @@ mod tests {
             let engine = hm_engine::scene(&built.project, SCENE_TOLERANCE_FINE_MM).unwrap();
             assert_eq!(view.fingerprint(), engine.fingerprint(), "{shape:?}");
         }
+    }
+
+    #[test]
+    fn visibility_hides_pieces_by_kind() {
+        let all = Visibility::default();
+        for id in [
+            PieceId::Hub,
+            PieceId::Shroud,
+            PieceId::BladeMean { index: 4 },
+        ] {
+            assert!(all.shows(id), "{id:?}");
+        }
+        let no_hub = Visibility {
+            hub: false,
+            ..Visibility::default()
+        };
+        assert!(!no_hub.shows(PieceId::Hub));
+        assert!(no_hub.shows(PieceId::Shroud));
+        let no_shroud = Visibility {
+            shroud: false,
+            ..Visibility::default()
+        };
+        assert!(!no_shroud.shows(PieceId::Shroud));
+        assert!(no_shroud.shows(PieceId::BladeMean { index: 4 }));
+        let no_blades = Visibility {
+            blades: false,
+            ..Visibility::default()
+        };
+        assert!(!no_blades.shows(PieceId::BladeMean { index: 4 }));
+        assert!(no_blades.shows(PieceId::Hub));
+    }
+
+    #[test]
+    fn the_triad_follows_the_camera() {
+        let camera = Camera::looking(StandardView::FromSuction);
+        let expected = [[-1.0, 0.0], [0.0, -1.0], [0.0, 0.0]];
+        for (axis, want) in triad_axes(&camera).iter().zip(expected) {
+            for (got, want) in axis.iter().zip(want) {
+                assert!((got - want).abs() < 1e-6, "{axis:?} ≠ {want:?}");
+            }
+        }
+    }
+
+    /// Una pieza con un solo triángulo entre dos esquinas.
+    fn box_piece(id: PieceId, low: [f64; 3], high: [f64; 3]) -> hm_design::scene::Piece {
+        hm_design::scene::Piece {
+            id,
+            surface: hm_geometry::mesh::TriangleMesh {
+                vertices: vec![low, [high[0], low[1], low[2]], high],
+                normals: vec![[0.0, 0.0, 1.0]; 3],
+                triangles: vec![[0, 1, 2]],
+            },
+            curves: Vec::new(),
+        }
+    }
+
+    #[test]
+    fn fit_uses_only_the_visible_pieces() {
+        let scene = Scene {
+            pieces: vec![
+                box_piece(PieceId::Hub, [0.0, 0.0, 0.0], [10.0, 10.0, 10.0]),
+                box_piece(
+                    PieceId::BladeMean { index: 0 },
+                    [-50.0, -50.0, -50.0],
+                    [100.0, 100.0, 100.0],
+                ),
+            ],
+            notices: Vec::new(),
+            tolerance: SCENE_TOLERANCE_FINE_MM,
+        };
+        let all = visible_bounds(&scene, &Visibility::default()).unwrap();
+        assert_eq!(all, ([-50.0; 3], [100.0; 3]));
+        let without_blades = Visibility {
+            blades: false,
+            ..Visibility::default()
+        };
+        let hub_only = visible_bounds(&scene, &without_blades).unwrap();
+        assert_eq!(hub_only, ([0.0; 3], [10.0; 3]));
+        let nothing = Visibility {
+            hub: false,
+            shroud: false,
+            blades: false,
+        };
+        assert_eq!(visible_bounds(&scene, &nothing), None);
+    }
+
+    #[test]
+    fn the_notice_strip_lists_every_notice() {
+        let scene = Scene {
+            pieces: Vec::new(),
+            notices: vec![
+                SceneNotice {
+                    piece: PieceId::Hub,
+                    message: "uno".to_string(),
+                },
+                SceneNotice {
+                    piece: PieceId::BladeMean { index: 1 },
+                    message: "dos".to_string(),
+                },
+            ],
+            tolerance: SCENE_TOLERANCE_FINE_MM,
+        };
+        let lines = notice_lines(Some(&Ok(scene)));
+        assert_eq!(lines, ["Cubo: uno", "Álabe 2: dos"]);
+        let mut title = None;
+        egui::__run_test_ui(|ui| title = notice_strip(ui, &lines));
+        assert_eq!(title.as_deref(), Some("Avisos (2)"));
+        let mut none = Some(String::new());
+        egui::__run_test_ui(|ui| none = notice_strip(ui, &[]));
+        assert_eq!(none, None);
     }
 
     #[test]

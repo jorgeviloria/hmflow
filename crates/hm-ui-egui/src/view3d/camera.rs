@@ -5,8 +5,6 @@
 use glam::{Mat3, Mat4, Quat, Vec3};
 
 /// Proyección del visor; ortográfica por defecto.
-// La barra de vistas de la Tarea 7 lo usa; hasta entonces solo las pruebas.
-#[allow(dead_code)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum Projection {
     Orthographic,
@@ -14,8 +12,6 @@ pub(crate) enum Projection {
 }
 
 /// Las vistas con nombre de la barra.
-// La barra de vistas de la Tarea 7 lo usa; hasta entonces solo las pruebas.
-#[allow(dead_code)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum StandardView {
     /// Ojo en −z mirando a +z, y arriba: la vista en planta de siempre.
@@ -66,8 +62,6 @@ impl Camera {
     }
 
     /// Cambia hacia dónde mira; conserva pivote, escala y proyección.
-    // La barra de vistas de la Tarea 7 lo usa; hasta entonces solo las pruebas.
-    #[allow(dead_code)]
     pub(crate) fn set_view(&mut self, view: StandardView) {
         self.orientation = orientation_of(view);
     }

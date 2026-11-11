@@ -28,3 +28,7 @@ hm-project = { path = "../hm-project" }
 hm-units = { path = "../hm-units" }
 rfd = "0.17.2"
 serde_json = { version = "1", features = ["float_roundtrip"] }
+
+[dev-dependencies]
+# Solo para armar mallas sintéticas en las pruebas del visor 3D.
+hm-geometry = { path = "../hm-geometry" }

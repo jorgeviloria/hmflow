@@ -4,6 +4,8 @@ struct Camera {
     view_proj: mat4x4<f32>,
     // Dirección de la luz: la de la cámara.
     light: vec4<f32>,
+    // Ancho y alto del cuadro en píxeles y ancho de curva; lo usa line.wgsl.
+    viewport: vec4<f32>,
 };
 
 struct Piece {

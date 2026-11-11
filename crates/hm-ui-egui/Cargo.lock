@@ -1552,6 +1552,7 @@ dependencies = [
  "hm-design",
  "hm-engine",
  "hm-formula",
+ "hm-geometry",
  "hm-project",
  "hm-units",
  "rfd",

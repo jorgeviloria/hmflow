@@ -3,8 +3,9 @@
 //! Dibuja a una textura propia que egui muestra como imagen, en tres
 //! pasadas: opacas con profundidad; transparentes con mezcla independiente
 //! del orden (weighted blended), para que no parpadeen al girar; y la
-//! composición de las transparentes sobre el color opaco ya resuelto. Todo
-//! con suavizado 4×.
+//! composición de las transparentes sobre el color opaco ya resuelto. Las
+//! curvas de borde van en la pasada opaca, como cuadriláteros con ancho en
+//! píxeles. Todo con suavizado 4×.
 
 use std::sync::Arc;
 
@@ -12,7 +13,7 @@ use bytemuck::{Pod, Zeroable};
 use eframe::egui;
 use eframe::egui_wgpu::{self, wgpu};
 use egui::mutex::RwLock;
-use hm_design::scene::{PieceId, Scene};
+use hm_design::scene::{Piece, PieceId, Scene};
 use wgpu::util::DeviceExt;
 
 use super::camera::Camera;
@@ -47,6 +48,16 @@ struct Vertex {
 struct CameraUniform {
     view_proj: [[f32; 4]; 4],
     light: [f32; 4],
+    /// Ancho y alto del cuadro en píxeles, ancho de las curvas en píxeles y 0.
+    viewport: [f32; 4],
+}
+
+/// Un tramo de curva: se dibuja como un cuadrilátero (seis vértices).
+#[repr(C)]
+#[derive(Debug, Clone, Copy, Pod, Zeroable)]
+struct Segment {
+    a: [f32; 3],
+    b: [f32; 3],
 }
 
 /// Una pieza ya en la tarjeta.
@@ -54,9 +65,13 @@ struct GpuPiece {
     id: PieceId,
     vertices: wgpu::Buffer,
     indices: wgpu::Buffer,
+    /// 0 si la pieza no tiene triángulos.
     index_count: u32,
     bind_group: wgpu::BindGroup,
     transparent: bool,
+    /// Tramos de sus curvas de borde.
+    segments: wgpu::Buffer,
+    segment_count: u32,
 }
 
 /// Las texturas de un tamaño.
@@ -82,6 +97,7 @@ struct Painted {
     view_proj: [f32; 16],
     visible: Vec<bool>,
     background: [f32; 4],
+    curve_width_px: f32,
 }
 
 pub(crate) struct Renderer3d {
@@ -95,6 +111,9 @@ pub(crate) struct Renderer3d {
     opaque: wgpu::RenderPipeline,
     transparent: wgpu::RenderPipeline,
     composite: wgpu::RenderPipeline,
+    curves: wgpu::RenderPipeline,
+    /// Color de las curvas, común a todas las piezas.
+    curve_bind_group: Option<wgpu::BindGroup>,
     pieces: Vec<GpuPiece>,
     targets: Option<Targets>,
     texture: Option<egui::TextureId>,
@@ -246,6 +265,43 @@ impl Renderer3d {
             ],
             false,
         );
+        let line_shader = device.create_shader_module(wgpu::include_wgsl!("shaders/line.wgsl"));
+        let segment_attributes = wgpu::vertex_attr_array![0 => Float32x3, 1 => Float32x3];
+        let curves = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+            label: Some("visor 3D: curvas"),
+            layout: Some(&mesh_layout),
+            vertex: wgpu::VertexState {
+                module: &line_shader,
+                entry_point: Some("vs_main"),
+                compilation_options: wgpu::PipelineCompilationOptions::default(),
+                buffers: &[Some(wgpu::VertexBufferLayout {
+                    array_stride: std::mem::size_of::<Segment>() as wgpu::BufferAddress,
+                    step_mode: wgpu::VertexStepMode::Instance,
+                    attributes: &segment_attributes,
+                })],
+            },
+            primitive: wgpu::PrimitiveState::default(),
+            depth_stencil: Some(wgpu::DepthStencilState {
+                format: DEPTH_FORMAT,
+                depth_write_enabled: Some(true),
+                depth_compare: Some(wgpu::CompareFunction::Less),
+                stencil: wgpu::StencilState::default(),
+                bias: wgpu::DepthBiasState::default(),
+            }),
+            multisample,
+            fragment: Some(wgpu::FragmentState {
+                module: &line_shader,
+                entry_point: Some("fs_main"),
+                compilation_options: wgpu::PipelineCompilationOptions::default(),
+                targets: &[Some(wgpu::ColorTargetState {
+                    format: COLOR_FORMAT,
+                    blend: None,
+                    write_mask: wgpu::ColorWrites::ALL,
+                })],
+            }),
+            multiview_mask: None,
+            cache: None,
+        });
         let composite_pipeline_layout =
             device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
                 label: Some("visor 3D: composición"),
@@ -289,6 +345,8 @@ impl Renderer3d {
             opaque,
             transparent,
             composite,
+            curves,
+            curve_bind_group: None,
             pieces: Vec::new(),
             targets: None,
             texture: None,
@@ -296,13 +354,36 @@ impl Renderer3d {
         }
     }
 
-    /// Sube las piezas de la escena con su estilo. Una pieza sin triángulos
-    /// no se sube.
-    pub(crate) fn set_scene(&mut self, scene: &Scene, style: &dyn Fn(PieceId) -> PieceStyle) {
+    /// Sube las piezas de la escena con su estilo y el color lineal de las
+    /// curvas. Una pieza sin triángulos ni curvas no se sube.
+    pub(crate) fn set_scene(
+        &mut self,
+        scene: &Scene,
+        style: &dyn Fn(PieceId) -> PieceStyle,
+        curve_color: [f32; 4],
+    ) {
+        let curve_uniform = self
+            .device
+            .create_buffer_init(&wgpu::util::BufferInitDescriptor {
+                label: Some("visor 3D: color de curvas"),
+                contents: bytemuck::cast_slice(&curve_color),
+                usage: wgpu::BufferUsages::UNIFORM,
+            });
+        self.curve_bind_group = Some(self.device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: Some("visor 3D: curvas"),
+            layout: &self.piece_layout,
+            entries: &[wgpu::BindGroupEntry {
+                binding: 0,
+                resource: curve_uniform.as_entire_binding(),
+            }],
+        }));
         self.pieces = scene
             .pieces
             .iter()
-            .filter(|piece| !piece.surface.triangles.is_empty())
+            .filter(|piece| {
+                !piece.surface.triangles.is_empty()
+                    || piece.curves.iter().any(|curve| curve.points.len() > 1)
+            })
             .map(|piece| {
                 let mesh = &piece.surface;
                 let vertices: Vec<Vertex> = mesh
@@ -315,6 +396,7 @@ impl Renderer3d {
                     })
                     .collect();
                 let indices: Vec<u32> = mesh.triangles.iter().flatten().copied().collect();
+                let segments = segments_of(piece);
                 let color = style(piece.id).color;
                 let uniform = self
                     .device
@@ -349,6 +431,14 @@ impl Renderer3d {
                         }],
                     }),
                     transparent: color[3] < 1.0,
+                    segments: self
+                        .device
+                        .create_buffer_init(&wgpu::util::BufferInitDescriptor {
+                            label: Some("visor 3D: tramos de curva"),
+                            contents: bytemuck::cast_slice(&segments),
+                            usage: wgpu::BufferUsages::VERTEX,
+                        }),
+                    segment_count: segments.len() as u32,
                 }
             })
             .collect();
@@ -356,13 +446,15 @@ impl Renderer3d {
     }
 
     /// Pinta si algo cambió y devuelve la textura que egui muestra. `None` si
-    /// `size_px` tiene un lado 0. `background` es color lineal.
+    /// `size_px` tiene un lado 0. `background` es color lineal; las curvas
+    /// tienen `curve_width_px` píxeles de ancho.
     pub(crate) fn paint(
         &mut self,
         size_px: [u32; 2],
         camera: &Camera,
         visible: &dyn Fn(PieceId) -> bool,
         background: [f32; 4],
+        curve_width_px: f32,
     ) -> Option<egui::TextureId> {
         if size_px.contains(&0) {
             return None;
@@ -376,6 +468,7 @@ impl Renderer3d {
             view_proj: view_proj.to_cols_array(),
             visible: self.pieces.iter().map(|piece| visible(piece.id)).collect(),
             background,
+            curve_width_px,
         };
         if self.painted.as_ref() == Some(&painted) {
             return self.texture;
@@ -387,6 +480,7 @@ impl Renderer3d {
         let uniform = CameraUniform {
             view_proj: view_proj.to_cols_array_2d(),
             light: [light.x, light.y, light.z, 0.0],
+            viewport: [viewport[0], viewport[1], curve_width_px, 0.0],
         };
         self.queue
             .write_buffer(&self.camera_buffer, 0, bytemuck::bytes_of(&uniform));
@@ -432,6 +526,19 @@ impl Renderer3d {
             pass.set_bind_group(0, &self.camera_bind_group, &[]);
             for piece in shown(false) {
                 draw(&mut pass, piece);
+            }
+            if let Some(curve_bind_group) = &self.curve_bind_group {
+                pass.set_pipeline(&self.curves);
+                pass.set_bind_group(1, curve_bind_group, &[]);
+                let with_curves = self
+                    .pieces
+                    .iter()
+                    .zip(&painted.visible)
+                    .filter(|(piece, shown)| **shown && piece.segment_count > 0);
+                for (piece, _) in with_curves {
+                    pass.set_vertex_buffer(0, piece.segments.slice(..));
+                    pass.draw(0..6, 0..piece.segment_count);
+                }
             }
         }
         let any_transparent = shown(true).next().is_some();
@@ -612,8 +719,37 @@ impl Drop for Renderer3d {
 }
 
 fn draw(pass: &mut wgpu::RenderPass<'_>, piece: &GpuPiece) {
+    if piece.index_count == 0 {
+        return;
+    }
     pass.set_bind_group(1, &piece.bind_group, &[]);
     pass.set_vertex_buffer(0, piece.vertices.slice(..));
     pass.set_index_buffer(piece.indices.slice(..), wgpu::IndexFormat::Uint32);
     pass.draw_indexed(0..piece.index_count, 0, 0..1);
+}
+
+/// Los tramos de las curvas de una pieza, en f32; una curva cerrada une el
+/// último punto con el primero.
+fn segments_of(piece: &Piece) -> Vec<Segment> {
+    let mut segments = Vec::new();
+    for curve in &piece.curves {
+        let points: Vec<[f32; 3]> = curve
+            .points
+            .iter()
+            .map(|point| point.map(|value| value as f32))
+            .collect();
+        for pair in points.windows(2) {
+            segments.push(Segment {
+                a: pair[0],
+                b: pair[1],
+            });
+        }
+        if curve.closed && points.len() > 2 {
+            segments.push(Segment {
+                a: points[points.len() - 1],
+                b: points[0],
+            });
+        }
+    }
+    segments
 }

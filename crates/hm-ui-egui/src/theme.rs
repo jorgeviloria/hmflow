@@ -40,6 +40,10 @@ pub(crate) struct Palette {
     pub npsh_a: Color32,
     pub recirculation: Color32,
     pub motor_limit: Color32,
+    /// Ejes x, y, z del triedro del visor 3D: rojo, verde y azul.
+    pub axis_x: Color32,
+    pub axis_y: Color32,
+    pub axis_z: Color32,
 }
 
 const fn rgb(r: u8, g: u8, b: u8) -> Color32 {
@@ -79,6 +83,9 @@ pub(crate) const LIGHT: Palette = Palette {
     npsh_a: rgb(30, 120, 70),
     recirculation: rgb(120, 70, 160),
     motor_limit: rgb(176, 42, 32),
+    axis_x: rgb(200, 40, 40),
+    axis_y: rgb(30, 140, 50),
+    axis_z: rgb(40, 80, 200),
 };
 
 pub(crate) const DARK: Palette = Palette {
@@ -114,6 +121,9 @@ pub(crate) const DARK: Palette = Palette {
     npsh_a: rgb(95, 195, 130),
     recirculation: rgb(185, 140, 225),
     motor_limit: rgb(235, 110, 95),
+    axis_x: rgb(240, 95, 85),
+    axis_y: rgb(110, 205, 120),
+    axis_z: rgb(110, 150, 240),
 };
 
 /// Paleta del tema activo de egui.

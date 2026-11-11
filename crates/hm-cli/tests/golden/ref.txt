@@ -62,7 +62,7 @@ Q_m3h,H_m,eta,P_shaft_kW,NPSHr_m
 144.000,39.0581,0.8298,18.4311,5.4215
 156.000,35.5605,0.8150,18.5075,6.8930
 # file ref.hmf
-schema = 6
+schema = 7
 
 [project]
 name = "ref"

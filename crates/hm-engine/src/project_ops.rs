@@ -3,7 +3,7 @@
 use hm_core::PumpType;
 use hm_design::blade_camber::{BladeCamber, camber_for_design};
 use hm_design::blade_setup::{BladeFamily, BladeSetup, BladeShape, CamberBows, STREAMLINE_COUNTS};
-use hm_design::blade_thickness::BladeThickness;
+use hm_design::blade_thickness::{BladeThickness, EditedThickness, ThicknessCurve, ThicknessNode};
 use hm_design::geometry::DEFAULT_INCIDENCE_DEG;
 use hm_design::meridian::{
     CutMode, EdgeEdit, EdgeMode, HubCutEdit, MeridianEdits, MeridionalModel, WallEdit,
@@ -462,8 +462,42 @@ pub fn blade_setup_of(section: Option<&hm_project::Blade>) -> Result<BladeSetup,
             hub: (section.bow_hub[0], section.bow_hub[1]),
             shroud: (section.bow_shroud[0], section.bow_shroud[1]),
         },
-        // El espesor de `[blade]` llega con el esquema 7.
-        thickness: BladeThickness::default(),
+        thickness: thickness_of(section)?,
+    })
+}
+
+/// La curva de espesor de una sección `[blade]`: mm → m, y cada lista pasa por
+/// `ThicknessCurve::new`, cuyo texto es el error. Una sección hecha a mano que
+/// no cumpla no se arregla: es un error.
+fn thickness_of(section: &hm_project::Blade) -> Result<BladeThickness, String> {
+    if let Some(problem) = section.thickness_layout_problem() {
+        return Err(problem);
+    }
+    let to_nodes = |pairs: &[[f64; 2]]| -> Result<Vec<ThicknessNode>, String> {
+        let nodes: Vec<ThicknessNode> = pairs
+            .iter()
+            .map(|&[x, e_mm]| ThicknessNode {
+                x,
+                e: e_mm / 1000.0,
+            })
+            .collect();
+        ThicknessCurve::new(nodes.clone()).map_err(|error| error.to_string())?;
+        Ok(nodes)
+    };
+    let edited = if section.thickness_hub.is_empty() {
+        None
+    } else {
+        let hub = to_nodes(&section.thickness_hub)?;
+        let shroud = if section.thickness_same {
+            hub.clone()
+        } else {
+            to_nodes(&section.thickness_shroud)?
+        };
+        Some(EditedThickness { hub, shroud })
+    };
+    Ok(BladeThickness {
+        same: section.thickness_same,
+        edited,
     })
 }
 
@@ -475,7 +509,31 @@ pub fn blade_section_of(setup: &BladeSetup) -> Option<hm_project::Blade> {
         streamlines: setup.streamlines,
         bow_hub: [setup.bows.hub.0, setup.bows.hub.1],
         bow_shroud: [setup.bows.shroud.0, setup.bows.shroud.1],
+        thickness_same: setup.thickness.same,
+        thickness_hub: setup
+            .thickness
+            .edited
+            .as_ref()
+            .map(|edited| nodes_mm(&edited.hub))
+            .unwrap_or_default(),
+        // Con «cubo = tapa» solo se escribe el cubo.
+        thickness_shroud: setup
+            .thickness
+            .edited
+            .as_ref()
+            .filter(|_| !setup.thickness.same)
+            .map(|edited| nodes_mm(&edited.shroud))
+            .unwrap_or_default(),
     })
+}
+
+/// Nodos de espesor m → mm, con x y e redondeados a 6 decimales.
+fn nodes_mm(nodes: &[ThicknessNode]) -> Vec<[f64; 2]> {
+    let round = |value: f64| (value * 1.0e6).round() / 1.0e6;
+    nodes
+        .iter()
+        .map(|node| [round(node.x), round(node.e * 1000.0)])
+        .collect()
 }
 
 /// Lo editado de una sección `[meridian]`, en mm. Un texto vacío o que no

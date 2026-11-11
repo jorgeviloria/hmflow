@@ -23,15 +23,29 @@ use thiserror::Error;
 /// - 5: añade la sección opcional `[blade]`, con la forma del álabe y el
 ///   número de líneas de corriente.
 /// - 6: añade las manijas de cubo y tapa a `[blade]`.
-pub const SCHEMA_VERSION: u32 = 6;
+/// - 7: añade el espesor a `[blade]`: el interruptor «cubo = tapa» y, si la
+///   curva está editada, los nodos de cubo y de tapa.
+pub const SCHEMA_VERSION: u32 = 7;
 
 /// Esquemas anteriores que se migran al cargar.
-pub const MIGRATABLE_SCHEMAS: &[u32] = &[1, 2, 3, 4, 5];
+pub const MIGRATABLE_SCHEMAS: &[u32] = &[1, 2, 3, 4, 5, 6];
 
 /// Rango de cada manija de cubo y tapa, en grados. El mismo que
 /// `hm_design::BETA_BOW_RANGE_DEG`: este crate no depende de `hm-design` y una
 /// prueba de `hm-engine` comprueba que coinciden.
 pub const BLADE_BOW_RANGE_DEG: (f64, f64) = (-30.0, 30.0);
+
+/// Cuántos nodos puede tener una curva de espesor: de 2 a 8. Los mismos que
+/// `hm_design::blade_thickness::THICKNESS_NODES`: este crate no depende de
+/// `hm-design` y una prueba de `hm-engine` comprueba que coinciden.
+pub const BLADE_THICKNESS_NODES: (usize, usize) = (2, 8);
+
+/// Espesor mínimo de un nodo, en mm (el mínimo de fundición). Ídem: lo ata a
+/// `hm_design` una prueba de `hm-engine`.
+pub const BLADE_THICKNESS_FLOOR_MM: f64 = 3.0;
+
+/// Espesor mínimo del nodo de x = 1, en mm: la mitad del anterior.
+pub const BLADE_THICKNESS_EXIT_FLOOR_MM: f64 = 1.5;
 
 /// Las formas de álabe que admite `[blade]`, con el nombre que llevan en el
 /// archivo.
@@ -98,30 +112,76 @@ pub struct Project {
 /// La forma del álabe y en cuántas líneas de corriente se reparte el canal.
 /// No va en `[params]`: no es una entrada del 1D ni mueve ningún número del
 /// diseño.
+///
+/// Al leer, además de cada campo se comprueba el conjunto (ver
+/// [`Blade::thickness_layout_problem`]); lo escrito a mano que no cumpla es un
+/// error de carga, no se arregla.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
+#[serde(try_from = "BladeFile")]
 pub struct Blade {
     /// Una de [`BLADE_SHAPES`].
-    #[serde(default = "default_blade_shape", deserialize_with = "blade_shape")]
     pub shape: String,
     /// Uno de [`STREAMLINE_COUNTS`].
-    #[serde(default = "default_streamlines", deserialize_with = "streamline_count")]
     pub streamlines: u8,
     /// Manijas de la ley de β del cubo a 1/3 y 2/3 de la longitud meridional,
     /// en grados (esquema 6). Cero: no se escriben.
-    #[serde(
-        default,
-        deserialize_with = "bow_pair::<_, 0>",
-        skip_serializing_if = "bows_are_zero"
-    )]
+    #[serde(skip_serializing_if = "bows_are_zero")]
     pub bow_hub: [f64; 2],
     /// Ídem para la tapa (esquema 6).
-    #[serde(
-        default,
-        deserialize_with = "bow_pair::<_, 1>",
-        skip_serializing_if = "bows_are_zero"
-    )]
+    #[serde(skip_serializing_if = "bows_are_zero")]
     pub bow_shroud: [f64; 2],
+    /// «Cubo = tapa» (esquema 7): se edita y se guarda una sola curva de
+    /// espesor. Por defecto, sí; encendido no se escribe.
+    #[serde(skip_serializing_if = "is_true")]
+    pub thickness_same: bool,
+    /// Nodos de la curva de espesor del cubo, `[x, e en mm]` (esquema 7).
+    /// Vacío es «Gülich»: la curva sigue al diseño. Vacío no se escribe.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub thickness_hub: Vec<[f64; 2]>,
+    /// Ídem para la tapa. Solo con `thickness_same = false` (esquema 7).
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub thickness_shroud: Vec<[f64; 2]>,
+}
+
+/// Lo que se lee de `[blade]`: cada campo con su comprobación. Después,
+/// [`Blade`] comprueba el conjunto.
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct BladeFile {
+    #[serde(default = "default_blade_shape", deserialize_with = "blade_shape")]
+    shape: String,
+    #[serde(default = "default_streamlines", deserialize_with = "streamline_count")]
+    streamlines: u8,
+    #[serde(default, deserialize_with = "bow_pair::<_, 0>")]
+    bow_hub: [f64; 2],
+    #[serde(default, deserialize_with = "bow_pair::<_, 1>")]
+    bow_shroud: [f64; 2],
+    #[serde(default = "default_true")]
+    thickness_same: bool,
+    #[serde(default, deserialize_with = "thickness_nodes::<_, 0>")]
+    thickness_hub: Vec<[f64; 2]>,
+    #[serde(default, deserialize_with = "thickness_nodes::<_, 1>")]
+    thickness_shroud: Vec<[f64; 2]>,
+}
+
+impl TryFrom<BladeFile> for Blade {
+    type Error = String;
+
+    fn try_from(file: BladeFile) -> Result<Self, String> {
+        let blade = Self {
+            shape: file.shape,
+            streamlines: file.streamlines,
+            bow_hub: file.bow_hub,
+            bow_shroud: file.bow_shroud,
+            thickness_same: file.thickness_same,
+            thickness_hub: file.thickness_hub,
+            thickness_shroud: file.thickness_shroud,
+        };
+        match blade.thickness_layout_problem() {
+            Some(problem) => Err(problem),
+            None => Ok(blade),
+        }
+    }
 }
 
 impl Default for Blade {
@@ -131,6 +191,9 @@ impl Default for Blade {
             streamlines: default_streamlines(),
             bow_hub: [0.0, 0.0],
             bow_shroud: [0.0, 0.0],
+            thickness_same: true,
+            thickness_hub: Vec::new(),
+            thickness_shroud: Vec::new(),
         }
     }
 }
@@ -142,6 +205,39 @@ impl Blade {
             && self.streamlines == DEFAULT_STREAMLINES
             && bows_are_zero(&self.bow_hub)
             && bows_are_zero(&self.bow_shroud)
+            && self.thickness_same
+            && self.thickness_hub.is_empty()
+            && self.thickness_shroud.is_empty()
+    }
+
+    /// Por qué las tres listas de espesor no pueden ir juntas, si no pueden:
+    /// la tapa exige el cubo y `thickness_same = false`; con las paredes
+    /// separadas y la curva editada hacen falta las dos. Lo de cada nodo lo
+    /// comprueba la lectura de cada lista (y `ThicknessCurve::new` en el
+    /// motor).
+    #[must_use]
+    pub fn thickness_layout_problem(&self) -> Option<String> {
+        if !self.thickness_shroud.is_empty() && self.thickness_hub.is_empty() {
+            return Some(
+                "«thickness_shroud» exige «thickness_hub»: la tapa no se edita sin el cubo".into(),
+            );
+        }
+        if self.thickness_same && !self.thickness_shroud.is_empty() {
+            return Some(
+                "«thickness_shroud» exige «thickness_same» = false: con «cubo = tapa» solo se escribe «thickness_hub»"
+                    .into(),
+            );
+        }
+        if !self.thickness_same
+            && !self.thickness_hub.is_empty()
+            && self.thickness_shroud.is_empty()
+        {
+            return Some(
+                "con «thickness_same» = false y la curva editada hacen falta «thickness_hub» y «thickness_shroud»"
+                    .into(),
+            );
+        }
+        None
     }
 }
 
@@ -151,6 +247,14 @@ fn default_blade_shape() -> String {
 
 fn default_streamlines() -> u8 {
     DEFAULT_STREAMLINES
+}
+
+fn default_true() -> bool {
+    true
+}
+
+fn is_true(value: &bool) -> bool {
+    *value
 }
 
 fn bows_are_zero(bows: &[f64; 2]) -> bool {
@@ -210,6 +314,71 @@ fn bow_pair<'de, D: serde::Deserializer<'de>, const WALL: usize>(
         }
     }
     Ok([first, second])
+}
+
+/// Los nodos de la curva de espesor del cubo (`WALL` = 0) o de la tapa
+/// (`WALL` = 1): vacía, o de 2 a [`BLADE_THICKNESS_NODES`] pares `[x, e]` finitos,
+/// con x de 0 a 1 estrictamente creciente y e en mm no menor que
+/// [`BLADE_THICKNESS_FLOOR_MM`] ([`BLADE_THICKNESS_EXIT_FLOOR_MM`] en x = 1).
+/// Cualquier otra cosa es un error de carga que nombra el campo.
+fn thickness_nodes<'de, D: serde::Deserializer<'de>, const WALL: usize>(
+    deserializer: D,
+) -> Result<Vec<[f64; 2]>, D::Error> {
+    use serde::de::Error;
+    let field = ["thickness_hub", "thickness_shroud"][WALL];
+    let (min_nodes, max_nodes) = BLADE_THICKNESS_NODES;
+    let raw = Vec::<Vec<f64>>::deserialize(deserializer)?;
+    if raw.is_empty() {
+        return Ok(Vec::new());
+    }
+    if !(min_nodes..=max_nodes).contains(&raw.len()) {
+        return Err(D::Error::custom(format!(
+            "«{field}» debe tener de {min_nodes} a {max_nodes} nodos [x, e en mm], no {}",
+            raw.len()
+        )));
+    }
+    let mut nodes: Vec<[f64; 2]> = Vec::with_capacity(raw.len());
+    for (index, pair) in raw.iter().enumerate() {
+        let [x, e] = pair[..] else {
+            return Err(D::Error::custom(format!(
+                "«{field}»: el nodo {} debe ser un par [x, e en mm], no {} números",
+                index + 1,
+                pair.len()
+            )));
+        };
+        if !x.is_finite() || !e.is_finite() {
+            return Err(D::Error::custom(format!(
+                "«{field}»: el nodo {} no es un número finito",
+                index + 1
+            )));
+        }
+        if let Some(previous) = nodes.last()
+            && x <= previous[0]
+        {
+            return Err(D::Error::custom(format!(
+                "«{field}»: la x del nodo {} no está a la derecha de la del anterior",
+                index + 1
+            )));
+        }
+        let floor = if x >= 1.0 {
+            BLADE_THICKNESS_EXIT_FLOOR_MM
+        } else {
+            BLADE_THICKNESS_FLOOR_MM
+        };
+        if e < floor {
+            return Err(D::Error::custom(format!(
+                "«{field}»: el nodo {} tiene {e} mm de espesor, menos que su mínimo de {floor} mm",
+                index + 1
+            )));
+        }
+        nodes.push([x, e]);
+    }
+    if nodes[0][0] != 0.0 || nodes[nodes.len() - 1][0] != 1.0 {
+        return Err(D::Error::custom(format!(
+            "«{field}»: el primer nodo va en x = 0 y el último en x = 1"
+        )));
+    }
+    Ok(nodes)
 }
 
 /// Lo editado del corte meridional: cada tapa es una Bézier de 5 puntos. Lo
@@ -911,7 +1080,7 @@ impl Project {
 
     /// Lleva un proyecto de un esquema anterior al actual.
     ///
-    /// Los esquemas 2 a 5 solo añaden campos opcionales, así que basta con
+    /// Los esquemas 2 a 7 solo añaden campos opcionales, así que basta con
     /// cambiar el número. Un esquema desconocido se deja como está y lo
     /// señala `validate` con `HM-PROJ-001`.
     fn migrated(mut self) -> Self {

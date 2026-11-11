@@ -24,7 +24,7 @@ recalculado v0.2.hmf
 # status
 0
 # file v0.2.hmf
-schema = 6
+schema = 7
 
 [project]
 name = "referencia-v0.2"

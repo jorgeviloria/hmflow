@@ -36,7 +36,7 @@ escrito hot-water.hmf
 # status
 0
 # file hot-water.hmf
-schema = 6
+schema = 7
 
 [project]
 name = "hot-water"

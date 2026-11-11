@@ -1,5 +1,5 @@
 //! Sección `[blade]`: la forma del álabe y el número de líneas de corriente
-//! (esquema 5; las manijas, esquema 6).
+//! (esquema 5; las manijas, esquema 6; el espesor, esquema 7).
 
 use hm_project::{
     BLADE_BOW_RANGE_DEG, BLADE_SHAPES, Blade, DEFAULT_BLADE_SHAPE, DEFAULT_STREAMLINES,
@@ -8,6 +8,7 @@ use hm_project::{
 
 const V4: &str = include_str!("fixtures/end_suction_v4.hmf");
 const V5: &str = include_str!("fixtures/end_suction_v5.hmf");
+const V6: &str = include_str!("fixtures/end_suction_v6.hmf");
 
 /// Un proyecto nuevo con esa sección `[blade]` añadida al final.
 fn with_blade(section: &str) -> String {
@@ -27,7 +28,7 @@ fn a_v4_file_without_blade_loads_as_default_and_saves_as_current_without_the_sec
     assert_eq!(project.schema, SCHEMA_VERSION);
     assert_eq!(project.blade, None);
     let saved = project.to_toml().unwrap();
-    assert!(saved.starts_with("schema = 6\n"), "{saved}");
+    assert!(saved.starts_with("schema = 7\n"), "{saved}");
     assert!(!saved.contains("[blade]"), "{saved}");
 }
 
@@ -105,9 +106,9 @@ fn an_unknown_field_in_the_section_is_rejected() {
 }
 
 #[test]
-fn the_schema_is_six_and_migrates_one_to_five() {
-    assert_eq!(SCHEMA_VERSION, 6);
-    assert_eq!(MIGRATABLE_SCHEMAS, [1, 2, 3, 4, 5]);
+fn the_schema_is_seven_and_migrates_one_to_six() {
+    assert_eq!(SCHEMA_VERSION, 7);
+    assert_eq!(MIGRATABLE_SCHEMAS, [1, 2, 3, 4, 5, 6]);
     assert_eq!(BLADE_BOW_RANGE_DEG, (-30.0, 30.0));
     assert_eq!(STREAMLINE_COUNTS, [3, 5, 7, 9]);
     assert_eq!(DEFAULT_STREAMLINES, 5);
@@ -115,16 +116,16 @@ fn the_schema_is_six_and_migrates_one_to_five() {
 }
 
 #[test]
-fn a_v5_file_loads_with_zero_handles_and_saves_as_v6() {
+fn a_v5_file_loads_with_zero_handles_and_saves_as_current() {
     assert!(V5.starts_with("schema = 5\n"), "la fixture debe ser v5");
     let project = Project::from_toml(V5).unwrap();
-    assert_eq!(project.schema, 6);
+    assert_eq!(project.schema, SCHEMA_VERSION);
     let blade = project.blade.as_ref().unwrap();
     assert_eq!(blade.bow_hub, [0.0, 0.0]);
     assert_eq!(blade.bow_shroud, [0.0, 0.0]);
     assert_eq!(blade.streamlines, 7);
     let saved = project.to_toml().unwrap();
-    assert!(saved.starts_with("schema = 6\n"), "{saved}");
+    assert!(saved.starts_with("schema = 7\n"), "{saved}");
     assert!(!saved.contains("bow_"), "{saved}");
 }
 
@@ -136,6 +137,7 @@ fn handles_round_trip() {
         streamlines: 5,
         bow_hub: [3.5, -2.0],
         bow_shroud: [0.0, 1.25],
+        ..Blade::default()
     };
     project.blade = Some(blade.clone());
     let saved = project.to_toml().unwrap();
@@ -204,4 +206,144 @@ fn a_handle_out_of_range_is_a_load_error() {
             "{text}: {error}"
         );
     }
+}
+
+#[test]
+fn a_v6_file_loads_without_thickness_and_saves_as_v7() {
+    assert!(V6.starts_with("schema = 6\n"), "la fixture debe ser v6");
+    let project = Project::from_toml(V6).unwrap();
+    assert_eq!(project.schema, SCHEMA_VERSION);
+    let blade = project.blade.as_ref().unwrap();
+    assert_eq!(blade.bow_hub, [3.5, -2.0]);
+    assert!(blade.thickness_same);
+    assert!(blade.thickness_hub.is_empty());
+    assert!(blade.thickness_shroud.is_empty());
+    let saved = project.to_toml().unwrap();
+    assert!(saved.starts_with("schema = 7\n"), "{saved}");
+    assert!(!saved.contains("thickness"), "{saved}");
+    assert!(saved.contains("bow_hub"), "{saved}");
+}
+
+#[test]
+fn thickness_round_trips() {
+    let mut project = Project::new("demo", PumpType::EndSuction);
+    let blade = Blade {
+        shape: "free_3d".into(),
+        thickness_same: false,
+        thickness_hub: vec![[0.0, 6.0], [0.8, 6.0], [1.0, 3.0]],
+        thickness_shroud: vec![[0.0, 5.0], [0.3, 5.5], [0.6, 4.0], [0.9, 3.5], [1.0, 2.0]],
+        ..Blade::default()
+    };
+    project.blade = Some(blade.clone());
+    let saved = project.to_toml().unwrap();
+    assert!(saved.contains("thickness_same = false"), "{saved}");
+    assert!(saved.contains("thickness_hub"), "{saved}");
+    assert!(saved.contains("thickness_shroud"), "{saved}");
+    assert_eq!(Project::from_toml(&saved).unwrap().blade, Some(blade));
+
+    // Con «cubo = tapa» solo se escribe el cubo, y el interruptor encendido no se escribe.
+    let blade = Blade {
+        thickness_hub: vec![[0.0, 6.0], [1.0, 3.0]],
+        ..Blade::default()
+    };
+    project.blade = Some(blade.clone());
+    let saved = project.to_toml().unwrap();
+    assert!(!saved.contains("thickness_same"), "{saved}");
+    assert!(!saved.contains("thickness_shroud"), "{saved}");
+    assert_eq!(Project::from_toml(&saved).unwrap().blade, Some(blade));
+}
+
+#[test]
+fn default_thickness_is_not_written_and_nodes_make_the_blade_non_default() {
+    let mut blade = Blade::default();
+    assert!(blade.is_default());
+    assert!(blade.thickness_same);
+    let mut project = Project::new("demo", PumpType::EndSuction);
+    project.blade = Some(blade.clone());
+    assert!(!project.to_toml().unwrap().contains("thickness"));
+
+    blade.thickness_hub = vec![[0.0, 6.0], [1.0, 3.0]];
+    assert!(!blade.is_default());
+    blade.thickness_hub.clear();
+    blade.thickness_shroud = vec![[0.0, 6.0], [1.0, 3.0]];
+    assert!(!blade.is_default());
+    blade.thickness_shroud.clear();
+    blade.thickness_same = false;
+    assert!(!blade.is_default());
+    // Apagar «cubo = tapa» sin nodos sí se guarda: es una elección del usuario.
+    project.blade = Some(blade.clone());
+    let saved = project.to_toml().unwrap();
+    assert!(saved.contains("thickness_same = false"), "{saved}");
+    assert_eq!(Project::from_toml(&saved).unwrap().blade, Some(blade));
+}
+
+#[test]
+fn hand_written_thickness_is_checked() {
+    let cases: [(&str, &str); 14] = [
+        (
+            "thickness_hub = [[0.0, 6.0], [0.5, 6.0], [0.3, 6.0], [1.0, 3.0]]",
+            "thickness_hub",
+        ),
+        (
+            "thickness_hub = [[0.0, 6.0], [0.5, 6.0], [0.5, 5.0], [1.0, 3.0]]",
+            "thickness_hub",
+        ),
+        (
+            "thickness_hub = [[0.0, 6.0], [0.1, 6.0], [0.2, 6.0], [0.3, 6.0], [0.4, 6.0], [0.5, 6.0], [0.6, 6.0], [0.7, 6.0], [1.0, 3.0]]",
+            "thickness_hub",
+        ),
+        ("thickness_hub = [[0.0, 6.0]]", "thickness_hub"),
+        (
+            "thickness_hub = []\nthickness_same = false\nthickness_shroud = [[0.0, 6.0], [1.0, 3.0]]",
+            "thickness_shroud",
+        ),
+        (
+            "thickness_hub = [[0.0, 6.0], [0.5, 2.9], [1.0, 3.0]]",
+            "thickness_hub",
+        ),
+        ("thickness_hub = [[0.0, 2.9], [1.0, 3.0]]", "thickness_hub"),
+        ("thickness_hub = [[0.0, nan], [1.0, 3.0]]", "thickness_hub"),
+        (
+            "thickness_hub = [[0.0, 6.0], [0.9, inf], [1.0, 3.0]]",
+            "thickness_hub",
+        ),
+        ("thickness_hub = [[0.1, 6.0], [1.0, 3.0]]", "thickness_hub"),
+        ("thickness_hub = [[0.0, 6.0], [0.9, 6.0]]", "thickness_hub"),
+        (
+            "thickness_hub = [[0.0, 6.0, 1.0], [1.0, 3.0]]",
+            "thickness_hub",
+        ),
+        (
+            "thickness_hub = [[0.0, 6.0], [1.0, 3.0]]\nthickness_shroud = [[0.0, 6.0], [1.0, 3.0]]",
+            "thickness_same",
+        ),
+        (
+            "thickness_same = false\nthickness_hub = [[0.0, 6.0], [1.0, 3.0]]",
+            "thickness_shroud",
+        ),
+    ];
+    for (text, field) in cases {
+        let error = Project::from_toml(&with_blade(text))
+            .expect_err(text)
+            .to_string();
+        assert!(error.contains(field), "{text}: {error}");
+    }
+}
+
+#[test]
+fn the_exit_node_may_be_1_5_mm() {
+    let project =
+        Project::from_toml(&with_blade("thickness_hub = [[0.0, 6.0], [1.0, 1.5]]")).unwrap();
+    assert_eq!(
+        project.blade.unwrap().thickness_hub,
+        vec![[0.0, 6.0], [1.0, 1.5]]
+    );
+    // Solo en x = 1: un nodo interior con 1,5 mm no vale.
+    assert!(
+        Project::from_toml(&with_blade(
+            "thickness_hub = [[0.0, 6.0], [0.5, 1.5], [1.0, 3.0]]"
+        ))
+        .is_err()
+    );
+    assert!(Project::from_toml(&with_blade("thickness_hub = [[0.0, 6.0], [1.0, 1.4]]")).is_err());
 }

@@ -1,0 +1,271 @@
+schema = 6
+
+[project]
+name = "referencia-v0.9"
+
+[design]
+pump_type = "end_suction"
+stages = 1
+standard = "ISO 2858"
+method = "end_suction_v0.9"
+
+[operating]
+Q = "120 m3/h"
+H = "45 m"
+n = "2900 rpm"
+fluid = "water"
+temperature = "20 degC"
+npsha = "15 m"
+
+[params.A]
+mode = "manual"
+value = "4.5"
+
+[params.J]
+mode = "manual"
+value = "1.0442428120665044"
+
+[params.a360]
+mode = "auto"
+formula = "design.volute_throat_area_ratio"
+value = "0.0025478244842801145 m2"
+
+[params.b1]
+mode = "auto"
+formula = "design.b1"
+value = "0.024156181343539026 m"
+
+[params.b2]
+mode = "auto"
+formula = "design.b2"
+value = "0.01793575331997844 m"
+
+[params.b3]
+mode = "auto"
+formula = "design.volute_width"
+value = "0.027936114250489218 m"
+
+[params.balance_holes]
+mode = "manual"
+value = "0"
+
+[params.beta2]
+mode = "manual"
+value = "18.833039088174417 deg"
+
+[params.blade_count]
+mode = "manual"
+value = "7"
+
+[params.c0]
+mode = "manual"
+value = "4.249273735924011 m/s"
+
+[params.c3]
+mode = "auto"
+formula = "design.volute_inlet_velocity"
+value = "16.353821436188742 m/s"
+
+[params.cm0]
+mode = "manual"
+value = "4.249273735924011 m/s"
+
+[params.cm2]
+mode = "auto"
+formula = "design.cm2"
+value = "3.014872561743018 m/s"
+
+[params.cu2]
+mode = "auto"
+formula = "design.cu2"
+value = "16.073519185392957 m/s"
+
+[params.d0]
+mode = "auto"
+formula = "design.d0"
+value = "0.1008996749398625 m"
+
+[params.d1]
+mode = "auto"
+formula = "design.d1"
+value = "0.10536376029579822 m"
+
+[params.d2]
+mode = "auto"
+formula = "design.d2"
+value = "0.20000721861021556 m"
+
+[params.d360]
+mode = "auto"
+formula = "design.volute_throat_diameter"
+value = "0.06265164780418946 m"
+
+[params.dn]
+mode = "auto"
+formula = "design.specific_diameter"
+value = "101.55611909853526"
+
+[params.eta]
+mode = "auto"
+formula = "design.loss_efficiency"
+value = "0.8415556419943847"
+
+[params.eta_h]
+mode = "auto"
+formula = "design.statistical_hydraulic_efficiency"
+value = "0.9040239284242526"
+
+[params.eta_m]
+mode = "manual"
+value = "0.9856064144305404"
+
+[params.eta_v]
+mode = "auto"
+formula = "design.volumetric_efficiency_gulich"
+value = "0.9810578579721277"
+
+[params.eta_v_fixed]
+mode = "manual"
+value = "0"
+
+[params.h0]
+mode = "auto"
+formula = "design.shutoff_head"
+value = "53.64632644002136 m"
+
+[params.impeller_roughness]
+mode = "manual"
+value = "0 m"
+
+[params.incidence_deg]
+mode = "manual"
+value = "2 deg"
+
+[params.k3]
+mode = "manual"
+value = "1.1093290833252558"
+
+[params.k_eff]
+mode = "manual"
+value = "1.1"
+
+[params.margin]
+mode = "manual"
+value = "1.1"
+
+[params.mm]
+mode = "manual"
+value = "0.001 m"
+
+[params.npshr_d]
+mode = "auto"
+formula = "design.npsh3_inlet"
+value = "3.8068890572617318 m"
+
+[params.nq]
+mode = "auto"
+formula = "similarity.nq"
+value = "30.47389629010233"
+
+[params.p_disk_loss]
+mode = "auto"
+formula = "design.disk_friction_loss"
+value = "640.9210389924708 W"
+
+[params.p_hyd]
+mode = "auto"
+formula = "perf.hydraulic_power"
+value = "14683.555884899997 W"
+
+[params.p_hyd_loss]
+mode = "auto"
+formula = "design.hydraulic_loss"
+value = "1558.8857399516612 W"
+
+[params.p_max]
+mode = "auto"
+formula = "design.max_power"
+value = "19192.921617294287 W"
+
+[params.p_mech_loss]
+mode = "auto"
+formula = "design.bearing_seal_loss"
+value = "251.14087238768707 W"
+
+[params.p_shaft]
+mode = "auto"
+formula = "design.shaft_power"
+value = "17448.11056117662 W"
+
+[params.p_vol_loss]
+mode = "auto"
+formula = "design.volumetric_loss"
+value = "313.60702494480677 W"
+
+[params.phi]
+mode = "manual"
+value = "0.09927197648738413"
+
+[params.psi]
+mode = "manual"
+value = "0.9569265489576482"
+
+[params.qth]
+mode = "auto"
+formula = "design.qth"
+value = "0.03397692915098219 m3/s"
+
+[params.r3]
+mode = "auto"
+formula = "design.volute_base_radius"
+value = "0.11093691223965224 m"
+
+[params.r4]
+mode = "auto"
+formula = "design.volute_outer_radius"
+value = "0.14226273614174698 m"
+
+[params.rho]
+mode = "manual"
+value = "998.204 kg/m3"
+
+[params.sigma]
+mode = "auto"
+formula = "design.thoma_sigma"
+value = "0.11422256091476919"
+
+[params.slip]
+mode = "auto"
+formula = "design.slip_factor"
+value = "0.8373959174564424"
+
+[params.torque]
+mode = "auto"
+formula = "mech.shaft_torque"
+value = "57.45420089845165 N*m"
+
+[params.u2]
+mode = "auto"
+formula = "design.u2"
+value = "30.369825084787745 m/s"
+
+[params.volute_c]
+mode = "manual"
+value = "0.05"
+
+[params.volute_channels]
+mode = "manual"
+value = "1"
+
+[params.volute_ratio]
+mode = "manual"
+value = "0.8"
+
+[params.volute_wrap_deg]
+mode = "manual"
+value = "0 deg"
+
+[blade]
+shape = "free_2d"
+streamlines = 7
+bow_hub = [3.5, -2.0]

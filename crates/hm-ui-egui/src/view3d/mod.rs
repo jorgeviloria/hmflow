@@ -247,11 +247,23 @@ impl View3d {
         }
     }
 
-    /// La escena que se ve es la de arrastre.
+    /// La escena que se ve es la de arrastre y la fina está por llegar. Si
+    /// la última no salió no llega nada: eso lo dice [`View3d::stale_note`].
     pub(crate) fn is_preview(&self) -> bool {
-        self.scene
+        self.scene_error.is_none()
+            && self
+                .scene
+                .as_ref()
+                .is_some_and(|scene| scene.tolerance == SCENE_TOLERANCE_DRAG_MM)
+    }
+
+    /// Si la escena de las entradas vigentes no salió y se ve la anterior,
+    /// la nota que lo dice sobre el lienzo.
+    pub(crate) fn stale_note(&self) -> Option<String> {
+        self.scene.as_ref()?;
+        self.scene_error
             .as_ref()
-            .is_some_and(|scene| scene.tolerance == SCENE_TOLERANCE_DRAG_MM)
+            .map(|error| format!("escena anterior: {error}"))
     }
 
     /// Dibuja la última escena de [`View3d::sync`].
@@ -341,14 +353,21 @@ impl View3d {
             );
         }
         paint_triad(ui.painter(), rect, &self.camera, palette);
-        if self.is_preview() {
-            ui.painter().text(
-                rect.right_top() + egui::vec2(-8.0, 8.0),
-                egui::Align2::RIGHT_TOP,
-                "actualizando",
+        let mark = match self.stale_note() {
+            Some(note) => Some((note, palette.warn)),
+            None => self
+                .is_preview()
+                .then(|| ("actualizando".to_string(), palette.text_weak)),
+        };
+        if let Some((text, colour)) = mark {
+            let galley = ui.painter().layout(
+                text,
                 egui::FontId::proportional(12.0),
-                palette.text_weak,
+                colour,
+                (rect.width() - 16.0).max(1.0),
             );
+            let at = rect.right_top() + egui::vec2(-8.0 - galley.size().x, 8.0);
+            ui.painter().galley(at, galley, colour);
         }
     }
 }
@@ -706,6 +725,24 @@ mod tests {
         assert_eq!(view.scene.as_ref(), Some(&before));
         let lines = notice_lines(view.scene.as_ref(), view.scene_error.as_deref());
         assert!(lines.contains(&error), "{lines:?}");
+    }
+
+    /// Arrastre que pasa por una zona válida y acaba en una que no sale: al
+    /// soltar no queda «actualizando» y el lienzo dice que es la anterior.
+    #[test]
+    fn a_failed_scene_after_a_drag_is_not_a_preview() {
+        let mut view = View3d::new(None);
+        let good = outcome();
+        view.sync(&good, true);
+        assert!(view.is_preview());
+        assert_eq!(view.stale_note(), None);
+        let mut bad = good.clone();
+        bad.inputs.meridian.hub_diameter = "1000 mm".to_string();
+        let error = scene_of(&bad, SCENE_TOLERANCE_FINE_MM).unwrap_err();
+        view.sync(&bad, true);
+        view.sync(&bad, false);
+        assert!(!view.is_preview());
+        assert_eq!(view.stale_note(), Some(format!("escena anterior: {error}")));
     }
 
     #[test]

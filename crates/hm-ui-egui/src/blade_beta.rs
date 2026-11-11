@@ -525,6 +525,9 @@ pub(super) fn blade_beta_view(
     });
     match &camber {
         Ok(Some(camber)) => {
+            // Una vez por fotograma: la vista «Perfil» y el panel comparten el
+            // álabe con espesor.
+            let solid = crate::blade_inlet::solid_of(outcome);
             let mut chart = crate::blade_development::BladeChart::stored(ui.ctx());
             ui.horizontal(|ui| {
                 for (value, label) in crate::blade_development::BladeChart::ALL {
@@ -542,7 +545,6 @@ pub(super) fn blade_beta_view(
                     );
                 }
                 crate::blade_development::BladeChart::Profile => {
-                    let solid = crate::blade_inlet::solid_of(outcome);
                     crate::blade_development::profile_view(
                         ui,
                         camber,
@@ -551,6 +553,7 @@ pub(super) fn blade_beta_view(
                     );
                 }
             }
+            crate::blade_thickness::readings_panel(ui, &solid);
             edited |= bow_fields(ui, inputs, history);
         }
         Err(message) => {

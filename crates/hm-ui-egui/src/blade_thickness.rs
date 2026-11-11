@@ -9,6 +9,7 @@
 use eframe::egui;
 use egui_plot::{Plot, PlotPoint, Points, Text};
 use hm_design::blade_camber::BladeCamber;
+use hm_design::blade_solid::{BladeSolid, BladeSolidError, READING_STATIONS};
 use hm_design::blade_thickness::{
     BladeThickness, THICKNESS_NODES, THICKNESS_WARNING, ThicknessCurves, ThicknessWall, node_floor,
     thickness_curves_for_design,
@@ -35,6 +36,16 @@ impl ThicknessGraph {
         let curves = thickness_curves_for_design(&outcome.result, camber, &setup)
             .map_err(|error| error.to_string())?;
         Ok(Self { curves, setup })
+    }
+
+    /// `Err(motivo)` si con `candidate` el álabe con espesor no se construye
+    /// sobre este diseño; el motivo es el texto del error. No toca nada.
+    pub fn accepts(&self, outcome: &Outcome, candidate: &BladeThickness) -> Result<(), String> {
+        let mut setup = outcome.inputs.blade.clone();
+        setup.thickness = candidate.clone();
+        crate::blade_inlet::solid_for(outcome, &setup)
+            .map(|_| ())
+            .map_err(|error| error.to_string())
     }
 
     /// Las paredes que se dibujan: una sola con «cubo = tapa».
@@ -192,7 +203,7 @@ pub(super) fn thickness_view(
         .small()
         .weak(),
     );
-    edited |= thickness_plot(ui, &graph, inputs, history);
+    edited |= thickness_plot(ui, outcome, &graph, inputs, history);
     if graph.setup.is_edited()
         && let Some((inlet, exit)) = outcome.result.blade_edge_thickness
     {
@@ -220,6 +231,7 @@ pub(super) fn thickness_view(
 /// la cota. `true` si escribió `inputs`.
 fn thickness_plot(
     ui: &mut egui::Ui,
+    outcome: &Outcome,
     graph: &ThicknessGraph,
     inputs: &mut Inputs,
     history: &mut BetaHistory,
@@ -290,7 +302,7 @@ fn thickness_plot(
                     );
                 }
             }
-            if let Some(drag) = drag_nodes(plot_ui, graph, inputs) {
+            if let Some(drag) = drag_nodes(plot_ui, outcome, graph, inputs) {
                 match drag {
                     NodeDrag::Moving { status, written: w } => {
                         plot_ui
@@ -349,7 +361,15 @@ fn thickness_plot(
                 ui.label(egui::RichText::new(reason).small().weak());
             }
             if remove.clicked() {
-                written |= remove_node(inputs, history, graph, wall, index, time);
+                let refusal = graph
+                    .setup
+                    .with_node_removed(&graph.curves, wall, index)
+                    .and_then(|candidate| graph.accepts(outcome, &candidate).err());
+                if let Some(reason) = refusal {
+                    refuse(ui.ctx(), status_id, &reason);
+                } else {
+                    written |= remove_node(inputs, history, graph, wall, index, time);
+                }
                 ui.close();
             }
         }
@@ -360,7 +380,15 @@ fn thickness_plot(
                 ui.label(egui::RichText::new(reason).small().weak());
             }
             if add.clicked() {
-                written |= add_node(inputs, history, graph, wall, x, time);
+                let refusal = graph
+                    .setup
+                    .with_node_added(&graph.curves, wall, x)
+                    .and_then(|candidate| graph.accepts(outcome, &candidate).err());
+                if let Some(reason) = refusal {
+                    refuse(ui.ctx(), status_id, &reason);
+                } else {
+                    written |= add_node(inputs, history, graph, wall, x, time);
+                }
                 ui.close();
             }
         }
@@ -384,7 +412,7 @@ fn thickness_plot(
             ui.ctx().data_mut(|data| data.remove::<Editing>(editing_id));
             return written;
         };
-        let mut outcome = BoxOutcome::Open;
+        let mut box_state = BoxOutcome::Open;
         egui::Area::new(editing_id.with("area"))
             .order(egui::Order::Foreground)
             .fixed_pos(node + egui::vec2(8.0, -26.0))
@@ -402,16 +430,16 @@ fn thickness_plot(
                         let enter = response.lost_focus()
                             && ui.input(|input| input.key_pressed(egui::Key::Enter));
                         if escape {
-                            outcome = BoxOutcome::Cancel;
+                            box_state = BoxOutcome::Cancel;
                         } else if enter {
-                            outcome = BoxOutcome::Apply;
+                            box_state = BoxOutcome::Apply;
                         } else if response.lost_focus() {
-                            outcome = BoxOutcome::Cancel;
+                            box_state = BoxOutcome::Cancel;
                         }
                     });
                 });
             });
-        match outcome {
+        match box_state {
             BoxOutcome::Open => {
                 ui.ctx()
                     .data_mut(|data| data.insert_temp(editing_id, editing));
@@ -423,6 +451,9 @@ fn thickness_plot(
                 ui.ctx().data_mut(|data| data.remove::<Editing>(editing_id));
                 let status =
                     match write_thickness(graph, editing.wall, editing.index, &editing.text) {
+                        Ok((setup, _)) if let Err(reason) = graph.accepts(outcome, &setup) => {
+                            format!("No se mueve: {reason}")
+                        }
                         Ok((setup, note)) => {
                             let changed = setup != inputs.blade.thickness;
                             inputs.blade.thickness = setup;
@@ -607,6 +638,127 @@ fn write_thickness(
     Ok((setup, note))
 }
 
+/// Una fila del panel de lecturas.
+pub(super) struct ReadingRow {
+    pub label: String,
+    pub value: String,
+    /// El valor baja del mínimo de fundición: se pinta en rojo.
+    pub alarm: bool,
+}
+
+/// Las filas del panel, en este orden: espesor real de cubo y tapa (cuatro
+/// valores, en x = 0, 1/3, 2/3 y 1), la garganta de entrada de cada línea
+/// («—» sin vecino), el canto de salida de la línea central y el bloqueo de
+/// salida que resulta.
+pub(super) fn reading_rows(solid: &BladeSolid) -> Vec<ReadingRow> {
+    let readings = &solid.readings;
+    let thickness = |label: &str, values: &[f64; 4]| {
+        let shown: Vec<String> = values.iter().map(|e| mm_text(e * 1000.0)).collect();
+        ReadingRow {
+            label: label.to_string(),
+            value: format!("{} mm", shown.join(" · ")),
+            alarm: values
+                .iter()
+                .zip(READING_STATIONS)
+                .any(|(e, x)| *e < node_floor(x)),
+        }
+    };
+    let mut rows = vec![
+        thickness("Espesor real · cubo", &readings.true_thickness_hub),
+        thickness("Espesor real · tapa", &readings.true_thickness_shroud),
+    ];
+    for (k, throat) in readings.throats.iter().enumerate() {
+        rows.push(ReadingRow {
+            label: format!("Garganta de entrada · línea {k}"),
+            value: throat.as_ref().map_or_else(
+                || "—".to_string(),
+                |throat| format!("{} mm", comma(throat.width * 1000.0, 1)),
+            ),
+            alarm: false,
+        });
+    }
+    // La línea central: la de ψ más cercano a 0,5, la primera si hay empate.
+    let mid = (0..solid.lines.len())
+        .min_by(|a, b| {
+            (solid.lines[*a].psi - 0.5)
+                .abs()
+                .total_cmp(&(solid.lines[*b].psi - 0.5).abs())
+        })
+        .unwrap_or(0);
+    rows.push(ReadingRow {
+        label: "Canto de salida".to_string(),
+        value: format!("{} mm", mm_text(readings.exit_edges[mid] * 1000.0)),
+        alarm: false,
+    });
+    rows.push(ReadingRow {
+        label: "Bloqueo de salida τ2".to_string(),
+        value: comma(readings.exit_blockage, 3),
+        alarm: false,
+    });
+    rows
+}
+
+/// El panel plegable «Lecturas» bajo la gráfica: cerrado al arrancar. Si el
+/// álabe con espesor no sale, enseña solo el motivo.
+pub(super) fn readings_panel(ui: &mut egui::Ui, solid: &Result<BladeSolid, BladeSolidError>) {
+    readings_panel_open(ui, solid, None);
+}
+
+/// Como [`readings_panel`]; `open` fuerza el estado del panel (las pruebas).
+fn readings_panel_open(
+    ui: &mut egui::Ui,
+    solid: &Result<BladeSolid, BladeSolidError>,
+    open: Option<bool>,
+) {
+    let palette = crate::theme::palette(ui.ctx());
+    egui::CollapsingHeader::new("Lecturas")
+        .id_salt("blade_readings")
+        // Solo para las capturas: `HMF_READINGS=open`.
+        .default_open(std::env::var("HMF_READINGS").is_ok_and(|text| text == "open"))
+        .open(open)
+        .show(ui, |ui| match solid {
+            Err(error) => {
+                ui.label(
+                    egui::RichText::new(format!("Sin álabe con espesor: {error}."))
+                        .small()
+                        .color(palette.error),
+                );
+            }
+            Ok(solid) => {
+                egui::Grid::new("blade_readings_grid")
+                    .num_columns(2)
+                    .spacing([16.0, 4.0])
+                    .show(ui, |ui| {
+                        for row in reading_rows(solid) {
+                            ui.label(row.label);
+                            let value = egui::RichText::new(row.value);
+                            ui.label(if row.alarm {
+                                value.color(palette.error)
+                            } else {
+                                value
+                            });
+                            ui.end_row();
+                        }
+                    });
+                ui.label(
+                    egui::RichText::new(
+                        "Espesor real: distancia entre las dos caras sobre la normal, en x = 0, \
+                         1/3, 2/3 y 1; en rojo bajo el mínimo de fundición. Garganta: la \
+                         distancia más corta del borde de ataque a la cara de succión del \
+                         vecino. Canto de salida y bloqueo: los de la línea central.",
+                    )
+                    .small()
+                    .weak(),
+                );
+            }
+        });
+}
+
+/// La línea de lectura de un cambio que el álabe no admite.
+fn refuse(ctx: &egui::Context, status_id: egui::Id, reason: &str) {
+    ctx.data_mut(|data| data.insert_temp(status_id, format!("No se mueve: {reason}")));
+}
+
 /// Si se puede añadir un nodo en x sobre la curva de `wall`; si no, por qué.
 fn can_add(graph: &ThicknessGraph, wall: ThicknessWall, x: f64) -> Result<(), &'static str> {
     if graph.nodes(wall).len() >= THICKNESS_NODES.1 {
@@ -689,6 +841,7 @@ enum NodeDrag {
 /// puntero da (x, e en mm) y [`BladeThickness::with_node_moved`] lo acota.
 fn drag_nodes(
     plot_ui: &mut egui_plot::PlotUi<'_>,
+    outcome: &Outcome,
     graph: &ThicknessGraph,
     inputs: &mut Inputs,
 ) -> Option<NodeDrag> {
@@ -724,6 +877,16 @@ fn drag_nodes(
         graph
             .setup
             .with_node_moved(&graph.curves, wall, index, pointer.x, pointer.y / 1000.0);
+    // Un movimiento con que el álabe no se construye no se escribe: el nodo
+    // conserva su último valor válido.
+    if moved != inputs.blade.thickness
+        && let Err(reason) = graph.accepts(outcome, &moved)
+    {
+        return Some(NodeDrag::Moving {
+            status: format!("No se mueve: {reason}"),
+            written: false,
+        });
+    }
     let written = moved != inputs.blade.thickness;
     inputs.blade.thickness = moved;
     // Lo que quedó: el nodo ya acotado por la curva nueva.
@@ -1184,5 +1347,118 @@ mod tests {
             });
             thickness_view(ui, &outcome, &mut inputs, &mut history, &camber);
         });
+    }
+
+    fn b1_solid() -> hm_design::blade_solid::BladeSolid {
+        let (outcome, _) = b1_3d();
+        crate::blade_inlet::solid_of(&outcome).unwrap()
+    }
+
+    #[test]
+    fn the_rows_follow_the_readings() {
+        let solid = b1_solid();
+        let rows = reading_rows(&solid);
+        let lines = solid.lines.len();
+        assert_eq!(rows.len(), 2 + lines + 2);
+        assert_eq!(rows[0].label, "Espesor real · cubo");
+        assert_eq!(rows[1].label, "Espesor real · tapa");
+        for (k, row) in rows[2..2 + lines].iter().enumerate() {
+            assert_eq!(row.label, format!("Garganta de entrada · línea {k}"));
+        }
+        assert_eq!(rows[2 + lines].label, "Canto de salida");
+        assert_eq!(rows[3 + lines].label, "Bloqueo de salida τ2");
+
+        // Los valores son los de las lecturas, en mm y con coma.
+        let hub: Vec<String> = solid
+            .readings
+            .true_thickness_hub
+            .iter()
+            .map(|e| mm_text(e * 1000.0))
+            .collect();
+        assert_eq!(rows[0].value, format!("{} mm", hub.join(" · ")));
+        let throat = solid.readings.throats[0].as_ref().unwrap().width * 1000.0;
+        assert_eq!(rows[2].value, format!("{} mm", comma(throat, 1)));
+        let mid = (0..lines)
+            .min_by(|a, b| {
+                (solid.lines[*a].psi - 0.5)
+                    .abs()
+                    .total_cmp(&(solid.lines[*b].psi - 0.5).abs())
+            })
+            .unwrap();
+        assert_eq!(
+            rows[2 + lines].value,
+            format!("{} mm", mm_text(solid.readings.exit_edges[mid] * 1000.0))
+        );
+        assert_eq!(
+            rows[3 + lines].value,
+            comma(solid.readings.exit_blockage, 3)
+        );
+        // B1 con Gülich no baja de ningún mínimo.
+        assert!(rows.iter().all(|row| !row.alarm));
+    }
+
+    #[test]
+    fn a_true_thickness_under_the_minimum_is_flagged() {
+        let mut solid = b1_solid();
+        solid.readings.true_thickness_hub[1] = 0.002;
+        let rows = reading_rows(&solid);
+        assert!(rows[0].alarm);
+        assert!(rows[1..].iter().all(|row| !row.alarm));
+
+        // En x = 1 el mínimo es la mitad: 2 mm no es alarma, 1 mm sí.
+        let mut solid = b1_solid();
+        solid.readings.true_thickness_shroud[3] = 0.002;
+        assert!(!reading_rows(&solid)[1].alarm);
+        solid.readings.true_thickness_shroud[3] = 0.001;
+        assert!(reading_rows(&solid)[1].alarm);
+    }
+
+    #[test]
+    fn one_blade_shows_a_dash_for_the_throat() {
+        let mut solid = b1_solid();
+        solid.readings.throats.fill(None);
+        let rows = reading_rows(&solid);
+        let lines = solid.lines.len();
+        assert!(rows[2..2 + lines].iter().all(|row| row.value == "—"));
+    }
+
+    #[test]
+    fn a_drag_that_breaks_the_blade_is_refused_and_keeps_the_last_value() {
+        let (outcome, camber) = b1_3d();
+        let graph = ThicknessGraph::of(&outcome, &camber).unwrap();
+        // 60 mm en el nodo central: los álabes vecinos se tocan.
+        let candidate =
+            graph
+                .setup
+                .with_node_moved(&graph.curves, ThicknessWall::Hub, 1, 0.5, 0.060);
+        let reason = graph
+            .accepts(&outcome, &candidate)
+            .expect_err("con 60 mm el álabe no se construye");
+        assert!(reason.contains("línea de corriente"), "{reason}");
+        assert!(reason.contains("(0 es el cubo)"), "{reason}");
+        // No se escribe nada: las entradas siguen como estaban.
+        assert_eq!(outcome.inputs.blade.thickness, BladeThickness::default());
+    }
+
+    #[test]
+    fn a_valid_drag_is_accepted() {
+        let (outcome, camber) = b1_3d();
+        let graph = ThicknessGraph::of(&outcome, &camber).unwrap();
+        let candidate =
+            graph
+                .setup
+                .with_node_moved(&graph.curves, ThicknessWall::Hub, 0, 0.0, 0.006);
+        assert_eq!(graph.accepts(&outcome, &candidate), Ok(()));
+    }
+
+    #[test]
+    fn the_panel_shows_the_reason_when_there_is_no_solid() {
+        use hm_design::blade_solid::BladeSolidError;
+        let failed = Err(BladeSolidError::NoCamber("sin línea media".into()));
+        // Abierto a la fuerza, para que se dibuje el cuerpo.
+        egui::__run_test_ui(|ui| readings_panel_open(ui, &failed, Some(true)));
+        let ok = Ok(b1_solid());
+        egui::__run_test_ui(|ui| readings_panel_open(ui, &ok, Some(true)));
+        egui::__run_test_ui(|ui| readings_panel(ui, &ok));
     }
 }

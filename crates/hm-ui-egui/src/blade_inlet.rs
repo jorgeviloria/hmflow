@@ -388,7 +388,15 @@ pub(super) fn camber_of(outcome: &Outcome) -> Result<Option<BladeCamber>, String
 /// [`camber_of`]: sobre el meridiano editado y con la incidencia aplicada.
 /// Con forma 2D, o si algo falla, el error dice por qué.
 pub(super) fn solid_of(outcome: &Outcome) -> Result<BladeSolid, BladeSolidError> {
-    let setup = &outcome.inputs.blade;
+    solid_for(outcome, &outcome.inputs.blade)
+}
+
+/// Como [`solid_of`], con otra elección de álabe sobre el mismo diseño: para
+/// saber si un cambio de espesor se podría construir antes de escribirlo.
+pub(super) fn solid_for(
+    outcome: &Outcome,
+    setup: &BladeSetup,
+) -> Result<BladeSolid, BladeSolidError> {
     let no_solid = |text: String| BladeSolidError::NoCamber(text);
     let geometry = outcome
         .geometry

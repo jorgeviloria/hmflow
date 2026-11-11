@@ -10,7 +10,7 @@ use eframe::egui;
 use egui_plot::{Plot, PlotPoint, Points, Text};
 use hm_design::blade_camber::BladeCamber;
 use hm_design::blade_thickness::{
-    BladeThickness, THICKNESS_WARNING, ThicknessCurves, ThicknessWall, node_floor,
+    BladeThickness, THICKNESS_NODES, THICKNESS_WARNING, ThicknessCurves, ThicknessWall, node_floor,
     thickness_curves_for_design,
 };
 use hm_design::mechanics::CAST_MIN_THICKNESS;
@@ -203,7 +203,8 @@ pub(super) fn thickness_view(
     edited
 }
 
-/// El trazado con sus nodos y el arrastre. `true` si escribió `inputs`.
+/// El trazado con sus nodos, el arrastre, el menú de clic derecho y la caja de
+/// la cota. `true` si escribió `inputs`.
 fn thickness_plot(
     ui: &mut egui::Ui,
     graph: &ThicknessGraph,
@@ -211,7 +212,10 @@ fn thickness_plot(
     history: &mut BetaHistory,
 ) -> bool {
     let status_id = egui::Id::unique("blade_thickness_status");
+    let target_id = egui::Id::unique("blade_thickness_target");
+    let editing_id = egui::Id::unique("blade_thickness_editing");
     let palette = crate::theme::palette(ui.ctx());
+    let time = ui.input(|input| input.time);
     let mut written = false;
     // Margen arriba para que la cota del nodo más alto no quede cortada.
     let top = graph
@@ -219,7 +223,7 @@ fn thickness_plot(
         .iter()
         .map(|(_, _, point)| point[1])
         .fold(CAST_MIN_THICKNESS * 1000.0, f64::max);
-    Plot::new("blade_thickness")
+    let plot = Plot::new("blade_thickness")
         .height(190.0)
         .include_y(0.0)
         .include_y(top * 1.25)
@@ -269,11 +273,7 @@ fn thickness_plot(
                             PlotPoint::new(x, e),
                             egui::RichText::new(format!(" {}", mm_text(e))).small(),
                         )
-                        .anchor(if x > 0.9 {
-                            egui::Align2::RIGHT_TOP
-                        } else {
-                            egui::Align2::LEFT_BOTTOM
-                        }),
+                        .anchor(label_anchor(x)),
                     );
                 }
             }
@@ -292,14 +292,367 @@ fn thickness_plot(
                     }
                 }
             }
+            // Lo que hay bajo el puntero cuando se hace clic derecho o doble
+            // clic: el menú y la caja de la cota lo leen después.
+            let response = plot_ui.response().clone();
+            if let Some(pointer) = plot_ui.pointer_coordinate() {
+                let to_screen = |p: [f64; 2]| plot_ui.screen_from_plot(PlotPoint::new(p[0], p[1]));
+                let at = plot_ui.screen_from_plot(pointer);
+                if response.secondary_clicked() {
+                    let target = target_at(graph, &to_screen, at);
+                    plot_ui
+                        .ctx()
+                        .data_mut(|data| data.insert_temp(target_id, target));
+                }
+                if response.double_clicked()
+                    && let Some((wall, index)) = label_hit(graph, &to_screen, at)
+                {
+                    let e = graph.nodes(wall).get(index).map_or(0.0, |node| node[1]);
+                    plot_ui.ctx().data_mut(|data| {
+                        data.insert_temp(
+                            editing_id,
+                            Editing {
+                                wall,
+                                index,
+                                text: comma(e, 2),
+                                opened: true,
+                            },
+                        );
+                    });
+                }
+            }
         });
-    if written {
-        history.record(&BetaSnapshot::of(inputs), ui.input(|input| input.time));
+    // Clic derecho: «Añadir nodo aquí» sobre la curva, «Quitar nodo» sobre un
+    // nodo.
+    let target = ui
+        .ctx()
+        .data(|data| data.get_temp::<Target>(target_id))
+        .unwrap_or(Target::Nothing);
+    plot.response.context_menu(|ui| match target {
+        Target::Node(wall, index) => {
+            let can = can_remove(graph, wall, index);
+            let remove = ui.add_enabled(can.is_ok(), egui::Button::new("Quitar nodo"));
+            if let Err(reason) = can {
+                ui.label(egui::RichText::new(reason).small().weak());
+            }
+            if remove.clicked() {
+                written |= remove_node(inputs, history, graph, wall, index, time);
+                ui.close();
+            }
+        }
+        Target::Curve(wall, x) => {
+            let can = can_add(graph, wall, x);
+            let add = ui.add_enabled(can.is_ok(), egui::Button::new("Añadir nodo aquí"));
+            if let Err(reason) = can {
+                ui.label(egui::RichText::new(reason).small().weak());
+            }
+            if add.clicked() {
+                written |= add_node(inputs, history, graph, wall, x, time);
+                ui.close();
+            }
+        }
+        Target::Nothing => {
+            ui.label(
+                egui::RichText::new("Clic derecho sobre un nodo o sobre la curva.")
+                    .small()
+                    .weak(),
+            );
+        }
+    });
+    // Doble clic en la cota: una caja de texto. Intro la aplica, Esc la cierra.
+    if let Some(mut editing) = ui.ctx().data(|data| data.get_temp::<Editing>(editing_id)) {
+        let node = graph
+            .nodes(editing.wall)
+            .get(editing.index)
+            .copied()
+            .map(|[x, e]| plot.transform.position_from_point(&PlotPoint::new(x, e)));
+        let Some(node) = node else {
+            // El nodo ya no existe (se quitó o se deshizo): se cierra la caja.
+            ui.ctx().data_mut(|data| data.remove::<Editing>(editing_id));
+            return written;
+        };
+        let mut outcome = BoxOutcome::Open;
+        egui::Area::new(editing_id.with("area"))
+            .order(egui::Order::Foreground)
+            .fixed_pos(node + egui::vec2(8.0, -26.0))
+            .show(ui.ctx(), |ui| {
+                egui::Frame::popup(ui.style()).show(ui, |ui| {
+                    ui.horizontal(|ui| {
+                        let response = ui
+                            .add(egui::TextEdit::singleline(&mut editing.text).desired_width(56.0));
+                        ui.label(egui::RichText::new("mm").small());
+                        if editing.opened {
+                            response.request_focus();
+                            editing.opened = false;
+                        }
+                        let escape = ui.input(|input| input.key_pressed(egui::Key::Escape));
+                        let enter = response.lost_focus()
+                            && ui.input(|input| input.key_pressed(egui::Key::Enter));
+                        if escape {
+                            outcome = BoxOutcome::Cancel;
+                        } else if enter {
+                            outcome = BoxOutcome::Apply;
+                        } else if response.lost_focus() {
+                            outcome = BoxOutcome::Cancel;
+                        }
+                    });
+                });
+            });
+        match outcome {
+            BoxOutcome::Open => {
+                ui.ctx()
+                    .data_mut(|data| data.insert_temp(editing_id, editing));
+            }
+            BoxOutcome::Cancel => {
+                ui.ctx().data_mut(|data| data.remove::<Editing>(editing_id));
+            }
+            BoxOutcome::Apply => {
+                ui.ctx().data_mut(|data| data.remove::<Editing>(editing_id));
+                let status =
+                    match write_thickness(graph, editing.wall, editing.index, &editing.text) {
+                        Ok((setup, note)) => {
+                            let changed = setup != inputs.blade.thickness;
+                            inputs.blade.thickness = setup;
+                            if changed {
+                                history.record(&BetaSnapshot::of(inputs), time);
+                                written = true;
+                            }
+                            let mut status = format!(
+                                "{} · nodo {}: e escrito = {} mm",
+                                graph.wall_name(editing.wall),
+                                editing.index + 1,
+                                editing.text.trim()
+                            );
+                            if let Some(note) = note {
+                                status.push_str(&format!(" ({note})"));
+                            }
+                            status
+                        }
+                        Err(reason) => format!("No se cambia el nodo: {reason}"),
+                    };
+                ui.ctx()
+                    .data_mut(|data| data.insert_temp(status_id, status));
+            }
+        }
     }
     if let Some(status) = ui.ctx().data(|data| data.get_temp::<String>(status_id)) {
         ui.label(egui::RichText::new(status).small());
     }
     written
+}
+
+/// Dónde se ancla la cota de un nodo: a la derecha y arriba, salvo cerca de la
+/// salida, donde va a la izquierda y debajo para no salirse del marco.
+fn label_anchor(x: f64) -> egui::Align2 {
+    if x > 0.9 {
+        egui::Align2::RIGHT_TOP
+    } else {
+        egui::Align2::LEFT_BOTTOM
+    }
+}
+
+/// Lo que hay bajo el puntero en la gráfica.
+#[derive(Debug, Clone, Copy, PartialEq)]
+enum Target {
+    /// Un nodo: pared e índice.
+    Node(ThicknessWall, usize),
+    /// Un punto de la curva que no es un nodo: pared y x.
+    Curve(ThicknessWall, f64),
+    Nothing,
+}
+
+/// El nodo a menos de [`GRAB_PIXELS`] del puntero; si no, el punto de la curva
+/// a menos de esa distancia; si no, nada. `to_screen` pasa (x, e mm) a píxeles.
+fn target_at(
+    graph: &ThicknessGraph,
+    to_screen: &dyn Fn([f64; 2]) -> egui::Pos2,
+    pointer: egui::Pos2,
+) -> Target {
+    let node = graph
+        .handles()
+        .into_iter()
+        .map(|(wall, index, point)| ((wall, index), to_screen(point).distance(pointer)))
+        .filter(|(_, distance)| *distance <= GRAB_PIXELS)
+        .min_by(|a, b| a.1.total_cmp(&b.1));
+    if let Some(((wall, index), _)) = node {
+        return Target::Node(wall, index);
+    }
+    let mut best: Option<(ThicknessWall, f64, f32)> = None;
+    for (wall, points) in graph.lines(120) {
+        for pair in points.windows(2) {
+            let (a, b) = (to_screen(pair[0]), to_screen(pair[1]));
+            let along = b - a;
+            let length_squared = along.length_sq();
+            let t = if length_squared > 0.0 {
+                (((pointer - a).dot(along)) / length_squared).clamp(0.0, 1.0)
+            } else {
+                0.0
+            };
+            let distance = (a + along * t).distance(pointer);
+            if distance <= GRAB_PIXELS && best.is_none_or(|(_, _, d)| distance < d) {
+                let x = pair[0][0] + f64::from(t) * (pair[1][0] - pair[0][0]);
+                best = Some((wall, x, distance));
+            }
+        }
+    }
+    best.map_or(Target::Nothing, |(wall, x, _)| Target::Curve(wall, x))
+}
+
+/// El nodo cuya cota (o cuyo punto) está bajo el puntero: ahí el doble clic
+/// abre la caja de texto.
+fn label_hit(
+    graph: &ThicknessGraph,
+    to_screen: &dyn Fn([f64; 2]) -> egui::Pos2,
+    pointer: egui::Pos2,
+) -> Option<(ThicknessWall, usize)> {
+    // Tamaño aproximado de la cota, en píxeles, con letra pequeña.
+    const LABEL: egui::Vec2 = egui::vec2(52.0, 16.0);
+    graph
+        .handles()
+        .into_iter()
+        .filter(|(_, _, point)| {
+            let p = to_screen(*point);
+            let rect = match label_anchor(point[0]) {
+                a if a == egui::Align2::RIGHT_TOP => {
+                    egui::Rect::from_min_size(p + egui::vec2(-LABEL.x, 0.0), LABEL)
+                }
+                _ => egui::Rect::from_min_size(p + egui::vec2(0.0, -LABEL.y), LABEL),
+            };
+            rect.contains(pointer) || p.distance(pointer) <= GRAB_PIXELS
+        })
+        .min_by(|a, b| {
+            let d = |h: &(ThicknessWall, usize, [f64; 2])| to_screen(h.2).distance(pointer);
+            d(a).total_cmp(&d(b))
+        })
+        .map(|(wall, index, _)| (wall, index))
+}
+
+/// La caja de texto de una cota abierta con doble clic.
+#[derive(Debug, Clone)]
+struct Editing {
+    wall: ThicknessWall,
+    index: usize,
+    text: String,
+    /// Recién abierta: pide el foco una vez.
+    opened: bool,
+}
+
+/// Qué pasó con la caja en este fotograma.
+enum BoxOutcome {
+    Open,
+    Apply,
+    Cancel,
+}
+
+/// «4,5», «4.5» o «4,5 mm» → 4.5. Vacío, texto o un valor que no es mayor que
+/// cero: `Err` con la frase que se enseña.
+pub(super) fn parse_thickness_mm(text: &str) -> Result<f64, String> {
+    let trimmed = text.trim();
+    if trimmed.is_empty() {
+        return Err("escribe un espesor en mm, por ejemplo 4,5".to_string());
+    }
+    let number = trimmed.to_lowercase();
+    let number = number.strip_suffix("mm").unwrap_or(&number).trim();
+    let value: f64 = number
+        .replace(',', ".")
+        .parse()
+        .map_err(|_| format!("«{trimmed}» no es un espesor en mm; escribe por ejemplo 4,5"))?;
+    if !value.is_finite() {
+        return Err(format!("«{trimmed}» no es un número finito"));
+    }
+    if value <= 0.0 {
+        return Err("el espesor tiene que ser mayor que cero".to_string());
+    }
+    Ok(value)
+}
+
+/// Un número en mm con coma y sin ceros de sobra: «3», «1,5».
+fn mm_trimmed(value: f64) -> String {
+    crate::meridian_segments::trimmed(value, 2).replace('.', ",")
+}
+
+/// Aplica una cota escrita al nodo `index` de `wall`, con su misma x. Da el
+/// estado nuevo y, si el valor bajaba del mínimo de fundición y se subió a él,
+/// la nota que se enseña. Un texto que no vale o un nodo que no existe es
+/// `Err` y no cambia nada.
+fn write_thickness(
+    graph: &ThicknessGraph,
+    wall: ThicknessWall,
+    index: usize,
+    text: &str,
+) -> Result<(BladeThickness, Option<String>), String> {
+    let mm = parse_thickness_mm(text)?;
+    let Some(&[x, _]) = graph.nodes(wall).get(index) else {
+        return Err("ese nodo ya no existe".to_string());
+    };
+    let floor = node_floor(x);
+    let setup = graph
+        .setup
+        .with_node_moved(&graph.curves, wall, index, x, mm / 1000.0);
+    let note = (mm / 1000.0 < floor)
+        .then(|| format!("mínimo de fundición: {} mm", mm_trimmed(floor * 1000.0)));
+    Ok((setup, note))
+}
+
+/// Si se puede añadir un nodo en x sobre la curva de `wall`; si no, por qué.
+fn can_add(graph: &ThicknessGraph, wall: ThicknessWall, x: f64) -> Result<(), &'static str> {
+    if graph.nodes(wall).len() >= THICKNESS_NODES.1 {
+        return Err("máximo 8 nodos");
+    }
+    match graph.setup.with_node_added(&graph.curves, wall, x) {
+        Some(_) => Ok(()),
+        None => Err("demasiado cerca de otro nodo"),
+    }
+}
+
+/// Si se puede quitar el nodo `index`; si no, por qué.
+fn can_remove(
+    graph: &ThicknessGraph,
+    wall: ThicknessWall,
+    index: usize,
+) -> Result<(), &'static str> {
+    let count = graph.nodes(wall).len();
+    if index == 0 || index + 1 >= count {
+        return Err("los extremos no se quitan");
+    }
+    if count <= THICKNESS_NODES.0 {
+        return Err("mínimo 2 nodos");
+    }
+    Ok(())
+}
+
+/// Añade un nodo sobre la curva en x y lo apunta en el historial.
+fn add_node(
+    inputs: &mut Inputs,
+    history: &mut BetaHistory,
+    graph: &ThicknessGraph,
+    wall: ThicknessWall,
+    x: f64,
+    time: f64,
+) -> bool {
+    let Some(setup) = graph.setup.with_node_added(&graph.curves, wall, x) else {
+        return false;
+    };
+    inputs.blade.thickness = setup;
+    history.record(&BetaSnapshot::of(inputs), time);
+    true
+}
+
+/// Quita el nodo `index` y lo apunta en el historial.
+fn remove_node(
+    inputs: &mut Inputs,
+    history: &mut BetaHistory,
+    graph: &ThicknessGraph,
+    wall: ThicknessWall,
+    index: usize,
+    time: f64,
+) -> bool {
+    let Some(setup) = graph.setup.with_node_removed(&graph.curves, wall, index) else {
+        return false;
+    };
+    inputs.blade.thickness = setup;
+    history.record(&BetaSnapshot::of(inputs), time);
+    true
 }
 
 /// Color de la curva de una pared: la del álabe con «cubo = tapa».
@@ -383,7 +736,7 @@ fn drag_nodes(
         mm_text(shown[1]),
     );
     if shown[1] <= floor + 1e-9 {
-        status.push_str(&format!(" (mínimo de fundición: {} mm)", comma(floor, 1)));
+        status.push_str(&format!(" (mínimo de fundición: {} mm)", mm_trimmed(floor)));
     }
     Some(NodeDrag::Moving { status, written })
 }
@@ -567,5 +920,198 @@ mod tests {
     fn the_millimetres_have_a_decimal_comma() {
         assert_eq!(mm_text(3.2105), "3,21");
         assert_eq!(mm_text(6.0), "6,00");
+    }
+
+    // ----- Tarea 4: añadir, quitar y escribir la cota -----
+
+    #[test]
+    fn written_millimetres_take_comma_or_point() {
+        for text in ["4,5", "4.5", " 4,5 mm ", "4,5mm", "4,5 MM"] {
+            assert_eq!(parse_thickness_mm(text), Ok(4.5), "{text:?}");
+        }
+    }
+
+    #[test]
+    fn an_empty_or_garbled_value_is_refused_with_a_reason() {
+        for text in ["", "  ", "abc", "NaN", "-2", "inf", "0", "4,5,6"] {
+            let reason = parse_thickness_mm(text).expect_err(text);
+            assert!(!reason.is_empty(), "{text:?}");
+        }
+        // Y el nodo no cambia.
+        let graph = graph_of(BladeThickness::default());
+        assert!(write_thickness(&graph, ThicknessWall::Hub, 0, "abc").is_err());
+        assert!(write_thickness(&graph, ThicknessWall::Hub, 9, "4,5").is_err());
+    }
+
+    #[test]
+    fn a_written_value_under_the_minimum_is_raised_to_it() {
+        let graph = graph_of(BladeThickness::default());
+        let (setup, note) = write_thickness(&graph, ThicknessWall::Hub, 0, "1").unwrap();
+        let after = graph_of(setup);
+        assert!((after.nodes(ThicknessWall::Hub)[0][1] - 3.0).abs() < 1e-9);
+        assert_eq!(note.as_deref(), Some("mínimo de fundición: 3 mm"));
+        // El nodo de salida baja hasta 1,5 mm.
+        let (setup, note) = write_thickness(&graph, ThicknessWall::Hub, 2, "1").unwrap();
+        let after = graph_of(setup);
+        assert!((after.nodes(ThicknessWall::Hub)[2][1] - 1.5).abs() < 1e-9);
+        assert_eq!(note.as_deref(), Some("mínimo de fundición: 1,5 mm"));
+        // Un valor que vale no lleva nota y no mueve la x del nodo.
+        let (setup, note) = write_thickness(&graph, ThicknessWall::Hub, 1, "4,5").unwrap();
+        let after = graph_of(setup);
+        assert_eq!(note, None);
+        assert_eq!(
+            after.nodes(ThicknessWall::Hub)[1][0],
+            graph.nodes(ThicknessWall::Hub)[1][0]
+        );
+        assert!((after.nodes(ThicknessWall::Hub)[1][1] - 4.5).abs() < 1e-9);
+    }
+
+    #[test]
+    fn adding_a_node_keeps_the_curve_through_the_old_nodes() {
+        let (outcome, _) = b1_3d();
+        let graph = graph_of(BladeThickness::default());
+        let mut inputs = outcome.inputs.clone();
+        let mut history = BetaHistory::default();
+        assert!(add_node(
+            &mut inputs,
+            &mut history,
+            &graph,
+            ThicknessWall::Hub,
+            0.5,
+            1.0
+        ));
+        let after = graph_of(inputs.blade.thickness.clone());
+        let nodes = after.nodes(ThicknessWall::Hub);
+        assert_eq!(nodes.len(), 4);
+        for old in graph.nodes(ThicknessWall::Hub) {
+            assert!(nodes.contains(&old), "{old:?} sigue en la curva");
+        }
+        // El nodo nuevo cae sobre la curva de antes.
+        let new = nodes.iter().find(|n| n[0] == 0.5).expect("nodo en x = 0,5");
+        assert!((new[1] - 1000.0 * graph.curves.hub.at(0.5)).abs() < 1e-9);
+        assert_eq!(state_label(&after.setup), "editada");
+    }
+
+    #[test]
+    fn the_menu_refuses_the_ninth_node_and_the_end_nodes() {
+        let graph = graph_of(BladeThickness::default());
+        let hub = ThicknessWall::Hub;
+        assert_eq!(can_add(&graph, hub, 0.5), Ok(()));
+        assert!(can_add(&graph, hub, 0.0).is_err());
+        assert!(can_add(&graph, hub, 1.0).is_err());
+        assert!(can_add(&graph, hub, 0.935).is_err(), "encima de otro nodo");
+        assert!(can_remove(&graph, hub, 0).is_err());
+        assert!(can_remove(&graph, hub, 2).is_err());
+        assert_eq!(can_remove(&graph, hub, 1), Ok(()));
+        // Con 8 nodos no se añade el noveno.
+        let mut graph = graph;
+        for x in [0.1, 0.2, 0.3, 0.4, 0.5] {
+            let setup = graph
+                .setup
+                .with_node_added(&graph.curves, hub, x)
+                .expect("cabe");
+            graph = graph_of(setup);
+        }
+        assert_eq!(graph.nodes(hub).len(), 8);
+        assert_eq!(can_add(&graph, hub, 0.7), Err("máximo 8 nodos"));
+        // Con dos nodos solo quedan los extremos.
+        let two = graph_of(BladeThickness::default());
+        let two = two.setup.with_node_removed(&two.curves, hub, 1).unwrap();
+        let two = graph_of(two);
+        assert_eq!(two.nodes(hub).len(), 2);
+        assert!(can_remove(&two, hub, 0).is_err());
+        assert!(can_remove(&two, hub, 1).is_err());
+    }
+
+    #[test]
+    fn adding_and_removing_are_undoable() {
+        let (outcome, _) = b1_3d();
+        let graph = graph_of(BladeThickness::default());
+        let hub = ThicknessWall::Hub;
+        let mut history = BetaHistory::default();
+        history.follow(&BetaSnapshot::of(&outcome.inputs));
+        let mut inputs = outcome.inputs.clone();
+        assert!(add_node(&mut inputs, &mut history, &graph, hub, 0.5, 1.0));
+        let previous = history.undo(&BetaSnapshot::of(&inputs)).unwrap();
+        previous.apply(&mut inputs);
+        assert_eq!(inputs.blade.thickness, BladeThickness::default());
+        let next = history.redo(&BetaSnapshot::of(&inputs)).unwrap();
+        next.apply(&mut inputs);
+        let with_four = graph_of(inputs.blade.thickness.clone());
+        assert_eq!(with_four.nodes(hub).len(), 4);
+        // Quitar también se deshace.
+        assert!(remove_node(
+            &mut inputs,
+            &mut history,
+            &with_four,
+            hub,
+            1,
+            3.0
+        ));
+        assert_eq!(graph_of(inputs.blade.thickness.clone()).nodes(hub).len(), 3);
+        let previous = history.undo(&BetaSnapshot::of(&inputs)).unwrap();
+        previous.apply(&mut inputs);
+        assert_eq!(graph_of(inputs.blade.thickness.clone()).nodes(hub).len(), 4);
+    }
+
+    /// 400 px por unidad de x y 20 px por mm, con y hacia abajo.
+    fn to_screen(p: [f64; 2]) -> egui::Pos2 {
+        egui::pos2((p[0] * 400.0) as f32, (300.0 - p[1] * 20.0) as f32)
+    }
+
+    #[test]
+    fn the_pointer_finds_a_node_a_curve_point_or_nothing() {
+        let graph = graph_of(BladeThickness::default());
+        let hub = ThicknessWall::Hub;
+        let node = graph.nodes(hub)[2];
+        let near = to_screen(node) + egui::vec2(3.0, 2.0);
+        assert_eq!(target_at(&graph, &to_screen, near), Target::Node(hub, 2));
+        let on_curve = to_screen([0.5, graph.curves.hub.at(0.5) * 1000.0]) + egui::vec2(0.0, 4.0);
+        match target_at(&graph, &to_screen, on_curve) {
+            Target::Curve(wall, x) => {
+                assert_eq!(wall, hub);
+                assert!((x - 0.5).abs() < 0.02, "x = {x}");
+            }
+            other => panic!("se esperaba la curva y salió {other:?}"),
+        }
+        let far = to_screen([0.5, 1.0]);
+        assert_eq!(target_at(&graph, &to_screen, far), Target::Nothing);
+    }
+
+    #[test]
+    fn a_double_click_on_the_label_or_the_node_edits_that_node() {
+        let graph = graph_of(BladeThickness::default());
+        let hub = ThicknessWall::Hub;
+        let node = to_screen(graph.nodes(hub)[0]);
+        // La cota del nodo 0 va a su derecha y arriba.
+        let on_label = node + egui::vec2(20.0, -8.0);
+        assert_eq!(label_hit(&graph, &to_screen, on_label), Some((hub, 0)));
+        assert_eq!(label_hit(&graph, &to_screen, node), Some((hub, 0)));
+        assert_eq!(
+            label_hit(&graph, &to_screen, node + egui::vec2(0.0, 120.0)),
+            None
+        );
+    }
+
+    #[test]
+    fn the_view_draws_with_the_edit_box_open() {
+        let (outcome, camber) = b1_3d();
+        let mut inputs = outcome.inputs.clone();
+        let mut history = BetaHistory::default();
+        let ctx_id = egui::Id::unique("blade_thickness_editing");
+        egui::__run_test_ui(|ui| {
+            ui.ctx().data_mut(|data| {
+                data.insert_temp(
+                    ctx_id,
+                    Editing {
+                        wall: ThicknessWall::Hub,
+                        index: 0,
+                        text: "4,5".to_string(),
+                        opened: false,
+                    },
+                );
+            });
+            thickness_view(ui, &outcome, &mut inputs, &mut history, &camber);
+        });
     }
 }

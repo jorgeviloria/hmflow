@@ -8,7 +8,8 @@ pub(crate) mod renderer;
 use eframe::egui;
 use eframe::egui_wgpu;
 use hm_design::scene::{
-    BladeSurfaceSource, PieceId, SCENE_TOLERANCE_FINE_MM, Scene, SceneNotice, scene_from,
+    BladeSurfaceSource, PieceId, SCENE_TOLERANCE_DRAG_MM, SCENE_TOLERANCE_FINE_MM, Scene,
+    SceneNotice, scene_from,
 };
 
 use crate::model::{Inputs, Outcome};
@@ -86,6 +87,9 @@ impl Visibility {
     }
 }
 
+/// Ancho inicial del panel lateral del visor, en puntos de egui.
+pub(crate) const PANEL_DEFAULT_WIDTH: f32 = 420.0;
+
 /// Ancho de las curvas de borde, en puntos de egui.
 pub(crate) const CURVE_WIDTH_PX: f32 = 1.5;
 /// Lado del triedro, en puntos de egui.
@@ -119,17 +123,19 @@ fn visible_bounds(scene: &Scene, visibility: &Visibility) -> Option<([f32; 3], [
         })
 }
 
-/// Una línea por aviso: «{pieza}: {mensaje}». Sin meridiano, su motivo.
-fn notice_lines(scene: Option<&Result<Scene, String>>) -> Vec<String> {
-    match scene {
-        Some(Ok(scene)) => scene
-            .notices
-            .iter()
-            .map(|notice| format!("{}: {}", notice.piece.label(), notice.message))
-            .collect(),
-        Some(Err(error)) => vec![error.clone()],
-        None => Vec::new(),
-    }
+/// Una línea por aviso: «{pieza}: {mensaje}».
+/// El error de la última escena que no salió va primero.
+fn notice_lines(scene: Option<&Scene>, error: Option<&str>) -> Vec<String> {
+    error
+        .map(str::to_string)
+        .into_iter()
+        .chain(scene.into_iter().flat_map(|scene| {
+            scene
+                .notices
+                .iter()
+                .map(|notice| format!("{}: {}", notice.piece.label(), notice.message))
+        }))
+        .collect()
 }
 
 /// Franja plegable «Avisos (n)»; no se pinta sin avisos. Devuelve su título.
@@ -164,9 +170,19 @@ pub(crate) struct View3d {
     camera: Camera,
     /// Ya se encuadró la primera escena: un cambio de diseño no mueve la cámara.
     fitted: bool,
-    scene: Option<Result<Scene, String>>,
-    /// Las entradas de las que salió `scene`.
-    inputs: Option<Inputs>,
+    /// La última escena válida.
+    scene: Option<Scene>,
+    /// Por qué no salió la escena de las entradas vigentes; se sigue viendo
+    /// la última válida.
+    scene_error: Option<String>,
+    /// Entradas y tolerancia de la última construcción, salga o no.
+    built_from: Option<(Inputs, f64)>,
+    /// Hay que subir la escena a la tarjeta.
+    upload: bool,
+    /// Cuántas escenas se han construido; lo leen las pruebas.
+    pub(crate) builds: u32,
+    /// El visor está abierto en el panel lateral de Geometría y Meridiano.
+    pub(crate) panel_open: bool,
     /// Los estilos con que se subió la escena; cambian con el tema y el fondo.
     styles: Option<Styles>,
     visibility: Visibility,
@@ -190,14 +206,56 @@ impl View3d {
             camera: Camera::looking(StandardView::Isometric),
             fitted: false,
             scene: None,
-            inputs: None,
+            scene_error: None,
+            built_from: None,
+            upload: false,
+            builds: 0,
+            panel_open: false,
             styles: None,
             visibility: Visibility::default(),
             white_background: false,
         }
     }
 
-    pub(crate) fn show(&mut self, ui: &mut egui::Ui, outcome: &Outcome) {
+    /// Rehace la escena si cambió `outcome.inputs` o si toca pasar de la
+    /// malla de arrastre a la fina. Mientras se arrastra sin cambiar nada se
+    /// conserva la que hay.
+    pub(crate) fn sync(&mut self, outcome: &Outcome, dragging: bool) {
+        let tolerance = if dragging {
+            SCENE_TOLERANCE_DRAG_MM
+        } else {
+            SCENE_TOLERANCE_FINE_MM
+        };
+        let rebuild = match &self.built_from {
+            None => true,
+            Some((inputs, built)) => {
+                *inputs != outcome.inputs || (!dragging && *built != tolerance)
+            }
+        };
+        if !rebuild {
+            return;
+        }
+        self.builds += 1;
+        self.built_from = Some((outcome.inputs.clone(), tolerance));
+        match scene_of(outcome, tolerance) {
+            Ok(scene) => {
+                self.scene = Some(scene);
+                self.scene_error = None;
+                self.upload = true;
+            }
+            Err(error) => self.scene_error = Some(error),
+        }
+    }
+
+    /// La escena que se ve es la de arrastre.
+    pub(crate) fn is_preview(&self) -> bool {
+        self.scene
+            .as_ref()
+            .is_some_and(|scene| scene.tolerance == SCENE_TOLERANCE_DRAG_MM)
+    }
+
+    /// Dibuja la última escena de [`View3d::sync`].
+    pub(crate) fn show(&mut self, ui: &mut egui::Ui) {
         let Some(renderer) = self.renderer.as_mut() else {
             let reason = self.gpu_error.as_deref().unwrap_or("motivo desconocido");
             ui.label(format!(
@@ -206,12 +264,7 @@ impl View3d {
             ));
             return;
         };
-        let mut upload = false;
-        if self.inputs.as_ref() != Some(&outcome.inputs) {
-            self.scene = Some(scene_of(outcome, SCENE_TOLERANCE_FINE_MM));
-            self.inputs = Some(outcome.inputs.clone());
-            upload = true;
-        }
+        let mut upload = std::mem::take(&mut self.upload);
 
         let action = bar(
             ui,
@@ -219,7 +272,10 @@ impl View3d {
             &mut self.visibility,
             &mut self.white_background,
         );
-        notice_strip(ui, &notice_lines(self.scene.as_ref()));
+        notice_strip(
+            ui,
+            &notice_lines(self.scene.as_ref(), self.scene_error.as_deref()),
+        );
 
         let palette = if self.white_background {
             &theme::LIGHT
@@ -242,20 +298,17 @@ impl View3d {
                 notices: Vec::new(),
                 tolerance: SCENE_TOLERANCE_FINE_MM,
             };
-            let scene = match &self.scene {
-                Some(Ok(scene)) => scene,
-                _ => &empty,
-            };
+            let scene = self.scene.as_ref().unwrap_or(&empty);
             renderer.set_scene(scene, &|id| style_of(&styles, id), styles.curve);
         }
 
         let (rect, response) =
             ui.allocate_exact_size(ui.available_size(), egui::Sense::click_and_drag());
         let viewport = [rect.width(), rect.height()];
-        let bounds = match &self.scene {
-            Some(Ok(scene)) => visible_bounds(scene, &self.visibility),
-            _ => None,
-        };
+        let bounds = self
+            .scene
+            .as_ref()
+            .and_then(|scene| visible_bounds(scene, &self.visibility));
         if !self.fitted && bounds.is_some() {
             self.camera.fit(bounds, viewport);
             self.fitted = true;
@@ -288,6 +341,15 @@ impl View3d {
             );
         }
         paint_triad(ui.painter(), rect, &self.camera, palette);
+        if self.is_preview() {
+            ui.painter().text(
+                rect.right_top() + egui::vec2(-8.0, 8.0),
+                egui::Align2::RIGHT_TOP,
+                "actualizando",
+                egui::FontId::proportional(12.0),
+                palette.text_weak,
+            );
+        }
     }
 }
 
@@ -590,7 +652,7 @@ mod tests {
             ],
             tolerance: SCENE_TOLERANCE_FINE_MM,
         };
-        let lines = notice_lines(Some(&Ok(scene)));
+        let lines = notice_lines(Some(&scene), None);
         assert_eq!(lines, ["Cubo: uno", "Álabe 2: dos"]);
         let mut title = None;
         egui::__run_test_ui(|ui| title = notice_strip(ui, &lines));
@@ -601,10 +663,93 @@ mod tests {
     }
 
     #[test]
+    fn sync_rebuilds_only_when_the_inputs_change() {
+        let mut view = View3d::new(None);
+        let outcome = outcome();
+        view.sync(&outcome, false);
+        view.sync(&outcome, false);
+        assert_eq!(view.builds, 1);
+        let mut changed = outcome.clone();
+        changed.inputs.meridian.edge_shroud = "0.1".to_string();
+        view.sync(&changed, false);
+        assert_eq!(view.builds, 2);
+    }
+
+    #[test]
+    fn dragging_uses_the_coarse_mesh_and_release_the_fine_one() {
+        let mut view = View3d::new(None);
+        let outcome = outcome();
+        view.sync(&outcome, true);
+        assert_eq!(
+            view.scene.as_ref().unwrap().tolerance,
+            SCENE_TOLERANCE_DRAG_MM
+        );
+        assert!(view.is_preview());
+        view.sync(&outcome, false);
+        assert_eq!(
+            view.scene.as_ref().unwrap().tolerance,
+            SCENE_TOLERANCE_FINE_MM
+        );
+        assert!(!view.is_preview());
+    }
+
+    #[test]
+    fn a_failed_scene_keeps_the_last_good_one() {
+        let mut view = View3d::new(None);
+        let good = outcome();
+        view.sync(&good, false);
+        let before = view.scene.clone().unwrap();
+        let mut bad = good.clone();
+        bad.inputs.meridian.hub_diameter = "1000 mm".to_string();
+        let error = scene_of(&bad, SCENE_TOLERANCE_FINE_MM).unwrap_err();
+        view.sync(&bad, false);
+        assert_eq!(view.scene.as_ref(), Some(&before));
+        let lines = notice_lines(view.scene.as_ref(), view.scene_error.as_deref());
+        assert!(lines.contains(&error), "{lines:?}");
+    }
+
+    #[test]
+    fn a_new_scene_does_not_move_the_camera() {
+        let mut view = View3d::new(None);
+        let outcome = outcome();
+        view.sync(&outcome, false);
+        view.camera.orbit(40.0, -25.0);
+        let camera = view.camera.clone();
+        let mut changed = outcome.clone();
+        changed.inputs.meridian.edge_shroud = "0.1".to_string();
+        view.sync(&changed, false);
+        assert_eq!(view.builds, 2);
+        assert_eq!(view.camera, camera);
+    }
+
+    /// `cargo test --release scene_timing -- --ignored --nocapture`
+    #[test]
+    #[ignore]
+    fn scene_timing() {
+        use hm_design::blade_setup::BladeShape;
+        let mut inputs = Inputs::default();
+        inputs.blade.shape = BladeShape::Free3D;
+        let outcome = compute(&inputs, &Basis::default()).unwrap();
+        for (name, tolerance) in [
+            ("fina", SCENE_TOLERANCE_FINE_MM),
+            ("arrastre", SCENE_TOLERANCE_DRAG_MM),
+        ] {
+            scene_of(&outcome, tolerance).unwrap();
+            let start = std::time::Instant::now();
+            for _ in 0..20 {
+                scene_of(&outcome, tolerance).unwrap();
+            }
+            let ms = start.elapsed().as_secs_f64() * 1000.0 / 20.0;
+            println!("scene_of {name} ({tolerance} mm): {ms:.2} ms");
+        }
+    }
+
+    #[test]
     fn without_a_render_state_the_view_reports_it() {
         let mut view = View3d::new(None);
         assert!(view.gpu_error.is_some());
         let outcome = outcome();
-        egui::__run_test_ui(|ui| view.show(ui, &outcome));
+        view.sync(&outcome, false);
+        egui::__run_test_ui(|ui| view.show(ui));
     }
 }

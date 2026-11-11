@@ -212,42 +212,69 @@ impl eframe::App for App {
                 ui.selectable_value(&mut self.tab, Tab::Geometry, "Geometría");
                 ui.selectable_value(&mut self.tab, Tab::Meridian, "Meridiano");
                 ui.selectable_value(&mut self.tab, Tab::Model3d, "Modelo 3D");
+                if matches!(self.tab, Tab::Geometry | Tab::Meridian) {
+                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                        ui.toggle_value(&mut self.view3d.panel_open, "3D")
+                            .on_hover_text("Visor 3D en un panel a la derecha");
+                    });
+                }
             });
             ui.separator();
             let Some(outcome) = &self.outcome else {
                 ui.label("Sin diseño todavía: corrige las entradas.");
                 return;
             };
-            match self.tab {
-                Tab::Summary => {
-                    egui::ScrollArea::vertical().show(ui, |ui| {
-                        summary(ui, outcome, &mut self.selected);
-                    });
-                }
-                Tab::Curves => curves(ui, outcome),
-                Tab::Geometry => {
-                    if blade_beta::blade_beta_view(
-                        ui,
-                        outcome,
-                        &mut self.session.inputs,
-                        &mut self.beta_history,
-                    ) {
-                        meridian_edited = true;
-                    }
-                    plan_view(ui, outcome);
-                }
-                Tab::Meridian => {
-                    if meridian_view(
-                        ui,
-                        outcome,
-                        &mut self.session.inputs.meridian,
-                        &mut self.meridian_history,
-                    ) {
-                        meridian_edited = true;
-                    }
-                }
-                Tab::Model3d => self.view3d.show(ui, outcome),
+            let side_panel =
+                self.view3d.panel_open && matches!(self.tab, Tab::Geometry | Tab::Meridian);
+            if side_panel || self.tab == Tab::Model3d {
+                let dragging = ui.input(|input| input.pointer.primary_down());
+                self.view3d.sync(outcome, dragging);
             }
+            let mut free = ui.available_rect_before_wrap();
+            if side_panel {
+                let panel = egui::Panel::right("view3d_panel")
+                    .resizable(true)
+                    .default_size(view3d::PANEL_DEFAULT_WIDTH)
+                    .show(ui, |ui| self.view3d.show(ui));
+                free.max.x = free.max.x.min(panel.response.rect.min.x);
+            }
+            // Un hijo con lo que deja libre el panel, recortado: una vista con
+            // ancho mínimo mayor que el hueco se corta en vez de pintar encima
+            // del panel; el divisor del panel deja ensancharla.
+            let clip = ui.clip_rect().intersect(free);
+            ui.scope_builder(egui::UiBuilder::new().max_rect(free), |ui| {
+                ui.set_clip_rect(clip);
+                match self.tab {
+                    Tab::Summary => {
+                        egui::ScrollArea::vertical().show(ui, |ui| {
+                            summary(ui, outcome, &mut self.selected);
+                        });
+                    }
+                    Tab::Curves => curves(ui, outcome),
+                    Tab::Geometry => {
+                        if blade_beta::blade_beta_view(
+                            ui,
+                            outcome,
+                            &mut self.session.inputs,
+                            &mut self.beta_history,
+                        ) {
+                            meridian_edited = true;
+                        }
+                        plan_view(ui, outcome);
+                    }
+                    Tab::Meridian => {
+                        if meridian_view(
+                            ui,
+                            outcome,
+                            &mut self.session.inputs.meridian,
+                            &mut self.meridian_history,
+                        ) {
+                            meridian_edited = true;
+                        }
+                    }
+                    Tab::Model3d => self.view3d.show(ui),
+                }
+            });
         });
         // Fuera del panel, que tiene prestado el resultado: sin recalcular,
         // la barra diría «entradas inválidas» tras cada edición del meridiano.

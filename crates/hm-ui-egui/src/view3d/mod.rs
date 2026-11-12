@@ -957,21 +957,34 @@ mod tests {
     #[test]
     #[ignore]
     fn scene_timing() {
+        use hm_design::blade_edges::LeadingKind;
         use hm_design::blade_setup::BladeShape;
         let mut inputs = Inputs::default();
         inputs.blade.shape = BladeShape::Free3D;
-        let outcome = compute(&inputs, &Basis::default()).unwrap();
-        for (name, tolerance) in [
-            ("fina", SCENE_TOLERANCE_FINE_MM),
-            ("arrastre", SCENE_TOLERANCE_DRAG_MM),
-        ] {
-            scene_of(&outcome, tolerance).unwrap();
-            let start = std::time::Instant::now();
-            for _ in 0..20 {
+        let first = compute(&inputs, &Basis::default()).unwrap();
+        let r = &first.result;
+        let (_, e, _) = hm_design::mechanics::blade_thicknesses(
+            r.selection.blade_count,
+            r.u2.si,
+            r.nq,
+            r.d2.si,
+        )
+        .unwrap();
+        for kind in [LeadingKind::Blunt, LeadingKind::Ellipse, LeadingKind::Wedge] {
+            inputs.blade.edges = inputs.blade.edges.with_leading_kind(kind, e, e);
+            let outcome = compute(&inputs, &Basis::default()).unwrap();
+            for (name, tolerance) in [
+                ("fina", SCENE_TOLERANCE_FINE_MM),
+                ("arrastre", SCENE_TOLERANCE_DRAG_MM),
+            ] {
                 scene_of(&outcome, tolerance).unwrap();
+                let start = std::time::Instant::now();
+                for _ in 0..20 {
+                    scene_of(&outcome, tolerance).unwrap();
+                }
+                let ms = start.elapsed().as_secs_f64() * 1000.0 / 20.0;
+                println!("scene_of {kind:?} {name} ({tolerance} mm): {ms:.2} ms");
             }
-            let ms = start.elapsed().as_secs_f64() * 1000.0 / 20.0;
-            println!("scene_of {name} ({tolerance} mm): {ms:.2} ms");
         }
     }
 

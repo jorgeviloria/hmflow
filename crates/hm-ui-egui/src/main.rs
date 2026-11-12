@@ -161,6 +161,13 @@ impl App {
             chart.store(&cc.egui_ctx);
         }
         app.recompute();
+        // Solo para las capturas: `HMF_LEADING=blunt|ellipse|wedge`. Necesita el
+        // espesor del diseño, así que va después del primer cálculo.
+        if let Some(outcome) = app.outcome.as_ref()
+            && blade_beta::seed_leading(&mut app.session.inputs, outcome)
+        {
+            app.recompute();
+        }
         app
     }
 

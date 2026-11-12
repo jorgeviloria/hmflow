@@ -552,6 +552,7 @@ mod blades {
 
 mod thick {
     use hm_design::blade_camber::{BladeCamber, camber_for_design};
+    use hm_design::blade_edges::{BladeEdges, LeadingKind};
     use hm_design::blade_setup::{BladeSetup, BladeShape};
     use hm_design::blade_solid::{BladeSolid, blade_solid_for_design};
     use hm_design::geometry::{DEFAULT_INCIDENCE_DEG, geometry};
@@ -585,6 +586,10 @@ mod thick {
     }
 
     fn thick(shape: BladeShape, streamlines: u8) -> Thick {
+        thick_with(shape, streamlines, BladeEdges::default())
+    }
+
+    fn thick_with(shape: BladeShape, streamlines: u8, edges: BladeEdges) -> Thick {
         let input = b1_input();
         let result = design(&input).unwrap();
         let impeller = geometry(&input, &result).unwrap().impeller;
@@ -592,6 +597,7 @@ mod thick {
         let setup = BladeSetup {
             shape,
             streamlines,
+            edges,
             ..BladeSetup::default()
         };
         let camber = camber_for_design(&result, &impeller, &model, &setup, DEFAULT_INCIDENCE_DEG)
@@ -801,7 +807,8 @@ mod thick {
             assert_eq!(mesh.normals.len(), mesh.vertices.len());
         }
         assert_eq!(BladeFace::Pressure.label(), "Cara de presión");
-        assert_eq!(BladeFace::TrailingEdge.label(), "Canto de salida");
+        assert_eq!(BladeFace::Nose.label(), "Nariz");
+        assert_eq!(BladeFace::TrailingEdge.label(), "Salida");
     }
 
     #[test]
@@ -811,7 +818,7 @@ mod thick {
         let piece = blade(&scene, 0);
         let pressure = piece.face(BladeFace::Pressure).unwrap();
         let suction = piece.face(BladeFace::Suction).unwrap();
-        let leading = piece.face(BladeFace::LeadingEdge).unwrap();
+        let leading = piece.face(BladeFace::Nose).unwrap();
         let trailing = piece.face(BladeFace::TrailingEdge).unwrap();
         let across = leading.vertices.len() / 3;
         assert_eq!(trailing.vertices.len(), 3 * across);
@@ -890,5 +897,320 @@ mod thick {
             PieceId::BladeMean { index: 0 }.label(),
             "Superficie media 1"
         );
+    }
+
+    /// B1 con esa nariz por defecto (Lp = 5·e, punta 0,1·e en el afilado), con
+    /// el espesor de la entrada del sólido con romo.
+    fn nosed(shape: BladeShape, kind: LeadingKind) -> Thick {
+        let e = thick(shape, 5).solid.lines[0].true_thickness[0];
+        thick_with(
+            shape,
+            5,
+            BladeEdges::default().with_leading_kind(kind, e, e),
+        )
+    }
+
+    /// El área de cada triángulo de la pieza, mm².
+    fn areas(mesh: &hm_geometry::mesh::TriangleMesh) -> Vec<f64> {
+        mesh.triangles
+            .iter()
+            .map(|t| {
+                let [a, b, c] = t.map(|i| mesh.vertices[i as usize]);
+                let u: [f64; 3] = std::array::from_fn(|k| b[k] - a[k]);
+                let v: [f64; 3] = std::array::from_fn(|k| c[k] - a[k]);
+                let n = [
+                    u[1] * v[2] - u[2] * v[1],
+                    u[2] * v[0] - u[0] * v[2],
+                    u[0] * v[1] - u[1] * v[0],
+                ];
+                0.5 * (n[0] * n[0] + n[1] * n[1] + n[2] * n[2]).sqrt()
+            })
+            .collect()
+    }
+
+    #[test]
+    fn blunt_scene_is_unchanged() {
+        // Con romo, la cara «Nariz» son las tres filas de la etapa 1 y las
+        // 12 aristas son las de siempre. (La malla, las normales, las
+        // aristas y la huella son idénticas a las del commit anterior: se
+        // comprobó bit a bit al hacer este cambio.)
+        for shape in [BladeShape::Free3D, BladeShape::Ruled3D] {
+            let case = thick(shape, 5);
+            let reference = scene(&case, 0.05);
+            // Con romo, ninguna cota importa.
+            let noisy = thick_with(
+                shape,
+                5,
+                BladeEdges {
+                    leading: LeadingKind::Blunt,
+                    leading_hub: hm_design::blade_edges::LeadingDims {
+                        lp: 0.05,
+                        tip: 0.002,
+                        asymmetry: 1.0,
+                    },
+                    leading_shroud: hm_design::blade_edges::LeadingDims::default(),
+                },
+            );
+            assert_eq!(
+                scene(&noisy, 0.05).fingerprint(),
+                reference.fingerprint(),
+                "{shape:?}"
+            );
+            let piece = blade(&reference, 0);
+            let nose = piece.face(BladeFace::Nose).unwrap();
+            let pressure = piece.face(BladeFace::Pressure).unwrap();
+            let across = nose.vertices.len() / 3;
+            assert_eq!(nose.vertices[..across], pressure.vertices[..across]);
+            assert_eq!(piece.curves[6].points.len(), 3);
+            assert_eq!(piece.curves[7].points.len(), 3);
+        }
+    }
+
+    #[test]
+    fn a_nosed_blade_is_closed_with_outward_normals() {
+        for shape in [BladeShape::Free3D, BladeShape::Ruled3D] {
+            for kind in [LeadingKind::Ellipse, LeadingKind::Wedge] {
+                let case = nosed(shape, kind);
+                for tolerance in [0.05, 0.5] {
+                    let scene = scene(&case, tolerance);
+                    assert!(scene.notices.is_empty(), "{:?}", scene.notices);
+                    for index in [0, case.blades - 1] {
+                        let mesh = &blade(&scene, index).surface;
+                        assert_eq!(
+                            mesh.open_edges(1e-6),
+                            0,
+                            "{shape:?} {kind:?}, {tolerance} mm, álabe {index}"
+                        );
+                        assert!(
+                            mesh.signed_volume() > 0.0,
+                            "{shape:?} {kind:?}: volumen {}",
+                            mesh.signed_volume()
+                        );
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn asymmetry_one_with_zero_tip_is_closed_and_has_no_degenerate_triangles() {
+        let e = thick(BladeShape::Free3D, 5).solid.lines[0].true_thickness[0];
+        let cases = [
+            // La elipse y el afilado sin punta: la punta es un solo punto.
+            (LeadingKind::Ellipse, 0.0, 0.0),
+            (LeadingKind::Wedge, 0.0, 0.0),
+            // Asimetría 1 con punta 0: las dos caras se tocan en s = 0.
+            (LeadingKind::Wedge, 0.0, 1.0),
+            // Y con punta: la presión pasa por la línea media.
+            (LeadingKind::Wedge, 0.1 * e, 1.0),
+        ];
+        for shape in [BladeShape::Free3D, BladeShape::Ruled3D] {
+            for (kind, tip, asymmetry) in cases {
+                let dims = hm_design::blade_edges::LeadingDims {
+                    lp: 5.0 * e,
+                    tip,
+                    asymmetry,
+                };
+                let case = thick_with(
+                    shape,
+                    5,
+                    BladeEdges {
+                        leading: kind,
+                        leading_hub: dims,
+                        leading_shroud: dims,
+                    },
+                );
+                let scene = scene(&case, 0.05);
+                assert!(scene.notices.is_empty(), "{:?}", scene.notices);
+                let mesh = &blade(&scene, 0).surface;
+                let label = format!("{shape:?} {kind:?} tip {tip} a {asymmetry}");
+                assert_eq!(mesh.open_edges(1e-6), 0, "{label}");
+                assert!(mesh.signed_volume() > 0.0, "{label}");
+                let smallest = areas(mesh).into_iter().fold(f64::MAX, f64::min);
+                assert!(smallest > 1.0e-9, "{label}: triángulo de área {smallest}");
+                assert!(
+                    mesh.normals.iter().all(|n| n.iter().all(|v| v.is_finite())),
+                    "{label}: normal que no es un número"
+                );
+            }
+        }
+    }
+
+    /// El volumen que quita la nariz, mm³: en cada celda de la superficie
+    /// media entre dos líneas vecinas y dos filas de la nariz, su área por
+    /// lo que falta de espesor respecto al del álabe con romo (la media de
+    /// las cuatro esquinas). El espesor de la nariz es el medido entre sus
+    /// dos caras en cada fila.
+    fn removed_by_the_nose(case: &Thick, blunt: &Thick) -> f64 {
+        let point = |p: &hm_design::blade_solid::SolidPoint| {
+            [
+                p.r * p.theta.cos() * 1000.0,
+                p.r * p.theta.sin() * 1000.0,
+                p.z * 1000.0,
+            ]
+        };
+        let sub = |a: [f64; 3], b: [f64; 3]| [a[0] - b[0], a[1] - b[1], a[2] - b[2]];
+        let length = |a: [f64; 3]| (a[0] * a[0] + a[1] * a[1] + a[2] * a[2]).sqrt();
+        let cross = |a: [f64; 3], b: [f64; 3]| {
+            [
+                a[1] * b[2] - a[2] * b[1],
+                a[2] * b[0] - a[0] * b[2],
+                a[0] * b[1] - a[1] * b[0],
+            ]
+        };
+        let half_area =
+            |a: [f64; 3], b: [f64; 3], c: [f64; 3]| 0.5 * length(cross(sub(b, a), sub(c, a)));
+        // Lo que falta de espesor en la fila `j` de la línea `k`, mm.
+        let missing = |k: usize, j: usize| {
+            let row = &case.solid.lines[k].nose[j];
+            let wedge = length(sub(point(&row[0]), point(&row[2])));
+            // El espesor del romo, medido igual (entre las dos caras de su
+            // primera estación) y no el real sobre la normal.
+            let full = &blunt.solid.lines[k];
+            length(sub(point(&full.pressure[0]), point(&full.suction[0]))) - wedge
+        };
+        let lines = case.solid.lines.len();
+        let rows = case.solid.lines[0].nose.len();
+        let mut total = 0.0;
+        for k in 0..lines - 1 {
+            for j in 0..rows - 1 {
+                let corner = |line: usize, row: usize| point(&case.solid.lines[line].nose[row][1]);
+                let (a, b) = (corner(k, j), corner(k, j + 1));
+                let (c, d) = (corner(k + 1, j + 1), corner(k + 1, j));
+                let area = half_area(a, b, c) + half_area(a, c, d);
+                let mean = 0.25
+                    * (missing(k, j)
+                        + missing(k, j + 1)
+                        + missing(k + 1, j)
+                        + missing(k + 1, j + 1));
+                total += area * mean;
+            }
+        }
+        total
+    }
+
+    /// Una malla más fina que la de la escena: el volumen de dos mallas
+    /// muestreadas por separado difiere en el orden de (tolerancia × área), y
+    /// a 0,05 mm eso es el 0,8 % del álabe.
+    const FINE: f64 = 0.01;
+
+    #[test]
+    fn the_nose_volume_is_the_blunt_volume_minus_the_removed_one() {
+        for shape in [BladeShape::Free3D, BladeShape::Ruled3D] {
+            let blunt = thick(shape, 5);
+            let blunt_volume = blade(&scene(&blunt, FINE), 0).surface.signed_volume();
+            for kind in [LeadingKind::Ellipse, LeadingKind::Wedge] {
+                let case = nosed(shape, kind);
+                let volume = blade(&scene(&case, FINE), 0).surface.signed_volume();
+                let removed = removed_by_the_nose(&case, &blunt);
+                assert!(removed > 0.0);
+                // ± 0,5 % del volumen del álabe con romo en la libre. La
+                // reglada es la recta de cubo a tapa y no pasa por las líneas
+                // intermedias (se apartan hasta 8 mm): su referencia con las
+                // cinco líneas admite el doble.
+                let tolerance = if shape == BladeShape::Ruled3D {
+                    0.01
+                } else {
+                    0.005
+                };
+                assert!(
+                    ((blunt_volume - volume) - removed).abs() < tolerance * blunt_volume,
+                    "{shape:?} {kind:?}: romo {blunt_volume}, con nariz {volume}, quitado {removed} mm³"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn there_are_twelve_edges_and_the_nose_ones_end_on_the_joint() {
+        for kind in [LeadingKind::Ellipse, LeadingKind::Wedge] {
+            let case = nosed(BladeShape::Free3D, kind);
+            let scene = scene(&case, FINE);
+            let piece = blade(&scene, 0);
+            assert_eq!(piece.curves.len(), 12);
+            // [4] unión de presión, [5] unión de succión, [6] contorno del
+            // cubo y [7] contorno de la tapa de la nariz.
+            let (pressure_joint, suction_joint) = (&piece.curves[4], &piece.curves[5]);
+            let (hub, shroud) = (&piece.curves[6], &piece.curves[7]);
+            // Las uniones empiezan donde empiezan las caras de presión y
+            // succión a lo largo, y van de cubo a tapa.
+            assert_eq!(piece.curves[0].points[0], pressure_joint.points[0]);
+            assert_eq!(
+                piece.curves[1].points[0],
+                *pressure_joint.points.last().unwrap()
+            );
+            assert_eq!(piece.curves[2].points[0], suction_joint.points[0]);
+            assert_eq!(
+                piece.curves[3].points[0],
+                *suction_joint.points.last().unwrap()
+            );
+            // Los contornos de la nariz van de la unión de presión a la de
+            // succión por la punta.
+            for (outline, col) in [(hub, 0), (shroud, pressure_joint.points.len() - 1)] {
+                assert_eq!(outline.points[0], pressure_joint.points[col]);
+                assert_eq!(*outline.points.last().unwrap(), suction_joint.points[col]);
+                assert!(outline.points.len() > 2 * 16, "{}", outline.points.len());
+            }
+            // La salida sigue en las cuatro últimas.
+            assert_eq!(piece.curves[8].points.len(), pressure_joint.points.len());
+            assert_eq!(piece.curves[10].points.len(), 3);
+        }
+    }
+
+    #[test]
+    fn the_joint_points_are_shared_bit_for_bit() {
+        for shape in [BladeShape::Free3D, BladeShape::Ruled3D] {
+            let case = nosed(shape, LeadingKind::Ellipse);
+            let scene = scene(&case, 0.05);
+            let piece = blade(&scene, 0);
+            let nose = piece.face(BladeFace::Nose).unwrap();
+            let pressure = piece.face(BladeFace::Pressure).unwrap();
+            let suction = piece.face(BladeFace::Suction).unwrap();
+            let cols = piece.curves[4].points.len();
+            // La primera fila de la nariz es la primera de la presión y la
+            // última, la primera de la succión.
+            assert_eq!(nose.vertices[..cols], pressure.vertices[..cols]);
+            assert_eq!(
+                nose.vertices[nose.vertices.len() - cols..],
+                suction.vertices[..cols]
+            );
+            // Y las bandas llevan los mismos puntos de unión.
+            for (band, col) in [(BladeFace::HubBand, 0), (BladeFace::ShroudBand, cols - 1)] {
+                let band = piece.face(band).unwrap();
+                for joint in [pressure.vertices[col], suction.vertices[col]] {
+                    assert!(
+                        band.vertices.contains(&joint),
+                        "{shape:?}: la banda no lleva el punto de unión {joint:?}"
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn the_faces_tree_names_nose_and_exit() {
+        let labels: Vec<&str> = BladeFace::ALL.map(BladeFace::label).to_vec();
+        assert_eq!(
+            labels,
+            [
+                "Cara de presión",
+                "Cara de succión",
+                "Banda del cubo",
+                "Banda de la tapa",
+                "Nariz",
+                "Salida"
+            ]
+        );
+        for kind in [LeadingKind::Blunt, LeadingKind::Ellipse, LeadingKind::Wedge] {
+            let case = thick_with(
+                BladeShape::Free3D,
+                5,
+                BladeEdges::default().with_leading_kind(kind, 0.008, 0.008),
+            );
+            let scene = scene(&case, 0.05);
+            let piece = blade(&scene, 0);
+            let names: Vec<BladeFace> = piece.faces.iter().map(|(face, _)| *face).collect();
+            assert_eq!(names, BladeFace::ALL);
+        }
     }
 }

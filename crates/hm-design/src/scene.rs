@@ -72,14 +72,15 @@ impl PieceId {
 }
 
 /// Las seis caras de un álabe con espesor, en el orden en que se tejen y se
-/// unen en la pieza.
+/// unen en la pieza. `Nose` es la entrada: con romo, las tres filas de la
+/// etapa 1; con elipse o afilado, la nariz entera de una unión a la otra.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum BladeFace {
     Pressure,
     Suction,
     HubBand,
     ShroudBand,
-    LeadingEdge,
+    Nose,
     TrailingEdge,
 }
 
@@ -90,7 +91,7 @@ impl BladeFace {
         Self::Suction,
         Self::HubBand,
         Self::ShroudBand,
-        Self::LeadingEdge,
+        Self::Nose,
         Self::TrailingEdge,
     ];
 
@@ -102,8 +103,8 @@ impl BladeFace {
             Self::Suction => "Cara de succión",
             Self::HubBand => "Banda del cubo",
             Self::ShroudBand => "Banda de la tapa",
-            Self::LeadingEdge => "Canto de entrada",
-            Self::TrailingEdge => "Canto de salida",
+            Self::Nose => "Nariz",
+            Self::TrailingEdge => "Salida",
         }
     }
 }
@@ -564,10 +565,18 @@ fn woven_blades(
 
 /// Los `blade_count` álabes con espesor: cada uno, una pieza cerrada de seis
 /// caras tejidas por separado (presión, succión, banda del cubo, banda de la
-/// tapa, canto de entrada y canto de salida) y unidas sin fundirse: ningún
-/// triángulo cruza la arista entre una cara y otra, y la etapa 2 puede
-/// cambiar el canto de entrada sin rehacer las otras cinco. El álabe 0 sale
-/// con `offset = 0` y los demás, girados `−2π·k/Z`.
+/// tapa, nariz y salida) y unidas sin fundirse: ningún triángulo cruza la
+/// arista entre una cara y otra. El álabe 0 sale con `offset = 0` y los demás,
+/// girados `−2π·k/Z`.
+///
+/// **La nariz.** Con romo son las tres filas de la etapa 1 (presión, medio y
+/// succión de la primera estación). Con elipse o afilado, las filas de
+/// [`SolidLine::nose`] de la unión de presión por la punta a la unión de
+/// succión, con la fila del medio de la punta; si presión, medio y succión
+/// coinciden en la punta (punta 0), las filas repetidas se quitan. Las bandas
+/// del cubo y de la tapa recorren las filas de la nariz y las del cuerpo, y
+/// si la primera fila de la banda es un solo punto, un abanico de dos
+/// triángulos la cierra. Las caras de presión y succión empiezan en la unión.
 ///
 /// Las seis rejillas comparten estaciones y columnas, y sus puntos de borde,
 /// bit a bit: la malla resultante es cerrada. Las estaciones son las de
@@ -640,7 +649,7 @@ fn thick_pieces(
         ),
         _ => {
             let psi: Vec<f64> = lines.iter().map(|line| line.psi).collect();
-            free_columns(&psi, &faces, &[0, 2], &stations, tolerance)
+            free_columns(&psi, &faces, &[0, 2], &stations, tolerance, None)
         }
     };
     let notice = missed.map(|deviation| {
@@ -652,6 +661,78 @@ fn thick_pieces(
     let rows = stations.len();
     let (pressure, middle, suction) = (&grids[0], &grids[1], &grids[2]);
 
+    // La nariz: las tres rejillas de sus filas (presión, medio y succión), con
+    // las mismas columnas que el cuerpo; su última fila es la primera
+    // estación de las caras, bit a bit.
+    let nose_len = lines[0].nose.len();
+    if lines.iter().any(|line| line.nose.len() != nose_len) || nose_len == 1 {
+        return Err(
+            "las narices de las líneas de corriente no tienen las mismas filas".to_string(),
+        );
+    }
+    let nose_grids: Vec<Vec<[f64; 3]>> = if nose_len == 0 {
+        Vec::new()
+    } else {
+        let nose_faces: Vec<Vec<Vec<[f64; 3]>>> = (0..3)
+            .map(|side| {
+                lines
+                    .iter()
+                    .map(|line| {
+                        line.nose
+                            .iter()
+                            .map(|row| [row[side].z, row[side].r, row[side].theta])
+                            .collect()
+                    })
+                    .collect()
+            })
+            .collect();
+        let nose_stations: Vec<usize> = (0..nose_len).collect();
+        match camber.shape {
+            BladeShape::Ruled3D => nose_faces
+                .iter()
+                .map(|face| {
+                    let in_mm: Vec<Vec<[f64; 3]>> = face
+                        .iter()
+                        .map(|line| line.iter().map(|p| polar_to_mm(p[0], p[1], p[2])).collect())
+                        .collect();
+                    ruled_exact(&in_mm, &nose_stations)
+                })
+                .collect(),
+            _ => {
+                let psi: Vec<f64> = lines.iter().map(|line| line.psi).collect();
+                free_columns(
+                    &psi,
+                    &nose_faces,
+                    &[],
+                    &nose_stations,
+                    tolerance,
+                    Some(cols),
+                )
+                .1
+            }
+        }
+    };
+    let grid_row = |grid: &[[f64; 3]], row: usize| grid[row * cols..(row + 1) * cols].to_vec();
+    // Las filas de la cara de la nariz, de la presión a la succión.
+    let mut cap: Vec<Vec<[f64; 3]>> = Vec::new();
+    if nose_len == 0 {
+        cap.extend([
+            grid_row(pressure, 0),
+            grid_row(middle, 0),
+            grid_row(suction, 0),
+        ]);
+    } else {
+        let mut sequence: Vec<Vec<[f64; 3]>> = Vec::new();
+        sequence.extend((1..nose_len).rev().map(|k| grid_row(&nose_grids[0], k)));
+        sequence.extend((0..3).map(|side| grid_row(&nose_grids[side], 0)));
+        sequence.extend((1..nose_len).map(|k| grid_row(&nose_grids[2], k)));
+        for row in sequence {
+            if cap.last() != Some(&row) {
+                cap.push(row);
+            }
+        }
+    }
+
     // Una rejilla de `rows × cols` puntos escogidos por `pick(fila, columna)`.
     let weave = |rows: usize, cols: usize, pick: &dyn Fn(usize, usize) -> [f64; 3]| {
         let points: Vec<[f64; 3]> = (0..rows)
@@ -662,10 +743,31 @@ fn thick_pieces(
             .map_err(|error| format!("el álabe con espesor no se pudo tejer: {error}"))
     };
     let side = |grid: &[[f64; 3]]| weave(rows, cols, &|row, col| grid[row * cols + col]);
-    let band = |col: usize| {
-        weave(rows, 3, &|row, k| {
-            [pressure, middle, suction][k][row * cols + col]
-        })
+    let band = |col: usize| -> Result<TriangleMesh, String> {
+        // Las filas [presión, medio, succión] de la nariz (menos la unión,
+        // que es la primera del cuerpo) y las del cuerpo.
+        let nose_at = |k: usize| -> [[f64; 3]; 3] {
+            std::array::from_fn(|side| nose_grids[side][k * cols + col])
+        };
+        let tip = (nose_len > 0).then(|| nose_at(0));
+        // Punta 0: presión, medio y succión son un solo punto y la fila no se
+        // puede tejer; un abanico de dos triángulos la reemplaza.
+        let collapsed = tip.is_some_and(|row| row[0] == row[1] && row[1] == row[2]);
+        let first = usize::from(collapsed);
+        let mut table: Vec<[[f64; 3]; 3]> =
+            (first..nose_len.saturating_sub(1)).map(nose_at).collect();
+        table.extend(
+            (0..rows).map(|row| [pressure, middle, suction].map(|grid| grid[row * cols + col])),
+        );
+        let mut mesh = weave(table.len(), 3, &|row, k| table[row][k])?;
+        if let Some(row) = tip.filter(|_| collapsed) {
+            let apex = mesh.vertices.len() as u32;
+            mesh.vertices.push(row[0]);
+            mesh.normals.push(mesh.normals[1]);
+            mesh.triangles.push([apex, 1, 0]);
+            mesh.triangles.push([apex, 2, 1]);
+        }
+        Ok(mesh)
     };
     let edge = |row: usize| {
         weave(3, cols, &|k, col| {
@@ -677,7 +779,7 @@ fn thick_pieces(
         side(suction)?,
         band(0)?,
         band(cols - 1)?,
-        edge(0)?,
+        weave(cap.len(), cols, &|row, col| cap[row][col])?,
         edge(rows - 1)?,
     ];
 
@@ -707,7 +809,12 @@ fn thick_pieces(
         toward_pressure.map(|value| -value),
         minus(column(middle, 0), column(middle, 1)),
         minus(column(middle, cols - 1), column(middle, cols - 2)),
-        minus(row_of(middle, 0), row_of(middle, 1)),
+        if nose_len == 0 {
+            minus(row_of(middle, 0), row_of(middle, 1))
+        } else {
+            // De la fila vecina a la punta hacia la punta.
+            minus(row_of(&nose_grids[1], 0), row_of(&nose_grids[1], 1))
+        },
         minus(row_of(middle, rows - 1), row_of(middle, rows - 2)),
     ];
     let meshes: Vec<TriangleMesh> = meshes
@@ -726,8 +833,9 @@ fn thick_pieces(
     let surface = TriangleMesh::merged(&meshes);
 
     // Las 12 aristas: cuatro a lo largo (presión–cubo, presión–tapa,
-    // succión–cubo, succión–tapa), cuatro del canto de entrada y cuatro del
-    // de salida (presión, succión, cubo y tapa).
+    // succión–cubo, succión–tapa), cuatro de la nariz (la línea de unión de
+    // presión, la de succión y los contornos de cubo y de tapa) y cuatro de la
+    // salida (presión, succión, cubo y tapa). Con romo, las de la etapa 1.
     let open = |points: Vec<[f64; 3]>| Polyline3 {
         points,
         closed: false,
@@ -749,14 +857,19 @@ fn thick_pieces(
         open(along(suction, 0)),
         open(along(suction, cols - 1)),
     ];
-    for row in [0, rows - 1] {
-        curves.extend([
-            open(across(pressure, row)),
-            open(across(suction, row)),
-            open(thickness(row, 0)),
-            open(thickness(row, cols - 1)),
-        ]);
-    }
+    let outline = |col: usize| -> Vec<[f64; 3]> { cap.iter().map(|row| row[col]).collect() };
+    curves.extend([
+        open(across(pressure, 0)),
+        open(across(suction, 0)),
+        open(outline(0)),
+        open(outline(cols - 1)),
+    ]);
+    curves.extend([
+        open(across(pressure, rows - 1)),
+        open(across(suction, rows - 1)),
+        open(thickness(rows - 1, 0)),
+        open(thickness(rows - 1, cols - 1)),
+    ]);
 
     let blades = (0..blade_count)
         .map(|index| {
@@ -841,6 +954,7 @@ fn free_columns(
     checked: &[usize],
     stations: &[usize],
     tolerance: f64,
+    fixed: Option<usize>,
 ) -> (usize, Vec<Vec<[f64; 3]>>, Option<f64>) {
     let (first, last) = (psi[0], psi[psi.len() - 1]);
     let splines: Vec<Vec<[Spline; 3]>> = faces
@@ -895,13 +1009,18 @@ fn free_columns(
             .fold(0.0, f64::max)
     };
     let most = FREE_COLUMNS[FREE_COLUMNS.len() - 1];
-    let (cols, missed) = match FREE_COLUMNS
-        .iter()
-        .copied()
-        .find(|&cols| deviation(cols) < tolerance)
-    {
+    let (cols, missed) = match fixed {
+        // Las mismas columnas de otra llamada: los puntos de borde compartidos
+        // salen igual, bit a bit.
         Some(cols) => (cols, None),
-        None => (most, Some(deviation(most))),
+        None => match FREE_COLUMNS
+            .iter()
+            .copied()
+            .find(|&cols| deviation(cols) < tolerance)
+        {
+            Some(cols) => (cols, None),
+            None => (most, Some(deviation(most))),
+        },
     };
     let grids = (0..faces.len())
         .map(|face| {

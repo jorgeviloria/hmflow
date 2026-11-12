@@ -192,6 +192,21 @@ pub enum BladeSolidError {
         limit: f64,
     },
 
+    /// La salida con forma no cabe en la línea ni con la cota acotada, o su
+    /// cota no es un número finito. `radius`, `length` y `limit` en m.
+    #[error(
+        "línea de corriente {line} (0 es el cubo): la salida no cabe en la línea en r = {} mm: longitud = {} mm y el máximo es {} mm",
+        mm(.radius),
+        mm(.length),
+        mm(.limit)
+    )]
+    TailOutOfRange {
+        line: usize,
+        radius: f64,
+        length: f64,
+        limit: f64,
+    },
+
     /// La nariz y la salida con forma no caben en la misma línea. `radius`
     /// en m.
     #[error(
@@ -1053,7 +1068,8 @@ struct Tail {
 
 /// Acota las cotas de la salida de la línea `index` y localiza la unión a
 /// L − longitud. `Err` si la nariz y la salida no caben juntas (`nose_lp` es
-/// la Lp ya acotada, si hay nariz) o si la cota no es finita.
+/// la Lp ya acotada, si hay nariz), si la salida no cabe ni acotada o si la
+/// cota no es finita (`TailOutOfRange`).
 #[allow(clippy::too_many_arguments)]
 fn plan_tail(
     index: usize,
@@ -1071,15 +1087,22 @@ fn plan_tail(
     let total = arc[steps];
     let exit_r = nodes[steps].r;
     let floor = crate::blade_thickness::node_floor(1.0);
-    let out_of_range = |length: f64| BladeSolidError::NoseOutOfRange {
+    let limit = crate::blade_edges::TAIL_MAX_FRACTION * total;
+    let out_of_range = |length: f64| BladeSolidError::TailOutOfRange {
         line: index,
         radius: exit_r,
-        lp: length,
-        limit: crate::blade_edges::TAIL_MAX_FRACTION * total,
+        length,
+        limit,
     };
     let clamped = dims
         .clamped(e1, total, floor)
         .ok_or_else(|| out_of_range(dims.length))?;
+    // Una línea tan corta que 0,3·L < e(1)/2 deja ganar el mínimo e(1)/2:
+    // como con la nariz, la salida que no cabe es un error, no se acorta aquí
+    // en silencio.
+    if clamped.length > limit {
+        return Err(out_of_range(clamped.length));
+    }
     if nose_lp + clamped.length > total {
         return Err(BladeSolidError::NoseAndExitOverlap {
             line: index,

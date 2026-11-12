@@ -230,8 +230,9 @@ impl TrailingDims {
 
     /// Las cotas dentro de los límites: longitud entre e(1)/2 (de hmflow) y
     /// 0,3·`length_total`, y espesor final entre `floor` (el mínimo de
-    /// fundición de x = 1, [`crate::blade_thickness::node_floor`]) y e(1). Si
-    /// algo no es finito, `None`. De hmflow.
+    /// fundición de x = 1, [`crate::blade_thickness::node_floor`]) y e(1) (que
+    /// gana si e(1) está bajo el suelo). Si algo no es finito, `None`. De
+    /// hmflow.
     #[must_use]
     pub fn clamped(self, e1: f64, length_total: f64, floor: f64) -> Option<Self> {
         let finite = [self.length, self.end, e1, length_total, floor]
@@ -245,7 +246,8 @@ impl TrailingDims {
                 .length
                 .min(TAIL_MAX_FRACTION * length_total)
                 .max(e1 / 2.0),
-            end: self.end.min(e1).max(floor),
+            // Limar no engorda la salida: con e(1) bajo el suelo, e(1) gana.
+            end: self.end.max(floor).min(e1),
         })
     }
 }

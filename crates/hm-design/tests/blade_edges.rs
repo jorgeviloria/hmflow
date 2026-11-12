@@ -543,6 +543,22 @@ fn trailing_clamping() {
 }
 
 #[test]
+fn the_end_thickness_never_exceeds_e1_even_when_e1_is_under_the_floor() {
+    // Con e(1) por debajo del mínimo de fundición de x = 1 el espesor final no
+    // pasa de e(1): limar no engorda la salida.
+    let floor = 0.0015;
+    let thin_e1 = 0.0012;
+    let clamped = TrailingDims {
+        length: LENGTH,
+        end: 0.002,
+    }
+    .clamped(thin_e1, 0.2, floor)
+    .unwrap();
+    assert!(clamped.end <= thin_e1, "{}", clamped.end);
+    close(clamped.end, thin_e1, 1e-18);
+}
+
+#[test]
 fn changing_the_trailing_kind_keeps_the_leading_edges() {
     let (e_hub, e_shroud) = (0.006, 0.004);
     let leading = BladeEdges::default().with_leading_kind(LeadingKind::Wedge, e_hub, e_shroud);

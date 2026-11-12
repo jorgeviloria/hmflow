@@ -1430,6 +1430,22 @@ fn a_nose_that_cannot_fit_is_an_error() {
 }
 
 #[test]
+fn a_tail_that_cannot_fit_is_a_tail_error_not_a_nose_error() {
+    let case = b1_case();
+    for kind in [TrailingKind::FiledSuction, TrailingKind::Ellipse] {
+        let error = solid_with(&case, &tail_edges(kind, f64::NAN, 0.002)).unwrap_err();
+        let BladeSolidError::TailOutOfRange { line, .. } = error else {
+            panic!("{kind:?}: {error:?}");
+        };
+        assert_eq!(line, 0);
+        let text = error.to_string();
+        assert!(text.contains("0 es el cubo"), "{text}");
+        assert!(text.contains("la salida"), "{text}");
+        assert!(!text.contains("nariz"), "{text}");
+    }
+}
+
+#[test]
 fn a_long_nose_raises_a_notice() {
     let case = b1_case();
     let length = camber_length(&case, 0);

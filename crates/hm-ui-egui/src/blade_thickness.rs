@@ -302,7 +302,7 @@ fn thickness_plot(
                     );
                 }
             }
-            if let Some(drag) = drag_nodes(plot_ui, outcome, graph, inputs) {
+            if let Some(drag) = drag_nodes(plot_ui, outcome, graph, inputs, history, time) {
                 match drag {
                     NodeDrag::Moving { status, written: w } => {
                         plot_ui
@@ -829,6 +829,37 @@ fn wall_color(palette: &crate::theme::Palette, same: bool, wall: ThicknessWall) 
     }
 }
 
+/// Mueve el nodo `index` de `wall` hacia (x, e en m) y lo apunta en el
+/// historial, como hace la gráfica de β con sus manijas: así se puede deshacer
+/// y el fotograma siguiente no ve las entradas cambiadas «por otra vía» (lo
+/// que vaciaría el historial). `Ok(true)` si cambió algo; `Err(motivo)` si con
+/// ese espesor el álabe no se construye: entonces no se escribe nada.
+#[allow(clippy::too_many_arguments)]
+fn move_node(
+    inputs: &mut Inputs,
+    history: &mut BetaHistory,
+    graph: &ThicknessGraph,
+    outcome: &Outcome,
+    wall: ThicknessWall,
+    index: usize,
+    x: f64,
+    e: f64,
+    time: f64,
+) -> Result<bool, String> {
+    let moved = graph
+        .setup
+        .with_node_moved(&graph.curves, wall, index, x, e);
+    let changed = moved != inputs.blade.thickness;
+    if changed {
+        graph.accepts(outcome, &moved)?;
+    }
+    inputs.blade.thickness = moved;
+    if changed {
+        history.record(&BetaSnapshot::of(inputs), time);
+    }
+    Ok(changed)
+}
+
 /// Lo que pasó en un fotograma de arrastre.
 enum NodeDrag {
     /// Se mueve un nodo: la línea de lectura y si se escribió `inputs`.
@@ -844,6 +875,8 @@ fn drag_nodes(
     outcome: &Outcome,
     graph: &ThicknessGraph,
     inputs: &mut Inputs,
+    history: &mut BetaHistory,
+    time: f64,
 ) -> Option<NodeDrag> {
     let id = egui::Id::unique("blade_thickness_dragged");
     let response = plot_ui.response().clone();
@@ -873,22 +906,27 @@ fn drag_nodes(
     let (Some((wall, index)), true) = (grabbed, response.dragged()) else {
         return None;
     };
-    let moved =
-        graph
-            .setup
-            .with_node_moved(&graph.curves, wall, index, pointer.x, pointer.y / 1000.0);
     // Un movimiento con que el álabe no se construye no se escribe: el nodo
     // conserva su último valor válido.
-    if moved != inputs.blade.thickness
-        && let Err(reason) = graph.accepts(outcome, &moved)
-    {
-        return Some(NodeDrag::Moving {
-            status: format!("No se mueve: {reason}"),
-            written: false,
-        });
-    }
-    let written = moved != inputs.blade.thickness;
-    inputs.blade.thickness = moved;
+    let written = match move_node(
+        inputs,
+        history,
+        graph,
+        outcome,
+        wall,
+        index,
+        pointer.x,
+        pointer.y / 1000.0,
+        time,
+    ) {
+        Ok(written) => written,
+        Err(reason) => {
+            return Some(NodeDrag::Moving {
+                status: format!("No se mueve: {reason}"),
+                written: false,
+            });
+        }
+    };
     // Lo que quedó: el nodo ya acotado por la curva nueva.
     let shown = inputs
         .blade
@@ -1460,5 +1498,96 @@ mod tests {
         let ok = Ok(b1_solid());
         egui::__run_test_ui(|ui| readings_panel_open(ui, &ok, Some(true)));
         egui::__run_test_ui(|ui| readings_panel(ui, &ok));
+    }
+
+    /// Un arrastre de nodo se apunta en el historial como el de β: se puede
+    /// deshacer y no borra lo anterior. Sin apuntarlo, el fotograma siguiente
+    /// ve las entradas cambiadas «por otra vía» y vacía el historial.
+    #[test]
+    fn a_drag_goes_into_the_history_and_does_not_clear_it() {
+        let (outcome, camber) = b1_3d();
+        let graph = ThicknessGraph::of(&outcome, &camber).unwrap();
+        let mut inputs = outcome.inputs.clone();
+        let mut history = BetaHistory::default();
+        history.follow(&BetaSnapshot::of(&inputs));
+
+        let written = move_node(
+            &mut inputs,
+            &mut history,
+            &graph,
+            &outcome,
+            ThicknessWall::Hub,
+            0,
+            0.0,
+            0.006,
+            10.0,
+        );
+        assert_eq!(written, Ok(true));
+        assert_eq!(state_label(&inputs.blade.thickness), "editada");
+        assert!(history.can_undo(), "el arrastre no se puede deshacer");
+
+        // El fotograma siguiente: las entradas ya son las anotadas.
+        history.follow(&BetaSnapshot::of(&inputs));
+        assert!(history.can_undo(), "el historial se vació");
+
+        let previous = history.undo(&BetaSnapshot::of(&inputs)).unwrap();
+        previous.apply(&mut inputs);
+        assert_eq!(inputs.blade.thickness, BladeThickness::default());
+    }
+
+    #[test]
+    fn a_drag_that_breaks_the_blade_writes_and_records_nothing() {
+        let (outcome, camber) = b1_3d();
+        let graph = ThicknessGraph::of(&outcome, &camber).unwrap();
+        let mut inputs = outcome.inputs.clone();
+        let mut history = BetaHistory::default();
+        history.follow(&BetaSnapshot::of(&inputs));
+
+        let written = move_node(
+            &mut inputs,
+            &mut history,
+            &graph,
+            &outcome,
+            ThicknessWall::Hub,
+            1,
+            0.5,
+            0.060,
+            10.0,
+        );
+        let reason = written.expect_err("con 60 mm el álabe no se construye");
+        assert!(reason.contains("(0 es el cubo)"), "{reason}");
+        assert_eq!(inputs.blade.thickness, BladeThickness::default());
+        assert!(!history.can_undo());
+    }
+
+    #[test]
+    fn a_drag_that_changes_nothing_records_nothing() {
+        let (outcome, camber) = b1_3d();
+        let graph = ThicknessGraph::of(&outcome, &camber).unwrap();
+        let mut inputs = outcome.inputs.clone();
+        let mut history = BetaHistory::default();
+        history.follow(&BetaSnapshot::of(&inputs));
+        // El primer movimiento pasa a «editada» y se apunta.
+        let e = graph.nodes(ThicknessWall::Hub)[0][1] / 1000.0;
+        let mut drag = |time: f64| {
+            move_node(
+                &mut inputs,
+                &mut history,
+                &graph,
+                &outcome,
+                ThicknessWall::Hub,
+                0,
+                0.0,
+                e,
+                time,
+            )
+        };
+        assert_eq!(drag(10.0), Ok(true));
+        // El mismo valor otra vez: nada que escribir ni que apuntar.
+        assert_eq!(drag(20.0), Ok(false));
+        assert!(history.can_undo());
+        let steps = history.undo(&BetaSnapshot::of(&inputs));
+        assert!(steps.is_some());
+        assert!(!history.can_undo(), "se apuntó un paso de más");
     }
 }

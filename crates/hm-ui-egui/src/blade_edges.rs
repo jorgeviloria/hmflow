@@ -477,6 +477,17 @@ pub(super) fn set_status(ctx: &egui::Context, text: Option<String>) {
     });
 }
 
+/// La línea de lectura de la fila «Salida», que comparten la fila y la vista
+/// «Perfil». `None` la quita.
+pub(super) fn set_trailing_status(ctx: &egui::Context, text: Option<String>) {
+    ctx.data_mut(|data| match text {
+        Some(text) => {
+            data.insert_temp(status_id(Side::Trailing), text);
+        }
+        None => data.remove::<String>(status_id(Side::Trailing)),
+    });
+}
+
 /// Escribe `candidate` en las entradas si el álabe con espesor se sigue
 /// construyendo con él. `Ok(true)` si cambió algo; `Err(motivo)` y nada
 /// escrito si no se construye.
@@ -745,6 +756,27 @@ fn distance3(a: [f64; 3], b: [f64; 3]) -> f64 {
     (0..3).map(|k| (a[k] - b[k]).powi(2)).sum::<f64>().sqrt()
 }
 
+/// La longitud 3D de una línea media, m.
+fn camber_length(line: &hm_design::blade_camber::CamberLine) -> f64 {
+    line.points
+        .windows(2)
+        .map(|pair| {
+            distance3(
+                [
+                    pair[0].r * pair[0].theta.cos(),
+                    pair[0].r * pair[0].theta.sin(),
+                    pair[0].z,
+                ],
+                [
+                    pair[1].r * pair[1].theta.cos(),
+                    pair[1].r * pair[1].theta.sin(),
+                    pair[1].z,
+                ],
+            )
+        })
+        .sum()
+}
+
 fn unit(from: [f64; 2], to: [f64; 2]) -> Option<[f64; 2]> {
     let (dx, dy) = (to[0] - from[0], to[1] - from[1]);
     let length = dx.hypot(dy);
@@ -781,15 +813,7 @@ pub(super) fn nose_frames(
             (a[0] - b[0]).hypot(a[1] - b[1])
         };
         let chord = distance3(cartesian(&joint[0]), cartesian(&joint[2]));
-        let nodes: Vec<[f64; 3]> = camber_line
-            .points
-            .iter()
-            .map(|p| [p.r * p.theta.cos(), p.r * p.theta.sin(), p.z])
-            .collect();
-        let length = nodes
-            .windows(2)
-            .map(|pair| distance3(pair[0], pair[1]))
-            .sum();
+        let length = camber_length(camber_line);
         let tip_gap = {
             let (a, b) = (at(&line.nose[0][0]), at(&line.nose[0][2]));
             (a[0] - b[0]).hypot(a[1] - b[1])
@@ -907,6 +931,213 @@ pub(super) fn drag_nose(
     };
     let dims = wanted.clamped(frame.e, frame.length).unwrap_or(current);
     edges.with_leading_dims(wall, dims, same)
+}
+
+// ---------------------------------------------------------------------------
+// Las manijas de la salida en la vista «Perfil».
+// ---------------------------------------------------------------------------
+
+/// Una cota de la salida que se agarra en el dibujo.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub(super) enum TailHandle {
+    /// La unión de la salida: la longitud, a lo largo de la línea media hacia
+    /// D2.
+    Length { wall: ThicknessWall },
+    /// La cara limada en el canto de D2: el espesor final, perpendicular a la
+    /// línea media.
+    End { wall: ThicknessWall },
+}
+
+impl TailHandle {
+    pub(super) fn wall(self) -> ThicknessWall {
+        match self {
+            Self::Length { wall } | Self::End { wall } => wall,
+        }
+    }
+}
+
+/// Lo que hace falta de una pared para convertir un puntero del dibujo en una
+/// cota de la salida (las mismas razones que [`NoseFrame`]).
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub(super) struct TailFrame {
+    /// e(1) de la pared, m.
+    pub e1: f64,
+    /// Longitud de la línea media de esa pared, m: el tope de la longitud es
+    /// 0,3·L.
+    pub length: f64,
+    /// El mínimo de fundición de x = 1, m: el suelo del espesor final.
+    pub floor: f64,
+    /// La línea media en D2, en el dibujo.
+    pub exit: [f64; 2],
+    /// Unitario de D2 a la unión de la salida, a lo largo de la línea media.
+    pub inward: [f64; 2],
+    /// Unitario de la cara de presión a la de succión.
+    pub normal: [f64; 2],
+    /// m por grado del dibujo, medido en la unión (respaldo si la cota
+    /// actual no sirve para calibrar).
+    pub scale: f64,
+    /// Distancia en el dibujo de D2 a la unión, en grados.
+    pub joint_dist: f64,
+    /// Distancia en el dibujo entre las dos caras en D2, en grados.
+    pub end_gap: f64,
+    /// Las caras en D2 en el dibujo: [presión, succión].
+    pub faces: [[f64; 2]; 2],
+}
+
+/// Los marcos de cubo y de tapa de la salida; `None` si el sólido no tiene
+/// salida con forma o la geometría degenera.
+pub(super) fn tail_frames(
+    camber: &BladeCamber,
+    solid: &BladeSolid,
+    e1: [f64; 2],
+) -> Option<[TailFrame; 2]> {
+    let lines = wall_lines(solid);
+    let frame = |wall: usize| -> Option<TailFrame> {
+        let k = lines[wall];
+        let line = solid.lines.get(k)?;
+        let camber_line = camber.lines.get(k)?;
+        let joint = line.tail.first()?;
+        let exit = line.tail.last()?;
+        let plane = crate::blade_development::plane_of(camber_line);
+        let at = |p: &SolidPoint| plane(p.theta, p.m_conformal);
+        let (exit_middle, joint_middle) = (at(&exit[1]), at(&joint[1]));
+        let inward = unit(exit_middle, joint_middle)?;
+        // La elipse acaba en punta: sin caras separadas en D2, la normal es la de
+        // la unión.
+        let normal =
+            unit(at(&exit[0]), at(&exit[2])).or_else(|| unit(at(&joint[0]), at(&joint[2])))?;
+        let plane_gap = {
+            let (a, b) = (at(&joint[0]), at(&joint[2]));
+            (a[0] - b[0]).hypot(a[1] - b[1])
+        };
+        let chord = distance3(cartesian(&joint[0]), cartesian(&joint[2]));
+        let faces = [at(&exit[0]), at(&exit[2])];
+        let end_gap = (faces[0][0] - faces[1][0]).hypot(faces[0][1] - faces[1][1]);
+        let joint_dist = (joint_middle[0] - exit_middle[0]).hypot(joint_middle[1] - exit_middle[1]);
+        Some(TailFrame {
+            e1: e1[wall],
+            length: camber_length(camber_line),
+            floor: hm_design::blade_thickness::node_floor(1.0),
+            exit: exit_middle,
+            inward,
+            normal,
+            scale: if plane_gap > 0.0 {
+                chord / plane_gap
+            } else {
+                0.0
+            },
+            joint_dist,
+            end_gap,
+            faces,
+        })
+    };
+    Some([frame(0)?, frame(1)?])
+}
+
+/// Las manijas y su posición en el dibujo: la longitud en la unión de la
+/// salida (el medio de su primera fila) y, en el limado, el espesor final en
+/// la cara limada del canto de D2 (succión o presión según el tipo). Con
+/// «cubo = tapa», solo las del cubo. Con recortada, ninguna.
+pub(super) fn tail_handles(
+    camber: &BladeCamber,
+    solid: &BladeSolid,
+    edges: &BladeEdges,
+    same: bool,
+) -> Vec<(TailHandle, [f64; 2])> {
+    if edges.trailing == TrailingKind::Cut || solid.lines.iter().any(|l| l.tail.is_empty()) {
+        return Vec::new();
+    }
+    let lines = wall_lines(solid);
+    let walls: &[(ThicknessWall, usize)] = if same {
+        &[(ThicknessWall::Hub, 0)]
+    } else {
+        &[(ThicknessWall::Hub, 0), (ThicknessWall::Shroud, 1)]
+    };
+    let mut out = Vec::new();
+    for &(wall, index) in walls {
+        let k = lines[index];
+        let (Some(line), Some(camber_line)) = (solid.lines.get(k), camber.lines.get(k)) else {
+            continue;
+        };
+        let plane = crate::blade_development::plane_of(camber_line);
+        let at = |p: &SolidPoint| plane(p.theta, p.m_conformal);
+        let (Some(joint), Some(exit)) = (line.tail.first(), line.tail.last()) else {
+            continue;
+        };
+        out.push((TailHandle::Length { wall }, at(&joint[1])));
+        match edges.trailing {
+            TrailingKind::FiledSuction => out.push((TailHandle::End { wall }, at(&exit[2]))),
+            TrailingKind::FiledPressure => out.push((TailHandle::End { wall }, at(&exit[0]))),
+            TrailingKind::Cut | TrailingKind::Ellipse => {}
+        }
+    }
+    out
+}
+
+/// Los bordes con la cota de esa manija llevada al puntero (en el dibujo),
+/// acotada a sus límites. Longitud: la distancia de D2 al puntero a lo largo de
+/// la línea media, hacia dentro. Espesor final: la distancia del puntero a la
+/// cara que no se lima, perpendicular a la línea media. Con «cubo = tapa» se
+/// escribe en las dos paredes. Se calibra con la cota actual, como la nariz.
+pub(super) fn drag_tail(
+    handle: TailHandle,
+    pointer: [f64; 2],
+    edges: &BladeEdges,
+    frames: &[TailFrame; 2],
+    same: bool,
+) -> BladeEdges {
+    let wall = handle.wall();
+    let frame = &frames[usize::from(wall == ThicknessWall::Shroud && !same)];
+    let current = if wall == ThicknessWall::Hub || same {
+        edges.trailing_hub
+    } else {
+        edges.trailing_shroud
+    };
+    let wanted = match handle {
+        TailHandle::Length { .. } => {
+            let scale = if current.length > 0.0 && frame.joint_dist > 1.0e-12 {
+                current.length / frame.joint_dist
+            } else {
+                frame.scale
+            };
+            let offset = [pointer[0] - frame.exit[0], pointer[1] - frame.exit[1]];
+            let along = (offset[0] * frame.inward[0] + offset[1] * frame.inward[1]) * scale;
+            TrailingDims {
+                length: along,
+                ..current
+            }
+        }
+        TailHandle::End { .. } => {
+            let scale = if current.end > 1.0e-9 && frame.end_gap > 1.0e-12 {
+                current.end / frame.end_gap
+            } else {
+                frame.scale
+            };
+            // El espesor es la distancia entre las dos caras: del puntero a la
+            // que no se lima.
+            let end = match edges.trailing {
+                TrailingKind::FiledSuction => {
+                    let from = frame.faces[0];
+                    (pointer[0] - from[0]) * frame.normal[0]
+                        + (pointer[1] - from[1]) * frame.normal[1]
+                }
+                TrailingKind::FiledPressure => {
+                    let from = frame.faces[1];
+                    -((pointer[0] - from[0]) * frame.normal[0]
+                        + (pointer[1] - from[1]) * frame.normal[1])
+                }
+                TrailingKind::Cut | TrailingKind::Ellipse => return edges.clone(),
+            };
+            TrailingDims {
+                end: end * scale,
+                ..current
+            }
+        }
+    };
+    let dims = wanted
+        .clamped(frame.e1, frame.length, frame.floor)
+        .unwrap_or(current);
+    edges.with_trailing_dims(wall, dims, same)
 }
 
 #[cfg(test)]
@@ -1835,5 +2066,238 @@ mod tests {
         assert!(reason.contains("(0 es el cubo)"), "{reason}");
         assert_eq!(inputs.blade, before);
         assert!(!history.can_undo());
+    }
+    // -----------------------------------------------------------------------
+    // Las manijas de la salida en la vista «Perfil».
+    // -----------------------------------------------------------------------
+
+    /// B1 libre 3D con ese tipo de salida (cotas por defecto).
+    fn tailed(kind: TrailingKind) -> (Outcome, BladeCamber, BladeSolid) {
+        let (outcome, camber) = b1_3d();
+        let graph = graph(&outcome, &camber);
+        let (e_hub, e_shroud) = e1_walls(&graph);
+        let mut inputs = outcome.inputs.clone();
+        inputs.blade = with_trailing_kind(&inputs.blade, kind, e_hub, e_shroud);
+        let outcome = compute(&inputs, &Basis::default()).unwrap();
+        let solid = crate::blade_inlet::solid_of(&outcome).unwrap();
+        (outcome, camber, solid)
+    }
+
+    fn tail_frames_of(
+        outcome: &Outcome,
+        camber: &BladeCamber,
+        solid: &BladeSolid,
+    ) -> [TailFrame; 2] {
+        let graph = graph(outcome, camber);
+        let (e_hub, e_shroud) = e1_walls(&graph);
+        tail_frames(camber, solid, [e_hub, e_shroud]).expect("con salida con forma")
+    }
+
+    #[test]
+    fn the_tail_handles_sit_on_the_joint_and_the_exit_canto() {
+        let (outcome, camber, solid) = tailed(TrailingKind::FiledSuction);
+        let edges = &outcome.inputs.blade.edges;
+        let hub = ThicknessWall::Hub;
+        let handles = tail_handles(&camber, &solid, edges, true);
+        assert_eq!(handles.len(), 2);
+        let line = &solid.lines[0];
+        let find = |wanted: TailHandle| handles.iter().find(|(h, _)| *h == wanted).unwrap().1;
+        // La longitud, en la unión de la salida (el medio de la primera fila).
+        assert_eq!(
+            find(TailHandle::Length { wall: hub }),
+            plane(&camber, 0, &line.tail[0][1])
+        );
+        // El espesor final, en la cara limada del canto de D2 (aquí, succión).
+        let exit = line.trailing_edge();
+        assert_eq!(
+            find(TailHandle::End { wall: hub }),
+            plane(&camber, 0, &exit[2])
+        );
+        // Con las paredes separadas, también las de la tapa, en su línea.
+        let split = tail_handles(&camber, &solid, edges, false);
+        assert_eq!(split.len(), 4);
+        let last = solid.lines.len() - 1;
+        let shroud = split
+            .iter()
+            .find(|(h, _)| {
+                *h == TailHandle::Length {
+                    wall: ThicknessWall::Shroud,
+                }
+            })
+            .unwrap()
+            .1;
+        assert_eq!(shroud, plane(&camber, last, &solid.lines[last].tail[0][1]));
+        // Limada por presión: el espesor final está en la cara de presión.
+        let (outcome, camber, solid) = tailed(TrailingKind::FiledPressure);
+        let handles = tail_handles(&camber, &solid, &outcome.inputs.blade.edges, true);
+        let exit = solid.lines[0].trailing_edge();
+        let end = handles
+            .iter()
+            .find(|(h, _)| *h == TailHandle::End { wall: hub })
+            .unwrap()
+            .1;
+        assert_eq!(end, plane(&camber, 0, &exit[0]));
+        // La elipse solo lleva la longitud; la recortada, ninguna.
+        let (outcome, camber, solid) = tailed(TrailingKind::Ellipse);
+        let handles = tail_handles(&camber, &solid, &outcome.inputs.blade.edges, true);
+        assert_eq!(handles.len(), 1);
+        assert_eq!(handles[0].0, TailHandle::Length { wall: hub });
+        let (outcome, camber, solid) = tailed(TrailingKind::Cut);
+        assert!(tail_handles(&camber, &solid, &outcome.inputs.blade.edges, true).is_empty());
+    }
+
+    #[test]
+    fn dragging_the_length_clamps_at_the_limits_and_never_overlaps_the_nose() {
+        let (outcome, camber, solid) = tailed(TrailingKind::FiledSuction);
+        let frames = tail_frames_of(&outcome, &camber, &solid);
+        let edges = &outcome.inputs.blade.edges;
+        let handle = TailHandle::Length {
+            wall: ThicknessWall::Hub,
+        };
+        let joint = plane(&camber, 0, &solid.lines[0].tail[0][1]);
+        let length = edges.trailing_hub.length;
+        let f = &frames[0];
+        // Soltar donde está no mueve nada (3 %).
+        let same = drag_tail(handle, joint, edges, &frames, true);
+        assert!(
+            (same.trailing_hub.length - length).abs() < 0.03 * length,
+            "{} frente a {length}",
+            same.trailing_hub.length
+        );
+        // Más adentro: más larga, y con «cubo = tapa» en las dos paredes.
+        let deeper = [joint[0] + f.inward[0] * 2.0, joint[1] + f.inward[1] * 2.0];
+        let longer = drag_tail(handle, deeper, edges, &frames, true);
+        assert!(longer.trailing_hub.length > length);
+        assert_eq!(longer.trailing_shroud, longer.trailing_hub);
+        // Lo demás no cambia.
+        assert_eq!(longer.trailing, TrailingKind::FiledSuction);
+        assert_eq!(longer.trailing_hub.end, edges.trailing_hub.end);
+        // Muy adentro: 0,3·L; pasado D2: e(1)/2.
+        let far = [f.exit[0] + f.inward[0] * 1e6, f.exit[1] + f.inward[1] * 1e6];
+        let capped = drag_tail(handle, far, edges, &frames, true);
+        assert!((capped.trailing_hub.length - 0.3 * f.length).abs() < 1e-12);
+        let beyond = [f.exit[0] - f.inward[0] * 1e6, f.exit[1] - f.inward[1] * 1e6];
+        let floor = drag_tail(handle, beyond, edges, &frames, true);
+        assert!((floor.trailing_hub.length - f.e1 / 2.0).abs() < 1e-12);
+        // En el tope, con una nariz de elipse de su tope, el álabe se sigue
+        // construyendo: la nariz y la salida nunca se pisan.
+        let graph = graph(&outcome, &camber);
+        let mut candidate = outcome.inputs.blade.clone();
+        candidate.edges = capped;
+        let (e0_hub, e0_shroud) = e_walls(&graph);
+        let nosed = candidate
+            .edges
+            .with_leading_kind(LeadingKind::Ellipse, e0_hub, e0_shroud);
+        let big_nose = LeadingDims {
+            lp: 0.3 * f.length,
+            ..nosed.leading_hub
+        };
+        candidate.edges = nosed.with_leading_dims(ThicknessWall::Hub, big_nose, true);
+        assert_eq!(graph.accepts(&outcome, &candidate), Ok(()));
+    }
+
+    #[test]
+    fn dragging_the_end_thickness_stays_between_the_floor_and_e1() {
+        let (outcome, camber, solid) = tailed(TrailingKind::FiledSuction);
+        let frames = tail_frames_of(&outcome, &camber, &solid);
+        let edges = &outcome.inputs.blade.edges;
+        let handle = TailHandle::End {
+            wall: ThicknessWall::Hub,
+        };
+        let f = &frames[0];
+        let at = plane(&camber, 0, &solid.lines[0].trailing_edge()[2]);
+        let end = edges.trailing_hub.end;
+        // En su sitio: el mismo espesor final (3 %).
+        let same = drag_tail(handle, at, edges, &frames, true);
+        assert!(
+            (same.trailing_hub.end - end).abs() < 0.03 * end,
+            "{} frente a {end}",
+            same.trailing_hub.end
+        );
+        // Más afuera por la succión: más grueso; la longitud no cambia.
+        let out = [at[0] + f.normal[0] * 0.2, at[1] + f.normal[1] * 0.2];
+        let thicker = drag_tail(handle, out, edges, &frames, true);
+        assert!(thicker.trailing_hub.end > end);
+        assert_eq!(thicker.trailing_hub.length, edges.trailing_hub.length);
+        // Tope: e(1); suelo: el mínimo de fundición de x = 1.
+        let huge = [at[0] + f.normal[0] * 1e6, at[1] + f.normal[1] * 1e6];
+        assert!(
+            (drag_tail(handle, huge, edges, &frames, true)
+                .trailing_hub
+                .end
+                - f.e1)
+                .abs()
+                < 1e-12
+        );
+        let under = [at[0] - f.normal[0] * 1e6, at[1] - f.normal[1] * 1e6];
+        assert!(
+            (drag_tail(handle, under, edges, &frames, true)
+                .trailing_hub
+                .end
+                - f.floor)
+                .abs()
+                < 1e-12
+        );
+        // Limada por presión: la cara limada es la de presión, y arrastrarla
+        // hacia fuera (menos normal) engorda.
+        let (outcome, camber, solid) = tailed(TrailingKind::FiledPressure);
+        let frames = tail_frames_of(&outcome, &camber, &solid);
+        let edges = &outcome.inputs.blade.edges;
+        let at = plane(&camber, 0, &solid.lines[0].trailing_edge()[0]);
+        let f = &frames[0];
+        let out = [at[0] - f.normal[0] * 0.2, at[1] - f.normal[1] * 0.2];
+        assert!(
+            drag_tail(handle, out, edges, &frames, true)
+                .trailing_hub
+                .end
+                > edges.trailing_hub.end
+        );
+        // La elipse no lleva espesor final: no cambia.
+        let (outcome, camber, solid) = tailed(TrailingKind::Ellipse);
+        let frames = tail_frames_of(&outcome, &camber, &solid);
+        let edges = &outcome.inputs.blade.edges;
+        assert_eq!(drag_tail(handle, at, edges, &frames, true), *edges);
+    }
+
+    #[test]
+    fn the_right_click_menu_changes_the_trailing_kind() {
+        // El menú elige con la misma ruta que la fila: `with_trailing_kind` y
+        // `commit`.
+        let (outcome, camber) = b1_3d();
+        let graph = graph(&outcome, &camber);
+        let (e_hub, e_shroud) = e1_walls(&graph);
+        let mut inputs = outcome.inputs.clone();
+        let mut history = history_for(&inputs);
+        for (time, (kind, label)) in [
+            (1.0, TRAILING_KINDS[1]),
+            (4.0, TRAILING_KINDS[2]),
+            (8.0, TRAILING_KINDS[3]),
+            (12.0, TRAILING_KINDS[0]),
+        ] {
+            let candidate = with_trailing_kind(&inputs.blade, kind, e_hub, e_shroud);
+            assert_eq!(
+                commit(&outcome, &mut inputs, &mut history, &graph, candidate, time),
+                Ok(true),
+                "{label}"
+            );
+            assert_eq!(inputs.blade.edges.trailing, kind);
+        }
+        assert!(history.can_undo());
+        let previous = history.undo(&BetaSnapshot::of(&inputs)).unwrap();
+        previous.apply(&mut inputs);
+        assert_eq!(inputs.blade.edges.trailing, TrailingKind::Ellipse);
+    }
+
+    #[test]
+    fn a_refused_tail_drag_says_why_in_its_own_status_line() {
+        let ctx = egui::Context::default();
+        set_trailing_status(&ctx, Some("No se mueve: x".to_string()));
+        let leading: Option<String> = ctx.data(|d| d.get_temp(status_id(Side::Leading)));
+        let trailing: Option<String> = ctx.data(|d| d.get_temp(status_id(Side::Trailing)));
+        assert_eq!(leading, None);
+        assert_eq!(trailing.as_deref(), Some("No se mueve: x"));
+        set_trailing_status(&ctx, None);
+        let trailing: Option<String> = ctx.data(|d| d.get_temp(status_id(Side::Trailing)));
+        assert_eq!(trailing, None);
     }
 }

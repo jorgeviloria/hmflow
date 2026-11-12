@@ -7,7 +7,14 @@ use egui_plot::{LineStyle, Plot, PlotPoint, Points, Polygon, Text};
 use hm_design::blade_camber::{BladeCamber, CamberLine};
 use hm_design::blade_solid::{BladeSolid, BladeSolidError};
 
+use hm_design::blade_edges::{LeadingKind, cp_min};
+use hm_design::blade_thickness::ThicknessWall;
+
+use crate::blade_beta::{BetaHistory, GRAB_PIXELS};
+use crate::blade_edges::{NoseHandle, drag_nose, nose_frames, nose_handles};
+use crate::blade_thickness::ThicknessGraph;
 use crate::curves::line;
+use crate::model::{Inputs, Outcome};
 
 /// Qué gráfica enseña el paso con forma 3D. Se guarda en los datos temporales
 /// de egui.
@@ -79,7 +86,7 @@ pub(super) fn development_curves(camber: &BladeCamber) -> Vec<Vec<[f64; 2]>> {
 
 /// El plano del dibujo de una línea: [(θ − Θ)°, (m′ − m′ de la salida)·180/π],
 /// con Θ y m′ de la salida de esa línea. Todas acaban en y = 0.
-fn plane_of(line: &CamberLine) -> impl Fn(f64, f64) -> [f64; 2] {
+pub(super) fn plane_of(line: &CamberLine) -> impl Fn(f64, f64) -> [f64; 2] {
     let (theta_end, m_end) = line
         .points
         .last()
@@ -98,6 +105,9 @@ pub(super) struct ProfileLine {
     pub suction: Vec<[f64; 2]>,
     /// La línea media, remuestreada como las dos caras.
     pub camber: Vec<[f64; 2]>,
+    /// Las filas [presión, medio, succión] de la nariz, de la punta a la
+    /// unión (la última es el primer punto de las caras). Vacío con romo.
+    pub nose: Vec<[[f64; 2]; 3]>,
     /// Extremos de la garganta de entrada en el dibujo y su ancho en mm.
     pub throat: Option<([[f64; 2]; 2], f64)>,
 }
@@ -122,6 +132,11 @@ pub(super) fn profile_lines(camber: &BladeCamber, solid: &BladeSolid) -> Vec<Pro
                 pressure: draw(&solid_line.pressure),
                 suction: draw(&solid_line.suction),
                 camber: draw(&solid_line.middle),
+                nose: solid_line
+                    .nose
+                    .iter()
+                    .map(|row| row.map(|p| plane(p.theta, p.m_conformal)))
+                    .collect(),
                 throat: throat.as_ref().map(|throat| {
                     (
                         [
@@ -259,10 +274,39 @@ fn draw_solid(
                     .allow_hover(false),
             );
         }
+        // La nariz: relleno, contorno y la línea de unión (a trazos) con las
+        // caras. Con romo, el canto recto de siempre.
+        if line.nose.is_empty() {
+            plot_ui.line(line_of(vec![line.pressure[0], line.suction[0]], color, 1.5));
+        } else {
+            for pair in line.nose.windows(2) {
+                plot_ui.polygon(
+                    Polygon::new("", vec![pair[0][0], pair[1][0], pair[1][2], pair[0][2]])
+                        .fill_color(color.gamma_multiply(0.35))
+                        .stroke(egui::Stroke::NONE)
+                        .allow_hover(false),
+                );
+            }
+            plot_ui.line(line_of(
+                line.nose.iter().map(|row| row[0]).collect(),
+                color,
+                1.5,
+            ));
+            plot_ui.line(line_of(
+                line.nose.iter().map(|row| row[2]).collect(),
+                color,
+                1.5,
+            ));
+            let tip = &line.nose[0];
+            plot_ui.line(line_of(vec![tip[0], tip[2]], color, 1.5));
+            plot_ui.line(
+                line_of(vec![line.pressure[0], line.suction[0]], color, 1.0)
+                    .style(LineStyle::dashed_dense()),
+            );
+        }
         for contour in [&line.pressure, &line.suction] {
             plot_ui.line(line_of(contour.clone(), color, 1.5));
         }
-        plot_ui.line(line_of(vec![line.pressure[0], line.suction[0]], color, 1.5));
         plot_ui.line(line_of(
             vec![
                 *line.pressure.last().unwrap(),
@@ -271,18 +315,34 @@ fn draw_solid(
             color,
             1.5,
         ));
-        plot_ui.line(line_of(line.camber.clone(), color, 1.0).style(LineStyle::dashed_loose()));
+        let camber_line: Vec<[f64; 2]> = line
+            .nose
+            .iter()
+            .take(line.nose.len().saturating_sub(1))
+            .map(|row| row[1])
+            .chain(line.camber.iter().copied())
+            .collect();
+        plot_ui.line(line_of(camber_line, color, 1.0).style(LineStyle::dashed_loose()));
 
         // El álabe vecino: el mismo contorno, +paso, sin relleno.
         let faint = color.gamma_multiply(0.6);
         for contour in [&line.pressure, &line.suction] {
             plot_ui.line(line_of(shift(contour), faint, 1.0));
         }
-        plot_ui.line(line_of(
-            shift(&[line.pressure[0], line.suction[0]]),
-            faint,
-            1.0,
-        ));
+        if line.nose.is_empty() {
+            plot_ui.line(line_of(
+                shift(&[line.pressure[0], line.suction[0]]),
+                faint,
+                1.0,
+            ));
+        } else {
+            for side in [0, 2] {
+                let contour: Vec<[f64; 2]> = line.nose.iter().map(|row| row[side]).collect();
+                plot_ui.line(line_of(shift(&contour), faint, 1.0));
+            }
+            let tip = &line.nose[0];
+            plot_ui.line(line_of(shift(&[tip[0], tip[2]]), faint, 1.0));
+        }
         plot_ui.line(line_of(
             shift(&[
                 *line.pressure.last().unwrap(),
@@ -316,16 +376,33 @@ fn line_of(points: Vec<[f64; 2]>, color: egui::Color32, width: f32) -> egui_plot
     line("", points, color).width(width)
 }
 
-/// Solo lectura: zoom con la rueda, desplazamiento arrastrando y doble clic
-/// para reencuadrar. Con el álabe con espesor, el vecino y la garganta; si no
-/// sale, las líneas medias y el motivo bajo la vista.
+/// Un número con coma decimal.
+fn comma(value: f64, decimals: usize) -> String {
+    format!("{value:.decimals$}").replace('.', ",")
+}
+
+/// Cuánto se acerca un clic derecho a la nariz para tomarlo como «sobre la
+/// nariz», en píxeles.
+const NOSE_MENU_PIXELS: f32 = 40.0;
+
+/// Zoom con la rueda, desplazamiento arrastrando y doble clic para reencuadrar.
+/// Con el álabe con espesor, el vecino y la garganta; si no sale, las líneas
+/// medias y el motivo bajo la vista. Con nariz, las cotas se agarran: Lp en la
+/// línea de unión y, en el afilado, la punta y la asimetría; el clic derecho
+/// sobre la nariz cambia el tipo de entrada. Lo que se mueve pasa por el mismo
+/// `accepts` y el mismo historial que la fila «Entrada». `true` si escribió
+/// `inputs`.
 pub(super) fn profile_view(
     ui: &mut egui::Ui,
+    outcome: &Outcome,
+    inputs: &mut Inputs,
+    history: &mut BetaHistory,
     camber: &BladeCamber,
     solid: &Result<BladeSolid, BladeSolidError>,
     blade_count: u32,
-) {
+) -> bool {
     let palette = crate::theme::palette(ui.ctx());
+    let time = ui.input(|input| input.time);
     let mut shown = ProfileShown::stored(ui.ctx());
     ui.horizontal(|ui| {
         ui.checkbox(&mut shown.hub, "Cubo");
@@ -339,10 +416,31 @@ pub(super) fn profile_view(
         .ok()
         .map(|solid| profile_lines(camber, solid));
     let marks = profile_marks(camber, solid);
-    Plot::new("blade_profile")
+    let graph = ThicknessGraph::of(outcome, camber).ok();
+    let same = inputs.blade.thickness.same;
+    let handles = match solid {
+        Ok(solid) => nose_handles(camber, solid, &inputs.blade.edges, same),
+        Err(_) => Vec::new(),
+    };
+    let frames = graph.as_ref().and_then(|graph| {
+        let e = [graph.curves.hub.at(0.0), graph.curves.shroud.at(0.0)];
+        solid
+            .as_ref()
+            .ok()
+            .and_then(|solid| nose_frames(camber, solid, e))
+    });
+    let grabbed_id = egui::Id::unique("profile_nose_grabbed");
+    let near_id = egui::Id::unique("profile_nose_near");
+    let target_id = egui::Id::unique("profile_nose_target");
+    let ctx = ui.ctx().clone();
+    let grabbed: Option<NoseHandle> = ctx.data(|data| data.get_temp(grabbed_id)).flatten();
+    let near: bool = ctx.data(|data| data.get_temp(near_id)).unwrap_or(false);
+    let mut written = false;
+    let plot = Plot::new("blade_profile")
         .height(260.0)
         .data_aspect(1.0)
-        .allow_drag(true)
+        // Con una manija bajo el puntero, arrastrar la mueve y no desplaza.
+        .allow_drag(!(near || grabbed.is_some()))
         .allow_zoom(true)
         .allow_scroll(false)
         .allow_boxed_zoom(false)
@@ -367,7 +465,139 @@ pub(super) fn profile_view(
                     .anchor(egui::Align2::LEFT_BOTTOM),
                 );
             }
+            // Las manijas con su cota al lado.
+            let edges = &inputs.blade.edges;
+            for (handle, at) in &handles {
+                let dims = if handle.wall() == ThicknessWall::Hub || same {
+                    edges.leading_hub
+                } else {
+                    edges.leading_shroud
+                };
+                let text = match handle {
+                    NoseHandle::Lp { .. } => {
+                        let mut text = format!("Lp {} mm", comma(dims.lp * 1000.0, 1));
+                        if let (Some(graph), true) = (&graph, edges.leading == LeadingKind::Ellipse)
+                        {
+                            let e = graph.curves.hub.at(0.0);
+                            text.push_str(&format!(" · cp,min {}", comma(cp_min(e / dims.lp), 3)));
+                        }
+                        text
+                    }
+                    NoseHandle::Tip { .. } => format!("punta {} mm", comma(dims.tip * 1000.0, 2)),
+                    NoseHandle::Asymmetry { .. } => {
+                        format!("asimetría {}", comma(dims.asymmetry, 2))
+                    }
+                };
+                let grabbed_now = grabbed == Some(*handle);
+                plot_ui.points(
+                    Points::new("", vec![*at])
+                        .color(palette.dimension)
+                        .radius(if grabbed_now { 8.0 } else { 6.0 })
+                        .filled(true),
+                );
+                plot_ui.text(
+                    Text::new(
+                        "",
+                        PlotPoint::new(at[0], at[1]),
+                        egui::RichText::new(format!(" {text}"))
+                            .small()
+                            .color(palette.dimension_text),
+                    )
+                    // La punta y la asimetría casi coinciden: una cuelga debajo
+                    // de su manija y la otra se apoya encima.
+                    .anchor(match handle {
+                        NoseHandle::Asymmetry { .. } => egui::Align2::RIGHT_BOTTOM,
+                        _ => egui::Align2::LEFT_TOP,
+                    }),
+                );
+            }
+            // El arrastre y lo que hay bajo el puntero.
+            let response = plot_ui.response().clone();
+            let pointer = plot_ui.pointer_coordinate();
+            let to_screen = |p: [f64; 2]| plot_ui.screen_from_plot(PlotPoint::new(p[0], p[1]));
+            if let Some(pointer) = pointer {
+                let at = plot_ui.screen_from_plot(pointer);
+                let nearest = handles
+                    .iter()
+                    .map(|(handle, point)| (*handle, to_screen(*point).distance(at)))
+                    .filter(|(_, distance)| *distance <= GRAB_PIXELS)
+                    .min_by(|a, b| a.1.total_cmp(&b.1))
+                    .map(|(handle, _)| handle);
+                ctx.data_mut(|data| data.insert_temp(near_id, nearest.is_some()));
+                if response.drag_started() {
+                    ctx.data_mut(|data| data.insert_temp(grabbed_id, nearest));
+                }
+                if response.secondary_clicked() {
+                    let on_nose = lines.iter().flatten().any(|line| {
+                        line.nose
+                            .iter()
+                            .flatten()
+                            .any(|point| to_screen(*point).distance(at) <= NOSE_MENU_PIXELS)
+                    });
+                    ctx.data_mut(|data| data.insert_temp(target_id, on_nose));
+                }
+                if let (Some(handle), true, Some(frames), Some(graph)) =
+                    (grabbed, response.dragged(), frames.as_ref(), graph.as_ref())
+                {
+                    let edges = drag_nose(
+                        handle,
+                        [pointer.x, pointer.y],
+                        &inputs.blade.edges,
+                        frames,
+                        same,
+                    );
+                    let mut candidate = inputs.blade.clone();
+                    candidate.edges = edges;
+                    match crate::blade_edges::commit(outcome, inputs, history, graph, candidate, time)
+                    {
+                        Ok(changed) => {
+                            written |= changed;
+                            crate::blade_edges::set_status(&ctx, None);
+                        }
+                        Err(reason) => crate::blade_edges::set_status(
+                            &ctx,
+                            Some(format!("No se mueve: {reason}")),
+                        ),
+                    }
+                }
+            }
+            if response.drag_stopped() {
+                ctx.data_mut(|data| data.remove::<Option<NoseHandle>>(grabbed_id));
+            }
         });
+    // Clic derecho sobre la nariz: el tipo de entrada.
+    let on_nose: bool = ctx.data(|data| data.get_temp(target_id)).unwrap_or(false);
+    plot.response.context_menu(|ui| {
+        if !on_nose {
+            ui.label(
+                egui::RichText::new("Clic derecho sobre la nariz.")
+                    .small()
+                    .weak(),
+            );
+            return;
+        }
+        ui.label(egui::RichText::new("Entrada").small().weak());
+        let current = inputs.blade.edges.leading;
+        for (kind, label) in crate::blade_edges::KINDS {
+            if ui.selectable_label(kind == current, label).clicked() {
+                if let Some(graph) = &graph {
+                    let (e_hub, e_shroud) = (graph.curves.hub.at(0.0), graph.curves.shroud.at(0.0));
+                    let candidate =
+                        crate::blade_edges::with_kind(&inputs.blade, kind, e_hub, e_shroud);
+                    match crate::blade_edges::commit(
+                        outcome, inputs, history, graph, candidate, time,
+                    ) {
+                        Ok(changed) => written |= changed,
+                        Err(reason) => crate::blade_edges::set_status(
+                            ui.ctx(),
+                            Some(format!("No se mueve: {reason}")),
+                        ),
+                    }
+                }
+                ui.close();
+            }
+        }
+    });
     if let Err(error) = solid {
         ui.label(
             egui::RichText::new(format!("Sin álabe con espesor: {error}."))
@@ -378,11 +608,13 @@ pub(super) fn profile_view(
     ui.label(
         egui::RichText::new(
             "Perfil: el álabe con su espesor en el plano conforme, donde los ángulos son los \
-             verdaderos. A trazos, la línea media.",
+             verdaderos. A trazos, la línea media. Con nariz, arrastra Lp en la línea de unión y, \
+             en el afilado, la punta y la asimetría; clic derecho sobre la nariz cambia el tipo.",
         )
         .small()
         .weak(),
     );
+    written
 }
 
 #[cfg(test)]
@@ -468,6 +700,13 @@ mod tests {
 
     /// B1 con forma libre 3D y cinco líneas de corriente: la línea media y el
     /// álabe con espesor.
+    fn b1_outcome() -> Outcome {
+        let mut inputs = Inputs::default();
+        inputs.blade.shape = BladeShape::Free3D;
+        inputs.blade.streamlines = 5;
+        crate::model::compute(&inputs, &Basis::default()).unwrap()
+    }
+
     fn b1_solid() -> (BladeCamber, BladeSolid, u32) {
         let mut inputs = Inputs::default();
         inputs.blade.shape = BladeShape::Free3D;
@@ -574,7 +813,52 @@ mod tests {
             at: [0.1, 0.2],
         };
         for result in [Ok(solid), Err(marked)] {
-            egui::__run_test_ui(|ui| profile_view(ui, &camber, &result, z));
+            let outcome = b1_outcome();
+            let mut inputs = outcome.inputs.clone();
+            let mut history = BetaHistory::default();
+            egui::__run_test_ui(|ui| {
+                profile_view(ui, &outcome, &mut inputs, &mut history, &camber, &result, z);
+            });
+        }
+    }
+
+    #[test]
+    fn the_profile_view_draws_the_nose_without_panicking() {
+        use hm_design::blade_edges::LeadingKind;
+        for kind in [LeadingKind::Blunt, LeadingKind::Ellipse, LeadingKind::Wedge] {
+            let mut inputs = Inputs::default();
+            inputs.blade.shape = BladeShape::Free3D;
+            inputs.blade.edges = inputs.blade.edges.with_leading_kind(kind, 0.0077, 0.0077);
+            let outcome = crate::model::compute(&inputs, &Basis::default()).unwrap();
+            let camber = crate::blade_inlet::camber_of(&outcome)
+                .unwrap()
+                .expect("forma 3D");
+            let solid = crate::blade_inlet::solid_of(&outcome);
+            assert!(solid.is_ok(), "{kind:?}: {solid:?}");
+            let mut history = BetaHistory::default();
+            for same in [true, false] {
+                let mut inputs = outcome.inputs.clone();
+                if !same {
+                    inputs.blade = crate::blade_edges::switch_same(
+                        &inputs.blade,
+                        &crate::blade_thickness::ThicknessGraph::of(&outcome, &camber)
+                            .unwrap()
+                            .curves,
+                        false,
+                    );
+                }
+                egui::__run_test_ui(|ui| {
+                    profile_view(
+                        ui,
+                        &outcome,
+                        &mut inputs,
+                        &mut history,
+                        &camber,
+                        &solid,
+                        outcome.result.selection.blade_count,
+                    );
+                });
+            }
         }
     }
 

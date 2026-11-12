@@ -547,8 +547,11 @@ pub(super) fn blade_beta_view(
                 crate::blade_development::BladeChart::Profile => {
                     edited |=
                         crate::blade_edges::leading_row(ui, outcome, inputs, history, Some(camber));
-                    crate::blade_development::profile_view(
+                    edited |= crate::blade_development::profile_view(
                         ui,
+                        outcome,
+                        inputs,
+                        history,
                         camber,
                         &solid,
                         outcome.result.selection.blade_count,

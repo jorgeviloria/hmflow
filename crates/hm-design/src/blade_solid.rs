@@ -1703,8 +1703,8 @@ fn readings(
     let outlet_gaps = lines
         .iter()
         .zip(nominal)
-        .map(|(line, (exit, cut_suction))| {
-            (blade_count > 1).then(|| outlet_gap(line, exit, cut_suction, pitch))
+        .map(|(line, (exit, cut_pressure))| {
+            (blade_count > 1).then(|| outlet_gap(line, exit, cut_pressure, pitch))
         })
         .collect();
 

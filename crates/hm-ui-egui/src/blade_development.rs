@@ -735,14 +735,34 @@ pub(super) fn profile_view(
         }
         if on_nose {
             ui.label(egui::RichText::new("Entrada").small().weak());
-            let current = inputs.blade.edges.leading;
-            for (kind, label) in crate::blade_edges::KINDS {
-                if ui.selectable_label(kind == current, label).clicked() {
-                    if let Some(graph) = &graph {
+            let same = inputs.blade.thickness.same;
+            for (choice, label) in crate::blade_edges::LEADING_CHOICES {
+                let (selected, e_hub, e_shroud) = match &graph {
+                    Some(graph) => {
                         let (e_hub, e_shroud) =
                             (graph.curves.hub.at(0.0), graph.curves.shroud.at(0.0));
-                        let candidate =
-                            crate::blade_edges::with_kind(&inputs.blade, kind, e_hub, e_shroud);
+                        (
+                            crate::blade_edges::choice_selected(
+                                choice,
+                                &inputs.blade.edges,
+                                same,
+                                e_hub,
+                                e_shroud,
+                            ),
+                            e_hub,
+                            e_shroud,
+                        )
+                    }
+                    None => (false, 0.0, 0.0),
+                };
+                if ui.selectable_label(selected, label).clicked() {
+                    if let Some(graph) = &graph {
+                        let candidate = crate::blade_edges::choose_leading(
+                            &inputs.blade,
+                            choice,
+                            e_hub,
+                            e_shroud,
+                        );
                         match crate::blade_edges::commit(
                             outcome, inputs, history, graph, candidate, time,
                         ) {

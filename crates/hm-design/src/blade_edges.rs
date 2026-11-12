@@ -72,7 +72,9 @@ fn is_positive(v: f64) -> bool {
 /// La forma del borde de ataque.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum LeadingKind {
-    /// Romo: sin nariz, el canto de la curva e(x) tal cual.
+    /// Recto («blunt» de Gülich, el «romo» del spec): sin nariz, el canto de
+    /// la curva e(x) tal cual, cortado perpendicular a la línea media. No es
+    /// el semicírculo: ese es la elipse con Lp = e/2.
     #[default]
     Blunt,
     /// Semielipse de semiejes Lp y e/2.

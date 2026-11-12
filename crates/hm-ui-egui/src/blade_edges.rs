@@ -1,5 +1,5 @@
 //! La fila «Entrada» de la vista «Perfil»: el selector del borde de entrada
-//! (romo, elipse o afilado), sus cotas en mm de cubo y de tapa, y las líneas
+//! (recto, semicírculo, elipse o afilado), sus cotas en mm de cubo y de tapa, y las líneas
 //! de cp,min (Gülich, ec. 7.1a, p. 414).
 //!
 //! Las cotas viven en `BladeSetup::edges`, así que elegir un tipo o escribir
@@ -23,9 +23,26 @@ use crate::model::{Inputs, Outcome};
 
 /// Los tipos del selector, en su orden, con su rótulo.
 pub(super) const KINDS: [(LeadingKind, &str); 3] = [
-    (LeadingKind::Blunt, "Romo"),
+    (LeadingKind::Blunt, "Recto"),
     (LeadingKind::Ellipse, "Elipse"),
     (LeadingKind::Wedge, "Afilado"),
+];
+
+/// Una elección del selector de entrada: un tipo, o el preset «Semicírculo»,
+/// que es la elipse con Lp = e/2 (radio completo, e/Lp = 2).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) enum LeadingChoice {
+    Kind(LeadingKind),
+    Semicircle,
+}
+
+/// Las elecciones de la entrada, en su orden, con su rótulo: de la peor
+/// caída de presión (recto) a la mejor (Gülich, ec. 7.1a).
+pub(super) const LEADING_CHOICES: [(LeadingChoice, &str); 4] = [
+    (LeadingChoice::Kind(LeadingKind::Blunt), "Recto"),
+    (LeadingChoice::Semicircle, "Semicírculo"),
+    (LeadingChoice::Kind(LeadingKind::Ellipse), "Elipse"),
+    (LeadingChoice::Kind(LeadingKind::Wedge), "Afilado"),
 ];
 
 /// Los tipos de la salida en el selector, en su orden, con su rótulo.
@@ -283,6 +300,67 @@ pub(super) fn with_trailing_kind(
     out
 }
 
+/// El álabe con esa elección de entrada. El semicírculo es una elipse con
+/// Lp = e(0)/2 en cada pared (con «cubo = tapa», la del cubo en las dos): el
+/// semicírculo de Gülich (§7.2.4, p. 415), sin geometría nueva.
+pub(super) fn choose_leading(
+    setup: &BladeSetup,
+    choice: LeadingChoice,
+    e_hub: f64,
+    e_shroud: f64,
+) -> BladeSetup {
+    match choice {
+        LeadingChoice::Kind(kind) => with_kind(setup, kind, e_hub, e_shroud),
+        LeadingChoice::Semicircle => {
+            let mut out = with_kind(setup, LeadingKind::Ellipse, e_hub, e_shroud);
+            let same = setup.thickness.same;
+            let hub = LeadingDims {
+                lp: e_hub / 2.0,
+                ..out.edges.leading_hub
+            };
+            out.edges = out.edges.with_leading_dims(ThicknessWall::Hub, hub, same);
+            if !same {
+                let shroud = LeadingDims {
+                    lp: e_shroud / 2.0,
+                    ..out.edges.leading_shroud
+                };
+                out.edges = out
+                    .edges
+                    .with_leading_dims(ThicknessWall::Shroud, shroud, false);
+            }
+            out
+        }
+    }
+}
+
+/// Si la entrada es el semicírculo: elipse con Lp = e(0)/2 en cada pared que
+/// cuenta (solo el cubo con «cubo = tapa»).
+pub(super) fn is_semicircle(edges: &BladeEdges, same: bool, e_hub: f64, e_shroud: f64) -> bool {
+    let half = |lp: f64, e: f64| (lp - e / 2.0).abs() <= 1.0e-9 * e.abs().max(1.0e-3);
+    edges.leading == LeadingKind::Ellipse
+        && half(edges.leading_hub.lp, e_hub)
+        && (same || half(edges.leading_shroud.lp, e_shroud))
+}
+
+/// Si esa elección es la que hay puesta. La elipse deja de estar marcada
+/// cuando es justo el semicírculo.
+pub(super) fn choice_selected(
+    choice: LeadingChoice,
+    edges: &BladeEdges,
+    same: bool,
+    e_hub: f64,
+    e_shroud: f64,
+) -> bool {
+    let semicircle = is_semicircle(edges, same, e_hub, e_shroud);
+    match choice {
+        LeadingChoice::Semicircle => semicircle,
+        LeadingChoice::Kind(LeadingKind::Ellipse) => {
+            edges.leading == LeadingKind::Ellipse && !semicircle
+        }
+        LeadingChoice::Kind(kind) => edges.leading == kind,
+    }
+}
+
 /// Enciende o apaga «cubo = tapa» para la curva de espesor y para los bordes:
 /// un solo interruptor gobierna las dos cosas.
 pub(super) fn switch_same(setup: &BladeSetup, base: &ThicknessCurves, same: bool) -> BladeSetup {
@@ -294,7 +372,8 @@ pub(super) fn switch_same(setup: &BladeSetup, base: &ThicknessCurves, same: bool
 
 /// Las líneas de cp,min de la entrada, por pared (una sola con «cubo =
 /// tapa»), con e(0) de cada pared y la Lp escrita: «Cubo: e/Lp = 0,20 →
-/// cp,min = 0,155». Con romo, la nota de que es peor que el semicírculo. Sin
+/// cp,min = 0,155». Con el canto recto, la nota de que es peor que el
+/// semicírculo; con e/Lp = 2, la de que es el semicírculo. Sin
 /// umbral: es una lectura orientativa (Gülich avisa de que no se transfiere
 /// tal cual al rodete).
 #[must_use]
@@ -305,7 +384,7 @@ pub(super) fn cp_min_lines(
     e_shroud: f64,
 ) -> Vec<String> {
     if edges.leading == LeadingKind::Blunt {
-        return vec!["Entrada: romo, peor que el semicírculo (cp,min > 2,05)".to_string()];
+        return vec!["Entrada: recto, peor que el semicírculo (cp,min > 2,05)".to_string()];
     }
     let walls: Vec<(&str, f64, f64)> = if same {
         vec![("Cubo = tapa", 0.0, e_hub)]
@@ -324,7 +403,11 @@ pub(super) fn cp_min_lines(
                 comma(ratio, 2),
                 comma(cp_min(ratio), 3)
             );
-            if ratio >= 2.0 {
+            if (ratio - 2.0).abs() < 1.0e-6 {
+                line.push_str(
+                    " · semicírculo: solo para bombas pequeñas o poco exigentes (Gülich)",
+                );
+            } else if ratio > 2.0 {
                 line.push_str(" · más romo que un semicírculo");
             }
             if edges.leading == LeadingKind::Wedge && profile.dims.asymmetry > 0.0 {
@@ -425,9 +508,13 @@ impl Side {
     /// Los rótulos del selector y cuál está elegido (para la fila desactivada).
     fn labels(self, edges: &BladeEdges) -> Vec<(&'static str, bool)> {
         match self {
-            Self::Leading => KINDS
+            Self::Leading => LEADING_CHOICES
                 .iter()
-                .map(|(kind, label)| (*label, *kind == edges.leading))
+                .map(|(choice, label)| {
+                    let selected =
+                        matches!(choice, LeadingChoice::Kind(kind) if *kind == edges.leading);
+                    (*label, selected)
+                })
                 .collect(),
             Self::Trailing => TRAILING_KINDS
                 .iter()
@@ -508,7 +595,7 @@ pub(super) fn commit(
     Ok(true)
 }
 
-/// «Entrada: [Romo | Elipse | Afilado]» y, debajo, las cotas del tipo en mm de
+/// «Entrada: [Recto | Semicírculo | Elipse | Afilado]» y, debajo, las cotas del tipo en mm de
 /// cubo y de tapa (una sola fila con «cubo = tapa»). Con una forma 2D sale
 /// desactivada y no toca las cotas guardadas. `true` si escribió `inputs`.
 pub(super) fn leading_row(
@@ -573,13 +660,20 @@ fn edge_row(
         ui.label(side.title());
         match side {
             Side::Leading => {
-                let current = inputs.blade.edges.leading;
-                let mut chosen = current;
-                for (candidate, label) in KINDS {
-                    ui.selectable_value(&mut chosen, candidate, label);
-                }
-                if chosen != current {
-                    picked = Some(with_kind(&inputs.blade, chosen, e_hub, e_shroud));
+                let edges = &inputs.blade.edges;
+                let same = inputs.blade.thickness.same;
+                for (choice, label) in LEADING_CHOICES {
+                    let selected = choice_selected(choice, edges, same, e_hub, e_shroud);
+                    let mut response = ui.selectable_label(selected, label);
+                    if choice == LeadingChoice::Semicircle {
+                        response = response.on_hover_text(
+                            "Elipse con Lp = e/2: radio completo, e/Lp = 2, cp,min = 2,05 \
+                             (Gülich, ec. 7.1a). Solo para bombas pequeñas o poco exigentes.",
+                        );
+                    }
+                    if response.clicked() && !selected {
+                        picked = Some(choose_leading(&inputs.blade, choice, e_hub, e_shroud));
+                    }
                 }
             }
             Side::Trailing => {
@@ -1186,10 +1280,10 @@ mod tests {
     fn the_default_row_says_blunt() {
         let (outcome, _) = b1_3d();
         assert_eq!(outcome.inputs.blade.edges.leading, LeadingKind::Blunt);
-        assert_eq!(kind_label(LeadingKind::Blunt), "Romo");
+        assert_eq!(kind_label(LeadingKind::Blunt), "Recto");
         let lines = cp_min_lines(&outcome.inputs.blade.edges, true, 0.006, 0.006);
         assert_eq!(lines.len(), 1);
-        assert!(lines[0].contains("romo"), "{lines:?}");
+        assert!(lines[0].contains("recto"), "{lines:?}");
         assert!(lines[0].contains("2,05"), "{lines:?}");
     }
 
@@ -1234,6 +1328,89 @@ mod tests {
             .map(|_| ()),
             Ok(())
         );
+    }
+
+    #[test]
+    fn the_leading_choices_are_straight_semicircle_ellipse_and_wedge() {
+        assert_eq!(
+            LEADING_CHOICES.map(|(_, label)| label),
+            ["Recto", "Semicírculo", "Elipse", "Afilado"]
+        );
+    }
+
+    #[test]
+    fn choosing_the_semicircle_sets_lp_to_half_the_thickness() {
+        let (outcome, camber) = b1_3d();
+        let graph = graph(&outcome, &camber);
+        let (e_hub, e_shroud) = e_walls(&graph);
+        let setup = &outcome.inputs.blade;
+        let edges = &setup.edges;
+        assert!(!is_semicircle(edges, true, e_hub, e_shroud));
+        let chosen = choose_leading(setup, LeadingChoice::Semicircle, e_hub, e_shroud);
+        let edges = &chosen.edges;
+        assert_eq!(edges.leading, LeadingKind::Ellipse);
+        assert_eq!(edges.leading_hub.lp, e_hub / 2.0);
+        assert!(is_semicircle(edges, true, e_hub, e_shroud));
+        // Marcado el semicírculo y no la elipse.
+        assert!(choice_selected(
+            LeadingChoice::Semicircle,
+            edges,
+            true,
+            e_hub,
+            e_shroud
+        ));
+        assert!(!choice_selected(
+            LeadingChoice::Kind(LeadingKind::Ellipse),
+            edges,
+            true,
+            e_hub,
+            e_shroud
+        ));
+        assert!(!choice_selected(
+            LeadingChoice::Kind(LeadingKind::Blunt),
+            edges,
+            true,
+            e_hub,
+            e_shroud
+        ));
+        // Gülich: e/Lp = 2 → cp,min = 2,05 (2,0485 con tres decimales: 2,049), y la
+        // nota de que es el semicírculo.
+        let lines = cp_min_lines(edges, true, e_hub, e_shroud);
+        assert!(lines[0].contains("e/Lp = 2,00"), "{lines:?}");
+        assert!(lines[0].contains("2,049"), "{lines:?}");
+        assert!(lines[0].contains("semicírculo"), "{lines:?}");
+        assert!(!lines[0].contains("más romo"), "{lines:?}");
+        // La elipse por defecto no es el semicírculo, y la elige la fila.
+        let ellipse = choose_leading(
+            setup,
+            LeadingChoice::Kind(LeadingKind::Ellipse),
+            e_hub,
+            e_shroud,
+        );
+        assert!(!is_semicircle(&ellipse.edges, true, e_hub, e_shroud));
+        assert!(choice_selected(
+            LeadingChoice::Kind(LeadingKind::Ellipse),
+            &ellipse.edges,
+            true,
+            e_hub,
+            e_shroud
+        ));
+        // Con las paredes separadas, cada una con su e(0).
+        let split = switch_same(setup, &graph.curves, false);
+        let chosen = choose_leading(&split, LeadingChoice::Semicircle, e_hub, 0.004);
+        assert_eq!(chosen.edges.leading_hub.lp, e_hub / 2.0);
+        assert_eq!(chosen.edges.leading_shroud.lp, 0.002);
+        assert!(is_semicircle(&chosen.edges, false, e_hub, 0.004));
+        assert!(!is_semicircle(&chosen.edges, false, e_hub, 0.005));
+        // Y el sólido se construye con ella.
+        let mut inputs = outcome.inputs.clone();
+        let mut history = history_for(&inputs);
+        let candidate = choose_leading(&inputs.blade, LeadingChoice::Semicircle, e_hub, e_shroud);
+        assert_eq!(
+            commit(&outcome, &mut inputs, &mut history, &graph, candidate, 1.0),
+            Ok(true)
+        );
+        assert!(history.can_undo());
     }
 
     #[test]
@@ -1370,11 +1547,11 @@ mod tests {
         assert_eq!(split.len(), 2);
         assert!(split[0].starts_with("Cubo:") && split[1].starts_with("Tapa:"));
         assert!(split[1].contains("0,155"), "{split:?}");
-        // El semicírculo (e/Lp = 2): 2,05, y el aviso de que es más romo.
+        // Más corta que e/2 (e/Lp = 2,5) sería más roma que el semicírculo.
         let round = BladeEdges {
             leading: LeadingKind::Ellipse,
             leading_hub: LeadingDims {
-                lp: e / 2.0,
+                lp: e / 2.5,
                 tip: 0.0,
                 asymmetry: 0.0,
             },
@@ -1382,7 +1559,7 @@ mod tests {
             ..BladeEdges::default()
         };
         let lines = cp_min_lines(&round, true, e, e);
-        assert!(lines[0].contains("2,0"), "{lines:?}");
+        assert!(lines[0].contains("2,5"), "{lines:?}");
         assert!(
             lines[0].contains("más romo que un semicírculo"),
             "{lines:?}"
@@ -1439,12 +1616,12 @@ mod tests {
     #[test]
     fn the_row_draws_without_panicking() {
         let (outcome, camber) = b1_3d();
-        for kind in [LeadingKind::Blunt, LeadingKind::Ellipse, LeadingKind::Wedge] {
+        for (choice, _) in LEADING_CHOICES {
             let graph = graph(&outcome, &camber);
             let (e_hub, e_shroud) = e_walls(&graph);
             for same in [true, false] {
                 let mut inputs = outcome.inputs.clone();
-                inputs.blade = with_kind(&inputs.blade, kind, e_hub, e_shroud);
+                inputs.blade = choose_leading(&inputs.blade, choice, e_hub, e_shroud);
                 inputs.blade = switch_same(&inputs.blade, &graph.curves, same);
                 let mut history = history_for(&inputs);
                 egui::__run_test_ui(|ui| {

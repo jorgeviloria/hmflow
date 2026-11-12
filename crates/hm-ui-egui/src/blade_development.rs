@@ -478,6 +478,30 @@ enum Handle {
     Tail(TailHandle),
 }
 
+/// Si un clic derecho cae sobre la nariz o sobre la salida de alguna de las
+/// líneas que se dibujan (`close` dice si un punto del dibujo queda cerca del
+/// clic). La salida es su forma o, recortada, el canto de D2. Una línea que no
+/// se ve no cuenta.
+fn edge_targets(
+    lines: &[ProfileLine],
+    shown: ProfileShown,
+    close: impl Fn(&[f64; 2]) -> bool,
+) -> (bool, bool) {
+    let visible = lines
+        .iter()
+        .enumerate()
+        .filter(|(index, _)| shown.shows(*index, lines.len()))
+        .map(|(_, line)| line);
+    let (mut on_nose, mut on_tail) = (false, false);
+    for line in visible {
+        on_nose |= line.nose.iter().flatten().any(&close);
+        on_tail |= line.tail.iter().flatten().any(&close)
+            || line.pressure.last().is_some_and(&close)
+            || line.suction.last().is_some_and(&close);
+    }
+    (on_nose, on_tail)
+}
+
 /// Zoom con la rueda, desplazamiento arrastrando y doble clic para reencuadrar.
 /// Con el álabe con espesor, el vecino y la garganta; si no sale, las líneas
 /// medias y el motivo bajo la vista. Con nariz, las cotas se agarran: Lp en la
@@ -671,16 +695,10 @@ pub(super) fn profile_view(
                 }
                 if response.secondary_clicked() {
                     let close = |point: &[f64; 2]| to_screen(*point).distance(at) <= NOSE_MENU_PIXELS;
-                    let on_nose = lines
-                        .iter()
-                        .flatten()
-                        .any(|line| line.nose.iter().flatten().any(close));
-                    // La salida: su forma o, recortada, el canto de D2.
-                    let on_tail = lines.iter().flatten().any(|line| {
-                        line.tail.iter().flatten().any(close)
-                            || close(line.pressure.last().unwrap())
-                            || close(line.suction.last().unwrap())
-                    });
+                    let (on_nose, on_tail) = match &lines {
+                        Some(lines) => edge_targets(lines, shown, close),
+                        None => (false, false),
+                    };
                     ctx.data_mut(|data| data.insert_temp(target_id, (on_nose, on_tail)));
                 }
                 if let (Some(handle), true, Some(graph)) =
@@ -1166,5 +1184,39 @@ mod tests {
                 });
             }
         }
+    }
+    #[test]
+    fn the_right_click_ignores_the_lines_that_are_not_drawn() {
+        use hm_design::blade_edges::{LeadingKind, TrailingKind};
+        let mut inputs = Inputs::default();
+        inputs.blade.shape = BladeShape::Free3D;
+        inputs.blade.streamlines = 5;
+        inputs.blade.edges = inputs
+            .blade
+            .edges
+            .with_leading_kind(LeadingKind::Ellipse, 0.0077, 0.0077)
+            .with_trailing_kind(TrailingKind::FiledSuction, 0.0077, 0.0077);
+        let outcome = crate::model::compute(&inputs, &Basis::default()).unwrap();
+        let camber = crate::blade_inlet::camber_of(&outcome).unwrap().unwrap();
+        let solid = crate::blade_inlet::solid_of(&outcome).unwrap();
+        let lines = profile_lines(&camber, &solid);
+        let inner = 2;
+        // La punta de la nariz y el canto de D2 de la línea intermedia.
+        let nose_tip = lines[inner].nose[0][1];
+        let exit = lines[inner].tail.last().unwrap()[1];
+        let near = |target: [f64; 2]| {
+            move |p: &[f64; 2]| (p[0] - target[0]).hypot(p[1] - target[1]) < 1e-9
+        };
+        let hidden = ProfileShown::default();
+        assert!(!hidden.inner);
+        assert_eq!(edge_targets(&lines, hidden, near(nose_tip)), (false, false));
+        assert_eq!(edge_targets(&lines, hidden, near(exit)), (false, false));
+        // Con las intermedias a la vista, sí cuentan.
+        let shown = ProfileShown {
+            inner: true,
+            ..hidden
+        };
+        assert_eq!(edge_targets(&lines, shown, near(nose_tip)), (true, false));
+        assert_eq!(edge_targets(&lines, shown, near(exit)), (false, true));
     }
 }

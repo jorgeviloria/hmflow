@@ -1786,10 +1786,67 @@ fn a_gap_ratio_above_one_with_suction_filing_and_one_with_pressure_filing() {
     // cambia: solo estrecha la estela (Gülich, 4.5.2, fig. 3.6).
     assert!(gap_s.ratio() > 1.0, "{}", gap_s.ratio());
     assert!(gap_s.cut > 0.0);
-    close(gap_p.ratio(), 1.0, 1.0e-9);
+    // La cara de presión limada se remuestrea: unas micras, no un cambio.
+    close(gap_p.ratio(), 1.0, 2.0e-4);
     // El rango de la altura del libro sale del cociente.
     let (low, high) = gap_s.head_gain_range();
     assert!(0.0 < low && low < high, "{low} {high}");
+}
+
+/// El punto en cartesianas, m.
+fn xyz(p: &SolidPoint) -> [f64; 3] {
+    [p.r * p.theta.cos(), p.r * p.theta.sin(), p.z]
+}
+
+#[test]
+fn a2_is_the_throat_between_blades_and_not_the_chord_to_the_nose() {
+    // Gülich, ec. 3.8 (p. 136): a2 = t2·sen βa2, con t2 = π·d2/Z. La garganta
+    // de un canal de paredes casi paralelas es t2·sen β2B − e, no la cuerda del
+    // paso ni la distancia a la nariz.
+    let case = b1_case();
+    let solid = solid_with(&case, &BladeEdges::default()).unwrap();
+    let z = f64::from(case.z());
+    for (index, gap) in solid.readings.outlet_gaps.iter().enumerate() {
+        let gap = gap.as_ref().unwrap();
+        let exit = case.camber.lines[index].points.last().unwrap();
+        let t2 = 2.0 * std::f64::consts::PI * exit.r / z;
+        let e1 = case.curves.at(solid.lines[index].psi, 1.0);
+        let expected = t2 * exit.beta.sin() - e1;
+        // El canal se ensancha y las caras no son paralelas: 15 %.
+        close(gap.cut, expected, 0.15 * expected);
+        // El pie está sobre la cara de presión del vecino, en la parte de
+        // fuera del álabe (r ≥ 0,6·r2), no en la nariz.
+        assert!(gap.to.r > 0.6 * exit.r, "línea {index}: r = {}", gap.to.r);
+        // Y la distancia que se dice es la de los dos puntos.
+        let (a, b) = (xyz(&gap.from), xyz(&gap.to));
+        let distance = (0..3).map(|k| (a[k] - b[k]).powi(2)).sum::<f64>().sqrt();
+        close(distance, gap.cut, 1.0e-9);
+    }
+}
+
+#[test]
+fn filing_the_suction_side_opens_the_throat_by_about_the_filed_thickness() {
+    // Limar por succión quita material de la cara que mira la garganta: a2′ es
+    // mayor que a2 en lo que se lima (de e(1)/2 a `end`, medido sobre la
+    // garganta), y limar por presión no la cambia (Gülich, 4.5.2, fig. 3.6).
+    let case = b1_case();
+    let e1 = case.curves.hub.at(1.0);
+    let suction = solid_with(&case, &default_tail(&case, TrailingKind::FiledSuction)).unwrap();
+    let pressure = solid_with(&case, &default_tail(&case, TrailingKind::FiledPressure)).unwrap();
+    for index in 0..suction.lines.len() {
+        let gap_s = suction.readings.outlet_gaps[index].as_ref().unwrap();
+        let gap_p = pressure.readings.outlet_gaps[index].as_ref().unwrap();
+        let opened = gap_s.shaped - gap_s.cut;
+        assert!(
+            opened > 0.1 * e1 && opened < e1,
+            "línea {index}: abre {} mm con e(1) = {} mm",
+            opened * 1000.0,
+            e1 * 1000.0
+        );
+        assert!(gap_s.ratio() > 1.01, "línea {index}: {}", gap_s.ratio());
+        // La cara de presión limada se remuestrea: unas micras, no un cambio.
+        close(gap_p.ratio(), 1.0, 2.0e-4);
+    }
 }
 
 #[test]

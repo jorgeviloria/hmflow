@@ -1246,7 +1246,7 @@ pub fn blade_solid(
     let mut node_faces: Vec<(Vec<SolidPoint>, Vec<SolidPoint>)> = Vec::with_capacity(lines.len());
     let mut nose_notices: Vec<SolidNotice> = Vec::new();
     // Por línea: el corte nominal de D2 (el del espesor del cuerpo) y la cara
-    // de succión entera hasta D2.
+    // de presión entera hasta D2.
     let mut nominal_exits: Vec<([SolidPoint; 3], Vec<SolidPoint>)> =
         Vec::with_capacity(lines.len());
     for (index, (line, path)) in camber.lines.iter().zip(paths).enumerate() {
@@ -1446,7 +1446,7 @@ pub fn blade_solid(
                 (pressure, suction, rows)
             }
         };
-        nominal_exits.push((cut_exit, cut_suction));
+        nominal_exits.push((cut_exit, cut_pressure));
         node_faces.push((
             nominal_sections(&path, &stations, &planes, &tangents, &along, 1.0, steps),
             nominal_sections(&path, &stations, &planes, &tangents, &along, -1.0, steps),
@@ -1598,17 +1598,23 @@ pub struct Throat {
 /// 0.2 y §3.3, ec. 3.8, p. 136): «la distancia entre álabes en la garganta»,
 /// la distancia más corta entre el canto de salida de un álabe y la superficie
 /// del álabe vecino, con βa2 = arcsen(a2/t2), t2 = π·d2/Z. Aquí: la distancia
-/// más corta, en 3D, entre los puntos del canto de salida del álabe vecino
-/// (θ + 2π/Z) y la cara de succión de éste.
+/// más corta, en 3D, entre los puntos del canto de salida de este álabe y la
+/// cara de presión del vecino (θ + 2π/Z), que es la que mira a ese canto: el
+/// pie de la perpendicular cae dentro de la cara, a una distancia de
+/// t2·sen β2B − e, y no en la nariz ni en el canto de D2 del otro lado (que
+/// daría la cuerda del paso). Limar por succión retira material de la esquina
+/// de succión del canto, la que mira a la garganta, y la abre (Gülich, 4.5.2,
+/// fig. 3.6); limar por presión no toca esa esquina.
 #[derive(Debug, Clone, PartialEq)]
 pub struct OutletGap {
     /// a2 con la salida recortada, m.
     pub cut: f64,
     /// a2′ con la forma elegida (igual a `cut` con recortada), m.
     pub shaped: f64,
-    /// El punto del canto del álabe vecino que da a2′.
+    /// El punto del canto de salida de este álabe que da a2′.
     pub from: SolidPoint,
-    /// El punto de la cara de succión más cercano a `from`.
+    /// El punto de la cara de presión del álabe vecino (θ + 2π/Z) más cercano
+    /// a `from`, con su θ en la misma vuelta que la de `from`.
     pub to: SolidPoint,
 }
 
@@ -1821,23 +1827,28 @@ fn nearest_on(target: [f64; 3], line: &[SolidPoint]) -> (f64, SolidPoint) {
     best.expect("la cara tiene al menos dos puntos")
 }
 
-/// a2 de `line`: la distancia más corta entre el canto de salida del álabe
-/// vecino (θ + 2π/Z) y la cara de succión, con la salida recortada
-/// (`cut_exit`, `cut_suction`) y con la elegida (la de `line`).
+/// a2 de `line`: la distancia más corta entre su canto de salida y la cara de
+/// presión del álabe vecino (θ + 2π/Z), con la salida recortada (`cut_exit`,
+/// `cut_pressure`) y con la elegida (la de `line`). La cara de presión del
+/// vecino es la de esta línea girada un paso, y las distancias son las mismas
+/// que con el canto del vecino girado un paso atrás.
 fn outlet_gap(
     line: &SolidLine,
     cut_exit: &[SolidPoint; 3],
-    cut_suction: &[SolidPoint],
+    cut_pressure: &[SolidPoint],
     pitch: f64,
 ) -> OutletGap {
-    let measure = |exit: &[SolidPoint; 3], suction: &[SolidPoint]| {
-        let mut best: Option<(f64, SolidPoint, SolidPoint)> = None;
-        for point in exit {
-            let from = SolidPoint {
+    let measure = |exit: &[SolidPoint; 3], pressure: &[SolidPoint]| {
+        let neighbour: Vec<SolidPoint> = pressure
+            .iter()
+            .map(|point| SolidPoint {
                 theta: point.theta + pitch,
                 ..*point
-            };
-            let (distance, to) = nearest_on(cartesian(&from), suction);
+            })
+            .collect();
+        let mut best: Option<(f64, SolidPoint, SolidPoint)> = None;
+        for from in exit {
+            let (distance, to) = nearest_on(cartesian(from), &neighbour);
             if best
                 .as_ref()
                 .is_none_or(|(shortest, ..)| distance < *shortest)
@@ -1848,19 +1859,19 @@ fn outlet_gap(
                     theta: to.theta + turns * 2.0 * std::f64::consts::PI,
                     ..to
                 };
-                best = Some((distance, from, to));
+                best = Some((distance, *from, to));
             }
         }
         best.expect("el canto tiene tres puntos")
     };
-    let shaped_suction: Vec<SolidPoint> = line
-        .suction
+    let shaped_pressure: Vec<SolidPoint> = line
+        .pressure
         .iter()
         .copied()
-        .chain(line.tail.iter().skip(1).map(|row| row[2]))
+        .chain(line.tail.iter().skip(1).map(|row| row[0]))
         .collect();
-    let (cut, ..) = measure(cut_exit, cut_suction);
-    let (shaped, from, to) = measure(&line.trailing_edge(), &shaped_suction);
+    let (cut, ..) = measure(cut_exit, cut_pressure);
+    let (shaped, from, to) = measure(&line.trailing_edge(), &shaped_pressure);
     OutletGap {
         cut,
         shaped,

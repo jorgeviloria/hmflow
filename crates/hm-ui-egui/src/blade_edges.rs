@@ -10,7 +10,9 @@
 
 use eframe::egui;
 use hm_design::blade_camber::BladeCamber;
-use hm_design::blade_edges::{BladeEdges, LeadingDims, LeadingKind, cp_min};
+use hm_design::blade_edges::{
+    BladeEdges, LeadingDims, LeadingKind, TrailingDims, TrailingKind, cp_min,
+};
 use hm_design::blade_setup::{BladeFamily, BladeSetup};
 use hm_design::blade_solid::{BladeSolid, SolidPoint};
 use hm_design::blade_thickness::{ThicknessCurves, ThicknessWall};
@@ -26,7 +28,15 @@ pub(super) const KINDS: [(LeadingKind, &str); 3] = [
     (LeadingKind::Wedge, "Afilado"),
 ];
 
-/// Una cota de la nariz.
+/// Los tipos de la salida en el selector, en su orden, con su rótulo.
+pub(super) const TRAILING_KINDS: [(TrailingKind, &str); 4] = [
+    (TrailingKind::Cut, "Recortada"),
+    (TrailingKind::FiledSuction, "Limada por succión"),
+    (TrailingKind::FiledPressure, "Limada por presión"),
+    (TrailingKind::Ellipse, "Elipse"),
+];
+
+/// Una cota de la nariz o de la salida.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(super) enum Field {
     /// Longitud de la nariz, mm.
@@ -35,6 +45,10 @@ pub(super) enum Field {
     Tip,
     /// Asimetría del afilado, de 0 a 1.
     Asymmetry,
+    /// Longitud de la salida con forma, mm.
+    Length,
+    /// Espesor final del limado en D2, mm.
+    End,
 }
 
 impl Field {
@@ -43,10 +57,26 @@ impl Field {
             Self::Lp => "Lp",
             Self::Tip => "punta",
             Self::Asymmetry => "asimetría",
+            Self::Length => "longitud",
+            Self::End => "espesor final",
         }
     }
 
-    /// Las cotas que lleva un tipo.
+    /// Si es una cota de la salida.
+    fn is_trailing(self) -> bool {
+        matches!(self, Self::Length | Self::End)
+    }
+
+    /// Las cotas que lleva un tipo de salida.
+    fn of_trailing(kind: TrailingKind) -> &'static [Self] {
+        match kind {
+            TrailingKind::Cut => &[],
+            TrailingKind::FiledSuction | TrailingKind::FiledPressure => &[Self::Length, Self::End],
+            TrailingKind::Ellipse => &[Self::Length],
+        }
+    }
+
+    /// Las cotas que lleva un tipo de entrada.
     fn of(kind: LeadingKind) -> &'static [Self] {
         match kind {
             LeadingKind::Blunt => &[],
@@ -55,11 +85,25 @@ impl Field {
         }
     }
 
-    fn value(self, dims: &LeadingDims) -> f64 {
+    /// El valor guardado, en mm (la asimetría, sin unidad), del cubo o de la
+    /// tapa.
+    fn value(self, edges: &BladeEdges, hub: bool) -> f64 {
+        let leading = if hub {
+            edges.leading_hub
+        } else {
+            edges.leading_shroud
+        };
+        let trailing = if hub {
+            edges.trailing_hub
+        } else {
+            edges.trailing_shroud
+        };
         match self {
-            Self::Lp => dims.lp * 1000.0,
-            Self::Tip => dims.tip * 1000.0,
-            Self::Asymmetry => dims.asymmetry,
+            Self::Lp => leading.lp * 1000.0,
+            Self::Tip => leading.tip * 1000.0,
+            Self::Asymmetry => leading.asymmetry,
+            Self::Length => trailing.length * 1000.0,
+            Self::End => trailing.end * 1000.0,
         }
     }
 }
@@ -76,6 +120,14 @@ pub(super) fn kind_label(kind: LeadingKind) -> &'static str {
         .map_or("", |(_, label)| label)
 }
 
+/// El rótulo del selector de un tipo de salida.
+pub(super) fn trailing_label(kind: TrailingKind) -> &'static str {
+    TRAILING_KINDS
+        .iter()
+        .find(|(candidate, _)| *candidate == kind)
+        .map_or("", |(_, label)| label)
+}
+
 /// «12,5», «12.5» o «12,5 mm» → 12.5 (mm); la asimetría, un número de 0 a 1.
 /// Vacío, texto o un valor fuera de rango es `Err` con la frase que se
 /// enseña, y la cota queda como estaba.
@@ -83,8 +135,9 @@ pub(super) fn parse_dimension(text: &str, field: Field) -> Result<f64, String> {
     let trimmed = text.trim();
     let example = match field {
         Field::Lp => "12,5",
-        Field::Tip => "0,8",
+        Field::Tip | Field::End => "0,8",
         Field::Asymmetry => "0,5",
+        Field::Length => "12",
     };
     if trimmed.is_empty() {
         return Err(format!(
@@ -118,7 +171,11 @@ pub(super) fn parse_dimension(text: &str, field: Field) -> Result<f64, String> {
     }
     match field {
         Field::Lp if value <= 0.0 => Err("Lp tiene que ser mayor que cero".to_string()),
+        Field::Length if value <= 0.0 => {
+            Err("la longitud de la salida tiene que ser mayor que cero".to_string())
+        }
         Field::Tip if value < 0.0 => Err("la punta no puede ser negativa".to_string()),
+        Field::End if value < 0.0 => Err("el espesor final no puede ser negativo".to_string()),
         Field::Asymmetry if !(0.0..=1.0).contains(&value) => {
             Err("la asimetría va de 0 a 1".to_string())
         }
@@ -136,20 +193,51 @@ pub(super) fn write_dimension(
     field: Field,
     text: &str,
 ) -> Result<BladeSetup, String> {
-    let kind = setup.edges.leading;
-    if !Field::of(kind).contains(&field) {
-        return Err(format!(
-            "el borde «{}» no lleva la cota {}",
-            kind_label(kind).to_lowercase(),
-            field.label()
-        ));
+    let edges = &setup.edges;
+    let (name, allowed) = if field.is_trailing() {
+        (
+            format!(
+                "la salida «{}»",
+                trailing_label(edges.trailing).to_lowercase()
+            ),
+            Field::of_trailing(edges.trailing),
+        )
+    } else {
+        (
+            format!("el borde «{}»", kind_label(edges.leading).to_lowercase()),
+            Field::of(edges.leading),
+        )
+    };
+    if !allowed.contains(&field) {
+        return Err(format!("{name} no lleva la cota {}", field.label()));
     }
     let value = parse_dimension(text, field)?;
     let same = setup.thickness.same;
-    let current = if same || wall == ThicknessWall::Hub {
-        setup.edges.leading_hub
+    let hub = same || wall == ThicknessWall::Hub;
+    let mut out = setup.clone();
+    if field.is_trailing() {
+        let current = if hub {
+            edges.trailing_hub
+        } else {
+            edges.trailing_shroud
+        };
+        let dims = match field {
+            Field::Length => TrailingDims {
+                length: value / 1000.0,
+                ..current
+            },
+            _ => TrailingDims {
+                end: value / 1000.0,
+                ..current
+            },
+        };
+        out.edges = edges.with_trailing_dims(wall, dims, same);
+        return Ok(out);
+    }
+    let current = if hub {
+        edges.leading_hub
     } else {
-        setup.edges.leading_shroud
+        edges.leading_shroud
     };
     let dims = match field {
         Field::Lp => LeadingDims {
@@ -160,13 +248,12 @@ pub(super) fn write_dimension(
             tip: value / 1000.0,
             ..current
         },
-        Field::Asymmetry => LeadingDims {
+        _ => LeadingDims {
             asymmetry: value,
             ..current
         },
     };
-    let mut out = setup.clone();
-    out.edges = setup.edges.with_leading_dims(wall, dims, same);
+    out.edges = edges.with_leading_dims(wall, dims, same);
     Ok(out)
 }
 
@@ -180,6 +267,19 @@ pub(super) fn with_kind(
 ) -> BladeSetup {
     let mut out = setup.clone();
     out.edges = setup.edges.with_leading_kind(kind, e_hub, e_shroud);
+    out
+}
+
+/// El álabe con ese tipo de salida y las cotas por defecto de cada pared (con
+/// su e(1)); la entrada no se toca.
+pub(super) fn with_trailing_kind(
+    setup: &BladeSetup,
+    kind: TrailingKind,
+    e1_hub: f64,
+    e1_shroud: f64,
+) -> BladeSetup {
+    let mut out = setup.clone();
+    out.edges = setup.edges.with_trailing_kind(kind, e1_hub, e1_shroud);
     out
 }
 
@@ -235,6 +335,116 @@ pub(super) fn cp_min_lines(
         .collect()
 }
 
+/// Los avisos del sólido que son de la salida: la longitud o el espesor final
+/// acotados, y la elipse que llega a 0 en D2.
+fn tail_notices(solid: &BladeSolid) -> impl Iterator<Item = &str> {
+    solid
+        .notices
+        .iter()
+        .map(|notice| notice.message.as_str())
+        .filter(|message| message.contains("salida") || message.contains("limado"))
+}
+
+/// Las lecturas de la salida (a2 de cada línea y lo que sigue del tipo
+/// elegido), para el panel «Lecturas»:
+/// «Línea 2: a2 = 18,4 mm → a2′ = 19,6 mm (a2′/a2 = 1,065); altura estimada
+/// +2,6 % a +5,3 %».
+///
+/// a2 es la distancia más corta entre el canto de salida del álabe vecino y
+/// la cara de succión (Gülich, Tabla 0.2 y 3.3). El rango de altura, solo con
+/// limado por succión, es (a2′/a2)^0,4 − 1 a (a2′/a2)^0,8 − 1 (Gülich, 4.5.2).
+/// Con limado por presión a2 no cambia; con la elipse sale la geometría y el
+/// libro no da la altura. El 1D sigue con el canto del cuerpo, e(1).
+#[must_use]
+pub(super) fn outlet_lines(solid: &BladeSolid, edges: &BladeEdges) -> Vec<String> {
+    let readings = &solid.readings;
+    let mm = |value: f64| comma(value * 1000.0, 1);
+    let mut lines = Vec::new();
+    for (index, gap) in readings.outlet_gaps.iter().enumerate() {
+        let Some(gap) = gap else { continue };
+        let head = format!("Línea {index}: a2 = {} mm", mm(gap.cut));
+        lines.push(match edges.trailing {
+            TrailingKind::Cut => format!("{head} (salida recortada: a2′ = a2)"),
+            TrailingKind::FiledPressure => format!(
+                "{head}; a2′ = a2: el limado por presión no cambia a2, solo estrecha la estela"
+            ),
+            TrailingKind::FiledSuction => {
+                let (low, high) = gap.head_gain_range();
+                format!(
+                    "{head} → a2′ = {} mm (a2′/a2 = {}); altura estimada +{} % a +{} %",
+                    mm(gap.shaped),
+                    comma(gap.ratio(), 3),
+                    comma(low * 100.0, 1),
+                    comma(high * 100.0, 1),
+                )
+            }
+            TrailingKind::Ellipse => format!(
+                "{head} → a2′ = {} mm (a2′/a2 = {}); el libro no da la altura para la elipse",
+                mm(gap.shaped),
+                comma(gap.ratio(), 3),
+            ),
+        });
+    }
+    if lines.is_empty() {
+        lines.push("a2: sin álabe vecino (un solo álabe)".to_string());
+    }
+    if edges.trailing != TrailingKind::Cut && !solid.lines.is_empty() {
+        // La línea central: la de ψ más cercano a 0,5.
+        let mid = (0..solid.lines.len())
+            .min_by(|a, b| {
+                (solid.lines[*a].psi - 0.5)
+                    .abs()
+                    .total_cmp(&(solid.lines[*b].psi - 0.5).abs())
+            })
+            .unwrap_or(0);
+        lines.push(format!(
+            "Canto en D2 (línea central): {} mm; el 1D sigue con el del cuerpo, e(1) = {} mm",
+            mm(readings.shaped_exit_edges[mid]),
+            mm(readings.exit_edges[mid]),
+        ));
+    }
+    lines.extend(tail_notices(solid).map(str::to_string));
+    lines
+}
+
+/// Qué borde dibuja y edita una fila.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Side {
+    Leading,
+    Trailing,
+}
+
+impl Side {
+    fn title(self) -> &'static str {
+        match self {
+            Self::Leading => "Entrada:",
+            Self::Trailing => "Salida:",
+        }
+    }
+
+    /// Los rótulos del selector y cuál está elegido (para la fila desactivada).
+    fn labels(self, edges: &BladeEdges) -> Vec<(&'static str, bool)> {
+        match self {
+            Self::Leading => KINDS
+                .iter()
+                .map(|(kind, label)| (*label, *kind == edges.leading))
+                .collect(),
+            Self::Trailing => TRAILING_KINDS
+                .iter()
+                .map(|(kind, label)| (*label, *kind == edges.trailing))
+                .collect(),
+        }
+    }
+
+    /// Las cotas del tipo que hay elegido.
+    fn fields(self, edges: &BladeEdges) -> &'static [Field] {
+        match self {
+            Self::Leading => Field::of(edges.leading),
+            Self::Trailing => Field::of_trailing(edges.trailing),
+        }
+    }
+}
+
 /// Lo que se está escribiendo: la cota y su texto.
 #[derive(Debug, Clone)]
 struct Editing {
@@ -249,8 +459,11 @@ fn editing_id() -> egui::Id {
     egui::Id::unique("leading_edit")
 }
 
-fn status_id() -> egui::Id {
-    egui::Id::unique("leading_status")
+fn status_id(side: Side) -> egui::Id {
+    match side {
+        Side::Leading => egui::Id::unique("leading_status"),
+        Side::Trailing => egui::Id::unique("trailing_status"),
+    }
 }
 
 /// La línea de lectura de la fila «Entrada»: la comparten la fila y la vista
@@ -258,9 +471,9 @@ fn status_id() -> egui::Id {
 pub(super) fn set_status(ctx: &egui::Context, text: Option<String>) {
     ctx.data_mut(|data| match text {
         Some(text) => {
-            data.insert_temp(status_id(), text);
+            data.insert_temp(status_id(Side::Leading), text);
         }
-        None => data.remove::<String>(status_id()),
+        None => data.remove::<String>(status_id(Side::Leading)),
     });
 }
 
@@ -294,14 +507,37 @@ pub(super) fn leading_row(
     history: &mut BetaHistory,
     camber: Option<&BladeCamber>,
 ) -> bool {
-    let kind = inputs.blade.edges.leading;
+    edge_row(ui, outcome, inputs, history, camber, Side::Leading)
+}
+
+/// «Salida: [Recortada | Limada por succión | Limada por presión | Elipse]» y,
+/// debajo, longitud y espesor final en mm de cubo y de tapa. Igual que la fila
+/// de entrada: mismo historial, mismo `accepts`, misma regla de la coma.
+pub(super) fn trailing_row(
+    ui: &mut egui::Ui,
+    outcome: &Outcome,
+    inputs: &mut Inputs,
+    history: &mut BetaHistory,
+    camber: Option<&BladeCamber>,
+) -> bool {
+    edge_row(ui, outcome, inputs, history, camber, Side::Trailing)
+}
+
+fn edge_row(
+    ui: &mut egui::Ui,
+    outcome: &Outcome,
+    inputs: &mut Inputs,
+    history: &mut BetaHistory,
+    camber: Option<&BladeCamber>,
+    side: Side,
+) -> bool {
     let camber = camber.filter(|_| inputs.blade.shape.family() == BladeFamily::ThreeD);
     let Some(camber) = camber else {
         ui.add_enabled_ui(false, |ui| {
-            ui.horizontal(|ui| {
-                ui.label("Entrada:");
-                for (candidate, label) in KINDS {
-                    let _ = ui.selectable_label(candidate == kind, label);
+            ui.horizontal_wrapped(|ui| {
+                ui.label(side.title());
+                for (label, selected) in side.labels(&inputs.blade.edges) {
+                    let _ = ui.selectable_label(selected, label);
                 }
             });
         });
@@ -315,29 +551,48 @@ pub(super) fn leading_row(
         }
     };
     let (e_hub, e_shroud) = (graph.curves.hub.at(0.0), graph.curves.shroud.at(0.0));
+    let (e1_hub, e1_shroud) = (graph.curves.hub.at(1.0), graph.curves.shroud.at(1.0));
     let ctx = ui.ctx().clone();
     let time = ui.input(|input| input.time);
     let mut edited = false;
     let mut status: Option<String> = None;
 
-    ui.horizontal(|ui| {
-        ui.label("Entrada:");
-        let mut chosen = kind;
-        for (candidate, label) in KINDS {
-            ui.selectable_value(&mut chosen, candidate, label);
-        }
-        if chosen != kind {
-            let candidate = with_kind(&inputs.blade, chosen, e_hub, e_shroud);
-            match commit(outcome, inputs, history, &graph, candidate, time) {
-                Ok(changed) => edited |= changed,
-                Err(reason) => status = Some(format!("No se mueve: {reason}")),
+    let mut picked: Option<BladeSetup> = None;
+    ui.horizontal_wrapped(|ui| {
+        ui.label(side.title());
+        match side {
+            Side::Leading => {
+                let current = inputs.blade.edges.leading;
+                let mut chosen = current;
+                for (candidate, label) in KINDS {
+                    ui.selectable_value(&mut chosen, candidate, label);
+                }
+                if chosen != current {
+                    picked = Some(with_kind(&inputs.blade, chosen, e_hub, e_shroud));
+                }
             }
-            ctx.data_mut(|data| data.remove::<Editing>(editing_id()));
+            Side::Trailing => {
+                let current = inputs.blade.edges.trailing;
+                let mut chosen = current;
+                for (candidate, label) in TRAILING_KINDS {
+                    ui.selectable_value(&mut chosen, candidate, label);
+                }
+                if chosen != current {
+                    picked = Some(with_trailing_kind(&inputs.blade, chosen, e1_hub, e1_shroud));
+                }
+            }
         }
     });
+    if let Some(candidate) = picked {
+        match commit(outcome, inputs, history, &graph, candidate, time) {
+            Ok(changed) => edited |= changed,
+            Err(reason) => status = Some(format!("No se mueve: {reason}")),
+        }
+        ctx.data_mut(|data| data.remove::<Editing>(editing_id()));
+    }
 
     let same = inputs.blade.thickness.same;
-    let kind = inputs.blade.edges.leading;
+    let fields = side.fields(&inputs.blade.edges);
     let walls: &[(ThicknessWall, &str)] = if same {
         &[(ThicknessWall::Hub, "Cubo = tapa")]
     } else {
@@ -347,22 +602,16 @@ pub(super) fn leading_row(
         ]
     };
     for &(wall, name) in walls {
-        if Field::of(kind).is_empty() {
+        if fields.is_empty() {
             break;
         }
         ui.horizontal(|ui| {
             ui.label(egui::RichText::new(name).small().weak());
-            for &field in Field::of(kind) {
-                let dims = if wall == ThicknessWall::Hub || same {
-                    inputs.blade.edges.leading_hub
-                } else {
-                    inputs.blade.edges.leading_shroud
-                };
+            for &field in fields {
+                let value = field.value(&inputs.blade.edges, wall == ThicknessWall::Hub || same);
                 let shown = match field {
-                    Field::Asymmetry => {
-                        format!("{} {}", field.label(), comma(field.value(&dims), 2))
-                    }
-                    _ => format!("{} {} mm", field.label(), comma(field.value(&dims), 2)),
+                    Field::Asymmetry => format!("{} {}", field.label(), comma(value, 2)),
+                    _ => format!("{} {} mm", field.label(), comma(value, 2)),
                 };
                 let editing = ctx.data(|data| data.get_temp::<Editing>(editing_id()));
                 match editing.filter(|e| e.wall == wall && e.field == field) {
@@ -401,17 +650,13 @@ pub(super) fn leading_row(
                                 "Doble clic para escribir la cota (coma o punto decimal).",
                             );
                         if response.double_clicked() {
-                            let text = match field {
-                                Field::Asymmetry => comma(field.value(&dims), 2),
-                                _ => comma(field.value(&dims), 2),
-                            };
                             ctx.data_mut(|data| {
                                 data.insert_temp(
                                     editing_id(),
                                     Editing {
                                         wall,
                                         field,
-                                        text,
+                                        text: comma(value, 2),
                                         opened: true,
                                     },
                                 );
@@ -423,21 +668,24 @@ pub(super) fn leading_row(
             }
         });
     }
+    let id = status_id(side);
     if edited {
-        ctx.data_mut(|data| data.remove::<String>(status_id()));
+        ctx.data_mut(|data| data.remove::<String>(id));
     }
     if let Some(text) = status {
-        ctx.data_mut(|data| data.insert_temp(status_id(), text));
+        ctx.data_mut(|data| data.insert_temp(id, text));
     }
-    if let Some(text) = ctx.data(|data| data.get_temp::<String>(status_id())) {
+    if let Some(text) = ctx.data(|data| data.get_temp::<String>(id)) {
         ui.label(
             egui::RichText::new(text)
                 .small()
                 .color(crate::theme::palette(&ctx).error),
         );
     }
-    for line in cp_min_lines(&inputs.blade.edges, same, e_hub, e_shroud) {
-        ui.label(egui::RichText::new(line).small().weak());
+    if side == Side::Leading {
+        for line in cp_min_lines(&inputs.blade.edges, same, e_hub, e_shroud) {
+            ui.label(egui::RichText::new(line).small().weak());
+        }
     }
     edited
 }
@@ -970,6 +1218,370 @@ mod tests {
                 let mut history = history_for(&inputs);
                 egui::__run_test_ui(|ui| {
                     leading_row(ui, &outcome, &mut inputs, &mut history, Some(&camber));
+                });
+            }
+        }
+    }
+
+    // -----------------------------------------------------------------------
+    // La fila «Salida».
+    // -----------------------------------------------------------------------
+
+    fn e1_walls(graph: &ThicknessGraph) -> (f64, f64) {
+        (graph.curves.hub.at(1.0), graph.curves.shroud.at(1.0))
+    }
+
+    /// Elige un tipo de salida como lo hace la fila: por `commit`.
+    fn choose_trailing(
+        outcome: &Outcome,
+        inputs: &mut Inputs,
+        history: &mut BetaHistory,
+        graph: &ThicknessGraph,
+        kind: TrailingKind,
+        time: f64,
+    ) -> Result<bool, String> {
+        let (e_hub, e_shroud) = e1_walls(graph);
+        let candidate = with_trailing_kind(&inputs.blade, kind, e_hub, e_shroud);
+        commit(outcome, inputs, history, graph, candidate, time)
+    }
+
+    /// B1 libre 3D con ese tipo de salida (cotas por defecto) y su sólido.
+    fn tailed_b1(kind: TrailingKind) -> (Outcome, BladeSolid) {
+        let (outcome, camber) = b1_3d();
+        let graph = graph(&outcome, &camber);
+        let (e_hub, e_shroud) = e1_walls(&graph);
+        let mut inputs = outcome.inputs.clone();
+        inputs.blade = with_trailing_kind(&inputs.blade, kind, e_hub, e_shroud);
+        let outcome = compute(&inputs, &Basis::default()).unwrap();
+        let solid = crate::blade_inlet::solid_of(&outcome).unwrap();
+        (outcome, solid)
+    }
+
+    #[test]
+    fn the_default_trailing_row_says_cut() {
+        let (outcome, _) = b1_3d();
+        assert_eq!(outcome.inputs.blade.edges.trailing, TrailingKind::Cut);
+        assert_eq!(trailing_label(TrailingKind::Cut), "Recortada");
+        assert_eq!(
+            TRAILING_KINDS.map(|(_, label)| label),
+            [
+                "Recortada",
+                "Limada por succión",
+                "Limada por presión",
+                "Elipse"
+            ]
+        );
+        // Con recortada, ninguna cota.
+        assert!(Field::of_trailing(TrailingKind::Cut).is_empty());
+        let (_, solid) = tailed_b1(TrailingKind::Cut);
+        let lines = outlet_lines(&solid, &outcome.inputs.blade.edges);
+        assert!(!lines.is_empty());
+        assert!(
+            lines.iter().all(|line| !line.contains("→ a2′")),
+            "{lines:?}"
+        );
+        assert!(lines[0].contains("recortada"), "{lines:?}");
+    }
+
+    #[test]
+    fn choosing_filed_suction_sets_the_default_dims() {
+        let (outcome, camber) = b1_3d();
+        let graph = graph(&outcome, &camber);
+        let mut inputs = outcome.inputs.clone();
+        let mut history = history_for(&inputs);
+        assert_eq!(
+            choose_trailing(
+                &outcome,
+                &mut inputs,
+                &mut history,
+                &graph,
+                TrailingKind::FiledSuction,
+                1.0
+            ),
+            Ok(true)
+        );
+        let (e_hub, e_shroud) = e1_walls(&graph);
+        let edges = &inputs.blade.edges;
+        assert_eq!(edges.trailing, TrailingKind::FiledSuction);
+        // Longitud 4·e(1) y espesor final e(1)/2, en las dos paredes.
+        assert_eq!(edges.trailing_hub.length, 4.0 * e_hub);
+        assert_eq!(edges.trailing_hub.end, e_hub / 2.0);
+        assert_eq!(edges.trailing_shroud.length, 4.0 * e_shroud);
+        assert_eq!(edges.trailing_shroud.end, e_shroud / 2.0);
+        // La entrada no se toca.
+        assert_eq!(edges.leading, LeadingKind::Blunt);
+        assert!(history.can_undo());
+        // La elipse no lleva espesor final; el limado lleva las dos cotas.
+        assert_eq!(
+            Field::of_trailing(TrailingKind::Ellipse),
+            [Field::Length].as_slice()
+        );
+        assert_eq!(
+            Field::of_trailing(TrailingKind::FiledPressure),
+            [Field::Length, Field::End].as_slice()
+        );
+    }
+
+    #[test]
+    fn typing_a_trailing_dimension_follows_the_comma_rule() {
+        let (outcome, camber) = b1_3d();
+        let graph = graph(&outcome, &camber);
+        let mut inputs = outcome.inputs.clone();
+        let mut history = history_for(&inputs);
+        choose_trailing(
+            &outcome,
+            &mut inputs,
+            &mut history,
+            &graph,
+            TrailingKind::FiledSuction,
+            1.0,
+        )
+        .unwrap();
+        for (text, expected) in [("12,5", 0.0125), ("12.5", 0.0125), ("12,5 mm", 0.0125)] {
+            let candidate =
+                write_dimension(&inputs.blade, ThicknessWall::Hub, Field::Length, text).unwrap();
+            assert_eq!(candidate.edges.trailing_hub.length, expected, "{text}");
+            // Con «cubo = tapa» la tapa copia el cubo.
+            assert_eq!(candidate.edges.trailing_shroud.length, expected, "{text}");
+        }
+        let ok = write_dimension(&inputs.blade, ThicknessWall::Hub, Field::End, "1,5").unwrap();
+        assert_eq!(ok.edges.trailing_hub.end, 0.0015);
+        // Vacío, texto, cero, negativos y no finitos: nada cambia y lo dice.
+        for text in ["", "abc", "0", "-3", "inf", "1e999"] {
+            let error = write_dimension(&inputs.blade, ThicknessWall::Hub, Field::Length, text)
+                .expect_err(text);
+            assert!(!error.is_empty());
+        }
+        assert!(write_dimension(&inputs.blade, ThicknessWall::Hub, Field::End, "-1").is_err());
+        // La recortada no lleva cotas, la elipse no lleva espesor final, y las
+        // cotas de la entrada no valen en la salida.
+        let cut = BladeSetup::default();
+        assert!(write_dimension(&cut, ThicknessWall::Hub, Field::Length, "10").is_err());
+        let mut ellipse = inputs.blade.clone();
+        ellipse.edges = ellipse
+            .edges
+            .with_trailing_kind(TrailingKind::Ellipse, 0.003, 0.003);
+        assert!(write_dimension(&ellipse, ThicknessWall::Hub, Field::End, "1").is_err());
+        assert!(write_dimension(&ellipse, ThicknessWall::Hub, Field::Length, "9").is_ok());
+        assert!(write_dimension(&inputs.blade, ThicknessWall::Hub, Field::Lp, "9").is_err());
+        // Y lo escrito se anota y se guarda.
+        let candidate =
+            write_dimension(&inputs.blade, ThicknessWall::Hub, Field::Length, "12,5").unwrap();
+        assert_eq!(
+            commit(&outcome, &mut inputs, &mut history, &graph, candidate, 5.0),
+            Ok(true)
+        );
+        assert_eq!(inputs.blade.edges.trailing_hub.length, 0.0125);
+    }
+
+    #[test]
+    fn a_trailing_dimension_that_breaks_the_blade_is_refused() {
+        // Con 60 mm en el nodo central los álabes vecinos se tocan: el sólido
+        // no se construye con ninguna salida, y la cota no se escribe.
+        let (outcome, camber) = b1_3d();
+        let graph = graph(&outcome, &camber);
+        let mut inputs = outcome.inputs.clone();
+        inputs.blade.thickness =
+            graph
+                .setup
+                .with_node_moved(&graph.curves, ThicknessWall::Hub, 1, 0.5, 0.060);
+        let mut history = history_for(&inputs);
+        let (e_hub, e_shroud) = e1_walls(&graph);
+        inputs.blade.edges =
+            BladeEdges::default().with_trailing_kind(TrailingKind::FiledSuction, e_hub, e_shroud);
+        let before = inputs.blade.clone();
+        let candidate =
+            write_dimension(&inputs.blade, ThicknessWall::Hub, Field::Length, "12").unwrap();
+        let reason = commit(&outcome, &mut inputs, &mut history, &graph, candidate, 3.0)
+            .expect_err("con 60 mm el álabe no se construye");
+        assert!(reason.contains("(0 es el cubo)"), "{reason}");
+        assert_eq!(inputs.blade, before);
+        assert!(!history.can_undo());
+    }
+
+    #[test]
+    fn changing_the_trailing_kind_goes_through_the_history() {
+        let (outcome, camber) = b1_3d();
+        let graph = graph(&outcome, &camber);
+        let mut inputs = outcome.inputs.clone();
+        let mut history = history_for(&inputs);
+        choose_trailing(
+            &outcome,
+            &mut inputs,
+            &mut history,
+            &graph,
+            TrailingKind::FiledSuction,
+            1.0,
+        )
+        .unwrap();
+        let candidate =
+            write_dimension(&inputs.blade, ThicknessWall::Hub, Field::Length, "12").unwrap();
+        commit(&outcome, &mut inputs, &mut history, &graph, candidate, 3.0).unwrap();
+        let filed = inputs.blade.clone();
+        choose_trailing(
+            &outcome,
+            &mut inputs,
+            &mut history,
+            &graph,
+            TrailingKind::Ellipse,
+            6.0,
+        )
+        .unwrap();
+        assert_eq!(inputs.blade.edges.trailing, TrailingKind::Ellipse);
+        history.follow(&BetaSnapshot::of(&inputs));
+        let previous = history.undo(&BetaSnapshot::of(&inputs)).unwrap();
+        previous.apply(&mut inputs);
+        assert_eq!(inputs.blade, filed);
+        // Cambiar la salida deja la entrada como estaba, y al revés.
+        let (e0_hub, e0_shroud) = e_walls(&graph);
+        let with_nose = with_kind(&inputs.blade, LeadingKind::Ellipse, e0_hub, e0_shroud);
+        assert_eq!(with_nose.edges.trailing, TrailingKind::FiledSuction);
+        assert_eq!(with_nose.edges.trailing_hub, filed.edges.trailing_hub);
+    }
+
+    #[test]
+    fn the_outlet_lines_give_the_gap_ratio_and_the_head_range() {
+        let (outcome, solid) = tailed_b1(TrailingKind::FiledSuction);
+        let lines = outlet_lines(&solid, &outcome.inputs.blade.edges);
+        let gaps = solid.readings.outlet_gaps.iter().flatten().count();
+        assert!(gaps > 0);
+        let per_line: Vec<&String> = lines.iter().filter(|line| line.contains("a2′ =")).collect();
+        assert_eq!(per_line.len(), gaps, "{lines:?}");
+        let gap = solid.readings.outlet_gaps[0].as_ref().unwrap();
+        let first = per_line[0];
+        assert!(first.starts_with("Línea 0:"), "{first}");
+        assert!(first.contains("a2 ="), "{first}");
+        assert!(
+            first.contains(&format!("a2′/a2 = {}", comma(gap.ratio(), 3))),
+            "{first}"
+        );
+        let (low, high) = gap.head_gain_range();
+        assert!(
+            first.contains(&format!(
+                "altura estimada +{} % a +{} %",
+                comma(low * 100.0, 1),
+                comma(high * 100.0, 1)
+            )),
+            "{first}"
+        );
+        // El canto real en D2 y el 1D, y la cita del rango.
+        assert!(
+            lines.iter().any(|line| line.contains("Canto en D2")),
+            "{lines:?}"
+        );
+        assert!(lines.iter().any(|line| line.contains("1D")), "{lines:?}");
+        // Elipse: la geometría sí, el libro no da la altura.
+        let (outcome, solid) = tailed_b1(TrailingKind::Ellipse);
+        let lines = outlet_lines(&solid, &outcome.inputs.blade.edges);
+        assert!(
+            lines.iter().any(|line| line.contains("a2′/a2 = 1,")),
+            "{lines:?}"
+        );
+        assert!(
+            lines
+                .iter()
+                .any(|line| line.contains("el libro no da la altura")),
+            "{lines:?}"
+        );
+        assert!(
+            lines.iter().all(|line| !line.contains("altura estimada")),
+            "{lines:?}"
+        );
+        // La elipse llega a 0: el aviso del sólido sale en el panel.
+        assert!(
+            lines.iter().any(|line| line.contains("elipse de salida")),
+            "{lines:?}"
+        );
+    }
+
+    #[test]
+    fn pressure_filing_says_the_gap_does_not_change() {
+        let (outcome, solid) = tailed_b1(TrailingKind::FiledPressure);
+        let lines = outlet_lines(&solid, &outcome.inputs.blade.edges);
+        let per_line: Vec<&String> = lines.iter().filter(|line| line.contains("a2′ =")).collect();
+        assert!(!per_line.is_empty(), "{lines:?}");
+        for line in per_line {
+            assert!(line.contains("a2′ = a2"), "{line}");
+            assert!(line.contains("solo estrecha la estela"), "{line}");
+            assert!(!line.contains("altura estimada"), "{line}");
+        }
+    }
+
+    #[test]
+    fn a_clamped_tail_dimension_shows_the_solid_notice() {
+        let (outcome, camber) = b1_3d();
+        let graph = graph(&outcome, &camber);
+        let (e_hub, e_shroud) = e1_walls(&graph);
+        let mut inputs = outcome.inputs.clone();
+        inputs.blade =
+            with_trailing_kind(&inputs.blade, TrailingKind::FiledSuction, e_hub, e_shroud);
+        inputs.blade =
+            write_dimension(&inputs.blade, ThicknessWall::Hub, Field::Length, "500").unwrap();
+        let outcome = compute(&inputs, &Basis::default()).unwrap();
+        let solid = crate::blade_inlet::solid_of(&outcome).unwrap();
+        let lines = outlet_lines(&solid, &outcome.inputs.blade.edges);
+        assert!(
+            lines
+                .iter()
+                .any(|line| line.contains("la longitud de la salida")),
+            "{lines:?}"
+        );
+    }
+
+    #[test]
+    fn the_switch_joins_and_splits_the_trailing_dims() {
+        let (outcome, camber) = b1_3d();
+        let graph = graph(&outcome, &camber);
+        let (e_hub, e_shroud) = e1_walls(&graph);
+        let mut setup = with_trailing_kind(
+            &outcome.inputs.blade,
+            TrailingKind::FiledSuction,
+            e_hub,
+            e_shroud,
+        );
+        setup = switch_same(&setup, &graph.curves, false);
+        assert_eq!(setup.edges.trailing_shroud, setup.edges.trailing_hub);
+        let tapa = write_dimension(&setup, ThicknessWall::Shroud, Field::Length, "20").unwrap();
+        assert_eq!(tapa.edges.trailing_shroud.length, 0.020);
+        assert_eq!(tapa.edges.trailing_hub, setup.edges.trailing_hub);
+        let joined = switch_same(&tapa, &graph.curves, true);
+        assert_eq!(joined.edges.trailing_shroud, tapa.edges.trailing_hub);
+        let both = write_dimension(&joined, ThicknessWall::Shroud, Field::End, "1,8").unwrap();
+        assert_eq!(both.edges.trailing_hub.end, 0.0018);
+        assert_eq!(both.edges.trailing_shroud.end, 0.0018);
+    }
+
+    #[test]
+    fn a_2d_shape_disables_the_trailing_row() {
+        let mut inputs = Inputs::default();
+        inputs.blade.shape = hm_design::blade_setup::BladeShape::Free2D;
+        inputs.blade.edges =
+            BladeEdges::default().with_trailing_kind(TrailingKind::Ellipse, 0.003, 0.003);
+        let outcome = compute(&inputs, &Basis::default()).unwrap();
+        let before = inputs.clone();
+        let mut history = BetaHistory::default();
+        let mut edited = true;
+        egui::__run_test_ui(|ui| {
+            edited = trailing_row(ui, &outcome, &mut inputs, &mut history, None);
+        });
+        assert!(!edited);
+        assert_eq!(inputs, before);
+        assert_eq!(inputs.blade.edges.trailing, TrailingKind::Ellipse);
+    }
+
+    #[test]
+    fn the_trailing_row_draws_without_panicking() {
+        let (outcome, camber) = b1_3d();
+        for kind in TrailingKind::ALL {
+            let graph = graph(&outcome, &camber);
+            let (e_hub, e_shroud) = e1_walls(&graph);
+            for same in [true, false] {
+                let mut inputs = outcome.inputs.clone();
+                inputs.blade = with_trailing_kind(&inputs.blade, kind, e_hub, e_shroud);
+                inputs.blade = switch_same(&inputs.blade, &graph.curves, same);
+                let mut history = history_for(&inputs);
+                egui::__run_test_ui(|ui| {
+                    trailing_row(ui, &outcome, &mut inputs, &mut history, Some(&camber));
                 });
             }
         }

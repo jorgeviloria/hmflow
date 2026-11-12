@@ -547,6 +547,13 @@ pub(super) fn blade_beta_view(
                 crate::blade_development::BladeChart::Profile => {
                     edited |=
                         crate::blade_edges::leading_row(ui, outcome, inputs, history, Some(camber));
+                    edited |= crate::blade_edges::trailing_row(
+                        ui,
+                        outcome,
+                        inputs,
+                        history,
+                        Some(camber),
+                    );
                     edited |= crate::blade_development::profile_view(
                         ui,
                         outcome,
@@ -558,8 +565,9 @@ pub(super) fn blade_beta_view(
                     );
                 }
             }
-            // Las lecturas de cp,min de la entrada, con e(0) de cada pared.
-            let cp_min = crate::blade_thickness::ThicknessGraph::of(outcome, camber)
+            // Las lecturas de cp,min de la entrada, con e(0) de cada pared, y
+            // las de a2 de la salida.
+            let mut cp_min = crate::blade_thickness::ThicknessGraph::of(outcome, camber)
                 .map(|graph| {
                     crate::blade_edges::cp_min_lines(
                         &inputs.blade.edges,
@@ -569,6 +577,9 @@ pub(super) fn blade_beta_view(
                     )
                 })
                 .unwrap_or_default();
+            if let Ok(solid) = &solid {
+                cp_min.extend(crate::blade_edges::outlet_lines(solid, &inputs.blade.edges));
+            }
             crate::blade_thickness::readings_panel(ui, &solid, &cp_min);
             edited |= bow_fields(ui, inputs, history);
         }
@@ -596,6 +607,7 @@ pub(super) fn blade_beta_view(
             // El mismo selector de entrada, desactivado: las cotas guardadas no
             // se tocan.
             edited |= crate::blade_edges::leading_row(ui, outcome, inputs, history, None);
+            edited |= crate::blade_edges::trailing_row(ui, outcome, inputs, history, None);
             edited |= beta_2d_plot(ui, outcome, inputs, history);
         }
     }

@@ -558,7 +558,25 @@ fn face(
     grid: Grid,
     first: Mode,
 ) -> Result<Vec<SolidPoint>, BladeSolidError> {
-    let shifted: Vec<Plane> = stations
+    let shifted = shift_stations(path, stations, planes, tangents, along, sign, first);
+    face_from_shifted(
+        line, path, stations, planes, tangents, along, sign, end, grid, &shifted,
+    )
+}
+
+/// El punto desplazado de cada estación (la parte cara de [`face`]): solo
+/// depende de las estaciones, del signo y de `along`, no del corte ni del
+/// muestreo, así que varias caras de la misma línea la comparten.
+fn shift_stations(
+    path: &Path,
+    stations: &[Station],
+    planes: &[Plane],
+    tangents: &[[f64; 2]],
+    along: &Along,
+    sign: f64,
+    first: Mode,
+) -> Vec<Plane> {
+    stations
         .iter()
         .zip(planes)
         .zip(tangents)
@@ -575,8 +593,24 @@ fn face(
                 along,
             )
         })
-        .collect();
+        .collect()
+}
 
+/// Corta y remuestrea unos puntos ya desplazados ([`shift_stations`] de las
+/// mismas `stations`, `planes` y `tangents`): el resto de [`face`].
+#[allow(clippy::too_many_arguments)]
+fn face_from_shifted(
+    line: usize,
+    path: &Path,
+    stations: &[Station],
+    planes: &[Plane],
+    tangents: &[[f64; 2]],
+    along: &Along,
+    sign: f64,
+    end: f64,
+    grid: Grid,
+    shifted: &[Plane],
+) -> Result<Vec<SolidPoint>, BladeSolidError> {
     let cut = shifted
         .iter()
         .position(|point| point.conformal >= end)
@@ -1350,30 +1384,36 @@ pub fn blade_solid(
         // caras; con salida con forma, el corte nominal de D2 (de donde salen
         // el canto y el bloqueo del 1D) y la referencia de a2.
         let d2_end = face_planes[face_end].conformal;
-        let cut_pressure = face(
-            index,
-            &path,
-            face_stations,
-            face_planes,
-            face_tangents,
-            &along,
-            1.0,
-            d2_end,
-            Grid::Equal(steps),
-            first,
-        )?;
-        let cut_suction = face(
-            index,
-            &path,
-            face_stations,
-            face_planes,
-            face_tangents,
-            &along,
-            -1.0,
-            d2_end,
-            Grid::Equal(steps),
-            first,
-        )?;
+        // El desplazamiento de las estaciones, una vez por cara: las caras
+        // recortadas y las del cuerpo de la salida con forma lo comparten.
+        let shift = |sign: f64| {
+            shift_stations(
+                &path,
+                face_stations,
+                face_planes,
+                face_tangents,
+                &along,
+                sign,
+                first,
+            )
+        };
+        let (shifted_pressure, shifted_suction) = (shift(1.0), shift(-1.0));
+        let cut_face = |sign: f64, shifted: &[Plane], end: f64| {
+            face_from_shifted(
+                index,
+                &path,
+                face_stations,
+                face_planes,
+                face_tangents,
+                &along,
+                sign,
+                end,
+                Grid::Equal(steps),
+                shifted,
+            )
+        };
+        let cut_pressure = cut_face(1.0, &shifted_pressure, d2_end)?;
+        let cut_suction = cut_face(-1.0, &shifted_suction, d2_end)?;
         let cut_exit = [
             *cut_pressure.last().expect("la cara tiene puntos"),
             mid_point(
@@ -1404,21 +1444,10 @@ pub fn blade_solid(
         let (pressure, suction, tail_rows) = match &tail {
             None => (cut_pressure.clone(), cut_suction.clone(), Vec::new()),
             Some(tail) => {
-                let body = |sign: f64| {
-                    face(
-                        index,
-                        &path,
-                        face_stations,
-                        face_planes,
-                        face_tangents,
-                        &along,
-                        sign,
-                        tail.joint_conformal,
-                        Grid::Equal(steps),
-                        first,
-                    )
-                };
-                let (pressure, suction) = (body(1.0)?, body(-1.0)?);
+                let (pressure, suction) = (
+                    cut_face(1.0, &shifted_pressure, tail.joint_conformal)?,
+                    cut_face(-1.0, &shifted_suction, tail.joint_conformal)?,
+                );
                 let shaped = Along {
                     nodes: nodes.iter().map(|p| (p.m_conformal, p.x)).collect(),
                     thickness: Box::new(thickness),
@@ -1428,11 +1457,25 @@ pub fn blade_solid(
                         arcs: tail.arcs.clone(),
                     }),
                 };
+                // Solo cambian las estaciones desde la unión: antes de ella la
+                // salida con forma da el mismo espesor que el cuerpo (ya
+                // desplazado arriba). Se parte de una estación antes de la
+                // última cuyos dos puntos desplazados no pasan de la unión
+                // (una cara se adelanta a su pie en m′ hasta e/2r), así la
+                // primera fila de la cola cae entre dos puntos como antes.
+                let from = (0..face_planes.len())
+                    .rposition(|i| {
+                        shifted_pressure[i]
+                            .conformal
+                            .max(shifted_suction[i].conformal)
+                            <= tail.joint_conformal
+                    })
+                    .map_or(0, |i| i.saturating_sub(1));
                 let (fine_stations, fine_planes, fine_tangents) = refine_from(
                     tail.joint_conformal,
-                    face_stations,
-                    face_planes,
-                    face_tangents,
+                    &face_stations[from..],
+                    &face_planes[from..],
+                    &face_tangents[from..],
                     &shaped,
                     &path,
                 );
@@ -1448,7 +1491,7 @@ pub fn blade_solid(
                         sign,
                         d2_end,
                         Grid::Targets(rest),
-                        first,
+                        if from == 0 { first } else { Mode::Face },
                     )
                 };
                 let (rows_p, rows_s) = (side(1.0)?, side(-1.0)?);

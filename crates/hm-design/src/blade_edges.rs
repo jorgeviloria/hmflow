@@ -1,0 +1,265 @@
+//! Los bordes del álabe: la nariz de la entrada (la salida llega después).
+//!
+//! - **Tipo.** Uno por borde, igual en cubo y tapa: [`LeadingKind::Blunt`]
+//!   (romo: el canto perpendicular de la curva e(x), sin nariz),
+//!   [`LeadingKind::Ellipse`] y [`LeadingKind::Wedge`] (afilado). Por defecto,
+//!   romo, y con él nada cambia.
+//! - **Cotas por pared.** Cubo y tapa tienen las suyas ([`LeadingDims`]); la
+//!   línea con fracción de caudal ψ interpola (1 − ψ)·cubo + ψ·tapa, la regla
+//!   de [`crate::blade_thickness::ThicknessCurves::at`] (de hmflow). El
+//!   interruptor «cubo = tapa» es el de [`crate::blade_thickness`]: este
+//!   módulo no guarda otro y lo recibe como argumento.
+//! - **Forma.** El espesor total t(s) de la nariz, con s sobre la línea
+//!   media desde la punta y u = s/Lp:
+//!   - elipse: t = e·√(1 − (1 − u)²), la semielipse de semiejes Lp y e/2
+//!     (Gülich, *Centrifugal Pumps*, 4.ª ed., 2020, §7.2.1, fig. 7.3, p. 414);
+//!   - afilado: t = tip + (e − tip)·u, la cuña de la misma figura; la punta
+//!     `tip` y la longitud Lp son de hmflow (el libro no da valores);
+//!   - asimetría a: la línea media del espesor se desplaza hacia la succión
+//!     c = a·(t/2)·(1 − u)², h_s = t/2 + c y h_p = t/2 − c. Con a = 1 la cara
+//!     de presión pasa por la línea media en la punta, como en la fig. 7.10e
+//!     (§7.2.4, p. 425). **La fórmula con (1 − u)² es de hmflow**: el libro
+//!     dibuja el caso, no da el reparto; (1 − u)² lo devuelve a la simetría
+//!     con tangente continua en Lp.
+//! - **cp,min** (Gülich, ec. 7.1a, p. 414): la caída de presión del borde de
+//!   ataque a incidencia cero, [`cp_min`].
+//! - **Límites** (de hmflow): Lp ≥ e/2 (el semicírculo; más corto sería más
+//!   romo que él, y para eso está «romo»), Lp ≤ 0,3·L, punta entre 0 y e,
+//!   asimetría entre 0 y 1 ([`LeadingDims::clamped`]).
+//!
+//! Los bordes son forma: **no mueven el 1D**. Unidades: m.
+
+use crate::blade_thickness::ThicknessWall;
+
+/// Lp = 5·e al elegir un tipo, es decir e/Lp = 0,2 (Gülich, ec. 7.1a, da 0,155
+/// de cp,min con ese cociente).
+pub const NOSE_DEFAULT_RATIO: f64 = 5.0;
+
+/// Lp ≤ 0,3·L, con L la longitud de la línea media. De hmflow.
+pub const NOSE_MAX_FRACTION: f64 = 0.3;
+
+/// Aviso cuando Lp pasa de 0,2·L. De hmflow.
+pub const NOSE_LONG_FRACTION: f64 = 0.2;
+
+/// Punta del afilado al elegirlo: 0,1·e. De hmflow.
+pub const WEDGE_TIP_RATIO: f64 = 0.1;
+
+/// El 0,373 de la ec. 7.1a de Gülich (p. 414).
+pub const CP_MIN_COEFFICIENT: f64 = 0.373;
+
+/// Si `v` es un número finito mayor que cero.
+fn is_positive(v: f64) -> bool {
+    v.is_finite() && v > 0.0
+}
+
+/// La forma del borde de ataque.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum LeadingKind {
+    /// Romo: sin nariz, el canto de la curva e(x) tal cual.
+    #[default]
+    Blunt,
+    /// Semielipse de semiejes Lp y e/2.
+    Ellipse,
+    /// Afilado (cuña), con punta y asimetría.
+    Wedge,
+}
+
+/// Las cotas de una pared, en m. `tip` y `asymmetry` solo valen en
+/// [`LeadingKind::Wedge`].
+#[derive(Debug, Clone, Copy, PartialEq, Default)]
+pub struct LeadingDims {
+    /// Longitud de la nariz sobre la línea media, desde la punta hasta el
+    /// espesor completo.
+    pub lp: f64,
+    /// Espesor de la punta del afilado.
+    pub tip: f64,
+    /// Asimetría del afilado, de 0 (cuña simétrica) a 1 (la cara de presión
+    /// sobre la línea media en la punta).
+    pub asymmetry: f64,
+}
+
+impl LeadingDims {
+    /// Las cotas al elegir `kind` con el espesor `e` de la pared: Lp = 5·e,
+    /// punta 0,1·e (solo afilado) y asimetría 0. Romo no lleva cotas. De
+    /// hmflow, salvo e/Lp = 0,2 de la elipse (Gülich, ec. 7.1a).
+    #[must_use]
+    pub fn default_for(kind: LeadingKind, e: f64) -> Self {
+        match kind {
+            LeadingKind::Blunt => Self::default(),
+            LeadingKind::Ellipse => Self {
+                lp: NOSE_DEFAULT_RATIO * e,
+                tip: 0.0,
+                asymmetry: 0.0,
+            },
+            LeadingKind::Wedge => Self {
+                lp: NOSE_DEFAULT_RATIO * e,
+                tip: WEDGE_TIP_RATIO * e,
+                asymmetry: 0.0,
+            },
+        }
+    }
+
+    /// Las cotas dentro de los límites: Lp entre e/2 y 0,3·`length`, punta
+    /// entre 0 y e, asimetría entre 0 y 1. Si algo no es finito, `None`:
+    /// ningún valor se inventa. Con una línea tan corta que 0,3·L < e/2 gana
+    /// el mínimo e/2 (el semicírculo): la nariz que no cabe en la línea la
+    /// avisa quien la construye, no se acorta aquí en silencio. De hmflow.
+    #[must_use]
+    pub fn clamped(self, e: f64, length: f64) -> Option<Self> {
+        let finite = [self.lp, self.tip, self.asymmetry, e, length]
+            .iter()
+            .all(|v| v.is_finite());
+        if !finite {
+            return None;
+        }
+        Some(Self {
+            lp: self.lp.min(NOSE_MAX_FRACTION * length).max(e / 2.0),
+            tip: self.tip.clamp(0.0, e.max(0.0)),
+            asymmetry: self.asymmetry.clamp(0.0, 1.0),
+        })
+    }
+}
+
+/// Los bordes de un álabe. Por ahora, la entrada; la salida llega después.
+#[derive(Debug, Clone, PartialEq, Default)]
+pub struct BladeEdges {
+    /// El tipo de la entrada: uno solo, vale para cubo y tapa.
+    pub leading: LeadingKind,
+    /// Las cotas de la entrada en el cubo.
+    pub leading_hub: LeadingDims,
+    /// Las cotas de la entrada en la tapa. Con «cubo = tapa» no se leen.
+    pub leading_shroud: LeadingDims,
+}
+
+/// El perfil de la nariz de una línea de corriente (ψ ya interpolado), listo
+/// para evaluar.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct NoseProfile {
+    pub kind: LeadingKind,
+    pub dims: LeadingDims,
+}
+
+impl NoseProfile {
+    /// (h_presión, h_succión) en m a la distancia `s` (m) de la punta, con
+    /// `e` = e(x) en ese punto. Fuera de [0, Lp], con romo, o con Lp que no
+    /// es positiva: (e/2, e/2), el cuerpo de la etapa 1. La elipse es
+    /// simétrica; la asimetría solo cuenta en el afilado, se acota a [0, 1]
+    /// y mantiene h_p ≥ 0 (reparto de hmflow, ver el módulo).
+    #[must_use]
+    pub fn half_thicknesses(&self, s: f64, e: f64) -> (f64, f64) {
+        let body = (e / 2.0, e / 2.0);
+        let lp = self.dims.lp;
+        if self.kind == LeadingKind::Blunt || !is_positive(lp) || !(0.0..=lp).contains(&s) {
+            return body;
+        }
+        let u = s / lp;
+        let total = match self.kind {
+            LeadingKind::Blunt => return body,
+            // Gülich §7.2.1, fig. 7.3. El máx protege la raíz del redondeo en
+            // u = 1.
+            LeadingKind::Ellipse => e * (1.0 - (1.0 - u) * (1.0 - u)).max(0.0).sqrt(),
+            LeadingKind::Wedge => self.dims.tip + (e - self.dims.tip) * u,
+        };
+        let half = total / 2.0;
+        if self.kind == LeadingKind::Wedge {
+            // Asimetría de hmflow (fig. 7.10e de Gülich solo dibuja el caso).
+            let a = self.dims.asymmetry.clamp(0.0, 1.0);
+            let shift = a * half * (1.0 - u) * (1.0 - u);
+            (half - shift, half + shift)
+        } else {
+            (half, half)
+        }
+    }
+
+    /// e/Lp, el cociente de la ec. 7.1a; `None` con romo o con Lp que no es
+    /// positiva.
+    #[must_use]
+    pub fn ratio(&self, e: f64) -> Option<f64> {
+        if self.kind == LeadingKind::Blunt || !is_positive(self.dims.lp) {
+            return None;
+        }
+        Some(e / self.dims.lp)
+    }
+}
+
+/// cp,min = 0,373·(e/Lp)·(2 + 0,373·e/Lp): la depresión máxima del borde de
+/// ataque a incidencia cero, Δp = cp,min·(ρ/2)·w1² (Gülich, ec. 7.1a, p. 414).
+/// Da 2,05 con el semicírculo (e/Lp = 2) y 0,155 con e/Lp = 0,2. Gülich avisa
+/// de que no se transfiere tal cual al rodete: es una lectura orientativa.
+#[must_use]
+pub fn cp_min(e_over_lp: f64) -> f64 {
+    CP_MIN_COEFFICIENT * e_over_lp * (2.0 + CP_MIN_COEFFICIENT * e_over_lp)
+}
+
+impl BladeEdges {
+    /// El perfil de la nariz en la línea con fracción de caudal `psi`:
+    /// (1 − ψ)·cubo + ψ·tapa en Lp, punta y asimetría (de hmflow). ψ se acota
+    /// a [0, 1]. Con `same` («cubo = tapa»), las cotas del cubo.
+    #[must_use]
+    pub fn profile_at(&self, psi: f64, same: bool) -> NoseProfile {
+        let dims = if same {
+            self.leading_hub
+        } else {
+            let psi = if psi.is_finite() {
+                psi.clamp(0.0, 1.0)
+            } else {
+                0.0
+            };
+            let (hub, shroud) = (self.leading_hub, self.leading_shroud);
+            let blend = |h: f64, t: f64| (1.0 - psi) * h + psi * t;
+            LeadingDims {
+                lp: blend(hub.lp, shroud.lp),
+                tip: blend(hub.tip, shroud.tip),
+                asymmetry: blend(hub.asymmetry, shroud.asymmetry),
+            }
+        };
+        NoseProfile {
+            kind: self.leading,
+            dims,
+        }
+    }
+
+    /// Cambia el tipo de la entrada. Las cotas de las dos paredes arrancan con
+    /// [`LeadingDims::default_for`], cada una con su e(0): `e_hub` y
+    /// `e_shroud`. Desde ahí se guardan y dejan de seguir al diseño, como un
+    /// nodo editado; las del tipo anterior no se conservan aquí, pero el
+    /// `BladeSetup` anterior las guarda para «Deshacer».
+    #[must_use]
+    pub fn with_leading_kind(&self, kind: LeadingKind, e_hub: f64, e_shroud: f64) -> Self {
+        Self {
+            leading: kind,
+            leading_hub: LeadingDims::default_for(kind, e_hub),
+            leading_shroud: LeadingDims::default_for(kind, e_shroud),
+        }
+    }
+
+    /// Escribe las cotas de `wall` y deja la otra pared como estaba. Con
+    /// `same` («cubo = tapa») se escriben las dos y `wall` se ignora, como
+    /// en [`crate::blade_thickness::BladeThickness`].
+    #[must_use]
+    pub fn with_leading_dims(&self, wall: ThicknessWall, dims: LeadingDims, same: bool) -> Self {
+        let mut edges = self.clone();
+        match (same, wall) {
+            (true, _) => {
+                edges.leading_hub = dims;
+                edges.leading_shroud = dims;
+            }
+            (false, ThicknessWall::Hub) => edges.leading_hub = dims,
+            (false, ThicknessWall::Shroud) => edges.leading_shroud = dims,
+        }
+        edges
+    }
+
+    /// Enciende o apaga «cubo = tapa». Apagarlo: la tapa arranca como copia
+    /// del cubo. Encenderlo: manda el cubo y las cotas de la tapa se pierden.
+    /// Las dos cosas dejan las dos paredes iguales, como en
+    /// [`crate::blade_thickness::BladeThickness::with_same`].
+    #[must_use]
+    pub fn with_same(&self, _same: bool) -> Self {
+        Self {
+            leading: self.leading,
+            leading_hub: self.leading_hub,
+            leading_shroud: self.leading_hub,
+        }
+    }
+}

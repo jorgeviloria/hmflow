@@ -2,6 +2,7 @@
 
 use hm_core::PumpType;
 use hm_design::blade_camber::{BladeCamber, camber_for_design};
+use hm_design::blade_edges::BladeEdges;
 use hm_design::blade_setup::{BladeFamily, BladeSetup, BladeShape, CamberBows, STREAMLINE_COUNTS};
 use hm_design::blade_solid::{BladeSolid, blade_solid_for_design};
 use hm_design::blade_thickness::{BladeThickness, EditedThickness, ThicknessCurve, ThicknessNode};
@@ -477,6 +478,7 @@ pub fn blade_setup_of(section: Option<&hm_project::Blade>) -> Result<BladeSetup,
             shroud: (section.bow_shroud[0], section.bow_shroud[1]),
         },
         thickness: thickness_of(section)?,
+        edges: BladeEdges::default(),
     })
 }
 

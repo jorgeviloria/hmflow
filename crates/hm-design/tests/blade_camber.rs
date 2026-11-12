@@ -6,6 +6,7 @@ use hm_design::blade_camber::{
     BladeCamber, CAMBER_STEPS, CamberError, CamberOrigin, blade_camber, camber_for_design,
     wrap_range_deg,
 };
+use hm_design::blade_edges::BladeEdges;
 use hm_design::blade_setup::{BladeSetup, BladeShape, CamberBows};
 use hm_design::blade_thickness::BladeThickness;
 use hm_design::geometry::{DEFAULT_INCIDENCE_DEG, camber_line_shaped, geometry};
@@ -700,6 +701,7 @@ fn the_design_chain_matches_the_pieces() {
             streamlines: 5,
             bows,
             thickness: BladeThickness::default(),
+            edges: BladeEdges::default(),
         };
         let chained = camber_for_design(&result, &impeller, &model, &setup, DEFAULT_INCIDENCE_DEG)
             .unwrap()
@@ -729,6 +731,7 @@ fn a_failing_line_is_a_design_error() {
             shroud: (-30.0, -30.0),
         },
         thickness: BladeThickness::default(),
+        edges: BladeEdges::default(),
     };
     let error =
         camber_for_design(&result, &impeller, &model, &setup, DEFAULT_INCIDENCE_DEG).unwrap_err();

@@ -9,6 +9,7 @@
 //! diseño de rodetes (`oracle/notas/cfturbo.md`, «Formas de álabe del
 //! impulsor»); ningún algoritmo ni criterio sale de ahí.
 
+use crate::blade_edges::BladeEdges;
 use crate::blade_thickness::BladeThickness;
 
 /// Los números de líneas de corriente que se pueden elegir. Impares, para que
@@ -171,6 +172,10 @@ pub struct BladeSetup {
     /// La curva de espesor e(x) del álabe 3D: «Gülich» o los nodos editados.
     /// Se guarda con cualquier forma.
     pub thickness: BladeThickness,
+    /// Los bordes del álabe 3D: entrada romo, elipse o afilado. Por defecto,
+    /// romo, que deja el sólido de la etapa 1. No mueven el 1D. Se guarda con
+    /// cualquier forma.
+    pub edges: BladeEdges,
 }
 
 impl Default for BladeSetup {
@@ -180,6 +185,7 @@ impl Default for BladeSetup {
             streamlines: DEFAULT_STREAMLINES,
             bows: CamberBows::default(),
             thickness: BladeThickness::default(),
+            edges: BladeEdges::default(),
         }
     }
 }

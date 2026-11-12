@@ -82,7 +82,9 @@ pub enum ThicknessError {
     #[error("el primer nodo de la curva de espesor va en x = 0 y el último en x = 1")]
     Ends,
 
-    #[error("el nodo {index} de la curva de espesor no está a la derecha del anterior")]
+    /// `index` cuenta desde 0; el mensaje, desde 1, como el cargador del
+    /// proyecto.
+    #[error("el nodo {} de la curva de espesor no está a la derecha del anterior", .index + 1)]
     NotIncreasing { index: usize },
 
     #[error(

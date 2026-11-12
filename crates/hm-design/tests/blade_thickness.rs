@@ -539,3 +539,17 @@ fn the_mid_line_is_the_one_nearest_to_psi_one_half() {
     };
     assert!(mid_line(&empty).is_none());
 }
+
+/// El mensaje cuenta los nodos desde 1, como el cargador del proyecto
+/// (`hm-project`): con x = [0; 0,5; 0,5; 1] el que sobra es el tercero.
+#[test]
+fn the_not_increasing_error_counts_nodes_from_one() {
+    let node = |x: f64| ThicknessNode { x, e: 0.005 };
+    let error = ThicknessCurve::new(vec![node(0.0), node(0.5), node(0.5), node(1.0)])
+        .expect_err("x repetida");
+    assert_eq!(error, ThicknessError::NotIncreasing { index: 2 });
+    assert_eq!(
+        error.to_string(),
+        "el nodo 3 de la curva de espesor no está a la derecha del anterior"
+    );
+}

@@ -25,10 +25,12 @@ use thiserror::Error;
 /// - 6: añade las manijas de cubo y tapa a `[blade]`.
 /// - 7: añade el espesor a `[blade]`: el interruptor «cubo = tapa» y, si la
 ///   curva está editada, los nodos de cubo y de tapa.
-pub const SCHEMA_VERSION: u32 = 7;
+/// - 8: añade los bordes a `[blade]`: el tipo del borde de entrada y sus
+///   cotas de cubo y de tapa.
+pub const SCHEMA_VERSION: u32 = 8;
 
 /// Esquemas anteriores que se migran al cargar.
-pub const MIGRATABLE_SCHEMAS: &[u32] = &[1, 2, 3, 4, 5, 6];
+pub const MIGRATABLE_SCHEMAS: &[u32] = &[1, 2, 3, 4, 5, 6, 7];
 
 /// Rango de cada manija de cubo y tapa, en grados. El mismo que
 /// `hm_design::BETA_BOW_RANGE_DEG`: este crate no depende de `hm-design` y una
@@ -46,6 +48,20 @@ pub const BLADE_THICKNESS_FLOOR_MM: f64 = 3.0;
 
 /// Espesor mínimo del nodo de x = 1, en mm: la mitad del anterior.
 pub const BLADE_THICKNESS_EXIT_FLOOR_MM: f64 = 1.5;
+
+/// Los tipos de borde de entrada que admite `[blade]`, con el nombre que
+/// llevan en el archivo. Los mismos de `hm_design::blade_edges::LeadingKind`:
+/// este crate no depende de `hm-design` y una prueba de `hm-engine` lo
+/// comprueba.
+pub const BLADE_LEADING_KINDS: [&str; 3] = ["blunt", "ellipse", "wedge"];
+
+/// El tipo de borde de entrada de un álabe que no dice otro: romo.
+pub const DEFAULT_LEADING_EDGE: &str = "blunt";
+
+/// Rango de la asimetría del afilado, sin unidad. El mismo que acota
+/// `hm_design::blade_edges::LeadingDims::clamped`; lo ata una prueba de
+/// `hm-engine`.
+pub const BLADE_ASYMMETRY_RANGE: (f64, f64) = (0.0, 1.0);
 
 /// Las formas de álabe que admite `[blade]`, con el nombre que llevan en el
 /// archivo.
@@ -141,6 +157,30 @@ pub struct Blade {
     /// Ídem para la tapa. Solo con `thickness_same = false` (esquema 7).
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub thickness_shroud: Vec<[f64; 2]>,
+    /// El tipo del borde de entrada (esquema 8): una de
+    /// [`BLADE_LEADING_KINDS`]. Romo, el de por defecto, no se escribe.
+    #[serde(skip_serializing_if = "leading_is_blunt")]
+    pub leading_edge: String,
+    /// Las cotas de la entrada en el cubo, en mm (esquema 8). Solo los campos
+    /// del tipo; con romo no hay cotas y no se escriben.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub leading_hub: Option<LeadingDimsFile>,
+    /// Ídem para la tapa. Solo con `thickness_same = false` (esquema 8).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub leading_shroud: Option<LeadingDimsFile>,
+}
+
+/// Las cotas del borde de entrada de una pared, como van en el archivo: `lp`
+/// y `tip` en mm, `asymmetry` sin unidad de 0 a 1. Una elipse solo lleva
+/// `lp`; un afilado, las tres.
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct LeadingDimsFile {
+    pub lp: f64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tip: Option<f64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub asymmetry: Option<f64>,
 }
 
 /// Lo que se lee de `[blade]`: cada campo con su comprobación. Después,
@@ -162,6 +202,12 @@ struct BladeFile {
     thickness_hub: Vec<[f64; 2]>,
     #[serde(default, deserialize_with = "thickness_nodes::<_, 1>")]
     thickness_shroud: Vec<[f64; 2]>,
+    #[serde(default = "default_leading_edge")]
+    leading_edge: String,
+    #[serde(default)]
+    leading_hub: Option<LeadingDimsFile>,
+    #[serde(default)]
+    leading_shroud: Option<LeadingDimsFile>,
 }
 
 impl TryFrom<BladeFile> for Blade {
@@ -176,8 +222,14 @@ impl TryFrom<BladeFile> for Blade {
             thickness_same: file.thickness_same,
             thickness_hub: file.thickness_hub,
             thickness_shroud: file.thickness_shroud,
+            leading_edge: file.leading_edge,
+            leading_hub: file.leading_hub,
+            leading_shroud: file.leading_shroud,
         };
-        match blade.thickness_layout_problem() {
+        match blade
+            .thickness_layout_problem()
+            .or_else(|| blade.leading_layout_problem())
+        {
             Some(problem) => Err(problem),
             None => Ok(blade),
         }
@@ -194,6 +246,9 @@ impl Default for Blade {
             thickness_same: true,
             thickness_hub: Vec::new(),
             thickness_shroud: Vec::new(),
+            leading_edge: default_leading_edge(),
+            leading_hub: None,
+            leading_shroud: None,
         }
     }
 }
@@ -208,6 +263,9 @@ impl Blade {
             && self.thickness_same
             && self.thickness_hub.is_empty()
             && self.thickness_shroud.is_empty()
+            && leading_is_blunt(&self.leading_edge)
+            && self.leading_hub.is_none()
+            && self.leading_shroud.is_none()
     }
 
     /// Por qué las tres listas de espesor no pueden ir juntas, si no pueden:
@@ -239,6 +297,112 @@ impl Blade {
         }
         None
     }
+
+    /// Por qué el borde de entrada no puede ir así, si no puede: tipo
+    /// conocido; romo no lleva cotas; elipse solo `lp`; afilado `lp`, `tip` y
+    /// `asymmetry`; la tapa exige el cubo y `thickness_same = false`; con las
+    /// paredes separadas y un borde con forma hacen falta las dos; y cada cota
+    /// finita y en su rango absoluto (lp > 0, tip ≥ 0, asimetría de 0 a 1).
+    /// Los topes que dependen de e y de L (Lp ≥ e/2, Lp ≤ 0,3·L) no se pueden
+    /// comprobar aquí: los acota el diseño al construir el álabe.
+    #[must_use]
+    pub fn leading_layout_problem(&self) -> Option<String> {
+        let kind = self.leading_edge.as_str();
+        if !BLADE_LEADING_KINDS.contains(&kind) {
+            return Some(format!(
+                "borde de entrada desconocido «{kind}» en «leading_edge»; los válidos son: {}",
+                BLADE_LEADING_KINDS.join(", ")
+            ));
+        }
+        let walls = [
+            ("leading_hub", &self.leading_hub),
+            ("leading_shroud", &self.leading_shroud),
+        ];
+        if kind == DEFAULT_LEADING_EDGE {
+            return walls
+                .iter()
+                .find(|(_, dims)| dims.is_some())
+                .map(|(field, _)| {
+                    format!("con «leading_edge» = \"{kind}\" no hay cotas: sobra «{field}»")
+                });
+        }
+        if self.leading_hub.is_none() {
+            return Some(if self.leading_shroud.is_some() {
+                "«leading_shroud» exige «leading_hub»: la tapa no se acota sin el cubo".into()
+            } else {
+                format!("con «leading_edge» = \"{kind}\" hace falta «leading_hub»")
+            });
+        }
+        if self.thickness_same && self.leading_shroud.is_some() {
+            return Some(
+                "«leading_shroud» exige «thickness_same» = false: con «cubo = tapa» solo se escribe «leading_hub»"
+                    .into(),
+            );
+        }
+        if !self.thickness_same && self.leading_shroud.is_none() {
+            return Some(format!(
+                "con «thickness_same» = false y «leading_edge» = \"{kind}\" hacen falta «leading_hub» y «leading_shroud»"
+            ));
+        }
+        walls
+            .iter()
+            .filter_map(|(field, dims)| dims.as_ref().map(|dims| (field, dims)))
+            .find_map(|(field, dims)| leading_dims_problem(field, kind, dims))
+    }
+}
+
+/// Por qué las cotas de una pared no valen para ese tipo, si no valen.
+fn leading_dims_problem(field: &str, kind: &str, dims: &LeadingDimsFile) -> Option<String> {
+    if !dims.lp.is_finite() {
+        return Some(format!("«{field}»: «lp» no es un número finito"));
+    }
+    if dims.lp <= 0.0 {
+        return Some(format!(
+            "«{field}»: «lp» = {} mm no es válido; debe ser mayor que cero",
+            dims.lp
+        ));
+    }
+    if kind == "ellipse" {
+        for (name, value) in [("tip", dims.tip), ("asymmetry", dims.asymmetry)] {
+            if value.is_some() {
+                return Some(format!(
+                    "«{field}»: con una elipse solo vale «lp»; sobra «{name}»"
+                ));
+            }
+        }
+        return None;
+    }
+    let (Some(tip), Some(asymmetry)) = (dims.tip, dims.asymmetry) else {
+        return Some(format!(
+            "«{field}»: con un afilado (wedge) hacen falta «lp», «tip» y «asymmetry»"
+        ));
+    };
+    if !tip.is_finite() {
+        return Some(format!("«{field}»: «tip» no es un número finito"));
+    }
+    if tip < 0.0 {
+        return Some(format!(
+            "«{field}»: «tip» = {tip} mm no es válido; no puede ser negativo"
+        ));
+    }
+    let (low, high) = BLADE_ASYMMETRY_RANGE;
+    if !asymmetry.is_finite() {
+        return Some(format!("«{field}»: «asymmetry» no es un número finito"));
+    }
+    if !(low..=high).contains(&asymmetry) {
+        return Some(format!(
+            "«{field}»: «asymmetry» = {asymmetry} no es válido; debe ser un número de {low} a {high}"
+        ));
+    }
+    None
+}
+
+fn default_leading_edge() -> String {
+    DEFAULT_LEADING_EDGE.to_string()
+}
+
+fn leading_is_blunt(kind: &String) -> bool {
+    kind == DEFAULT_LEADING_EDGE
 }
 
 fn default_blade_shape() -> String {

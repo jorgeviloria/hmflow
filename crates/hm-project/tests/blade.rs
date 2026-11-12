@@ -1,9 +1,10 @@
 //! Sección `[blade]`: la forma del álabe y el número de líneas de corriente
-//! (esquema 5; las manijas, esquema 6; el espesor, esquema 7).
+//! (esquema 5; las manijas, esquema 6; el espesor, esquema 7; el borde de entrada, esquema 8).
 
 use hm_project::{
-    BLADE_BOW_RANGE_DEG, BLADE_SHAPES, Blade, DEFAULT_BLADE_SHAPE, DEFAULT_STREAMLINES,
-    MIGRATABLE_SCHEMAS, Project, PumpType, SCHEMA_VERSION, STREAMLINE_COUNTS,
+    BLADE_ASYMMETRY_RANGE, BLADE_BOW_RANGE_DEG, BLADE_LEADING_KINDS, BLADE_SHAPES, Blade,
+    DEFAULT_BLADE_SHAPE, DEFAULT_STREAMLINES, LeadingDimsFile, MIGRATABLE_SCHEMAS, Project,
+    PumpType, SCHEMA_VERSION, STREAMLINE_COUNTS,
 };
 
 const V4: &str = include_str!("fixtures/end_suction_v4.hmf");
@@ -28,7 +29,7 @@ fn a_v4_file_without_blade_loads_as_default_and_saves_as_current_without_the_sec
     assert_eq!(project.schema, SCHEMA_VERSION);
     assert_eq!(project.blade, None);
     let saved = project.to_toml().unwrap();
-    assert!(saved.starts_with("schema = 7\n"), "{saved}");
+    assert!(saved.starts_with("schema = 8\n"), "{saved}");
     assert!(!saved.contains("[blade]"), "{saved}");
 }
 
@@ -106,13 +107,15 @@ fn an_unknown_field_in_the_section_is_rejected() {
 }
 
 #[test]
-fn the_schema_is_seven_and_migrates_one_to_six() {
-    assert_eq!(SCHEMA_VERSION, 7);
-    assert_eq!(MIGRATABLE_SCHEMAS, [1, 2, 3, 4, 5, 6]);
+fn the_schema_is_eight_and_migrates_one_to_seven() {
+    assert_eq!(SCHEMA_VERSION, 8);
+    assert_eq!(MIGRATABLE_SCHEMAS, [1, 2, 3, 4, 5, 6, 7]);
     assert_eq!(BLADE_BOW_RANGE_DEG, (-30.0, 30.0));
     assert_eq!(STREAMLINE_COUNTS, [3, 5, 7, 9]);
     assert_eq!(DEFAULT_STREAMLINES, 5);
     assert_eq!(DEFAULT_BLADE_SHAPE, "free_2d");
+    assert_eq!(BLADE_LEADING_KINDS, ["blunt", "ellipse", "wedge"]);
+    assert_eq!(BLADE_ASYMMETRY_RANGE, (0.0, 1.0));
 }
 
 #[test]
@@ -125,7 +128,7 @@ fn a_v5_file_loads_with_zero_handles_and_saves_as_current() {
     assert_eq!(blade.bow_shroud, [0.0, 0.0]);
     assert_eq!(blade.streamlines, 7);
     let saved = project.to_toml().unwrap();
-    assert!(saved.starts_with("schema = 7\n"), "{saved}");
+    assert!(saved.starts_with("schema = 8\n"), "{saved}");
     assert!(!saved.contains("bow_"), "{saved}");
 }
 
@@ -219,7 +222,7 @@ fn a_v6_file_loads_without_thickness_and_saves_as_v7() {
     assert!(blade.thickness_hub.is_empty());
     assert!(blade.thickness_shroud.is_empty());
     let saved = project.to_toml().unwrap();
-    assert!(saved.starts_with("schema = 7\n"), "{saved}");
+    assert!(saved.starts_with("schema = 8\n"), "{saved}");
     assert!(!saved.contains("thickness"), "{saved}");
     assert!(saved.contains("bow_hub"), "{saved}");
 }
@@ -346,4 +349,220 @@ fn the_exit_node_may_be_1_5_mm() {
         .is_err()
     );
     assert!(Project::from_toml(&with_blade("thickness_hub = [[0.0, 6.0], [1.0, 1.4]]")).is_err());
+}
+
+/// Un proyecto de esquema 7 con espesor editado y sin ningún campo de borde.
+fn v7_text() -> String {
+    let mut project = Project::new("demo", PumpType::EndSuction);
+    project.blade = Some(Blade {
+        shape: "free_3d".into(),
+        thickness_hub: vec![[0.0, 6.0], [0.8, 6.0], [1.0, 3.0]],
+        ..Blade::default()
+    });
+    let text = project.to_toml().unwrap();
+    assert!(text.starts_with("schema = 8\n"), "{text}");
+    text.replacen("schema = 8", "schema = 7", 1)
+}
+
+#[test]
+fn a_v7_file_loads_with_blunt_edges_and_saves_as_v8() {
+    let text = v7_text();
+    assert!(text.starts_with("schema = 7\n"), "la fixture debe ser v7");
+    assert!(!text.contains("leading"), "{text}");
+    let project = Project::from_toml(&text).unwrap();
+    assert_eq!(project.schema, SCHEMA_VERSION);
+    let blade = project.blade.as_ref().unwrap();
+    assert_eq!(blade.leading_edge, "blunt");
+    assert_eq!(blade.leading_hub, None);
+    assert_eq!(blade.leading_shroud, None);
+    // Lo demás de [blade] llega intacto.
+    assert_eq!(blade.shape, "free_3d");
+    assert_eq!(
+        blade.thickness_hub,
+        vec![[0.0, 6.0], [0.8, 6.0], [1.0, 3.0]]
+    );
+    let saved = project.to_toml().unwrap();
+    assert!(saved.starts_with("schema = 8\n"), "{saved}");
+    assert!(!saved.contains("leading"), "{saved}");
+    // Y lo guardado vuelve igual.
+    assert_eq!(
+        Project::from_toml(&saved).unwrap().to_toml().unwrap(),
+        saved
+    );
+}
+
+#[test]
+fn leading_edge_round_trips() {
+    let mut project = Project::new("demo", PumpType::EndSuction);
+    // Un afilado con cubo y tapa distintos: «cubo = tapa» apagado.
+    let blade = Blade {
+        shape: "free_3d".into(),
+        thickness_same: false,
+        leading_edge: "wedge".into(),
+        leading_hub: Some(LeadingDimsFile {
+            lp: 30.0,
+            tip: Some(0.6),
+            asymmetry: Some(0.25),
+        }),
+        leading_shroud: Some(LeadingDimsFile {
+            lp: 22.5,
+            tip: Some(0.4),
+            asymmetry: Some(1.0),
+        }),
+        ..Blade::default()
+    };
+    project.blade = Some(blade.clone());
+    let saved = project.to_toml().unwrap();
+    assert!(saved.contains("leading_edge = \"wedge\""), "{saved}");
+    assert!(saved.contains("leading_hub"), "{saved}");
+    assert!(saved.contains("leading_shroud"), "{saved}");
+    assert_eq!(Project::from_toml(&saved).unwrap().blade, Some(blade));
+
+    // Con «cubo = tapa», una elipse: solo lp, y solo el cubo.
+    let blade = Blade {
+        leading_edge: "ellipse".into(),
+        leading_hub: Some(LeadingDimsFile {
+            lp: 12.5,
+            tip: None,
+            asymmetry: None,
+        }),
+        ..Blade::default()
+    };
+    project.blade = Some(blade.clone());
+    let saved = project.to_toml().unwrap();
+    assert!(!saved.contains("leading_shroud"), "{saved}");
+    assert!(!saved.contains("tip"), "{saved}");
+    assert!(!saved.contains("asymmetry"), "{saved}");
+    assert_eq!(Project::from_toml(&saved).unwrap().blade, Some(blade));
+}
+
+#[test]
+fn blunt_edges_are_not_written_and_a_kind_makes_the_blade_non_default() {
+    let mut blade = Blade::default();
+    assert_eq!(blade.leading_edge, "blunt");
+    assert!(blade.is_default());
+    let mut project = Project::new("demo", PumpType::EndSuction);
+    project.blade = Some(blade.clone());
+    assert!(!project.to_toml().unwrap().contains("leading"));
+
+    // Con otra forma sí hay [blade], pero romo sigue sin escribirse.
+    project.blade = Some(Blade {
+        shape: "free_3d".into(),
+        ..Blade::default()
+    });
+    let saved = project.to_toml().unwrap();
+    assert!(saved.contains("[blade]"), "{saved}");
+    assert!(!saved.contains("leading"), "{saved}");
+
+    blade.leading_edge = "ellipse".into();
+    blade.leading_hub = Some(LeadingDimsFile {
+        lp: 12.0,
+        tip: None,
+        asymmetry: None,
+    });
+    assert!(!blade.is_default());
+    project.blade = Some(blade.clone());
+    let saved = project.to_toml().unwrap();
+    assert!(saved.contains("[blade]"), "{saved}");
+    assert_eq!(Project::from_toml(&saved).unwrap().blade, Some(blade));
+}
+
+#[test]
+fn hand_written_edges_are_checked() {
+    let cases: [(&str, &str); 17] = [
+        // Tipo desconocido.
+        ("leading_edge = \"parabola\"", "leading_edge"),
+        // Romo no lleva cotas.
+        (
+            "leading_edge = \"blunt\"\nleading_hub = { lp = 10.0 }",
+            "leading_hub",
+        ),
+        ("leading_hub = { lp = 10.0 }", "leading_hub"),
+        // Elipse: solo lp.
+        (
+            "leading_edge = \"ellipse\"\nleading_hub = { lp = 10.0, tip = 0.5 }",
+            "tip",
+        ),
+        (
+            "leading_edge = \"ellipse\"\nleading_hub = { lp = 10.0, asymmetry = 0.5 }",
+            "asymmetry",
+        ),
+        // Afilado: las tres.
+        (
+            "leading_edge = \"wedge\"\nleading_hub = { lp = 10.0 }",
+            "wedge",
+        ),
+        // Sin cubo.
+        ("leading_edge = \"ellipse\"", "leading_hub"),
+        (
+            "thickness_same = false\nleading_edge = \"ellipse\"\nleading_shroud = { lp = 10.0 }",
+            "leading_hub",
+        ),
+        // Tapa con «cubo = tapa».
+        (
+            "leading_edge = \"ellipse\"\nleading_hub = { lp = 10.0 }\nleading_shroud = { lp = 12.0 }",
+            "thickness_same",
+        ),
+        // Con las paredes separadas hacen falta las dos.
+        (
+            "thickness_same = false\nleading_edge = \"ellipse\"\nleading_hub = { lp = 10.0 }",
+            "leading_shroud",
+        ),
+        // Rango absoluto.
+        (
+            "leading_edge = \"wedge\"\nleading_hub = { lp = 10.0, tip = 0.5, asymmetry = 1.2 }",
+            "asymmetry",
+        ),
+        (
+            "leading_edge = \"wedge\"\nleading_hub = { lp = 10.0, tip = 0.5, asymmetry = -0.1 }",
+            "asymmetry",
+        ),
+        (
+            "leading_edge = \"wedge\"\nleading_hub = { lp = 10.0, tip = -0.5, asymmetry = 0.5 }",
+            "tip",
+        ),
+        (
+            "leading_edge = \"ellipse\"\nleading_hub = { lp = 0.0 }",
+            "lp",
+        ),
+        (
+            "leading_edge = \"ellipse\"\nleading_hub = { lp = -3.0 }",
+            "lp",
+        ),
+        // No finitos.
+        (
+            "leading_edge = \"ellipse\"\nleading_hub = { lp = nan }",
+            "lp",
+        ),
+        (
+            "leading_edge = \"wedge\"\nleading_hub = { lp = 10.0, tip = 0.5, asymmetry = nan }",
+            "asymmetry",
+        ),
+    ];
+    for (text, field) in cases {
+        let error = Project::from_toml(&with_blade(text))
+            .expect_err(text)
+            .to_string();
+        assert!(error.contains(field), "{text}: {error}");
+    }
+    // Un campo que no existe en las cotas tampoco se acepta.
+    assert!(
+        Project::from_toml(&with_blade(
+            "leading_edge = \"ellipse\"\nleading_hub = { lp = 10.0, radius = 2.0 }"
+        ))
+        .is_err()
+    );
+    // Y lo bien escrito entra.
+    let project = Project::from_toml(&with_blade(
+        "leading_edge = \"wedge\"\nleading_hub = { lp = 10.0, tip = 0.0, asymmetry = 1.0 }",
+    ))
+    .unwrap();
+    assert_eq!(
+        project.blade.unwrap().leading_hub,
+        Some(LeadingDimsFile {
+            lp: 10.0,
+            tip: Some(0.0),
+            asymmetry: Some(1.0),
+        })
+    );
 }

@@ -2,7 +2,7 @@
 
 use hm_core::PumpType;
 use hm_design::blade_camber::{BladeCamber, camber_for_design};
-use hm_design::blade_edges::BladeEdges;
+use hm_design::blade_edges::{BladeEdges, LeadingDims, LeadingKind};
 use hm_design::blade_setup::{BladeFamily, BladeSetup, BladeShape, CamberBows, STREAMLINE_COUNTS};
 use hm_design::blade_solid::{BladeSolid, blade_solid_for_design};
 use hm_design::blade_thickness::{BladeThickness, EditedThickness, ThicknessCurve, ThicknessNode};
@@ -478,7 +478,35 @@ pub fn blade_setup_of(section: Option<&hm_project::Blade>) -> Result<BladeSetup,
             shroud: (section.bow_shroud[0], section.bow_shroud[1]),
         },
         thickness: thickness_of(section)?,
-        edges: BladeEdges::default(),
+        edges: edges_of(section)?,
+    })
+}
+
+/// Los bordes de una sección `[blade]`: mm → m. Lo que no cumpla es un error
+/// con el texto de la carga; los topes que dependen de e y de L los acota el
+/// diseño al construir el álabe. Con «cubo = tapa» la tapa copia el cubo.
+fn edges_of(section: &hm_project::Blade) -> Result<BladeEdges, String> {
+    if let Some(problem) = section.leading_layout_problem() {
+        return Err(problem);
+    }
+    let kind = LeadingKind::from_id(&section.leading_edge)
+        .ok_or_else(|| format!("borde de entrada desconocido «{}»", section.leading_edge))?;
+    let to_dims = |file: &hm_project::LeadingDimsFile| LeadingDims {
+        lp: file.lp / 1000.0,
+        tip: file.tip.unwrap_or(0.0) / 1000.0,
+        asymmetry: file.asymmetry.unwrap_or(0.0),
+    };
+    let Some(hub) = section.leading_hub.as_ref().map(to_dims) else {
+        return Ok(BladeEdges::default());
+    };
+    let shroud = match (&section.leading_shroud, section.thickness_same) {
+        (Some(file), false) => to_dims(file),
+        _ => hub,
+    };
+    Ok(BladeEdges {
+        leading: kind,
+        leading_hub: hub,
+        leading_shroud: shroud,
     })
 }
 
@@ -540,15 +568,35 @@ pub fn blade_section_of(setup: &BladeSetup) -> Option<hm_project::Blade> {
             .filter(|_| !setup.thickness.same)
             .map(|edited| nodes_mm(&edited.shroud))
             .unwrap_or_default(),
+        leading_edge: setup.edges.leading.id().to_string(),
+        // Romo no lleva cotas; con «cubo = tapa» solo se escribe el cubo.
+        leading_hub: (setup.edges.leading != LeadingKind::Blunt)
+            .then(|| leading_dims_mm(&setup.edges.leading, setup.edges.leading_hub)),
+        leading_shroud: (setup.edges.leading != LeadingKind::Blunt && !setup.thickness.same)
+            .then(|| leading_dims_mm(&setup.edges.leading, setup.edges.leading_shroud)),
     })
+}
+
+/// Las cotas de una pared m → mm, redondeadas a 6 decimales, con solo los
+/// campos del tipo.
+fn leading_dims_mm(kind: &LeadingKind, dims: LeadingDims) -> hm_project::LeadingDimsFile {
+    let wedge = *kind == LeadingKind::Wedge;
+    hm_project::LeadingDimsFile {
+        lp: round6(dims.lp * 1000.0),
+        tip: wedge.then(|| round6(dims.tip * 1000.0)),
+        asymmetry: wedge.then(|| round6(dims.asymmetry)),
+    }
+}
+
+fn round6(value: f64) -> f64 {
+    (value * 1.0e6).round() / 1.0e6
 }
 
 /// Nodos de espesor m → mm, con x y e redondeados a 6 decimales.
 fn nodes_mm(nodes: &[ThicknessNode]) -> Vec<[f64; 2]> {
-    let round = |value: f64| (value * 1.0e6).round() / 1.0e6;
     nodes
         .iter()
-        .map(|node| [round(node.x), round(node.e * 1000.0)])
+        .map(|node| [round6(node.x), round6(node.e * 1000.0)])
         .collect()
 }
 

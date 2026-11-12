@@ -1,5 +1,6 @@
 //! La sección `[blade]` del proyecto y el `BladeSetup` del diseño.
 
+use hm_design::blade_edges::{BladeEdges, LeadingDims, LeadingKind};
 use hm_design::blade_setup::{self, BladeSetup, BladeShape, CamberBows};
 use hm_design::blade_thickness::{
     self, BladeThickness, EditedThickness, THICKNESS_NODES, ThicknessNode, node_floor,
@@ -9,7 +10,7 @@ use hm_engine::{
     Intake, PumpType, analyze, blade_section_of, blade_setup_of, case_from_project, design_edits,
     edited_options, new_project, parse_temperature, recalc, reselect_design, reselected_options,
 };
-use hm_project::{Blade, Project};
+use hm_project::{Blade, LeadingDimsFile, Project};
 use hm_units::parse_quantity;
 
 #[test]
@@ -193,9 +194,9 @@ fn a_v6_project_gives_the_same_setup_and_the_same_result() {
         ..Blade::default()
     });
     let text = v7.to_toml().unwrap();
-    assert!(text.starts_with("schema = 7\n"), "{text}");
+    assert!(text.starts_with("schema = 8\n"), "{text}");
     assert!(!text.contains("thickness"), "{text}");
-    let v6_text = text.replacen("schema = 7", "schema = 6", 1);
+    let v6_text = text.replacen("schema = 8", "schema = 6", 1);
     let v6 = Project::from_toml(&v6_text).unwrap();
     assert_eq!(v6.schema, hm_project::SCHEMA_VERSION);
 
@@ -330,6 +331,29 @@ fn the_project_limits_match_the_design_ones() {
         hm_project::BLADE_THICKNESS_EXIT_FLOOR_MM / 1000.0,
         node_floor(1.0)
     );
+    // Los bordes: los nombres de los tipos y el rango de la asimetría.
+    assert_eq!(
+        hm_project::BLADE_LEADING_KINDS,
+        LeadingKind::ALL.map(LeadingKind::id)
+    );
+    assert_eq!(
+        hm_project::DEFAULT_LEADING_EDGE,
+        LeadingKind::default().id()
+    );
+    // `clamped` acota la asimetría a [0, 1]: los mismos extremos del archivo.
+    let (low, high) = hm_project::BLADE_ASYMMETRY_RANGE;
+    let clamp = |asymmetry: f64| {
+        LeadingDims {
+            lp: 0.03,
+            tip: 0.0,
+            asymmetry,
+        }
+        .clamped(0.006, 0.1)
+        .unwrap()
+        .asymmetry
+    };
+    assert_eq!(clamp(low - 1.0), low);
+    assert_eq!(clamp(high + 1.0), high);
 }
 
 /// El B1 como proyecto, con la sección `[blade]` dada.
@@ -425,4 +449,245 @@ fn reselecting_keeps_the_edited_edges() {
     let options = edited_options(Some(&project), &none).unwrap();
     assert_eq!(options.blade_edge_thickness, None);
     assert_eq!(reselect_design(project, &none).unwrap().project.blade, None);
+}
+
+/// El B1 libre 3D como proyecto de esquema 7: con espesor editado y sin
+/// ningún campo de borde.
+fn b1_v7_text() -> String {
+    let blade = Blade {
+        shape: "free_3d".into(),
+        thickness_hub: vec![[0.0, 6.0], [0.8, 6.0], [1.0, 3.0]],
+        ..Blade::default()
+    };
+    let text = b1_project(Some(blade)).to_toml().unwrap();
+    assert!(text.starts_with("schema = 8\n"), "{text}");
+    assert!(!text.contains("leading"), "{text}");
+    text.replacen("schema = 8", "schema = 7", 1)
+}
+
+#[test]
+fn a_v7_project_gives_the_same_setup_solid_and_scene() {
+    let v7 = Project::from_toml(&b1_v7_text()).unwrap();
+    assert_eq!(v7.schema, hm_project::SCHEMA_VERSION);
+    let setup = blade_setup_of(v7.blade.as_ref()).unwrap();
+    assert_eq!(setup.edges, BladeEdges::default());
+    assert_eq!(setup.edges.leading, LeadingKind::Blunt);
+
+    // El mismo álabe, armado a mano en el diseño sin tocar los bordes.
+    let by_hand = BladeSetup {
+        shape: BladeShape::Free3D,
+        thickness: setup.thickness.clone(),
+        ..BladeSetup::default()
+    };
+    assert_eq!(setup, by_hand);
+    // Lo que se guarda no lleva bordes.
+    let saved = blade_section_of(&setup).expect("no es el de por defecto");
+    assert_eq!(saved.leading_edge, "blunt");
+    assert_eq!(saved.leading_hub, None);
+    assert_eq!(saved.leading_shroud, None);
+
+    // La escena del proyecto migrado es la del mismo proyecto escrito hoy
+    // en esquema 8.
+    let from_v8 = Project::from_toml(&v7.to_toml().unwrap()).unwrap();
+    let tolerance = hm_design::scene::SCENE_TOLERANCE_FINE_MM;
+    assert_eq!(
+        hm_engine::scene(&v7, tolerance).unwrap(),
+        hm_engine::scene(&from_v8, tolerance).unwrap()
+    );
+}
+
+#[test]
+fn edges_go_to_the_setup_in_metres_and_back() {
+    // «Cubo = tapa»: una elipse con lp = 12,5 mm.
+    let section = Blade {
+        shape: "free_3d".into(),
+        leading_edge: "ellipse".into(),
+        leading_hub: Some(LeadingDimsFile {
+            lp: 12.5,
+            tip: None,
+            asymmetry: None,
+        }),
+        ..Blade::default()
+    };
+    let setup = blade_setup_of(Some(&section)).unwrap();
+    let dims = LeadingDims {
+        lp: 0.0125,
+        tip: 0.0,
+        asymmetry: 0.0,
+    };
+    assert_eq!(setup.edges.leading, LeadingKind::Ellipse);
+    assert_eq!(setup.edges.leading_hub, dims);
+    assert_eq!(setup.edges.leading_shroud, dims);
+    assert_eq!(blade_section_of(&setup), Some(section));
+
+    // Cubo y tapa distintos: un afilado con asimetría.
+    let section = Blade {
+        shape: "free_3d".into(),
+        thickness_same: false,
+        leading_edge: "wedge".into(),
+        leading_hub: Some(LeadingDimsFile {
+            lp: 30.0,
+            tip: Some(0.6),
+            asymmetry: Some(0.25),
+        }),
+        leading_shroud: Some(LeadingDimsFile {
+            lp: 22.5,
+            tip: Some(0.4),
+            asymmetry: Some(1.0),
+        }),
+        ..Blade::default()
+    };
+    let setup = blade_setup_of(Some(&section)).unwrap();
+    assert_eq!(setup.edges.leading, LeadingKind::Wedge);
+    assert_eq!(
+        setup.edges.leading_hub,
+        LeadingDims {
+            lp: 0.03,
+            tip: 0.0006,
+            asymmetry: 0.25,
+        }
+    );
+    assert_eq!(
+        setup.edges.leading_shroud,
+        LeadingDims {
+            lp: 0.0225,
+            tip: 0.0004,
+            asymmetry: 1.0,
+        }
+    );
+    assert_eq!(blade_section_of(&setup), Some(section));
+
+    // Solo el borde ya hace la elección distinta de la de por defecto.
+    let only_edge = BladeSetup {
+        edges: BladeEdges::default().with_leading_kind(LeadingKind::Wedge, 0.006, 0.006),
+        ..BladeSetup::default()
+    };
+    let section = blade_section_of(&only_edge).expect("el borde se guarda");
+    assert_eq!(section.leading_edge, "wedge");
+    // Las cotas de arranque (0,1·e) no son exactas en m, pero en el archivo
+    // (mm, 6 decimales) la ida y vuelta es estable.
+    let back = blade_setup_of(Some(&section)).unwrap();
+    assert_eq!(back.edges.leading, LeadingKind::Wedge);
+    assert_eq!(blade_section_of(&back), Some(section));
+}
+
+#[test]
+fn with_same_only_the_hub_edge_is_written() {
+    // Con «cubo = tapa» la tapa no se escribe, aunque el diseño la tenga
+    // igual; con las paredes separadas, sí.
+    let dims = LeadingDims {
+        lp: 0.0123456789,
+        tip: 0.0,
+        asymmetry: 0.0,
+    };
+    let setup = BladeSetup {
+        edges: BladeEdges {
+            leading: LeadingKind::Ellipse,
+            leading_hub: dims,
+            leading_shroud: dims,
+        },
+        ..BladeSetup::default()
+    };
+    let section = blade_section_of(&setup).unwrap();
+    assert_eq!(section.leading_shroud, None);
+    // Redondeado a 6 decimales en mm.
+    assert_eq!(section.leading_hub.unwrap().lp, 12.345679);
+
+    let split = BladeSetup {
+        thickness: BladeThickness {
+            same: false,
+            edited: None,
+        },
+        ..setup
+    };
+    let section = blade_section_of(&split).unwrap();
+    assert!(section.leading_shroud.is_some());
+}
+
+#[test]
+fn a_hand_made_section_with_bad_edges_is_rejected_with_the_load_text() {
+    for section in [
+        Blade {
+            leading_edge: "parabola".into(),
+            ..Blade::default()
+        },
+        Blade {
+            leading_hub: Some(LeadingDimsFile {
+                lp: 10.0,
+                tip: None,
+                asymmetry: None,
+            }),
+            ..Blade::default()
+        },
+        Blade {
+            leading_edge: "ellipse".into(),
+            ..Blade::default()
+        },
+        Blade {
+            leading_edge: "wedge".into(),
+            leading_hub: Some(LeadingDimsFile {
+                lp: 10.0,
+                tip: Some(0.5),
+                asymmetry: Some(1.2),
+            }),
+            ..Blade::default()
+        },
+        Blade {
+            leading_edge: "ellipse".into(),
+            leading_hub: Some(LeadingDimsFile {
+                lp: f64::NAN,
+                tip: None,
+                asymmetry: None,
+            }),
+            ..Blade::default()
+        },
+    ] {
+        let error = blade_setup_of(Some(&section)).unwrap_err();
+        assert!(
+            error.contains("leading_") || error.contains("lp"),
+            "{error}"
+        );
+        assert_eq!(Some(error), section.leading_layout_problem());
+    }
+}
+
+#[test]
+fn the_edges_never_change_the_1d() {
+    let points = CurvePoints::new(11).unwrap();
+    let blunt = b1_project(Some(Blade {
+        shape: "free_3d".into(),
+        ..Blade::default()
+    }));
+    let reference = recalc(blunt.clone(), false).unwrap();
+    let reference_report = hm_engine::report(&blunt, points).unwrap();
+    for (kind, tip, asymmetry) in [("ellipse", None, None), ("wedge", Some(0.6), Some(1.0))] {
+        let mut project = blunt.clone();
+        project.blade = Some(Blade {
+            shape: "free_3d".into(),
+            leading_edge: kind.into(),
+            leading_hub: Some(LeadingDimsFile {
+                lp: 30.0,
+                tip,
+                asymmetry,
+            }),
+            ..Blade::default()
+        });
+        // El 1D sale igual: lo que `recalc` reescribe y el informe entero.
+        let with_edge = recalc(project.clone(), false).unwrap();
+        let (mut edge_file, mut reference_file) =
+            (with_edge.project.clone(), reference.project.clone());
+        edge_file.blade = None;
+        reference_file.blade = None;
+        assert_eq!(
+            edge_file.to_toml().unwrap(),
+            reference_file.to_toml().unwrap(),
+            "{kind}"
+        );
+        assert_eq!(with_edge.changes, reference.changes, "{kind}");
+        assert_eq!(
+            hm_engine::report(&project, points).unwrap(),
+            reference_report,
+            "{kind}"
+        );
+    }
 }

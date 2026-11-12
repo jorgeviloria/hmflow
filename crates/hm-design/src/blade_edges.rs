@@ -64,6 +64,27 @@ pub enum LeadingKind {
     Wedge,
 }
 
+impl LeadingKind {
+    /// Todos, en el orden del selector.
+    pub const ALL: [Self; 3] = [Self::Blunt, Self::Ellipse, Self::Wedge];
+
+    /// El nombre con que se guarda en el proyecto.
+    #[must_use]
+    pub fn id(self) -> &'static str {
+        match self {
+            Self::Blunt => "blunt",
+            Self::Ellipse => "ellipse",
+            Self::Wedge => "wedge",
+        }
+    }
+
+    /// El tipo que se guarda con ese nombre, si existe.
+    #[must_use]
+    pub fn from_id(id: &str) -> Option<Self> {
+        Self::ALL.into_iter().find(|kind| kind.id() == id)
+    }
+}
+
 /// Las cotas de una pared, en m. `tip` y `asymmetry` solo valen en
 /// [`LeadingKind::Wedge`].
 #[derive(Debug, Clone, Copy, PartialEq, Default)]

@@ -369,3 +369,16 @@ fn the_default_is_blunt() {
         assert_eq!(profile.half_thicknesses(0.0, E), (E / 2.0, E / 2.0));
     }
 }
+
+#[test]
+fn the_kinds_have_file_ids_that_round_trip() {
+    assert_eq!(
+        LeadingKind::ALL.map(LeadingKind::id),
+        ["blunt", "ellipse", "wedge"]
+    );
+    for kind in LeadingKind::ALL {
+        assert_eq!(LeadingKind::from_id(kind.id()), Some(kind));
+    }
+    assert_eq!(LeadingKind::from_id("parabola"), None);
+    assert_eq!(LeadingKind::from_id(""), None);
+}

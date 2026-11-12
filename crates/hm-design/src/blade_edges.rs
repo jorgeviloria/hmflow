@@ -429,12 +429,13 @@ impl BladeEdges {
         edges
     }
 
-    /// Enciende o apaga «cubo = tapa». Apagarlo: la tapa arranca como copia
-    /// del cubo. Encenderlo: manda el cubo y las cotas de la tapa se pierden.
-    /// Las dos cosas dejan las dos paredes iguales, como en
-    /// [`crate::blade_thickness::BladeThickness::with_same`].
+    /// La tapa pasa a ser copia del cubo, en la entrada y en la salida. Es lo
+    /// que hace falta al encender o al apagar «cubo = tapa» (como en
+    /// [`crate::blade_thickness::BladeThickness::with_same`]): encendido manda
+    /// el cubo y las cotas de la tapa se pierden; apagado, la tapa arranca
+    /// como copia del cubo. Por eso no lleva argumento.
     #[must_use]
-    pub fn with_same(&self, _same: bool) -> Self {
+    pub fn with_shroud_as_hub(&self) -> Self {
         Self {
             leading_shroud: self.leading_hub,
             trailing_shroud: self.trailing_hub,

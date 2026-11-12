@@ -347,15 +347,12 @@ fn turning_same_off_copies_the_hub_and_on_keeps_the_hub() {
         },
         ..BladeEdges::default()
     };
-    // Apagarlo: la tapa arranca como copia del cubo.
-    let off = edges.with_same(false);
-    assert_eq!(off.leading_hub, edges.leading_hub);
-    assert_eq!(off.leading_shroud, edges.leading_hub);
-    // Encenderlo: manda el cubo y la tapa lo copia (sus cotas se pierden).
-    let on = edges.with_same(true);
-    assert_eq!(on.leading_hub, edges.leading_hub);
-    assert_eq!(on.leading_shroud, edges.leading_hub);
-    assert_eq!(on.leading, LeadingKind::Ellipse);
+    // Encender o apagar «cubo = tapa» deja la tapa como copia del cubo (sus
+    // cotas se pierden): un solo camino, sin argumento.
+    let joined = edges.with_shroud_as_hub();
+    assert_eq!(joined.leading_hub, edges.leading_hub);
+    assert_eq!(joined.leading_shroud, edges.leading_hub);
+    assert_eq!(joined.leading, LeadingKind::Ellipse);
 }
 
 #[test]
@@ -591,7 +588,7 @@ fn changing_the_trailing_kind_keeps_the_leading_edges() {
     let same = edited.with_trailing_dims(ThicknessWall::Shroud, hub_dims, true);
     assert_eq!(same.trailing_shroud, hub_dims);
     // «Cubo = tapa» también gobierna la salida.
-    let joined = edited.with_same(true);
+    let joined = edited.with_shroud_as_hub();
     assert_eq!(joined.trailing_shroud, edited.trailing_hub);
     assert_eq!(joined.trailing, TrailingKind::FiledSuction);
     // Las cotas por pared mezclan por ψ, como la entrada.

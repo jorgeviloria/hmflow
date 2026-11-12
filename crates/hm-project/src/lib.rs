@@ -353,47 +353,14 @@ impl Blade {
     /// comprobar aquí: los acota el diseño al construir el álabe.
     #[must_use]
     pub fn leading_layout_problem(&self) -> Option<String> {
-        let kind = self.leading_edge.as_str();
-        if !BLADE_LEADING_KINDS.contains(&kind) {
-            return Some(format!(
-                "borde de entrada desconocido «{kind}» en «leading_edge»; los válidos son: {}",
-                BLADE_LEADING_KINDS.join(", ")
-            ));
-        }
-        let walls = [
-            ("leading_hub", &self.leading_hub),
-            ("leading_shroud", &self.leading_shroud),
-        ];
-        if kind == DEFAULT_LEADING_EDGE {
-            return walls
-                .iter()
-                .find(|(_, dims)| dims.is_some())
-                .map(|(field, _)| {
-                    format!("con «leading_edge» = \"{kind}\" no hay cotas: sobra «{field}»")
-                });
-        }
-        if self.leading_hub.is_none() {
-            return Some(if self.leading_shroud.is_some() {
-                "«leading_shroud» exige «leading_hub»: la tapa no se acota sin el cubo".into()
-            } else {
-                format!("con «leading_edge» = \"{kind}\" hace falta «leading_hub»")
-            });
-        }
-        if self.thickness_same && self.leading_shroud.is_some() {
-            return Some(
-                "«leading_shroud» exige «thickness_same» = false: con «cubo = tapa» solo se escribe «leading_hub»"
-                    .into(),
-            );
-        }
-        if !self.thickness_same && self.leading_shroud.is_none() {
-            return Some(format!(
-                "con «thickness_same» = false y «leading_edge» = \"{kind}\" hacen falta «leading_hub» y «leading_shroud»"
-            ));
-        }
-        walls
-            .iter()
-            .filter_map(|(field, dims)| dims.as_ref().map(|dims| (field, dims)))
-            .find_map(|(field, dims)| leading_dims_problem(field, kind, dims))
+        edge_layout_problem(
+            &LEADING_FIELDS,
+            &self.leading_edge,
+            &self.leading_hub,
+            &self.leading_shroud,
+            self.thickness_same,
+            leading_dims_problem,
+        )
     }
 
     /// Por qué el borde de salida no puede ir así, si no puede: tipo conocido;
@@ -404,48 +371,103 @@ impl Blade {
     /// acota el diseño al construir el álabe.
     #[must_use]
     pub fn trailing_layout_problem(&self) -> Option<String> {
-        let kind = self.trailing_edge.as_str();
-        if !BLADE_TRAILING_KINDS.contains(&kind) {
-            return Some(format!(
-                "borde de salida desconocido «{kind}» en «trailing_edge»; los válidos son: {}",
-                BLADE_TRAILING_KINDS.join(", ")
-            ));
-        }
-        let walls = [
-            ("trailing_hub", &self.trailing_hub),
-            ("trailing_shroud", &self.trailing_shroud),
-        ];
-        if kind == DEFAULT_TRAILING_EDGE {
-            return walls
-                .iter()
-                .find(|(_, dims)| dims.is_some())
-                .map(|(field, _)| {
-                    format!("con «trailing_edge» = \"{kind}\" no hay cotas: sobra «{field}»")
-                });
-        }
-        if self.trailing_hub.is_none() {
-            return Some(if self.trailing_shroud.is_some() {
-                "«trailing_shroud» exige «trailing_hub»: la tapa no se acota sin el cubo".into()
-            } else {
-                format!("con «trailing_edge» = \"{kind}\" hace falta «trailing_hub»")
-            });
-        }
-        if self.thickness_same && self.trailing_shroud.is_some() {
-            return Some(
-                "«trailing_shroud» exige «thickness_same» = false: con «cubo = tapa» solo se escribe «trailing_hub»"
-                    .into(),
-            );
-        }
-        if !self.thickness_same && self.trailing_shroud.is_none() {
-            return Some(format!(
-                "con «thickness_same» = false y «trailing_edge» = \"{kind}\" hacen falta «trailing_hub» y «trailing_shroud»"
-            ));
-        }
-        walls
-            .iter()
-            .filter_map(|(field, dims)| dims.as_ref().map(|dims| (field, dims)))
-            .find_map(|(field, dims)| trailing_dims_problem(field, kind, dims))
+        edge_layout_problem(
+            &TRAILING_FIELDS,
+            &self.trailing_edge,
+            &self.trailing_hub,
+            &self.trailing_shroud,
+            self.thickness_same,
+            trailing_dims_problem,
+        )
     }
+}
+
+/// Los nombres que distinguen a un borde de otro en `[blade]`: lo único que
+/// cambia entre la entrada y la salida al comprobar su disposición.
+struct EdgeFields {
+    /// «borde de entrada» o «borde de salida», para el mensaje del tipo.
+    what: &'static str,
+    kind: &'static str,
+    hub: &'static str,
+    shroud: &'static str,
+    kinds: &'static [&'static str],
+    default: &'static str,
+}
+
+const LEADING_FIELDS: EdgeFields = EdgeFields {
+    what: "borde de entrada",
+    kind: "leading_edge",
+    hub: "leading_hub",
+    shroud: "leading_shroud",
+    kinds: &BLADE_LEADING_KINDS,
+    default: DEFAULT_LEADING_EDGE,
+};
+
+const TRAILING_FIELDS: EdgeFields = EdgeFields {
+    what: "borde de salida",
+    kind: "trailing_edge",
+    hub: "trailing_hub",
+    shroud: "trailing_shroud",
+    kinds: &BLADE_TRAILING_KINDS,
+    default: DEFAULT_TRAILING_EDGE,
+};
+
+/// La disposición de un borde en `[blade]`, igual para la entrada y la salida:
+/// tipo conocido; el tipo por defecto no lleva cotas; las cotas con forma
+/// exigen el cubo, la tapa solo con `thickness_same = false`, y con las
+/// paredes separadas las dos; y, al final, las cotas de cada pared según su
+/// tipo (`dims_problem(campo, tipo, cotas)`).
+fn edge_layout_problem<D>(
+    fields: &EdgeFields,
+    kind: &str,
+    hub: &Option<D>,
+    shroud: &Option<D>,
+    same: bool,
+    dims_problem: fn(&str, &str, &D) -> Option<String>,
+) -> Option<String> {
+    let EdgeFields {
+        what,
+        kind: kind_field,
+        hub: hub_field,
+        shroud: shroud_field,
+        kinds,
+        default,
+    } = fields;
+    if !kinds.contains(&kind) {
+        return Some(format!(
+            "{what} desconocido «{kind}» en «{kind_field}»; los válidos son: {}",
+            kinds.join(", ")
+        ));
+    }
+    if kind == *default {
+        return [(hub_field, hub), (shroud_field, shroud)]
+            .iter()
+            .find(|(_, dims)| dims.is_some())
+            .map(|(field, _)| {
+                format!("con «{kind_field}» = \"{kind}\" no hay cotas: sobra «{field}»")
+            });
+    }
+    if hub.is_none() {
+        return Some(if shroud.is_some() {
+            format!("«{shroud_field}» exige «{hub_field}»: la tapa no se acota sin el cubo")
+        } else {
+            format!("con «{kind_field}» = \"{kind}\" hace falta «{hub_field}»")
+        });
+    }
+    if same && shroud.is_some() {
+        return Some(format!(
+            "«{shroud_field}» exige «thickness_same» = false: con «cubo = tapa» solo se escribe «{hub_field}»"
+        ));
+    }
+    if !same && shroud.is_none() {
+        return Some(format!(
+            "con «thickness_same» = false y «{kind_field}» = \"{kind}\" hacen falta «{hub_field}» y «{shroud_field}»"
+        ));
+    }
+    [(hub_field, hub), (shroud_field, shroud)]
+        .iter()
+        .filter_map(|(field, dims)| dims.as_ref().map(|dims| (field, dims)))
+        .find_map(|(field, dims)| dims_problem(field, kind, dims))
 }
 
 /// Por qué las cotas de una pared de la salida no valen para ese tipo, si no

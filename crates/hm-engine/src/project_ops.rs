@@ -500,26 +500,24 @@ fn edges_of(section: &hm_project::Blade) -> Result<BladeEdges, String> {
         tip: file.tip.unwrap_or(0.0) / 1000.0,
         asymmetry: file.asymmetry.unwrap_or(0.0),
     };
-    let (leading_hub, leading_shroud) = match section.leading_hub.as_ref().map(leading_dims) {
-        None => (LeadingDims::default(), LeadingDims::default()),
-        Some(hub) => match (&section.leading_shroud, same) {
-            (Some(file), false) => (hub, leading_dims(file)),
-            _ => (hub, hub),
-        },
-    };
+    let (leading_hub, leading_shroud) = walls_of(
+        &section.leading_hub,
+        &section.leading_shroud,
+        same,
+        leading_dims,
+    );
     let trailing = TrailingKind::from_id(&section.trailing_edge)
         .ok_or_else(|| format!("borde de salida desconocido «{}»", section.trailing_edge))?;
     let trailing_dims = |file: &hm_project::TrailingDimsFile| TrailingDims {
         length: file.length / 1000.0,
         end: file.end.unwrap_or(0.0) / 1000.0,
     };
-    let (trailing_hub, trailing_shroud) = match section.trailing_hub.as_ref().map(trailing_dims) {
-        None => (TrailingDims::default(), TrailingDims::default()),
-        Some(hub) => match (&section.trailing_shroud, same) {
-            (Some(file), false) => (hub, trailing_dims(file)),
-            _ => (hub, hub),
-        },
-    };
+    let (trailing_hub, trailing_shroud) = walls_of(
+        &section.trailing_hub,
+        &section.trailing_shroud,
+        same,
+        trailing_dims,
+    );
     Ok(BladeEdges {
         leading,
         leading_hub,
@@ -601,6 +599,24 @@ pub fn blade_section_of(setup: &BladeSetup) -> Option<hm_project::Blade> {
         trailing_shroud: (setup.edges.trailing != TrailingKind::Cut && !setup.thickness.same)
             .then(|| trailing_dims_mm(&setup.edges.trailing, setup.edges.trailing_shroud)),
     })
+}
+
+/// Las cotas de cubo y de tapa que lleva un archivo, ya en m: sin cubo no hay
+/// cotas (las dos por defecto); con «cubo = tapa» o sin tapa, la tapa copia el
+/// cubo.
+fn walls_of<F, D: Copy + Default>(
+    hub: &Option<F>,
+    shroud: &Option<F>,
+    same: bool,
+    convert: impl Fn(&F) -> D,
+) -> (D, D) {
+    match hub.as_ref().map(&convert) {
+        None => (D::default(), D::default()),
+        Some(hub) => match (shroud, same) {
+            (Some(file), false) => (hub, convert(file)),
+            _ => (hub, hub),
+        },
+    }
 }
 
 /// Las cotas de una pared m → mm, redondeadas a 6 decimales, con solo los

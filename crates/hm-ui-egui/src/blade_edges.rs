@@ -366,7 +366,7 @@ pub(super) fn choice_selected(
 pub(super) fn switch_same(setup: &BladeSetup, base: &ThicknessCurves, same: bool) -> BladeSetup {
     let mut out = setup.clone();
     out.thickness = setup.thickness.with_same(base, same);
-    out.edges = setup.edges.with_same(same);
+    out.edges = setup.edges.with_shroud_as_hub();
     out
 }
 

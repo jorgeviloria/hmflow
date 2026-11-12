@@ -900,6 +900,7 @@ mod tests {
                 asymmetry: 0.0,
             },
             leading_shroud: LeadingDims::default(),
+            ..BladeEdges::default()
         };
         let lines = cp_min_lines(&round, true, e, e);
         assert!(lines[0].contains("2,0"), "{lines:?}");

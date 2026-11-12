@@ -2,9 +2,9 @@
 //! (esquema 5; las manijas, esquema 6; el espesor, esquema 7; el borde de entrada, esquema 8).
 
 use hm_project::{
-    BLADE_ASYMMETRY_RANGE, BLADE_BOW_RANGE_DEG, BLADE_LEADING_KINDS, BLADE_SHAPES, Blade,
-    DEFAULT_BLADE_SHAPE, DEFAULT_STREAMLINES, LeadingDimsFile, MIGRATABLE_SCHEMAS, Project,
-    PumpType, SCHEMA_VERSION, STREAMLINE_COUNTS,
+    BLADE_ASYMMETRY_RANGE, BLADE_BOW_RANGE_DEG, BLADE_LEADING_KINDS, BLADE_SHAPES,
+    BLADE_TRAILING_KINDS, Blade, DEFAULT_BLADE_SHAPE, DEFAULT_STREAMLINES, LeadingDimsFile,
+    MIGRATABLE_SCHEMAS, Project, PumpType, SCHEMA_VERSION, STREAMLINE_COUNTS, TrailingDimsFile,
 };
 
 const V4: &str = include_str!("fixtures/end_suction_v4.hmf");
@@ -116,6 +116,10 @@ fn the_schema_is_eight_and_migrates_one_to_seven() {
     assert_eq!(DEFAULT_BLADE_SHAPE, "free_2d");
     assert_eq!(BLADE_LEADING_KINDS, ["blunt", "ellipse", "wedge"]);
     assert_eq!(BLADE_ASYMMETRY_RANGE, (0.0, 1.0));
+    assert_eq!(
+        BLADE_TRAILING_KINDS,
+        ["cut", "filed_suction", "filed_pressure", "ellipse"]
+    );
 }
 
 #[test]
@@ -565,4 +569,174 @@ fn hand_written_edges_are_checked() {
             asymmetry: Some(1.0),
         })
     );
+}
+
+#[test]
+fn trailing_edge_round_trips_and_cut_is_not_written() {
+    let mut project = Project::new("demo", PumpType::EndSuction);
+    // Recortada, la de por defecto: no se escribe.
+    let blade = Blade {
+        shape: "free_3d".into(),
+        ..Blade::default()
+    };
+    assert_eq!(blade.trailing_edge, "cut");
+    project.blade = Some(blade);
+    assert!(!project.to_toml().unwrap().contains("trailing"));
+
+    // Limada por succión con cubo y tapa distintos.
+    let blade = Blade {
+        shape: "free_3d".into(),
+        thickness_same: false,
+        trailing_edge: "filed_suction".into(),
+        trailing_hub: Some(TrailingDimsFile {
+            length: 12.0,
+            end: Some(1.5),
+        }),
+        trailing_shroud: Some(TrailingDimsFile {
+            length: 9.5,
+            end: Some(1.8),
+        }),
+        ..Blade::default()
+    };
+    assert!(!blade.is_default());
+    project.blade = Some(blade.clone());
+    let saved = project.to_toml().unwrap();
+    assert!(
+        saved.contains("trailing_edge = \"filed_suction\""),
+        "{saved}"
+    );
+    assert_eq!(Project::from_toml(&saved).unwrap().blade, Some(blade));
+
+    // Elipse con «cubo = tapa»: solo `length` y solo el cubo.
+    let blade = Blade {
+        trailing_edge: "ellipse".into(),
+        trailing_hub: Some(TrailingDimsFile {
+            length: 12.0,
+            end: None,
+        }),
+        ..Blade::default()
+    };
+    project.blade = Some(blade.clone());
+    let saved = project.to_toml().unwrap();
+    assert!(!saved.contains("trailing_shroud"), "{saved}");
+    assert!(!saved.contains("end ="), "{saved}");
+    assert_eq!(Project::from_toml(&saved).unwrap().blade, Some(blade));
+
+    // La entrada y la salida van juntas sin pisarse.
+    let blade = Blade {
+        leading_edge: "ellipse".into(),
+        leading_hub: Some(LeadingDimsFile {
+            lp: 20.0,
+            tip: None,
+            asymmetry: None,
+        }),
+        trailing_edge: "filed_pressure".into(),
+        trailing_hub: Some(TrailingDimsFile {
+            length: 10.0,
+            end: Some(1.5),
+        }),
+        ..Blade::default()
+    };
+    project.blade = Some(blade.clone());
+    let saved = project.to_toml().unwrap();
+    assert_eq!(Project::from_toml(&saved).unwrap().blade, Some(blade));
+}
+
+#[test]
+fn hand_written_trailing_edges_are_checked() {
+    let cases: [(&str, &str); 14] = [
+        ("trailing_edge = \"round\"", "trailing_edge"),
+        // Recortada no lleva cotas.
+        (
+            "trailing_edge = \"cut\"\ntrailing_hub = { length = 10.0 }",
+            "trailing_hub",
+        ),
+        ("trailing_hub = { length = 10.0 }", "trailing_hub"),
+        // Elipse: solo length.
+        (
+            "trailing_edge = \"ellipse\"\ntrailing_hub = { length = 10.0, end = 1.5 }",
+            "end",
+        ),
+        // El limado pide las dos.
+        (
+            "trailing_edge = \"filed_suction\"\ntrailing_hub = { length = 10.0 }",
+            "end",
+        ),
+        // Sin cubo.
+        ("trailing_edge = \"filed_suction\"", "trailing_hub"),
+        (
+            "thickness_same = false\ntrailing_edge = \"ellipse\"\ntrailing_shroud = { length = 10.0 }",
+            "trailing_hub",
+        ),
+        // Tapa con «cubo = tapa».
+        (
+            "trailing_edge = \"ellipse\"\ntrailing_hub = { length = 10.0 }\ntrailing_shroud = { length = 9.0 }",
+            "thickness_same",
+        ),
+        // Con las paredes separadas hacen falta las dos.
+        (
+            "thickness_same = false\ntrailing_edge = \"ellipse\"\ntrailing_hub = { length = 10.0 }",
+            "trailing_shroud",
+        ),
+        // Rangos absolutos y no finitos.
+        (
+            "trailing_edge = \"ellipse\"\ntrailing_hub = { length = 0.0 }",
+            "length",
+        ),
+        (
+            "trailing_edge = \"ellipse\"\ntrailing_hub = { length = -2.0 }",
+            "length",
+        ),
+        (
+            "trailing_edge = \"ellipse\"\ntrailing_hub = { length = nan }",
+            "length",
+        ),
+        (
+            "trailing_edge = \"filed_pressure\"\ntrailing_hub = { length = 10.0, end = 0.0 }",
+            "end",
+        ),
+        (
+            "trailing_edge = \"filed_pressure\"\ntrailing_hub = { length = 10.0, end = nan }",
+            "end",
+        ),
+    ];
+    for (text, field) in cases {
+        let error = Project::from_toml(&with_blade(text))
+            .expect_err(text)
+            .to_string();
+        assert!(error.contains(field), "{text}: {error}");
+    }
+    assert!(
+        Project::from_toml(&with_blade(
+            "trailing_edge = \"ellipse\"\ntrailing_hub = { length = 10.0, radius = 2.0 }"
+        ))
+        .is_err()
+    );
+    let project = Project::from_toml(&with_blade(
+        "trailing_edge = \"filed_suction\"\ntrailing_hub = { length = 12.0, end = 1.5 }",
+    ))
+    .unwrap();
+    assert_eq!(
+        project.blade.unwrap().trailing_hub,
+        Some(TrailingDimsFile {
+            length: 12.0,
+            end: Some(1.5),
+        })
+    );
+}
+
+#[test]
+fn a_v8_file_without_trailing_fields_loads_as_cut() {
+    // Un esquema 8 con entrada pero sin salida (lo que se escribía antes de
+    // este cambio) carga con la salida recortada.
+    let text =
+        with_blade("shape = \"free_3d\"\nleading_edge = \"ellipse\"\nleading_hub = { lp = 20.0 }");
+    assert!(text.starts_with("schema = 8\n"), "{text}");
+    assert!(!text.contains("trailing"));
+    let project = Project::from_toml(&text).unwrap();
+    let blade = project.blade.unwrap();
+    assert_eq!(blade.trailing_edge, "cut");
+    assert_eq!(blade.trailing_hub, None);
+    assert_eq!(blade.trailing_shroud, None);
+    assert_eq!(blade.leading_edge, "ellipse");
 }

@@ -2,7 +2,7 @@
 
 use hm_core::PumpType;
 use hm_design::blade_camber::{BladeCamber, camber_for_design};
-use hm_design::blade_edges::{BladeEdges, LeadingDims, LeadingKind};
+use hm_design::blade_edges::{BladeEdges, LeadingDims, LeadingKind, TrailingDims, TrailingKind};
 use hm_design::blade_setup::{BladeFamily, BladeSetup, BladeShape, CamberBows, STREAMLINE_COUNTS};
 use hm_design::blade_solid::{BladeSolid, blade_solid_for_design};
 use hm_design::blade_thickness::{BladeThickness, EditedThickness, ThicknessCurve, ThicknessNode};
@@ -486,27 +486,47 @@ pub fn blade_setup_of(section: Option<&hm_project::Blade>) -> Result<BladeSetup,
 /// con el texto de la carga; los topes que dependen de e y de L los acota el
 /// diseño al construir el álabe. Con «cubo = tapa» la tapa copia el cubo.
 fn edges_of(section: &hm_project::Blade) -> Result<BladeEdges, String> {
-    if let Some(problem) = section.leading_layout_problem() {
+    if let Some(problem) = section
+        .leading_layout_problem()
+        .or_else(|| section.trailing_layout_problem())
+    {
         return Err(problem);
     }
-    let kind = LeadingKind::from_id(&section.leading_edge)
+    let same = section.thickness_same;
+    let leading = LeadingKind::from_id(&section.leading_edge)
         .ok_or_else(|| format!("borde de entrada desconocido «{}»", section.leading_edge))?;
-    let to_dims = |file: &hm_project::LeadingDimsFile| LeadingDims {
+    let leading_dims = |file: &hm_project::LeadingDimsFile| LeadingDims {
         lp: file.lp / 1000.0,
         tip: file.tip.unwrap_or(0.0) / 1000.0,
         asymmetry: file.asymmetry.unwrap_or(0.0),
     };
-    let Some(hub) = section.leading_hub.as_ref().map(to_dims) else {
-        return Ok(BladeEdges::default());
+    let (leading_hub, leading_shroud) = match section.leading_hub.as_ref().map(leading_dims) {
+        None => (LeadingDims::default(), LeadingDims::default()),
+        Some(hub) => match (&section.leading_shroud, same) {
+            (Some(file), false) => (hub, leading_dims(file)),
+            _ => (hub, hub),
+        },
     };
-    let shroud = match (&section.leading_shroud, section.thickness_same) {
-        (Some(file), false) => to_dims(file),
-        _ => hub,
+    let trailing = TrailingKind::from_id(&section.trailing_edge)
+        .ok_or_else(|| format!("borde de salida desconocido «{}»", section.trailing_edge))?;
+    let trailing_dims = |file: &hm_project::TrailingDimsFile| TrailingDims {
+        length: file.length / 1000.0,
+        end: file.end.unwrap_or(0.0) / 1000.0,
+    };
+    let (trailing_hub, trailing_shroud) = match section.trailing_hub.as_ref().map(trailing_dims) {
+        None => (TrailingDims::default(), TrailingDims::default()),
+        Some(hub) => match (&section.trailing_shroud, same) {
+            (Some(file), false) => (hub, trailing_dims(file)),
+            _ => (hub, hub),
+        },
     };
     Ok(BladeEdges {
-        leading: kind,
-        leading_hub: hub,
-        leading_shroud: shroud,
+        leading,
+        leading_hub,
+        leading_shroud,
+        trailing,
+        trailing_hub,
+        trailing_shroud,
     })
 }
 
@@ -574,6 +594,12 @@ pub fn blade_section_of(setup: &BladeSetup) -> Option<hm_project::Blade> {
             .then(|| leading_dims_mm(&setup.edges.leading, setup.edges.leading_hub)),
         leading_shroud: (setup.edges.leading != LeadingKind::Blunt && !setup.thickness.same)
             .then(|| leading_dims_mm(&setup.edges.leading, setup.edges.leading_shroud)),
+        trailing_edge: setup.edges.trailing.id().to_string(),
+        // Recortada no lleva cotas; con «cubo = tapa» solo se escribe el cubo.
+        trailing_hub: (setup.edges.trailing != TrailingKind::Cut)
+            .then(|| trailing_dims_mm(&setup.edges.trailing, setup.edges.trailing_hub)),
+        trailing_shroud: (setup.edges.trailing != TrailingKind::Cut && !setup.thickness.same)
+            .then(|| trailing_dims_mm(&setup.edges.trailing, setup.edges.trailing_shroud)),
     })
 }
 
@@ -585,6 +611,15 @@ fn leading_dims_mm(kind: &LeadingKind, dims: LeadingDims) -> hm_project::Leading
         lp: round6(dims.lp * 1000.0),
         tip: wedge.then(|| round6(dims.tip * 1000.0)),
         asymmetry: wedge.then(|| round6(dims.asymmetry)),
+    }
+}
+
+/// Las cotas de salida de una pared m → mm, redondeadas a 6 decimales, con
+/// solo los campos del tipo (la elipse no lleva `end`).
+fn trailing_dims_mm(kind: &TrailingKind, dims: TrailingDims) -> hm_project::TrailingDimsFile {
+    hm_project::TrailingDimsFile {
+        length: round6(dims.length * 1000.0),
+        end: (*kind != TrailingKind::Ellipse).then(|| round6(dims.end * 1000.0)),
     }
 }
 

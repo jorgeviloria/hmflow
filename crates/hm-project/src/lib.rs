@@ -25,8 +25,8 @@ use thiserror::Error;
 /// - 6: añade las manijas de cubo y tapa a `[blade]`.
 /// - 7: añade el espesor a `[blade]`: el interruptor «cubo = tapa» y, si la
 ///   curva está editada, los nodos de cubo y de tapa.
-/// - 8: añade los bordes a `[blade]`: el tipo del borde de entrada y sus
-///   cotas de cubo y de tapa.
+/// - 8: añade los bordes a `[blade]`: el tipo del borde de entrada y del de
+///   salida y sus cotas de cubo y de tapa.
 pub const SCHEMA_VERSION: u32 = 8;
 
 /// Esquemas anteriores que se migran al cargar.
@@ -54,6 +54,14 @@ pub const BLADE_THICKNESS_EXIT_FLOOR_MM: f64 = 1.5;
 /// este crate no depende de `hm-design` y una prueba de `hm-engine` lo
 /// comprueba.
 pub const BLADE_LEADING_KINDS: [&str; 3] = ["blunt", "ellipse", "wedge"];
+
+/// Los tipos de borde de salida que admite `[blade]`, con el nombre que llevan
+/// en el archivo. Los mismos de `hm_design::blade_edges::TrailingKind`; lo ata
+/// una prueba de `hm-engine`.
+pub const BLADE_TRAILING_KINDS: [&str; 4] = ["cut", "filed_suction", "filed_pressure", "ellipse"];
+
+/// El tipo de borde de salida de un álabe que no dice otro: recortada.
+pub const DEFAULT_TRAILING_EDGE: &str = "cut";
 
 /// El tipo de borde de entrada de un álabe que no dice otro: romo.
 pub const DEFAULT_LEADING_EDGE: &str = "blunt";
@@ -168,6 +176,28 @@ pub struct Blade {
     /// Ídem para la tapa. Solo con `thickness_same = false` (esquema 8).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub leading_shroud: Option<LeadingDimsFile>,
+    /// El tipo del borde de salida (esquema 8): uno de
+    /// [`BLADE_TRAILING_KINDS`]. Recortada, la de por defecto, no se escribe.
+    #[serde(skip_serializing_if = "trailing_is_cut")]
+    pub trailing_edge: String,
+    /// Las cotas de la salida en el cubo, en mm (esquema 8). Solo los campos
+    /// del tipo; recortada no lleva cotas.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub trailing_hub: Option<TrailingDimsFile>,
+    /// Ídem para la tapa. Solo con `thickness_same = false` (esquema 8).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub trailing_shroud: Option<TrailingDimsFile>,
+}
+
+/// Las cotas del borde de salida de una pared, como van en el archivo, en mm:
+/// `length` medida sobre la línea media hasta D2 y, en el limado, `end`, el
+/// espesor total en D2. La elipse solo lleva `length`.
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct TrailingDimsFile {
+    pub length: f64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub end: Option<f64>,
 }
 
 /// Las cotas del borde de entrada de una pared, como van en el archivo: `lp`
@@ -208,6 +238,12 @@ struct BladeFile {
     leading_hub: Option<LeadingDimsFile>,
     #[serde(default)]
     leading_shroud: Option<LeadingDimsFile>,
+    #[serde(default = "default_trailing_edge")]
+    trailing_edge: String,
+    #[serde(default)]
+    trailing_hub: Option<TrailingDimsFile>,
+    #[serde(default)]
+    trailing_shroud: Option<TrailingDimsFile>,
 }
 
 impl TryFrom<BladeFile> for Blade {
@@ -225,10 +261,14 @@ impl TryFrom<BladeFile> for Blade {
             leading_edge: file.leading_edge,
             leading_hub: file.leading_hub,
             leading_shroud: file.leading_shroud,
+            trailing_edge: file.trailing_edge,
+            trailing_hub: file.trailing_hub,
+            trailing_shroud: file.trailing_shroud,
         };
         match blade
             .thickness_layout_problem()
             .or_else(|| blade.leading_layout_problem())
+            .or_else(|| blade.trailing_layout_problem())
         {
             Some(problem) => Err(problem),
             None => Ok(blade),
@@ -249,6 +289,9 @@ impl Default for Blade {
             leading_edge: default_leading_edge(),
             leading_hub: None,
             leading_shroud: None,
+            trailing_edge: default_trailing_edge(),
+            trailing_hub: None,
+            trailing_shroud: None,
         }
     }
 }
@@ -266,6 +309,9 @@ impl Blade {
             && leading_is_blunt(&self.leading_edge)
             && self.leading_hub.is_none()
             && self.leading_shroud.is_none()
+            && trailing_is_cut(&self.trailing_edge)
+            && self.trailing_hub.is_none()
+            && self.trailing_shroud.is_none()
     }
 
     /// Por qué las tres listas de espesor no pueden ir juntas, si no pueden:
@@ -349,6 +395,91 @@ impl Blade {
             .filter_map(|(field, dims)| dims.as_ref().map(|dims| (field, dims)))
             .find_map(|(field, dims)| leading_dims_problem(field, kind, dims))
     }
+
+    /// Por qué el borde de salida no puede ir así, si no puede: tipo conocido;
+    /// recortada no lleva cotas; elipse solo `length`; limado `length` y
+    /// `end`; la tapa exige el cubo y `thickness_same = false`; con las
+    /// paredes separadas y un borde con forma hacen falta las dos; y cada cota
+    /// finita y mayor que cero. Los topes que dependen de e(1) y de L los
+    /// acota el diseño al construir el álabe.
+    #[must_use]
+    pub fn trailing_layout_problem(&self) -> Option<String> {
+        let kind = self.trailing_edge.as_str();
+        if !BLADE_TRAILING_KINDS.contains(&kind) {
+            return Some(format!(
+                "borde de salida desconocido «{kind}» en «trailing_edge»; los válidos son: {}",
+                BLADE_TRAILING_KINDS.join(", ")
+            ));
+        }
+        let walls = [
+            ("trailing_hub", &self.trailing_hub),
+            ("trailing_shroud", &self.trailing_shroud),
+        ];
+        if kind == DEFAULT_TRAILING_EDGE {
+            return walls
+                .iter()
+                .find(|(_, dims)| dims.is_some())
+                .map(|(field, _)| {
+                    format!("con «trailing_edge» = \"{kind}\" no hay cotas: sobra «{field}»")
+                });
+        }
+        if self.trailing_hub.is_none() {
+            return Some(if self.trailing_shroud.is_some() {
+                "«trailing_shroud» exige «trailing_hub»: la tapa no se acota sin el cubo".into()
+            } else {
+                format!("con «trailing_edge» = \"{kind}\" hace falta «trailing_hub»")
+            });
+        }
+        if self.thickness_same && self.trailing_shroud.is_some() {
+            return Some(
+                "«trailing_shroud» exige «thickness_same» = false: con «cubo = tapa» solo se escribe «trailing_hub»"
+                    .into(),
+            );
+        }
+        if !self.thickness_same && self.trailing_shroud.is_none() {
+            return Some(format!(
+                "con «thickness_same» = false y «trailing_edge» = \"{kind}\" hacen falta «trailing_hub» y «trailing_shroud»"
+            ));
+        }
+        walls
+            .iter()
+            .filter_map(|(field, dims)| dims.as_ref().map(|dims| (field, dims)))
+            .find_map(|(field, dims)| trailing_dims_problem(field, kind, dims))
+    }
+}
+
+/// Por qué las cotas de una pared de la salida no valen para ese tipo, si no
+/// valen.
+fn trailing_dims_problem(field: &str, kind: &str, dims: &TrailingDimsFile) -> Option<String> {
+    if !dims.length.is_finite() {
+        return Some(format!("«{field}»: «length» no es un número finito"));
+    }
+    if dims.length <= 0.0 {
+        return Some(format!(
+            "«{field}»: «length» = {} mm no es válido; debe ser mayor que cero",
+            dims.length
+        ));
+    }
+    if kind == "ellipse" {
+        return dims
+            .end
+            .is_some()
+            .then(|| format!("«{field}»: con una elipse solo vale «length»; sobra «end»"));
+    }
+    let Some(end) = dims.end else {
+        return Some(format!(
+            "«{field}»: con un limado hacen falta «length» y «end»"
+        ));
+    };
+    if !end.is_finite() {
+        return Some(format!("«{field}»: «end» no es un número finito"));
+    }
+    if end <= 0.0 {
+        return Some(format!(
+            "«{field}»: «end» = {end} mm no es válido; debe ser mayor que cero"
+        ));
+    }
+    None
 }
 
 /// Por qué las cotas de una pared no valen para ese tipo, si no valen.
@@ -399,6 +530,14 @@ fn leading_dims_problem(field: &str, kind: &str, dims: &LeadingDimsFile) -> Opti
 
 fn default_leading_edge() -> String {
     DEFAULT_LEADING_EDGE.to_string()
+}
+
+fn default_trailing_edge() -> String {
+    DEFAULT_TRAILING_EDGE.to_string()
+}
+
+fn trailing_is_cut(kind: &String) -> bool {
+    kind == DEFAULT_TRAILING_EDGE
 }
 
 fn leading_is_blunt(kind: &String) -> bool {

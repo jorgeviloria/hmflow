@@ -3,7 +3,8 @@
 
 use hm_design::blade_edges::{
     BladeEdges, CP_MIN_COEFFICIENT, LeadingDims, LeadingKind, NOSE_DEFAULT_RATIO,
-    NOSE_MAX_FRACTION, NoseProfile, WEDGE_TIP_RATIO, cp_min,
+    NOSE_MAX_FRACTION, NoseProfile, TAIL_DEFAULT_RATIO, TailProfile, TrailingDims, TrailingKind,
+    WEDGE_TIP_RATIO, cp_min,
 };
 use hm_design::blade_thickness::ThicknessWall;
 
@@ -253,6 +254,7 @@ fn inner_lines_blend_hub_and_shroud_by_value() {
             tip: 0.0008,
             asymmetry: 0.6,
         },
+        ..BladeEdges::default()
     };
     let blend = edges.profile_at(0.25, false);
     assert_eq!(blend.kind, LeadingKind::Wedge);
@@ -343,6 +345,7 @@ fn turning_same_off_copies_the_hub_and_on_keeps_the_hub() {
             tip: 0.0,
             asymmetry: 0.0,
         },
+        ..BladeEdges::default()
     };
     // Apagarlo: la tapa arranca como copia del cubo.
     let off = edges.with_same(false);
@@ -381,4 +384,227 @@ fn the_kinds_have_file_ids_that_round_trip() {
     }
     assert_eq!(LeadingKind::from_id("parabola"), None);
     assert_eq!(LeadingKind::from_id(""), None);
+}
+
+// ---------------------------------------------------------------------------
+// El borde de salida.
+// ---------------------------------------------------------------------------
+
+/// e en el cuerpo y e(1) de las pruebas de la salida: 6 mm y 3 mm.
+const E1: f64 = 0.003;
+/// Largo del limado: 4·e(1) = 12 mm.
+const LENGTH: f64 = 0.012;
+
+fn tail(kind: TrailingKind, length: f64, end: f64) -> TailProfile {
+    TailProfile {
+        kind,
+        dims: TrailingDims { length, end },
+    }
+}
+
+#[test]
+fn filing_the_suction_side_moves_only_the_suction_face_to_end_minus_half_e() {
+    // Limado por succión con end = 2 mm: en D2 la succión queda a end − e1/2
+    // de la línea media, y la presión no se toca (Gülich, 4.5.2, fig. 3.6).
+    let end = 0.002;
+    let profile = tail(TrailingKind::FiledSuction, LENGTH, end);
+    let (p, s) = profile.half_thicknesses(0.0, E, E1);
+    assert_eq!(p, E / 2.0);
+    close(s, end - E1 / 2.0, 1e-15);
+    // El espesor total en D2 es `end`.
+    close(p + s - E / 2.0 + E / 2.0, E / 2.0 + end - E1 / 2.0, 1e-15);
+    // En el inicio del limado, el cuerpo; entre los dos, lineal.
+    let (p, s) = profile.half_thicknesses(LENGTH, E, E1);
+    assert_eq!((p, s), (E / 2.0, E / 2.0));
+    for i in 0..=10 {
+        let w = f64::from(i) / 10.0;
+        let (p, s) = profile.half_thicknesses(w * LENGTH, E, E1);
+        assert_eq!(p, E / 2.0);
+        close(
+            s,
+            (end - E1 / 2.0) + w * (E / 2.0 - (end - E1 / 2.0)),
+            1e-15,
+        );
+    }
+    // Fuera del limado, el cuerpo: más adentro y más allá de D2.
+    for v in [1.5 * LENGTH, 1.0, -1e-9] {
+        assert_eq!(profile.half_thicknesses(v, E, E1), (E / 2.0, E / 2.0));
+    }
+}
+
+#[test]
+fn with_end_equal_to_half_e_the_filed_face_ends_on_the_camber() {
+    // end = e1/2: la cara limada acaba sobre la línea media.
+    for (kind, face) in [
+        (TrailingKind::FiledSuction, 1),
+        (TrailingKind::FiledPressure, 0),
+    ] {
+        let profile = tail(kind, LENGTH, E1 / 2.0);
+        let (p, s) = profile.half_thicknesses(0.0, E, E1);
+        let (filed, other) = if face == 1 { (s, p) } else { (p, s) };
+        close(filed, 0.0, 1e-15);
+        assert_eq!(other, E / 2.0);
+        // Con menos, pasa de la línea media (altura negativa): el espesor sigue
+        // siendo positivo porque la otra cara no se mueve.
+        let less = tail(kind, LENGTH, E1 / 4.0);
+        let (p, s) = less.half_thicknesses(0.0, E, E1);
+        let (filed, other) = if face == 1 { (s, p) } else { (p, s) };
+        assert!(filed < 0.0);
+        assert!(filed + other > 0.0);
+    }
+}
+
+#[test]
+fn filing_the_pressure_side_leaves_the_suction_face() {
+    let end = 0.002;
+    let profile = tail(TrailingKind::FiledPressure, LENGTH, end);
+    for i in 0..=10 {
+        let w = f64::from(i) / 10.0;
+        let (p, s) = profile.half_thicknesses(w * LENGTH, E, E1);
+        assert_eq!(s, E / 2.0, "w = {w}");
+        close(
+            p,
+            (end - E1 / 2.0) + w * (E / 2.0 - (end - E1 / 2.0)),
+            1e-15,
+        );
+    }
+    let (p, s) = profile.half_thicknesses(0.0, E, E1);
+    close(p, end - E1 / 2.0, 1e-15);
+    assert_eq!(s, E / 2.0);
+}
+
+#[test]
+fn the_trailing_ellipse_goes_to_zero_thickness_at_the_exit() {
+    let profile = tail(TrailingKind::Ellipse, LENGTH, 0.0);
+    let (p, s) = profile.half_thicknesses(0.0, E, E1);
+    assert_eq!((p, s), (0.0, 0.0));
+    for i in 0..=20 {
+        let v = LENGTH * f64::from(i) / 20.0;
+        let (p, s) = profile.half_thicknesses(v, E, E1);
+        assert_eq!(p, s);
+        // La semielipse de semiejes `length` y e/2, con D2 en la punta.
+        let on_ellipse = ((v - LENGTH) / LENGTH).powi(2) + (2.0 * p / E).powi(2);
+        close(on_ellipse, 1.0, 1e-12);
+    }
+    // En el inicio, el cuerpo con tangente continua.
+    let (p, _) = profile.half_thicknesses(LENGTH, E, E1);
+    close(p, E / 2.0, 1e-15);
+    let d = 1e-7;
+    let slope = (profile.half_thicknesses(LENGTH + d, E, E1).0
+        - profile.half_thicknesses(LENGTH - d, E, E1).0)
+        / (2.0 * d);
+    close(slope, 0.0, 1e-3);
+}
+
+#[test]
+fn trailing_defaults_follow_the_thickness() {
+    close(TAIL_DEFAULT_RATIO, 4.0, 0.0);
+    for kind in [TrailingKind::FiledSuction, TrailingKind::FiledPressure] {
+        let dims = TrailingDims::default_for(kind, E1);
+        close(dims.length, 4.0 * E1, 1e-18);
+        close(dims.end, E1 / 2.0, 1e-18);
+    }
+    let ellipse = TrailingDims::default_for(TrailingKind::Ellipse, E1);
+    close(ellipse.length, 4.0 * E1, 1e-18);
+    assert_eq!(ellipse.end, 0.0);
+    assert_eq!(
+        TrailingDims::default_for(TrailingKind::Cut, E1),
+        TrailingDims::default()
+    );
+}
+
+#[test]
+fn trailing_clamping() {
+    let floor = 0.0015;
+    let length = 0.2;
+    let dims = |length: f64, end: f64| TrailingDims { length, end };
+    // Más de 0,3·L → 0,3·L.
+    let long = dims(0.5 * length, 0.002)
+        .clamped(E1, length, floor)
+        .unwrap();
+    close(long.length, 0.3 * length, 1e-18);
+    // Muy corta: no baja de e1/2 (de hmflow).
+    let short = dims(1e-9, 0.002).clamped(E1, length, floor).unwrap();
+    close(short.length, E1 / 2.0, 1e-18);
+    // end: por debajo del mínimo de fundición de x = 1, el mínimo; por encima
+    // de e1, e1.
+    let low = dims(LENGTH, 0.0001).clamped(E1, length, floor).unwrap();
+    close(low.end, floor, 1e-18);
+    let high = dims(LENGTH, 0.01).clamped(E1, length, floor).unwrap();
+    close(high.end, E1, 1e-18);
+    // Dentro de los límites no se toca.
+    let ok = dims(LENGTH, 0.002);
+    assert_eq!(ok.clamped(E1, length, floor), Some(ok));
+    // No finito → None.
+    assert_eq!(dims(f64::NAN, 0.002).clamped(E1, length, floor), None);
+    assert_eq!(dims(LENGTH, f64::INFINITY).clamped(E1, length, floor), None);
+    assert_eq!(ok.clamped(f64::NAN, length, floor), None);
+    assert_eq!(ok.clamped(E1, f64::NAN, floor), None);
+}
+
+#[test]
+fn changing_the_trailing_kind_keeps_the_leading_edges() {
+    let (e_hub, e_shroud) = (0.006, 0.004);
+    let leading = BladeEdges::default().with_leading_kind(LeadingKind::Wedge, e_hub, e_shroud);
+    let edges = leading.with_trailing_kind(TrailingKind::FiledSuction, E1, 0.002);
+    assert_eq!(edges.trailing, TrailingKind::FiledSuction);
+    assert_eq!(edges.leading, LeadingKind::Wedge);
+    assert_eq!(edges.leading_hub, leading.leading_hub);
+    assert_eq!(edges.leading_shroud, leading.leading_shroud);
+    // Las cotas de la salida arrancan por pared con su e(1).
+    assert_eq!(
+        edges.trailing_hub,
+        TrailingDims::default_for(TrailingKind::FiledSuction, E1)
+    );
+    assert_eq!(
+        edges.trailing_shroud,
+        TrailingDims::default_for(TrailingKind::FiledSuction, 0.002)
+    );
+    // Y cambiar la entrada no toca la salida.
+    let again = edges.with_leading_kind(LeadingKind::Ellipse, e_hub, e_shroud);
+    assert_eq!(again.trailing, TrailingKind::FiledSuction);
+    assert_eq!(again.trailing_hub, edges.trailing_hub);
+    // Editar una pared de la salida deja la otra; con `same`, las dos.
+    let hub_dims = TrailingDims {
+        length: 0.02,
+        end: 0.002,
+    };
+    let edited = edges.with_trailing_dims(ThicknessWall::Hub, hub_dims, false);
+    assert_eq!(edited.trailing_hub, hub_dims);
+    assert_eq!(edited.trailing_shroud, edges.trailing_shroud);
+    let same = edited.with_trailing_dims(ThicknessWall::Shroud, hub_dims, true);
+    assert_eq!(same.trailing_shroud, hub_dims);
+    // «Cubo = tapa» también gobierna la salida.
+    let joined = edited.with_same(true);
+    assert_eq!(joined.trailing_shroud, edited.trailing_hub);
+    assert_eq!(joined.trailing, TrailingKind::FiledSuction);
+    // Las cotas por pared mezclan por ψ, como la entrada.
+    let blend = edited.tail_at(0.25, false);
+    close(
+        blend.dims.length,
+        0.75 * edited.trailing_hub.length + 0.25 * edited.trailing_shroud.length,
+        1e-15,
+    );
+    assert_eq!(edited.tail_at(0.25, true).dims, edited.trailing_hub);
+}
+
+#[test]
+fn the_default_trailing_is_cut() {
+    let edges = BladeEdges::default();
+    assert_eq!(edges.trailing, TrailingKind::Cut);
+    assert_eq!(edges.trailing_hub, TrailingDims::default());
+    assert_eq!(edges.trailing_shroud, TrailingDims::default());
+    // Con recortada, el cuerpo en cualquier punto.
+    let cut = edges.tail_at(0.5, false);
+    for v in [0.0, 0.001, 1.0] {
+        assert_eq!(cut.half_thicknesses(v, E, E1), (E / 2.0, E / 2.0));
+    }
+    assert_eq!(
+        TrailingKind::ALL.map(TrailingKind::id),
+        ["cut", "filed_suction", "filed_pressure", "ellipse"]
+    );
+    for kind in TrailingKind::ALL {
+        assert_eq!(TrailingKind::from_id(kind.id()), Some(kind));
+    }
+    assert_eq!(TrailingKind::from_id("round"), None);
 }

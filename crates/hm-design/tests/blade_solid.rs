@@ -988,6 +988,7 @@ fn edges(kind: LeadingKind, dims: LeadingDims) -> BladeEdges {
         leading: kind,
         leading_hub: dims,
         leading_shroud: dims,
+        ..BladeEdges::default()
     }
 }
 
@@ -1114,6 +1115,7 @@ fn the_nose_thickness_measured_between_faces_matches_the_profile() {
         leading: LeadingKind::Ellipse,
         leading_hub: LeadingDims::default_for(LeadingKind::Ellipse, e),
         leading_shroud: LeadingDims::default_for(LeadingKind::Ellipse, case.curves.shroud.at(0.0)),
+        ..BladeEdges::default()
     };
     // e/Lp = 0,2 en cubo, línea central y tapa.
     close(e / edges.leading_hub.lp, 0.2, 1e-12);

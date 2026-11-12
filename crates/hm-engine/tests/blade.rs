@@ -1,6 +1,6 @@
 //! La sección `[blade]` del proyecto y el `BladeSetup` del diseño.
 
-use hm_design::blade_edges::{BladeEdges, LeadingDims, LeadingKind};
+use hm_design::blade_edges::{BladeEdges, LeadingDims, LeadingKind, TrailingDims, TrailingKind};
 use hm_design::blade_setup::{self, BladeSetup, BladeShape, CamberBows};
 use hm_design::blade_thickness::{
     self, BladeThickness, EditedThickness, THICKNESS_NODES, ThicknessNode, node_floor,
@@ -10,7 +10,7 @@ use hm_engine::{
     Intake, PumpType, analyze, blade_section_of, blade_setup_of, case_from_project, design_edits,
     edited_options, new_project, parse_temperature, recalc, reselect_design, reselected_options,
 };
-use hm_project::{Blade, LeadingDimsFile, Project};
+use hm_project::{Blade, LeadingDimsFile, Project, TrailingDimsFile};
 use hm_units::parse_quantity;
 
 #[test]
@@ -340,6 +340,14 @@ fn the_project_limits_match_the_design_ones() {
         hm_project::DEFAULT_LEADING_EDGE,
         LeadingKind::default().id()
     );
+    assert_eq!(
+        hm_project::BLADE_TRAILING_KINDS,
+        TrailingKind::ALL.map(TrailingKind::id)
+    );
+    assert_eq!(
+        hm_project::DEFAULT_TRAILING_EDGE,
+        TrailingKind::default().id()
+    );
     // `clamped` acota la asimetría a [0, 1]: los mismos extremos del archivo.
     let (low, high) = hm_project::BLADE_ASYMMETRY_RANGE;
     let clamp = |asymmetry: f64| {
@@ -585,6 +593,7 @@ fn with_same_only_the_hub_edge_is_written() {
             leading: LeadingKind::Ellipse,
             leading_hub: dims,
             leading_shroud: dims,
+            ..BladeEdges::default()
         },
         ..BladeSetup::default()
     };
@@ -673,6 +682,151 @@ fn the_edges_never_change_the_1d() {
             ..Blade::default()
         });
         // El 1D sale igual: lo que `recalc` reescribe y el informe entero.
+        let with_edge = recalc(project.clone(), false).unwrap();
+        let (mut edge_file, mut reference_file) =
+            (with_edge.project.clone(), reference.project.clone());
+        edge_file.blade = None;
+        reference_file.blade = None;
+        assert_eq!(
+            edge_file.to_toml().unwrap(),
+            reference_file.to_toml().unwrap(),
+            "{kind}"
+        );
+        assert_eq!(with_edge.changes, reference.changes, "{kind}");
+        assert_eq!(
+            hm_engine::report(&project, points).unwrap(),
+            reference_report,
+            "{kind}"
+        );
+    }
+}
+
+#[test]
+fn trailing_goes_to_the_setup_in_metres_and_back() {
+    // «Cubo = tapa»: limada por succión; solo el cubo se escribe.
+    let section = Blade {
+        shape: "free_3d".into(),
+        trailing_edge: "filed_suction".into(),
+        trailing_hub: Some(TrailingDimsFile {
+            length: 12.5,
+            end: Some(1.5),
+        }),
+        ..Blade::default()
+    };
+    let setup = blade_setup_of(Some(&section)).unwrap();
+    let dims = TrailingDims {
+        length: 0.0125,
+        end: 0.0015,
+    };
+    assert_eq!(setup.edges.trailing, TrailingKind::FiledSuction);
+    assert_eq!(setup.edges.trailing_hub, dims);
+    assert_eq!(setup.edges.trailing_shroud, dims);
+    // La entrada no se toca.
+    assert_eq!(setup.edges.leading, LeadingKind::Blunt);
+    assert_eq!(blade_section_of(&setup), Some(section));
+
+    // Paredes separadas con elipse (solo `length`) y una entrada a la vez.
+    let section = Blade {
+        shape: "free_3d".into(),
+        thickness_same: false,
+        leading_edge: "ellipse".into(),
+        leading_hub: Some(LeadingDimsFile {
+            lp: 30.0,
+            tip: None,
+            asymmetry: None,
+        }),
+        leading_shroud: Some(LeadingDimsFile {
+            lp: 22.5,
+            tip: None,
+            asymmetry: None,
+        }),
+        trailing_edge: "ellipse".into(),
+        trailing_hub: Some(TrailingDimsFile {
+            length: 12.0,
+            end: None,
+        }),
+        trailing_shroud: Some(TrailingDimsFile {
+            length: 9.5,
+            end: None,
+        }),
+        ..Blade::default()
+    };
+    let setup = blade_setup_of(Some(&section)).unwrap();
+    assert_eq!(setup.edges.trailing, TrailingKind::Ellipse);
+    assert_eq!(setup.edges.trailing_shroud.length, 0.0095);
+    assert_eq!(setup.edges.trailing_shroud.end, 0.0);
+    assert_eq!(blade_section_of(&setup), Some(section));
+
+    // Solo la salida ya hace la elección distinta de la de por defecto.
+    let only_tail = BladeSetup {
+        edges: BladeEdges::default().with_trailing_kind(TrailingKind::FiledPressure, 0.003, 0.003),
+        ..BladeSetup::default()
+    };
+    let section = blade_section_of(&only_tail).expect("la salida se guarda");
+    assert_eq!(section.trailing_edge, "filed_pressure");
+    let back = blade_setup_of(Some(&section)).unwrap();
+    assert_eq!(back.edges.trailing, TrailingKind::FiledPressure);
+    assert_eq!(blade_section_of(&back), Some(section));
+}
+
+#[test]
+fn a_hand_made_section_with_bad_trailing_edges_is_rejected_with_the_load_text() {
+    for section in [
+        Blade {
+            trailing_edge: "round".into(),
+            ..Blade::default()
+        },
+        Blade {
+            trailing_edge: "filed_suction".into(),
+            ..Blade::default()
+        },
+        Blade {
+            trailing_edge: "ellipse".into(),
+            trailing_hub: Some(TrailingDimsFile {
+                length: 10.0,
+                end: Some(1.5),
+            }),
+            ..Blade::default()
+        },
+        Blade {
+            trailing_edge: "ellipse".into(),
+            trailing_hub: Some(TrailingDimsFile {
+                length: f64::NAN,
+                end: None,
+            }),
+            ..Blade::default()
+        },
+    ] {
+        let error = blade_setup_of(Some(&section)).unwrap_err();
+        assert!(
+            error.contains("trailing_") || error.contains("length"),
+            "{error}"
+        );
+        assert_eq!(Some(error), section.trailing_layout_problem());
+    }
+}
+
+#[test]
+fn the_edges_never_change_the_1d_with_any_trailing_kind() {
+    let points = CurvePoints::new(11).unwrap();
+    let blunt = b1_project(Some(Blade {
+        shape: "free_3d".into(),
+        ..Blade::default()
+    }));
+    let reference = recalc(blunt.clone(), false).unwrap();
+    let reference_report = hm_engine::report(&blunt, points).unwrap();
+    for (kind, end) in [
+        ("filed_suction", Some(1.5)),
+        ("filed_pressure", Some(1.5)),
+        ("ellipse", None),
+    ] {
+        let mut project = blunt.clone();
+        project.blade = Some(Blade {
+            shape: "free_3d".into(),
+            trailing_edge: kind.into(),
+            trailing_hub: Some(TrailingDimsFile { length: 12.0, end }),
+            ..Blade::default()
+        });
         let with_edge = recalc(project.clone(), false).unwrap();
         let (mut edge_file, mut reference_file) =
             (with_edge.project.clone(), reference.project.clone());

@@ -949,6 +949,7 @@ mod thick {
                         asymmetry: 1.0,
                     },
                     leading_shroud: hm_design::blade_edges::LeadingDims::default(),
+                    ..BladeEdges::default()
                 },
             );
             assert_eq!(
@@ -1018,6 +1019,7 @@ mod thick {
                         leading: kind,
                         leading_hub: dims,
                         leading_shroud: dims,
+                        ..BladeEdges::default()
                     },
                 );
                 let scene = scene(&case, 0.05);

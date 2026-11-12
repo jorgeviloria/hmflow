@@ -1,4 +1,4 @@
-//! Los bordes del álabe: la nariz de la entrada (la salida llega después).
+//! Los bordes del álabe: la nariz de la entrada y la forma de la salida.
 //!
 //! - **Tipo.** Uno por borde, igual en cubo y tapa: [`LeadingKind::Blunt`]
 //!   (romo: el canto perpendicular de la curva e(x), sin nariz),
@@ -27,6 +27,16 @@
 //!   romo que él, y para eso está «romo»), Lp ≤ 0,3·L, punta entre 0 y e,
 //!   asimetría entre 0 y 1 ([`LeadingDims::clamped`]).
 //!
+//! - **Salida.** Cuatro tipos ([`TrailingKind`]): recortada (la de la etapa 1),
+//!   limada por succión, limada por presión y elipse. En el limado, la cara
+//!   limada baja linealmente de e(x)/2 en el inicio del limado a `end − e(1)/2`
+//!   en D2, de modo que el espesor total en D2 es `end` (Gülich, cap. 4.5.2,
+//!   p. 207, y fig. 3.6, p. 92: sin perfilar, simétrica, «under-filing» por la
+//!   succión y «over-filing» por la presión); la otra cara no cambia. En la
+//!   elipse de salida, t = e(x)·√(1 − (1 − w)²), con w = v/longitud y v la
+//!   distancia a D2: el espesor llega a 0 en D2. **La longitud del limado y de
+//!   la elipse, y el espesor final, son de hmflow:** el libro no da cifras.
+//!
 //! Los bordes son forma: **no mueven el 1D**. Unidades: m.
 
 use crate::blade_thickness::ThicknessWall;
@@ -43,6 +53,13 @@ pub const NOSE_LONG_FRACTION: f64 = 0.2;
 
 /// Punta del afilado al elegirlo: 0,1·e. De hmflow.
 pub const WEDGE_TIP_RATIO: f64 = 0.1;
+
+/// Longitud del limado y de la elipse de salida al elegirlos: 4·e(1). De
+/// hmflow.
+pub const TAIL_DEFAULT_RATIO: f64 = 4.0;
+
+/// La longitud de la salida no pasa de 0,3·L. De hmflow.
+pub const TAIL_MAX_FRACTION: f64 = 0.3;
 
 /// El 0,373 de la ec. 7.1a de Gülich (p. 414).
 pub const CP_MIN_COEFFICIENT: f64 = 0.373;
@@ -141,9 +158,145 @@ impl LeadingDims {
     }
 }
 
-/// Los bordes de un álabe. Por ahora, la entrada; la salida llega después.
+/// La forma del borde de salida.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum TrailingKind {
+    /// Recortada en D2: el canto de la etapa 1.
+    #[default]
+    Cut,
+    /// Limada por la cara de succión.
+    FiledSuction,
+    /// Limada por la cara de presión.
+    FiledPressure,
+    /// Semielipse: el espesor llega a 0 en D2.
+    Ellipse,
+}
+
+impl TrailingKind {
+    /// Todos, en el orden del selector.
+    pub const ALL: [Self; 4] = [
+        Self::Cut,
+        Self::FiledSuction,
+        Self::FiledPressure,
+        Self::Ellipse,
+    ];
+
+    /// El nombre con que se guarda en el proyecto.
+    #[must_use]
+    pub fn id(self) -> &'static str {
+        match self {
+            Self::Cut => "cut",
+            Self::FiledSuction => "filed_suction",
+            Self::FiledPressure => "filed_pressure",
+            Self::Ellipse => "ellipse",
+        }
+    }
+
+    /// El tipo que se guarda con ese nombre, si existe.
+    #[must_use]
+    pub fn from_id(id: &str) -> Option<Self> {
+        Self::ALL.into_iter().find(|kind| kind.id() == id)
+    }
+}
+
+/// Las cotas de la salida de una pared, en m. `length` se mide sobre la línea
+/// media hasta D2; `end` (el espesor total en D2) solo vale en el limado.
+#[derive(Debug, Clone, Copy, PartialEq, Default)]
+pub struct TrailingDims {
+    pub length: f64,
+    pub end: f64,
+}
+
+impl TrailingDims {
+    /// Las cotas al elegir `kind` con el espesor de salida `e1` de la pared:
+    /// longitud 4·e(1) y, en el limado, espesor final e(1)/2. La recortada no
+    /// lleva cotas y la elipse no lleva `end`. De hmflow.
+    #[must_use]
+    pub fn default_for(kind: TrailingKind, e1: f64) -> Self {
+        match kind {
+            TrailingKind::Cut => Self::default(),
+            TrailingKind::FiledSuction | TrailingKind::FiledPressure => Self {
+                length: TAIL_DEFAULT_RATIO * e1,
+                end: e1 / 2.0,
+            },
+            TrailingKind::Ellipse => Self {
+                length: TAIL_DEFAULT_RATIO * e1,
+                end: 0.0,
+            },
+        }
+    }
+
+    /// Las cotas dentro de los límites: longitud entre e(1)/2 (de hmflow) y
+    /// 0,3·`length_total`, y espesor final entre `floor` (el mínimo de
+    /// fundición de x = 1, [`crate::blade_thickness::node_floor`]) y e(1). Si
+    /// algo no es finito, `None`. De hmflow.
+    #[must_use]
+    pub fn clamped(self, e1: f64, length_total: f64, floor: f64) -> Option<Self> {
+        let finite = [self.length, self.end, e1, length_total, floor]
+            .iter()
+            .all(|v| v.is_finite());
+        if !finite {
+            return None;
+        }
+        Some(Self {
+            length: self
+                .length
+                .min(TAIL_MAX_FRACTION * length_total)
+                .max(e1 / 2.0),
+            end: self.end.min(e1).max(floor),
+        })
+    }
+}
+
+/// El perfil de la salida de una línea de corriente (ψ ya interpolado), listo
+/// para evaluar.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct TailProfile {
+    pub kind: TrailingKind,
+    pub dims: TrailingDims,
+}
+
+impl TailProfile {
+    /// (h_presión, h_succión) en m a la distancia `v` (m) de D2 hacia dentro
+    /// sobre la línea media, con `e` = e(x) en ese punto y `e1` = e(1). Fuera
+    /// de [0, longitud], con recortada, o con una longitud que no es positiva:
+    /// (e/2, e/2).
+    #[must_use]
+    pub fn half_thicknesses(&self, v: f64, e: f64, e1: f64) -> (f64, f64) {
+        let body = (e / 2.0, e / 2.0);
+        let length = self.dims.length;
+        if self.kind == TrailingKind::Cut || !is_positive(length) || !(0.0..=length).contains(&v) {
+            return body;
+        }
+        let w = v / length;
+        // El limado: la cara limada pasa linealmente de e(x)/2 (w = 1) a
+        // `end − e(1)/2` (w = 0) (Gülich, 4.5.2, fig. 3.6; la rampa es de
+        // hmflow).
+        let filed = |face: f64| {
+            let at_exit = self.dims.end - e1 / 2.0;
+            at_exit + w * (face - at_exit)
+        };
+        match self.kind {
+            TrailingKind::Cut => body,
+            TrailingKind::FiledSuction => (e / 2.0, filed(e / 2.0)),
+            TrailingKind::FiledPressure => (filed(e / 2.0), e / 2.0),
+            TrailingKind::Ellipse => {
+                let half = 0.5 * e * (1.0 - (1.0 - w) * (1.0 - w)).max(0.0).sqrt();
+                (half, half)
+            }
+        }
+    }
+}
+
+/// Los bordes de un álabe: la entrada y la salida.
 #[derive(Debug, Clone, PartialEq, Default)]
 pub struct BladeEdges {
+    /// El tipo de la salida: uno solo, vale para cubo y tapa.
+    pub trailing: TrailingKind,
+    /// Las cotas de la salida en el cubo.
+    pub trailing_hub: TrailingDims,
+    /// Las cotas de la salida en la tapa. Con «cubo = tapa» no se leen.
+    pub trailing_shroud: TrailingDims,
     /// El tipo de la entrada: uno solo, vale para cubo y tapa.
     pub leading: LeadingKind,
     /// Las cotas de la entrada en el cubo.
@@ -251,6 +404,7 @@ impl BladeEdges {
             leading: kind,
             leading_hub: LeadingDims::default_for(kind, e_hub),
             leading_shroud: LeadingDims::default_for(kind, e_shroud),
+            ..self.clone()
         }
     }
 
@@ -278,9 +432,64 @@ impl BladeEdges {
     #[must_use]
     pub fn with_same(&self, _same: bool) -> Self {
         Self {
-            leading: self.leading,
-            leading_hub: self.leading_hub,
             leading_shroud: self.leading_hub,
+            trailing_shroud: self.trailing_hub,
+            ..self.clone()
         }
+    }
+
+    /// El perfil de la salida en la línea con fracción de caudal `psi`:
+    /// (1 − ψ)·cubo + ψ·tapa en la longitud y en el espesor final (de
+    /// hmflow). ψ se acota a [0, 1]. Con `same`, las cotas del cubo.
+    #[must_use]
+    pub fn tail_at(&self, psi: f64, same: bool) -> TailProfile {
+        let dims = if same {
+            self.trailing_hub
+        } else {
+            let psi = if psi.is_finite() {
+                psi.clamp(0.0, 1.0)
+            } else {
+                0.0
+            };
+            let (hub, shroud) = (self.trailing_hub, self.trailing_shroud);
+            let blend = |h: f64, t: f64| (1.0 - psi) * h + psi * t;
+            TrailingDims {
+                length: blend(hub.length, shroud.length),
+                end: blend(hub.end, shroud.end),
+            }
+        };
+        TailProfile {
+            kind: self.trailing,
+            dims,
+        }
+    }
+
+    /// Cambia el tipo de la salida; la entrada no se toca. Las cotas de las
+    /// dos paredes arrancan con [`TrailingDims::default_for`], cada una con su
+    /// e(1): `e1_hub` y `e1_shroud`.
+    #[must_use]
+    pub fn with_trailing_kind(&self, kind: TrailingKind, e1_hub: f64, e1_shroud: f64) -> Self {
+        Self {
+            trailing: kind,
+            trailing_hub: TrailingDims::default_for(kind, e1_hub),
+            trailing_shroud: TrailingDims::default_for(kind, e1_shroud),
+            ..self.clone()
+        }
+    }
+
+    /// Escribe las cotas de salida de `wall` y deja la otra pared como estaba.
+    /// Con `same` se escriben las dos y `wall` se ignora.
+    #[must_use]
+    pub fn with_trailing_dims(&self, wall: ThicknessWall, dims: TrailingDims, same: bool) -> Self {
+        let mut edges = self.clone();
+        match (same, wall) {
+            (true, _) => {
+                edges.trailing_hub = dims;
+                edges.trailing_shroud = dims;
+            }
+            (false, ThicknessWall::Hub) => edges.trailing_hub = dims,
+            (false, ThicknessWall::Shroud) => edges.trailing_shroud = dims,
+        }
+        edges
     }
 }

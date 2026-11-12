@@ -6,6 +6,7 @@
 mod bar;
 mod blade_beta;
 mod blade_development;
+mod blade_edges;
 mod blade_inlet;
 mod blade_thickness;
 mod curves;

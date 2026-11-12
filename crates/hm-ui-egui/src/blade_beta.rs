@@ -545,6 +545,8 @@ pub(super) fn blade_beta_view(
                     );
                 }
                 crate::blade_development::BladeChart::Profile => {
+                    edited |=
+                        crate::blade_edges::leading_row(ui, outcome, inputs, history, Some(camber));
                     crate::blade_development::profile_view(
                         ui,
                         camber,
@@ -553,7 +555,18 @@ pub(super) fn blade_beta_view(
                     );
                 }
             }
-            crate::blade_thickness::readings_panel(ui, &solid);
+            // Las lecturas de cp,min de la entrada, con e(0) de cada pared.
+            let cp_min = crate::blade_thickness::ThicknessGraph::of(outcome, camber)
+                .map(|graph| {
+                    crate::blade_edges::cp_min_lines(
+                        &inputs.blade.edges,
+                        inputs.blade.thickness.same,
+                        graph.curves.hub.at(0.0),
+                        graph.curves.shroud.at(0.0),
+                    )
+                })
+                .unwrap_or_default();
+            crate::blade_thickness::readings_panel(ui, &solid, &cp_min);
             edited |= bow_fields(ui, inputs, history);
         }
         Err(message) => {
@@ -577,6 +590,9 @@ pub(super) fn blade_beta_view(
                     .weak(),
                 );
             });
+            // El mismo selector de entrada, desactivado: las cotas guardadas no
+            // se tocan.
+            edited |= crate::blade_edges::leading_row(ui, outcome, inputs, history, None);
             edited |= beta_2d_plot(ui, outcome, inputs, history);
         }
     }

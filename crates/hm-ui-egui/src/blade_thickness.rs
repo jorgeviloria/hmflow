@@ -9,6 +9,7 @@
 use eframe::egui;
 use egui_plot::{Plot, PlotPoint, Points, Text};
 use hm_design::blade_camber::BladeCamber;
+use hm_design::blade_setup::BladeSetup;
 use hm_design::blade_solid::{BladeSolid, BladeSolidError, READING_STATIONS};
 use hm_design::blade_thickness::{
     BladeThickness, THICKNESS_NODES, THICKNESS_WARNING, ThicknessCurves, ThicknessWall, node_floor,
@@ -38,14 +39,25 @@ impl ThicknessGraph {
         Ok(Self { curves, setup })
     }
 
-    /// `Err(motivo)` si con `candidate` el álabe con espesor no se construye
-    /// sobre este diseño; el motivo es el texto del error. No toca nada.
-    pub fn accepts(&self, outcome: &Outcome, candidate: &BladeThickness) -> Result<(), String> {
-        let mut setup = outcome.inputs.blade.clone();
-        setup.thickness = candidate.clone();
-        crate::blade_inlet::solid_for(outcome, &setup)
+    /// `Err(motivo)` si con `candidate` (la curva de espesor y los bordes) el
+    /// álabe con espesor no se construye sobre este diseño; el motivo es el
+    /// texto del error. No toca nada.
+    pub fn accepts(&self, outcome: &Outcome, candidate: &BladeSetup) -> Result<(), String> {
+        crate::blade_inlet::solid_for(outcome, candidate)
             .map(|_| ())
             .map_err(|error| error.to_string())
+    }
+
+    /// Lo mismo con solo otra curva de espesor: el resto del álabe, el de las
+    /// entradas.
+    pub fn accepts_thickness(
+        &self,
+        outcome: &Outcome,
+        candidate: &BladeThickness,
+    ) -> Result<(), String> {
+        let mut setup = outcome.inputs.blade.clone();
+        setup.thickness = candidate.clone();
+        self.accepts(outcome, &setup)
     }
 
     /// Las paredes que se dibujan: una sola con «cubo = tapa».
@@ -177,7 +189,8 @@ pub(super) fn thickness_view(
             )
             .changed()
         {
-            inputs.blade.thickness = graph.setup.with_same(&graph.curves, same);
+            // Un solo interruptor gobierna el espesor y los bordes.
+            inputs.blade = crate::blade_edges::switch_same(&inputs.blade, &graph.curves, same);
             history.record(&BetaSnapshot::of(inputs), time);
             edited = true;
         }
@@ -364,7 +377,7 @@ fn thickness_plot(
                 let refusal = graph
                     .setup
                     .with_node_removed(&graph.curves, wall, index)
-                    .and_then(|candidate| graph.accepts(outcome, &candidate).err());
+                    .and_then(|candidate| graph.accepts_thickness(outcome, &candidate).err());
                 if let Some(reason) = refusal {
                     refuse(ui.ctx(), status_id, &reason);
                 } else {
@@ -383,7 +396,7 @@ fn thickness_plot(
                 let refusal = graph
                     .setup
                     .with_node_added(&graph.curves, wall, x)
-                    .and_then(|candidate| graph.accepts(outcome, &candidate).err());
+                    .and_then(|candidate| graph.accepts_thickness(outcome, &candidate).err());
                 if let Some(reason) = refusal {
                     refuse(ui.ctx(), status_id, &reason);
                 } else {
@@ -451,7 +464,9 @@ fn thickness_plot(
                 ui.ctx().data_mut(|data| data.remove::<Editing>(editing_id));
                 let status =
                     match write_thickness(graph, editing.wall, editing.index, &editing.text) {
-                        Ok((setup, _)) if let Err(reason) = graph.accepts(outcome, &setup) => {
+                        Ok((setup, _))
+                            if let Err(reason) = graph.accepts_thickness(outcome, &setup) =>
+                        {
                             format!("No se mueve: {reason}")
                         }
                         Ok((setup, note)) => {
@@ -700,14 +715,19 @@ pub(super) fn reading_rows(solid: &BladeSolid) -> Vec<ReadingRow> {
 
 /// El panel plegable «Lecturas» bajo la gráfica: cerrado al arrancar. Si el
 /// álabe con espesor no sale, enseña solo el motivo.
-pub(super) fn readings_panel(ui: &mut egui::Ui, solid: &Result<BladeSolid, BladeSolidError>) {
-    readings_panel_open(ui, solid, None);
+pub(super) fn readings_panel(
+    ui: &mut egui::Ui,
+    solid: &Result<BladeSolid, BladeSolidError>,
+    extra: &[String],
+) {
+    readings_panel_open(ui, solid, extra, None);
 }
 
 /// Como [`readings_panel`]; `open` fuerza el estado del panel (las pruebas).
 fn readings_panel_open(
     ui: &mut egui::Ui,
     solid: &Result<BladeSolid, BladeSolidError>,
+    extra: &[String],
     open: Option<bool>,
 ) {
     let palette = crate::theme::palette(ui.ctx());
@@ -740,6 +760,9 @@ fn readings_panel_open(
                             ui.end_row();
                         }
                     });
+                for line in extra {
+                    ui.label(egui::RichText::new(line).small());
+                }
                 ui.label(
                     egui::RichText::new(
                         "Espesor real: distancia entre las dos caras sobre la normal, en x = 0, \
@@ -851,7 +874,7 @@ fn move_node(
         .with_node_moved(&graph.curves, wall, index, x, e);
     let changed = moved != inputs.blade.thickness;
     if changed {
-        graph.accepts(outcome, &moved)?;
+        graph.accepts_thickness(outcome, &moved)?;
     }
     inputs.blade.thickness = moved;
     if changed {
@@ -1470,7 +1493,7 @@ mod tests {
                 .setup
                 .with_node_moved(&graph.curves, ThicknessWall::Hub, 1, 0.5, 0.060);
         let reason = graph
-            .accepts(&outcome, &candidate)
+            .accepts_thickness(&outcome, &candidate)
             .expect_err("con 60 mm el álabe no se construye");
         assert!(reason.contains("línea de corriente"), "{reason}");
         assert!(reason.contains("(0 es el cubo)"), "{reason}");
@@ -1486,7 +1509,7 @@ mod tests {
             graph
                 .setup
                 .with_node_moved(&graph.curves, ThicknessWall::Hub, 0, 0.0, 0.006);
-        assert_eq!(graph.accepts(&outcome, &candidate), Ok(()));
+        assert_eq!(graph.accepts_thickness(&outcome, &candidate), Ok(()));
     }
 
     #[test]
@@ -1494,10 +1517,17 @@ mod tests {
         use hm_design::blade_solid::BladeSolidError;
         let failed = Err(BladeSolidError::NoCamber("sin línea media".into()));
         // Abierto a la fuerza, para que se dibuje el cuerpo.
-        egui::__run_test_ui(|ui| readings_panel_open(ui, &failed, Some(true)));
+        egui::__run_test_ui(|ui| readings_panel_open(ui, &failed, &[], Some(true)));
         let ok = Ok(b1_solid());
-        egui::__run_test_ui(|ui| readings_panel_open(ui, &ok, Some(true)));
-        egui::__run_test_ui(|ui| readings_panel(ui, &ok));
+        egui::__run_test_ui(|ui| {
+            readings_panel_open(
+                ui,
+                &ok,
+                &["Cubo = tapa: e/Lp = 0,20 → cp,min = 0,155".to_string()],
+                Some(true),
+            )
+        });
+        egui::__run_test_ui(|ui| readings_panel(ui, &ok, &[]));
     }
 
     /// Un arrastre de nodo se apunta en el historial como el de β: se puede

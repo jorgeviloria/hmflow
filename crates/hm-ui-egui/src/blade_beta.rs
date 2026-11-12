@@ -1082,22 +1082,44 @@ pub(super) fn leading_from_env() -> Option<hm_design::blade_edges::LeadingKind> 
     kind
 }
 
-/// Solo para las capturas: `HMF_LEADING=blunt|ellipse|wedge` fija el tipo del
-/// borde de entrada con sus cotas por defecto (Lp = 5·e, punta 0,1·e), con el
-/// espesor de entrada e de «Gülich» del diseño ya calculado. Devuelve si
-/// cambió algo y hay que recalcular.
+/// El tipo del borde de salida que pide `HMF_TRAILING` (`cut`,
+/// `filed_suction`, `filed_pressure` o `ellipse`), si lo hay y es uno de ellos.
+pub(super) fn trailing_from_env() -> Option<hm_design::blade_edges::TrailingKind> {
+    let text = std::env::var("HMF_TRAILING").ok()?;
+    let kind = hm_design::blade_edges::TrailingKind::from_id(text.trim());
+    if kind.is_none() {
+        eprintln!(
+            "HMF_TRAILING: se espera cut, filed_suction, filed_pressure o ellipse; llegó {text:?}"
+        );
+    }
+    kind
+}
+
+/// Solo para las capturas: `HMF_LEADING=blunt|ellipse|wedge` y
+/// `HMF_TRAILING=cut|filed_suction|filed_pressure|ellipse` fijan el tipo de
+/// los bordes con sus cotas por defecto (entrada: Lp = 5·e, punta 0,1·e;
+/// salida: longitud 4·e(1), espesor final e(1)/2), con los espesores e y e(1)
+/// de «Gülich» del diseño ya calculado. Devuelve si cambió algo y hay que
+/// recalcular.
 pub(super) fn seed_leading(inputs: &mut Inputs, outcome: &crate::model::Outcome) -> bool {
-    let Some(kind) = leading_from_env() else {
+    let (leading, trailing) = (leading_from_env(), trailing_from_env());
+    if leading.is_none() && trailing.is_none() {
         return false;
-    };
+    }
     let r = &outcome.result;
-    let Ok((_, e, _)) =
+    let Ok((_, e, e1)) =
         hm_design::mechanics::blade_thicknesses(r.selection.blade_count, r.u2.si, r.nq, r.d2.si)
     else {
-        eprintln!("HMF_LEADING: el diseño no da el espesor del álabe");
+        eprintln!("HMF_LEADING / HMF_TRAILING: el diseño no da el espesor del álabe");
         return false;
     };
-    let edges = inputs.blade.edges.with_leading_kind(kind, e, e);
+    let mut edges = inputs.blade.edges.clone();
+    if let Some(kind) = leading {
+        edges = edges.with_leading_kind(kind, e, e);
+    }
+    if let Some(kind) = trailing {
+        edges = edges.with_trailing_kind(kind, e1, e1);
+    }
     let changed = edges != inputs.blade.edges;
     inputs.blade.edges = edges;
     changed

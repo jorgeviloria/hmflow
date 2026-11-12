@@ -552,9 +552,9 @@ mod blades {
 
 mod thick {
     use hm_design::blade_camber::{BladeCamber, camber_for_design};
-    use hm_design::blade_edges::{BladeEdges, LeadingKind};
+    use hm_design::blade_edges::{BladeEdges, LeadingKind, TrailingDims, TrailingKind};
     use hm_design::blade_setup::{BladeSetup, BladeShape};
-    use hm_design::blade_solid::{BladeSolid, blade_solid_for_design};
+    use hm_design::blade_solid::{BladeSolid, TAIL_STEPS, blade_solid_for_design};
     use hm_design::geometry::{DEFAULT_INCIDENCE_DEG, geometry};
     use hm_design::meridian::{MeridionalModel, meridional_model};
     use hm_design::scene::{BladeFace, BladeSurfaceSource, Piece, PieceId, Scene, scene_from};
@@ -1213,6 +1213,289 @@ mod thick {
             let piece = blade(&scene, 0);
             let names: Vec<BladeFace> = piece.faces.iter().map(|(face, _)| *face).collect();
             assert_eq!(names, BladeFace::ALL);
+        }
+    }
+
+    /// B1 con esa salida por defecto (4·e(1) y e(1)/2) y la entrada que se
+    /// diga (romo si `None`).
+    fn tailed(shape: BladeShape, kind: TrailingKind, leading: Option<LeadingKind>) -> Thick {
+        let e = thick(shape, 5).solid.lines[0].true_thickness[0];
+        let mut edges = BladeEdges::default().with_trailing_kind(kind, e / 2.0, e / 2.0);
+        if let Some(leading) = leading {
+            edges = edges.with_leading_kind(leading, e, e);
+        }
+        thick_with(shape, 5, edges)
+    }
+
+    const TAILS: [TrailingKind; 3] = [
+        TrailingKind::FiledSuction,
+        TrailingKind::FiledPressure,
+        TrailingKind::Ellipse,
+    ];
+
+    #[test]
+    fn cut_scene_is_unchanged_with_a_nosed_blade() {
+        // Con recortada, la cara «Salida» son las tres filas de la etapa 1 y
+        // las aristas, las de siempre, también con nariz. (La malla de la
+        // etapa 1 es idéntica bit a bit: se comprobó contra el commit
+        // anterior.)
+        for shape in [BladeShape::Free3D, BladeShape::Ruled3D] {
+            let e = thick(shape, 5).solid.lines[0].true_thickness[0];
+            let nosed = BladeEdges::default().with_leading_kind(LeadingKind::Ellipse, e, e);
+            let reference = thick_with(shape, 5, nosed.clone());
+            let noisy_edges = BladeEdges {
+                trailing: TrailingKind::Cut,
+                trailing_hub: TrailingDims {
+                    length: 0.05,
+                    end: 0.002,
+                },
+                ..nosed
+            };
+            let noisy = thick_with(shape, 5, noisy_edges);
+            let (a, b) = (scene(&reference, 0.05), scene(&noisy, 0.05));
+            assert_eq!(a.fingerprint(), b.fingerprint(), "{shape:?}");
+            let piece = blade(&a, 0);
+            let exit = piece.face(BladeFace::TrailingEdge).unwrap();
+            let pressure = piece.face(BladeFace::Pressure).unwrap();
+            let across = exit.vertices.len() / 3;
+            assert_eq!(
+                exit.vertices[..across],
+                pressure.vertices[pressure.vertices.len() - across..]
+            );
+            assert_eq!(piece.curves[10].points.len(), 3);
+            assert_eq!(piece.curves[11].points.len(), 3);
+        }
+    }
+
+    #[test]
+    fn a_filed_blade_is_closed_with_outward_normals() {
+        for shape in [BladeShape::Free3D, BladeShape::Ruled3D] {
+            for kind in [TrailingKind::FiledSuction, TrailingKind::FiledPressure] {
+                let case = tailed(shape, kind, None);
+                for tolerance in [0.05, 0.5] {
+                    let scene = scene(&case, tolerance);
+                    assert!(scene.notices.is_empty(), "{:?}", scene.notices);
+                    for index in [0, case.blades - 1] {
+                        let mesh = &blade(&scene, index).surface;
+                        assert_eq!(
+                            mesh.open_edges(1e-6),
+                            0,
+                            "{shape:?} {kind:?}, {tolerance} mm, álabe {index}"
+                        );
+                        assert!(
+                            mesh.signed_volume() > 0.0,
+                            "{shape:?} {kind:?}: volumen {}",
+                            mesh.signed_volume()
+                        );
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn an_ellipse_exit_blade_is_closed_and_has_no_exit_canto() {
+        for shape in [BladeShape::Free3D, BladeShape::Ruled3D] {
+            // Con y sin nariz: las dos puntas (entrada y salida) son un punto.
+            for leading in [None, Some(LeadingKind::Ellipse), Some(LeadingKind::Wedge)] {
+                let case = tailed(shape, TrailingKind::Ellipse, leading);
+                let scene = scene(&case, 0.05);
+                assert!(scene.notices.is_empty(), "{:?}", scene.notices);
+                let piece = blade(&scene, 0);
+                let mesh = &piece.surface;
+                let label = format!("{shape:?} {leading:?}");
+                assert_eq!(mesh.open_edges(1e-6), 0, "{label}");
+                assert!(mesh.signed_volume() > 0.0, "{label}");
+                let smallest = areas(mesh).into_iter().fold(f64::MAX, f64::min);
+                assert!(smallest > 1.0e-9, "{label}: triángulo de área {smallest}");
+                assert!(
+                    mesh.normals.iter().all(|n| n.iter().all(|v| v.is_finite())),
+                    "{label}"
+                );
+                // Sin canto: las filas de D2 son una sola, así que la cara va
+                // de la unión de presión a la punta y de vuelta.
+                let exit = piece.face(BladeFace::TrailingEdge).unwrap();
+                let across = piece.curves[8].points.len();
+                assert_eq!(
+                    exit.vertices.len(),
+                    (2 * TAIL_STEPS + 1) * across,
+                    "{label}"
+                );
+            }
+        }
+    }
+
+    /// El volumen que quita la salida con forma, mm³: en cada celda de la
+    /// superficie media entre dos líneas vecinas y dos filas, su área por lo que
+    /// falta de espesor normal respecto al del sólido recortado a la misma m′.
+    fn removed_by_the_tail(case: &Thick, cut: &Thick) -> f64 {
+        let point = |p: &hm_design::blade_solid::SolidPoint| {
+            [
+                p.r * p.theta.cos() * 1000.0,
+                p.r * p.theta.sin() * 1000.0,
+                p.z * 1000.0,
+            ]
+        };
+        let sub = |a: [f64; 3], b: [f64; 3]| [a[0] - b[0], a[1] - b[1], a[2] - b[2]];
+        let length = |a: [f64; 3]| (a[0] * a[0] + a[1] * a[1] + a[2] * a[2]).sqrt();
+        let cross = |a: [f64; 3], b: [f64; 3]| {
+            [
+                a[1] * b[2] - a[2] * b[1],
+                a[2] * b[0] - a[0] * b[2],
+                a[0] * b[1] - a[1] * b[0],
+            ]
+        };
+        let half_area =
+            |a: [f64; 3], b: [f64; 3], c: [f64; 3]| 0.5 * length(cross(sub(b, a), sub(c, a)));
+        // El espesor del recortado a esa m′: las caras interpoladas.
+        let cut_chord = |line: usize, conformal: f64| {
+            let at = |face: &[hm_design::blade_solid::SolidPoint]| {
+                let k = face
+                    .partition_point(|p| p.m_conformal <= conformal)
+                    .clamp(1, face.len() - 1);
+                let (a, b) = (&face[k - 1], &face[k]);
+                let t =
+                    ((conformal - a.m_conformal) / (b.m_conformal - a.m_conformal)).clamp(0.0, 1.0);
+                let (pa, pb) = (point(a), point(b));
+                std::array::from_fn::<f64, 3, _>(|i| pa[i] + t * (pb[i] - pa[i]))
+            };
+            let l = &cut.solid.lines[line];
+            length(sub(at(&l.pressure), at(&l.suction)))
+        };
+        let missing = |k: usize, row: usize| {
+            let r = &case.solid.lines[k].tail[row];
+            let shaped = length(sub(point(&r[0]), point(&r[2])));
+            // Las filas son cortes a m′ constante, oblicuos a la línea media:
+            // el acorde es e/sen β y el espesor normal, el acorde por sen β
+            // (el β de la salida, casi constante en la franja).
+            let beta = case.camber.lines[k].points.last().unwrap().beta;
+            (cut_chord(k, r[1].m_conformal) - shaped) * beta.sin()
+        };
+        let lines = case.solid.lines.len();
+        let rows = case.solid.lines[0].tail.len();
+        let mut total = 0.0;
+        for k in 0..lines - 1 {
+            for j in 0..rows - 1 {
+                let corner = |line: usize, row: usize| point(&case.solid.lines[line].tail[row][1]);
+                let (a, b) = (corner(k, j), corner(k, j + 1));
+                let (c, d) = (corner(k + 1, j + 1), corner(k + 1, j));
+                let area = half_area(a, b, c) + half_area(a, c, d);
+                let mean = 0.25
+                    * (missing(k, j)
+                        + missing(k, j + 1)
+                        + missing(k + 1, j)
+                        + missing(k + 1, j + 1));
+                total += area * mean;
+            }
+        }
+        total
+    }
+
+    #[test]
+    fn the_filed_volume_is_the_cut_volume_minus_the_filed_one() {
+        for shape in [BladeShape::Free3D, BladeShape::Ruled3D] {
+            let cut = thick(shape, 5);
+            let cut_volume = blade(&scene(&cut, FINE), 0).surface.signed_volume();
+            for kind in TAILS {
+                let case = tailed(shape, kind, None);
+                let volume = blade(&scene(&case, FINE), 0).surface.signed_volume();
+                let removed = removed_by_the_tail(&case, &cut);
+                assert!(removed > 0.0, "{shape:?} {kind:?}");
+                // ± 0,5 % del volumen del álabe recortado en la libre; la
+                // reglada, el doble (ver la prueba de la nariz).
+                let tolerance = if shape == BladeShape::Ruled3D {
+                    0.01
+                } else {
+                    0.005
+                };
+                assert!(
+                    ((cut_volume - volume) - removed).abs() < tolerance * cut_volume,
+                    "{shape:?} {kind:?}: recortado {cut_volume}, con forma {volume}, quitado {removed} mm³"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn twelve_edges_with_every_trailing_kind() {
+        for kind in [
+            TrailingKind::Cut,
+            TrailingKind::FiledSuction,
+            TrailingKind::FiledPressure,
+            TrailingKind::Ellipse,
+        ] {
+            let case = tailed(BladeShape::Free3D, kind, Some(LeadingKind::Ellipse));
+            let scene = scene(&case, 0.05);
+            let piece = blade(&scene, 0);
+            assert_eq!(piece.curves.len(), 12, "{kind:?}");
+            // [8] unión de presión, [9] unión de succión, [10] contorno del
+            // cubo y [11] contorno de la tapa de la salida.
+            let (pressure_joint, suction_joint) = (&piece.curves[8], &piece.curves[9]);
+            let (hub, shroud) = (&piece.curves[10], &piece.curves[11]);
+            // Las uniones son el final de las aristas a lo largo.
+            assert_eq!(piece.curves[0].points.last(), pressure_joint.points.first());
+            assert_eq!(piece.curves[1].points.last(), pressure_joint.points.last());
+            assert_eq!(piece.curves[2].points.last(), suction_joint.points.first());
+            assert_eq!(piece.curves[3].points.last(), suction_joint.points.last());
+            // Los contornos van de la unión de presión a la de succión.
+            for (outline, col) in [(hub, 0), (shroud, pressure_joint.points.len() - 1)] {
+                assert_eq!(outline.points[0], pressure_joint.points[col], "{kind:?}");
+                assert_eq!(
+                    *outline.points.last().unwrap(),
+                    suction_joint.points[col],
+                    "{kind:?}"
+                );
+            }
+            let expected = match kind {
+                TrailingKind::Cut => 3,
+                TrailingKind::Ellipse => 2 * TAIL_STEPS + 1,
+                _ => 2 * TAIL_STEPS + 3,
+            };
+            assert_eq!(hub.points.len(), expected, "{kind:?}");
+            assert_eq!(shroud.points.len(), expected, "{kind:?}");
+        }
+    }
+
+    #[test]
+    fn the_exit_joint_points_are_shared_bit_for_bit() {
+        for shape in [BladeShape::Free3D, BladeShape::Ruled3D] {
+            for kind in TAILS {
+                let case = tailed(shape, kind, None);
+                let scene = scene(&case, 0.05);
+                let piece = blade(&scene, 0);
+                let exit = piece.face(BladeFace::TrailingEdge).unwrap();
+                let pressure = piece.face(BladeFace::Pressure).unwrap();
+                let suction = piece.face(BladeFace::Suction).unwrap();
+                let cols = piece.curves[8].points.len();
+                // La primera fila de la salida es la última de la presión y la
+                // última, la última de la succión.
+                assert_eq!(
+                    exit.vertices[..cols],
+                    pressure.vertices[pressure.vertices.len() - cols..],
+                    "{shape:?} {kind:?}"
+                );
+                assert_eq!(
+                    exit.vertices[exit.vertices.len() - cols..],
+                    suction.vertices[suction.vertices.len() - cols..],
+                    "{shape:?} {kind:?}"
+                );
+                // Y las bandas llevan los mismos puntos de unión y de D2.
+                for (band, col) in [(BladeFace::HubBand, 0), (BladeFace::ShroudBand, cols - 1)] {
+                    let band = piece.face(band).unwrap();
+                    let last_p = pressure.vertices[pressure.vertices.len() - cols + col];
+                    let last_s = suction.vertices[suction.vertices.len() - cols + col];
+                    for joint in [
+                        last_p,
+                        last_s,
+                        exit.vertices[(exit.vertices.len() / cols / 2) * cols + col],
+                    ] {
+                        assert!(
+                            band.vertices.contains(&joint),
+                            "{shape:?} {kind:?}: la banda no lleva {joint:?}"
+                        );
+                    }
+                }
+            }
         }
     }
 }

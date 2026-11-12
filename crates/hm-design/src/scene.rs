@@ -664,21 +664,34 @@ fn thick_pieces(
     // La nariz: las tres rejillas de sus filas (presión, medio y succión), con
     // las mismas columnas que el cuerpo; su última fila es la primera
     // estación de las caras, bit a bit.
+    // La nariz y la salida con forma: las tres rejillas de sus filas (presión,
+    // medio y succión), con las mismas columnas que el cuerpo; la última fila
+    // de la nariz y la primera de la salida son la primera y la última
+    // estación de las caras, bit a bit.
     let nose_len = lines[0].nose.len();
+    let tail_len = lines[0].tail.len();
     if lines.iter().any(|line| line.nose.len() != nose_len) || nose_len == 1 {
         return Err(
             "las narices de las líneas de corriente no tienen las mismas filas".to_string(),
         );
     }
-    let nose_grids: Vec<Vec<[f64; 3]>> = if nose_len == 0 {
-        Vec::new()
-    } else {
-        let nose_faces: Vec<Vec<Vec<[f64; 3]>>> = (0..3)
+    if lines.iter().any(|line| line.tail.len() != tail_len) || tail_len == 1 {
+        return Err(
+            "las salidas de las líneas de corriente no tienen las mismas filas".to_string(),
+        );
+    }
+    let row_grids = |pick: fn(&SolidLine) -> &Vec<[SolidPoint; 3]>,
+                     len: usize|
+     -> Vec<Vec<[f64; 3]>> {
+        if len == 0 {
+            return Vec::new();
+        }
+        let faces_of_rows: Vec<Vec<Vec<[f64; 3]>>> = (0..3)
             .map(|side| {
                 lines
                     .iter()
                     .map(|line| {
-                        line.nose
+                        pick(line)
                             .iter()
                             .map(|row| [row[side].z, row[side].r, row[side].theta])
                             .collect()
@@ -686,25 +699,25 @@ fn thick_pieces(
                     .collect()
             })
             .collect();
-        let nose_stations: Vec<usize> = (0..nose_len).collect();
+        let row_stations: Vec<usize> = (0..len).collect();
         match camber.shape {
-            BladeShape::Ruled3D => nose_faces
+            BladeShape::Ruled3D => faces_of_rows
                 .iter()
                 .map(|face| {
                     let in_mm: Vec<Vec<[f64; 3]>> = face
                         .iter()
                         .map(|line| line.iter().map(|p| polar_to_mm(p[0], p[1], p[2])).collect())
                         .collect();
-                    ruled_exact(&in_mm, &nose_stations)
+                    ruled_exact(&in_mm, &row_stations)
                 })
                 .collect(),
             _ => {
                 let psi: Vec<f64> = lines.iter().map(|line| line.psi).collect();
                 free_columns(
                     &psi,
-                    &nose_faces,
+                    &faces_of_rows,
                     &[],
-                    &nose_stations,
+                    &row_stations,
                     tolerance,
                     Some(cols),
                 )
@@ -712,6 +725,8 @@ fn thick_pieces(
             }
         }
     };
+    let nose_grids = row_grids(|line| &line.nose, nose_len);
+    let tail_grids = row_grids(|line| &line.tail, tail_len);
     let grid_row = |grid: &[[f64; 3]], row: usize| grid[row * cols..(row + 1) * cols].to_vec();
     // Las filas de la cara de la nariz, de la presión a la succión.
     let mut cap: Vec<Vec<[f64; 3]>> = Vec::new();
@@ -729,6 +744,28 @@ fn thick_pieces(
         for row in sequence {
             if cap.last() != Some(&row) {
                 cap.push(row);
+            }
+        }
+    }
+    // Las filas de la cara «Salida», de la presión a la succión: con recortada,
+    // las tres de la última estación; con forma, la franja de presión de la
+    // unión a D2, el canto (con el medio) y la franja de succión de vuelta a
+    // la unión, sin filas repetidas (la punta de la elipse es una).
+    let mut exit_cap: Vec<Vec<[f64; 3]>> = Vec::new();
+    if tail_len == 0 {
+        exit_cap.extend([
+            grid_row(pressure, rows - 1),
+            grid_row(middle, rows - 1),
+            grid_row(suction, rows - 1),
+        ]);
+    } else {
+        let mut sequence: Vec<Vec<[f64; 3]>> = Vec::new();
+        sequence.extend((0..tail_len).map(|k| grid_row(&tail_grids[0], k)));
+        sequence.push(grid_row(&tail_grids[1], tail_len - 1));
+        sequence.extend((0..tail_len).rev().map(|k| grid_row(&tail_grids[2], k)));
+        for row in sequence {
+            if exit_cap.last() != Some(&row) {
+                exit_cap.push(row);
             }
         }
     }
@@ -754,11 +791,24 @@ fn thick_pieces(
         // puede tejer; un abanico de dos triángulos la reemplaza.
         let collapsed = tip.is_some_and(|row| row[0] == row[1] && row[1] == row[2]);
         let first = usize::from(collapsed);
+        // Lo mismo en la salida: las filas de D2 (menos la unión, que es la
+        // última del cuerpo); si la última es un punto, otro abanico.
+        let tail_at = |k: usize| -> [[f64; 3]; 3] {
+            std::array::from_fn(|side| tail_grids[side][k * cols + col])
+        };
+        let end = (tail_len > 0).then(|| tail_at(tail_len - 1));
+        let end_collapsed = end.is_some_and(|row| row[0] == row[1] && row[1] == row[2]);
+        let tail_last = if end_collapsed {
+            tail_len - 1
+        } else {
+            tail_len
+        };
         let mut table: Vec<[[f64; 3]; 3]> =
             (first..nose_len.saturating_sub(1)).map(nose_at).collect();
         table.extend(
             (0..rows).map(|row| [pressure, middle, suction].map(|grid| grid[row * cols + col])),
         );
+        table.extend((1..tail_last).map(tail_at));
         let mut mesh = weave(table.len(), 3, &|row, k| table[row][k])?;
         if let Some(row) = tip.filter(|_| collapsed) {
             let apex = mesh.vertices.len() as u32;
@@ -767,12 +817,15 @@ fn thick_pieces(
             mesh.triangles.push([apex, 1, 0]);
             mesh.triangles.push([apex, 2, 1]);
         }
+        if let Some(row) = end.filter(|_| end_collapsed) {
+            let base = ((table.len() - 1) * 3) as u32;
+            let apex = mesh.vertices.len() as u32;
+            mesh.vertices.push(row[0]);
+            mesh.normals.push(mesh.normals[(base + 1) as usize]);
+            mesh.triangles.push([base, base + 1, apex]);
+            mesh.triangles.push([base + 1, base + 2, apex]);
+        }
         Ok(mesh)
-    };
-    let edge = |row: usize| {
-        weave(3, cols, &|k, col| {
-            [pressure, middle, suction][k][row * cols + col]
-        })
     };
     let meshes = [
         side(pressure)?,
@@ -780,7 +833,7 @@ fn thick_pieces(
         band(0)?,
         band(cols - 1)?,
         weave(cap.len(), cols, &|row, col| cap[row][col])?,
-        edge(rows - 1)?,
+        weave(exit_cap.len(), cols, &|row, col| exit_cap[row][col])?,
     ];
 
     // Hacia fuera, con una referencia local de cada cara (no «desde el centro
@@ -815,7 +868,15 @@ fn thick_pieces(
             // De la fila vecina a la punta hacia la punta.
             minus(row_of(&nose_grids[1], 0), row_of(&nose_grids[1], 1))
         },
-        minus(row_of(middle, rows - 1), row_of(middle, rows - 2)),
+        if tail_len == 0 {
+            minus(row_of(middle, rows - 1), row_of(middle, rows - 2))
+        } else {
+            // De la fila vecina a D2 hacia D2.
+            minus(
+                row_of(&tail_grids[1], tail_len - 1),
+                row_of(&tail_grids[1], tail_len - 2),
+            )
+        },
     ];
     let meshes: Vec<TriangleMesh> = meshes
         .into_iter()
@@ -844,13 +905,6 @@ fn thick_pieces(
         (0..rows).map(|row| grid[row * cols + col]).collect()
     };
     let across = |grid: &[[f64; 3]], row: usize| grid[row * cols..(row + 1) * cols].to_vec();
-    let thickness = |row: usize, col: usize| -> Vec<[f64; 3]> {
-        vec![
-            pressure[row * cols + col],
-            middle[row * cols + col],
-            suction[row * cols + col],
-        ]
-    };
     let mut curves = vec![
         open(along(pressure, 0)),
         open(along(pressure, cols - 1)),
@@ -864,11 +918,13 @@ fn thick_pieces(
         open(outline(0)),
         open(outline(cols - 1)),
     ]);
+    let exit_outline =
+        |col: usize| -> Vec<[f64; 3]> { exit_cap.iter().map(|row| row[col]).collect() };
     curves.extend([
         open(across(pressure, rows - 1)),
         open(across(suction, rows - 1)),
-        open(thickness(rows - 1, 0)),
-        open(thickness(rows - 1, cols - 1)),
+        open(exit_outline(0)),
+        open(exit_outline(cols - 1)),
     ]);
 
     let blades = (0..blade_count)

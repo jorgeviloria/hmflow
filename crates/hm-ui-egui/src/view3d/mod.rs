@@ -957,7 +957,7 @@ mod tests {
     #[test]
     #[ignore]
     fn scene_timing() {
-        use hm_design::blade_edges::LeadingKind;
+        use hm_design::blade_edges::{BladeEdges, LeadingKind, TrailingKind};
         use hm_design::blade_setup::BladeShape;
         let mut inputs = Inputs::default();
         inputs.blade.shape = BladeShape::Free3D;
@@ -970,8 +970,20 @@ mod tests {
             r.d2.si,
         )
         .unwrap();
-        for kind in [LeadingKind::Blunt, LeadingKind::Ellipse, LeadingKind::Wedge] {
-            inputs.blade.edges = inputs.blade.edges.with_leading_kind(kind, e, e);
+        let e1 = e / 2.0;
+        // Entrada y salida: romo y recortada, la nariz de elipse con la salida
+        // limada por succión, y el afilado con la elipse de salida.
+        for (kind, tail) in [
+            (LeadingKind::Blunt, TrailingKind::Cut),
+            (LeadingKind::Ellipse, TrailingKind::Cut),
+            (LeadingKind::Wedge, TrailingKind::Cut),
+            (LeadingKind::Blunt, TrailingKind::FiledSuction),
+            (LeadingKind::Ellipse, TrailingKind::FiledSuction),
+            (LeadingKind::Wedge, TrailingKind::Ellipse),
+        ] {
+            inputs.blade.edges = BladeEdges::default()
+                .with_leading_kind(kind, e, e)
+                .with_trailing_kind(tail, e1, e1);
             let outcome = compute(&inputs, &Basis::default()).unwrap();
             for (name, tolerance) in [
                 ("fina", SCENE_TOLERANCE_FINE_MM),
@@ -983,7 +995,7 @@ mod tests {
                     scene_of(&outcome, tolerance).unwrap();
                 }
                 let ms = start.elapsed().as_secs_f64() * 1000.0 / 20.0;
-                println!("scene_of {kind:?} {name} ({tolerance} mm): {ms:.2} ms");
+                println!("scene_of {kind:?}+{tail:?} {name} ({tolerance} mm): {ms:.2} ms");
             }
         }
     }

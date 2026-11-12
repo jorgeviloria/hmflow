@@ -3,11 +3,11 @@
 //! salida y los errores que dicen la línea y el radio.
 
 use hm_design::blade_camber::{BladeCamber, CAMBER_STEPS, blade_camber};
-use hm_design::blade_edges::{BladeEdges, LeadingDims, LeadingKind};
+use hm_design::blade_edges::{BladeEdges, LeadingDims, LeadingKind, TrailingDims, TrailingKind};
 use hm_design::blade_setup::{BladeSetup, BladeShape, CamberBows};
 use hm_design::blade_solid::{
-    BladeSolid, BladeSolidError, NOSE_STEPS, READING_STATIONS, SolidLine, SolidPoint, blade_solid,
-    blade_solid_for_design,
+    BladeSolid, BladeSolidError, NOSE_STEPS, OutletGap, READING_STATIONS, SolidLine, SolidPoint,
+    TAIL_STEPS, blade_solid, blade_solid_for_design,
 };
 use hm_design::blade_thickness::{
     BladeThickness, ThicknessCurve, ThicknessCurves, ThicknessNode, thickness_curves_for_design,
@@ -1570,4 +1570,354 @@ fn the_design_chain_passes_the_edges_and_the_switch() {
             .iter()
             .all(|l| l.nose.len() == NOSE_STEPS + 1)
     );
+}
+
+// ---------------------------------------------------------------------------
+// La salida con forma (etapa 2).
+// ---------------------------------------------------------------------------
+
+/// Los bordes con esa salida y esas cotas, iguales en cubo y tapa; la entrada,
+/// romo.
+fn tail_edges(kind: TrailingKind, length: f64, end: f64) -> BladeEdges {
+    let dims = TrailingDims { length, end };
+    BladeEdges {
+        trailing: kind,
+        trailing_hub: dims,
+        trailing_shroud: dims,
+        ..BladeEdges::default()
+    }
+}
+
+/// La salida de B1 con las cotas por defecto de ese tipo (4·e(1) y e(1)/2).
+fn default_tail(case: &Case, kind: TrailingKind) -> BladeEdges {
+    let e1 = case.curves.hub.at(1.0);
+    let dims = TrailingDims::default_for(kind, e1);
+    tail_edges(kind, dims.length, dims.end)
+}
+
+/// β de la línea media en D2 de esa línea.
+fn beta_exit(case: &Case, line: usize) -> f64 {
+    case.camber.lines[line].points.last().unwrap().beta
+}
+
+#[test]
+fn cut_leaves_the_solid_bit_identical() {
+    for shape in [BladeShape::Free3D, BladeShape::Ruled3D] {
+        let case = case(shape, 5);
+        let reference = solid_with(&case, &BladeEdges::default()).unwrap();
+        // Con recortada ninguna cota importa.
+        let noisy = tail_edges(TrailingKind::Cut, 0.05, 0.002);
+        assert_eq!(solid_with(&case, &noisy).unwrap(), reference, "{shape:?}");
+        for line in &reference.lines {
+            assert!(line.tail.is_empty());
+            let last = line.pressure.len() - 1;
+            assert_eq!(
+                line.trailing_edge(),
+                [line.pressure[last], line.middle[last], line.suction[last]]
+            );
+        }
+        // El canto nominal y el de la forma son el mismo.
+        let readings = &reference.readings;
+        assert_eq!(readings.exit_edges, readings.shaped_exit_edges);
+        for gap in readings.outlet_gaps.iter().flatten() {
+            assert_eq!(gap.cut, gap.shaped);
+            assert_eq!(gap.ratio(), 1.0);
+        }
+    }
+}
+
+#[test]
+fn filing_the_suction_side_gives_a_canto_of_end_over_sin_beta() {
+    let case = b1_case();
+    let end = 0.0025;
+    let solid = solid_with(&case, &tail_edges(TrailingKind::FiledSuction, 0.012, end)).unwrap();
+    let last = solid.lines.len() - 1;
+    for index in [0, last / 2, last] {
+        let expected = end / beta_exit(&case, index).sin();
+        let canto = solid.readings.shaped_exit_edges[index];
+        close(canto, expected, 5.0e-5);
+        // El canto nominal (el del 1D) sigue siendo e(1)/sen β.
+        let nominal = case.curves.at(solid.lines[index].psi, 1.0) / beta_exit(&case, index).sin();
+        close(solid.readings.exit_edges[index], nominal, 5.0e-5);
+    }
+}
+
+/// Las caras de `shaped` (cuerpo y salida) de un lado, las que sean, sobre la
+/// polilínea de la misma cara del sólido recortado.
+fn side_points(line: &SolidLine, side: usize) -> Vec<SolidPoint> {
+    let body = match side {
+        0 => &line.pressure,
+        _ => &line.suction,
+    };
+    body.iter()
+        .copied()
+        .chain(line.tail.iter().skip(1).map(|row| row[side]))
+        .collect()
+}
+
+#[test]
+fn filing_the_suction_side_does_not_move_the_pressure_face() {
+    let case = b1_case();
+    let cut = solid_with(&case, &BladeEdges::default()).unwrap();
+    let filed = solid_with(&case, &default_tail(&case, TrailingKind::FiledSuction)).unwrap();
+    for (a, b) in cut.lines.iter().zip(&filed.lines) {
+        let reference: Vec<[f64; 3]> = a.pressure.iter().map(cartesian).collect();
+        for point in side_points(b, 0) {
+            let gap = distance_to_polyline(&reference, cartesian(&point));
+            assert!(
+                gap <= 5.0e-5,
+                "ψ = {}: la presión se aparta {} mm",
+                b.psi,
+                gap * 1000.0
+            );
+        }
+    }
+}
+
+#[test]
+fn filing_the_pressure_side_does_not_move_the_suction_face() {
+    let case = b1_case();
+    let cut = solid_with(&case, &BladeEdges::default()).unwrap();
+    let filed = solid_with(&case, &default_tail(&case, TrailingKind::FiledPressure)).unwrap();
+    for (a, b) in cut.lines.iter().zip(&filed.lines) {
+        let reference: Vec<[f64; 3]> = a.suction.iter().map(cartesian).collect();
+        for point in side_points(b, 2) {
+            let gap = distance_to_polyline(&reference, cartesian(&point));
+            assert!(
+                gap <= 5.0e-5,
+                "ψ = {}: la succión se aparta {} mm",
+                b.psi,
+                gap * 1000.0
+            );
+        }
+    }
+}
+
+#[test]
+fn the_trailing_ellipse_has_zero_canto_and_its_tip_is_on_the_exit() {
+    let case = b1_case();
+    let solid = solid_with(&case, &default_tail(&case, TrailingKind::Ellipse)).unwrap();
+    for (index, line) in solid.lines.iter().enumerate() {
+        assert_eq!(line.tail.len(), TAIL_STEPS + 1);
+        let tip = line.tail.last().unwrap();
+        // Los tres puntos son uno solo, sobre la salida del rodete.
+        assert_eq!(tip[0], tip[2]);
+        let node = case.camber.lines[index].points.last().unwrap();
+        for point in tip {
+            close(point.z, node.z, 1.0e-9);
+            close(point.r, node.r, 1.0e-9);
+        }
+        assert_eq!(solid.readings.shaped_exit_edges[index], 0.0);
+        // El canto nominal no cambia: el 1D sigue con e(1).
+        assert!(solid.readings.exit_edges[index] > 0.0);
+        // La unión es la última de las caras, bit a bit.
+        let last = line.pressure.len() - 1;
+        assert_eq!(
+            line.tail[0],
+            [line.pressure[last], line.middle[last], line.suction[last]]
+        );
+    }
+}
+
+/// Ángulo (grados) entre dos segmentos del plano conforme (m′, θ).
+fn angle_deg(a: [&SolidPoint; 2], b: [&SolidPoint; 2]) -> f64 {
+    let va = [a[1].m_conformal - a[0].m_conformal, a[1].theta - a[0].theta];
+    let vb = [b[1].m_conformal - b[0].m_conformal, b[1].theta - b[0].theta];
+    let cos = (va[0] * vb[0] + va[1] * vb[1]) / (va[0].hypot(va[1]) * vb[0].hypot(vb[1]));
+    cos.clamp(-1.0, 1.0).acos().to_degrees()
+}
+
+#[test]
+fn the_filing_joint_is_continuous_and_the_ellipse_one_tangent() {
+    let case = b1_case();
+    for kind in [
+        TrailingKind::FiledSuction,
+        TrailingKind::FiledPressure,
+        TrailingKind::Ellipse,
+    ] {
+        let solid = solid_with(&case, &default_tail(&case, kind)).unwrap();
+        for line in &solid.lines {
+            let last = line.pressure.len() - 1;
+            // Continuidad exacta: la unión comparte sus puntos.
+            assert_eq!(
+                line.tail[0],
+                [line.pressure[last], line.middle[last], line.suction[last]],
+                "{kind:?}"
+            );
+            if kind == TrailingKind::Ellipse {
+                // Tangente: el ángulo entre el último tramo del cuerpo y el
+                // primero de la salida es pequeño: la cuerda de la elipse a
+                // 16 pasos, de hmflow, con la longitud por defecto de la
+                // salida (4·e(1), más corta que la nariz), ≤ 1,5°.
+                for side in [0, 2] {
+                    let body = if side == 0 {
+                        &line.pressure
+                    } else {
+                        &line.suction
+                    };
+                    let angle = angle_deg(
+                        [&body[last - 1], &body[last]],
+                        [&line.tail[0][side], &line.tail[1][side]],
+                    );
+                    assert!(angle <= 1.5, "{kind:?} lado {side}: {angle}°");
+                }
+            }
+        }
+    }
+}
+
+#[test]
+fn a_gap_ratio_above_one_with_suction_filing_and_one_with_pressure_filing() {
+    let case = b1_case();
+    let suction = solid_with(&case, &default_tail(&case, TrailingKind::FiledSuction)).unwrap();
+    let pressure = solid_with(&case, &default_tail(&case, TrailingKind::FiledPressure)).unwrap();
+    let mid = suction.lines.len() / 2;
+    let gap_s = suction.readings.outlet_gaps[mid].as_ref().unwrap();
+    let gap_p = pressure.readings.outlet_gaps[mid].as_ref().unwrap();
+    println!(
+        "a2 = {} mm; succión: a2′ = {} mm (×{}); presión: a2′ = {} mm (×{})",
+        gap_s.cut * 1000.0,
+        gap_s.shaped * 1000.0,
+        gap_s.ratio(),
+        gap_p.shaped * 1000.0,
+        gap_p.ratio()
+    );
+    // Limar por succión abre la garganta (a2′ > a2); limar por presión no la
+    // cambia: solo estrecha la estela (Gülich, 4.5.2, fig. 3.6).
+    assert!(gap_s.ratio() > 1.0, "{}", gap_s.ratio());
+    assert!(gap_s.cut > 0.0);
+    close(gap_p.ratio(), 1.0, 1.0e-9);
+    // El rango de la altura del libro sale del cociente.
+    let (low, high) = gap_s.head_gain_range();
+    assert!(0.0 < low && low < high, "{low} {high}");
+}
+
+#[test]
+fn the_head_gain_range_follows_the_book_exponents() {
+    let point = SolidPoint {
+        z: 0.0,
+        r: 0.2,
+        theta: 0.0,
+        m_conformal: 0.0,
+    };
+    let gap = OutletGap {
+        cut: 0.020,
+        shaped: 0.020 * 1.065,
+        from: point,
+        to: point,
+    };
+    close(gap.ratio(), 1.065, 1e-12);
+    let (low, high) = gap.head_gain_range();
+    close(low, 1.065_f64.powf(0.4) - 1.0, 1e-12);
+    close(high, 1.065_f64.powf(0.8) - 1.0, 1e-12);
+    assert!(low < high);
+}
+
+#[test]
+fn an_inclined_outlet_with_filing_is_still_an_error() {
+    for kind in [TrailingKind::FiledSuction, TrailingKind::Ellipse] {
+        let mut case = b1_case();
+        let last = case.camber.lines.len() - 1;
+        case.camber.lines[last].points.last_mut().unwrap().r -= 0.005;
+        let edges = default_tail(&case, kind);
+        let error = solid_with(&case, &edges).unwrap_err();
+        assert!(
+            matches!(error, BladeSolidError::InclinedOutlet { .. }),
+            "{kind:?}: {error:?}"
+        );
+    }
+}
+
+#[test]
+fn an_end_thickness_under_the_floor_raises_a_notice_not_an_error() {
+    let case = b1_case();
+    // 0,5 mm de espesor final: bajo el mínimo de x = 1 (1,5 mm).
+    let solid = solid_with(
+        &case,
+        &tail_edges(TrailingKind::FiledSuction, 0.012, 0.0005),
+    )
+    .unwrap();
+    let notice = solid
+        .notices
+        .iter()
+        .find(|n| n.line == 0 && n.message.contains("espesor final"))
+        .expect("el aviso del espesor final");
+    assert!(notice.message.contains("se acotó"), "{}", notice.message);
+    assert!(
+        notice.message.contains("0 es el cubo"),
+        "{}",
+        notice.message
+    );
+    assert!(
+        notice.message.contains("mínimo de fundición"),
+        "{}",
+        notice.message
+    );
+    // Una longitud fuera de límites también se dice.
+    let solid = solid_with(&case, &tail_edges(TrailingKind::FiledSuction, 5.0, 0.002)).unwrap();
+    assert!(
+        solid
+            .notices
+            .iter()
+            .any(|n| n.message.contains("longitud de la salida") && n.message.contains("se acotó")),
+        "{:?}",
+        solid.notices
+    );
+    // Y la elipse avisa de su punta de espesor 0.
+    let solid = solid_with(&case, &default_tail(&case, TrailingKind::Ellipse)).unwrap();
+    assert!(
+        solid
+            .notices
+            .iter()
+            .any(|n| n.message.contains("elipse de salida")),
+        "{:?}",
+        solid.notices
+    );
+}
+
+#[test]
+fn the_1d_blockage_still_follows_e_of_the_curve() {
+    let case = b1_case();
+    let cut = solid_with(&case, &BladeEdges::default()).unwrap();
+    for kind in [
+        TrailingKind::FiledSuction,
+        TrailingKind::FiledPressure,
+        TrailingKind::Ellipse,
+    ] {
+        let shaped = solid_with(&case, &default_tail(&case, kind)).unwrap();
+        assert_eq!(
+            shaped.readings.exit_blockage, cut.readings.exit_blockage,
+            "{kind:?}"
+        );
+        assert_eq!(
+            shaped.readings.exit_edges, cut.readings.exit_edges,
+            "{kind:?}"
+        );
+    }
+}
+
+#[test]
+fn a_tail_does_not_change_the_nose_or_the_start() {
+    // La salida con forma no toca la nariz: las filas y el inicio de las caras
+    // son los mismos.
+    let case = b1_case();
+    let e = case.curves.hub.at(0.0);
+    let mut edges = default_tail(&case, TrailingKind::FiledSuction);
+    edges.leading = LeadingKind::Ellipse;
+    edges.leading_hub = LeadingDims::default_for(LeadingKind::Ellipse, e);
+    edges.leading_shroud = edges.leading_hub;
+    let both = solid_with(&case, &edges).unwrap();
+    let only_nose = BladeEdges {
+        leading: edges.leading,
+        leading_hub: edges.leading_hub,
+        leading_shroud: edges.leading_shroud,
+        ..BladeEdges::default()
+    };
+    let nose = solid_with(&case, &only_nose).unwrap();
+    for (a, b) in both.lines.iter().zip(&nose.lines) {
+        assert_eq!(a.nose, b.nose);
+        assert_eq!(a.pressure[0], b.pressure[0]);
+        assert_eq!(a.suction[0], b.suction[0]);
+        assert!(!a.tail.is_empty());
+    }
 }

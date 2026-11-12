@@ -47,6 +47,7 @@ use thiserror::Error;
 use crate::blade_camber::{BladeCamber, CAMBER_MIN_RADIUS, CamberPoint, camber_for_design};
 use crate::blade_edges::{
     BladeEdges, LeadingDims, LeadingKind, NOSE_LONG_FRACTION, NOSE_MAX_FRACTION, NoseProfile,
+    TailProfile, TrailingDims, TrailingKind,
 };
 use crate::blade_setup::BladeSetup;
 use crate::blade_thickness::{ThicknessCurves, thickness_curves_for_design};
@@ -63,6 +64,10 @@ pub const SOLID_EXTENSION_STEPS: usize = 8;
 /// uniforme. De hmflow: con ellos la cuerda no se aparta de la elipse más de
 /// 0,05 mm (la tolerancia fina de la escena) en una nariz de hasta unos 40 mm.
 pub const NOSE_STEPS: usize = 16;
+
+/// Pasos de la salida con forma, de la unión a D2: 16, como la nariz (la
+/// elipse a ángulo uniforme, más densa hacia D2). De hmflow.
+pub const TAIL_STEPS: usize = 16;
 
 /// Lo que puede diferir el radio de salida de una línea del de la línea 0 para
 /// que la salida se considere radial, m.
@@ -92,6 +97,11 @@ pub struct SolidLine {
     /// (s = Lp): [`NOSE_STEPS`] + 1, la última igual a `pressure[0]`,
     /// `middle[0]` y `suction[0]`. Vacía con romo.
     pub nose: Vec<[SolidPoint; 3]>,
+    /// Filas [presión, medio, succión] de la unión de la salida a D2:
+    /// [`TAIL_STEPS`] + 1, la primera igual a la última de `pressure`,
+    /// `middle` y `suction`, bit a bit. Con una salida con forma, las dos
+    /// caras acaban en esa unión. Vacía con recortada.
+    pub tail: Vec<[SolidPoint; 3]>,
     /// Espesor real en cada nodo de la línea media (J + 1), m: la distancia
     /// entre las dos caras medida sobre la normal a la superficie media.
     pub true_thickness: Vec<f64>,
@@ -112,9 +122,13 @@ impl SolidLine {
         [self.pressure[0], self.middle[0], self.suction[0]]
     }
 
-    /// El canto de salida: los de la última estación.
+    /// El canto de salida en D2: los de la última estación o, con una salida
+    /// con forma, la última fila de `tail`.
     #[must_use]
     pub fn trailing_edge(&self) -> [SolidPoint; 3] {
+        if let Some(row) = self.tail.last() {
+            return *row;
+        }
         let last = self.pressure.len() - 1;
         [self.pressure[last], self.middle[last], self.suction[last]]
     }
@@ -177,6 +191,14 @@ pub enum BladeSolidError {
         lp: f64,
         limit: f64,
     },
+
+    /// La nariz y la salida con forma no caben en la misma línea. `radius`
+    /// en m.
+    #[error(
+        "línea de corriente {line} (0 es el cubo): la nariz y la salida se solapan en r = {} mm: Lp más la longitud de la salida pasan de la longitud de la línea",
+        mm(.radius)
+    )]
+    NoseAndExitOverlap { line: usize, radius: f64 },
 
     #[error(
         "línea de corriente {line} (0 es el cubo): la salida del rodete no es radial (r = {} mm): el recorte del álabe en una salida inclinada no está resuelto",
@@ -372,6 +394,37 @@ struct Along<'a> {
     /// (m′, x) de los nodos de la línea media.
     nodes: Vec<(f64, f64)>,
     thickness: Box<dyn Fn(f64) -> f64 + 'a>,
+    /// La salida con forma de esta línea, si la hay.
+    tail: Option<TailShape>,
+}
+
+/// La salida con forma de una línea: su perfil y lo que hace falta para saber
+/// a qué distancia de D2 cae una m′.
+struct TailShape {
+    profile: TailProfile,
+    /// e(1) de la línea.
+    e1: f64,
+    /// (m′, arco desde la punta) de las estaciones 0..=J de la línea media.
+    arcs: Vec<(f64, f64)>,
+}
+
+impl TailShape {
+    /// La distancia a D2 sobre la línea media de la m′ dada, m; no positiva
+    /// desde D2 hacia fuera.
+    fn distance_to_exit(&self, conformal: f64) -> f64 {
+        let last = self.arcs.len() - 1;
+        let total = self.arcs[last].1;
+        let at = if conformal <= self.arcs[0].0 {
+            0.0
+        } else if conformal >= self.arcs[last].0 {
+            total
+        } else {
+            let segment = (self.arcs.partition_point(|node| node.0 <= conformal) - 1).min(last - 1);
+            let (a, b) = (self.arcs[segment], self.arcs[segment + 1]);
+            a.1 + (conformal - a.0) / (b.0 - a.0) * (b.1 - a.1)
+        };
+        total - at
+    }
 }
 
 impl Along<'_> {
@@ -390,6 +443,20 @@ impl Along<'_> {
             a.1 + (conformal - a.0) / (b.0 - a.0) * (b.1 - a.1)
         };
         (self.thickness)(x)
+    }
+
+    /// El semiespesor de la cara de `sign` (+1 presión, −1 succión) en la m′
+    /// dada: e/2, o el de la salida con forma si el punto cae en ella.
+    fn half(&self, sign: f64, conformal: f64) -> f64 {
+        let e = self.thickness(conformal);
+        match &self.tail {
+            None => 0.5 * e,
+            Some(tail) => {
+                let v = tail.distance_to_exit(conformal);
+                let (pressure, suction) = tail.profile.half_thicknesses(v, e, tail.e1);
+                if sign > 0.0 { pressure } else { suction }
+            }
+        }
     }
 }
 
@@ -429,33 +496,40 @@ fn offset(
     path: &Path,
     along: &Along,
 ) -> Plane {
-    let displaced = |e: f64, r: f64| {
-        let half = sign * 0.5 * e / r;
+    let displaced = |half: f64, r: f64| {
+        let shift = sign * half / r;
         Plane {
-            conformal: foot.conformal + half * t[1],
-            theta: foot.theta - half * t[0],
+            conformal: foot.conformal + shift * t[1],
+            theta: foot.theta - shift * t[0],
         }
     };
-    let mut point = displaced(e, r);
+    let mut point = displaced(0.5 * e, r);
     if mode != Mode::Foot {
         for _ in 0..FIXED_POINT_PASSES {
             let middle = 0.5 * (foot.conformal + point.conformal);
-            let e = if mode == Mode::Face {
-                along.thickness(point.conformal)
+            let half = if mode == Mode::Face {
+                along.half(sign, point.conformal)
             } else {
-                e
+                0.5 * e
             };
-            point = displaced(e, path.at(middle)[1]);
+            point = displaced(half, path.at(middle)[1]);
         }
     }
     point
 }
 
-/// Una cara: la polilínea desplazada de la línea media, cortada en m′ = m′_J y
-/// remuestreada en J + 1 puntos a pasos iguales de m′. `steps` es el índice de
-/// la estación de la salida en las listas dadas y `first`, cómo se desplaza la
-/// estación 0: [`Mode::Foot`] en el canto romo y [`Mode::Face`] en la unión de
-/// la nariz.
+/// Cómo se reparten los puntos de una cara a lo largo de m′.
+#[derive(Clone, Copy)]
+enum Grid<'a> {
+    /// J + 1 puntos a pasos iguales de m′ del primero hasta `end`.
+    Equal(usize),
+    /// Exactamente estas m′; la última es `end`, donde la cara se corta.
+    Targets(&'a [f64]),
+}
+
+/// Una cara: la polilínea desplazada de la línea media, cortada en m′ = `end`
+/// y remuestreada según `grid`. `first` es cómo se desplaza la estación 0:
+/// [`Mode::Foot`] en el canto romo y [`Mode::Face`] en la unión de la nariz.
 #[allow(clippy::too_many_arguments)]
 fn face(
     line: usize,
@@ -465,8 +539,8 @@ fn face(
     tangents: &[[f64; 2]],
     along: &Along,
     sign: f64,
-    steps: usize,
-    intervals: usize,
+    end: f64,
+    grid: Grid,
     first: Mode,
 ) -> Result<Vec<SolidPoint>, BladeSolidError> {
     let shifted: Vec<Plane> = stations
@@ -488,7 +562,6 @@ fn face(
         })
         .collect();
 
-    let end = planes[steps].conformal;
     let cut = shifted
         .iter()
         .position(|point| point.conformal >= end)
@@ -557,12 +630,22 @@ fn face(
 
     let start = shifted[0].conformal;
     let mut segment = 0;
-    let mut out = Vec::with_capacity(intervals + 1);
-    for k in 0..=intervals {
-        let target = if k == intervals {
-            end
-        } else {
-            start + (end - start) * k as f64 / intervals as f64
+    let count = match grid {
+        Grid::Equal(intervals) => intervals + 1,
+        Grid::Targets(targets) => targets.len(),
+    };
+    let mut out = Vec::with_capacity(count);
+    for k in 0..count {
+        let last = k + 1 == count;
+        let target = match grid {
+            Grid::Equal(intervals) => {
+                if last {
+                    end
+                } else {
+                    start + (end - start) * k as f64 / intervals as f64
+                }
+            }
+            Grid::Targets(targets) => targets[k],
         };
         while segment + 1 < cut && shifted[segment + 1].conformal < target {
             segment += 1;
@@ -578,7 +661,7 @@ fn face(
         out.push(SolidPoint {
             z,
             r,
-            theta: if k == intervals {
+            theta: if last {
                 cut_theta
             } else {
                 a.theta + t * (b.theta - a.theta)
@@ -729,23 +812,22 @@ fn foot_at(s: f64, arc: &[f64], planes: &[Plane], tangents: &[[f64; 2]], path: &
     }
 }
 
-/// El punto de una cara que sale del pie `foot` de la línea media, a la
-/// distancia `s` de la punta: ±h/r a lo largo de su normal (t_θ, −t_m′), con +
-/// hacia la presión, con h el semiespesor de esa cara en `profile` y r a medio
-/// desplazamiento. Como en [`Mode::Face`], e se toma de la x del punto
-/// desplazado y no de la del pie: así la nariz y las caras, que siguen con
-/// ese mismo criterio, se unen sin escalón aunque e(x) tenga pendiente.
-fn nose_offset(
+/// El punto de una cara que sale del pie `foot` de la línea media: ±h/r a lo
+/// largo de su normal (t_θ, −t_m′), con + hacia la presión, con h el
+/// semiespesor de esa cara que da `half_of(e)` y r a medio desplazamiento.
+/// Como en [`Mode::Face`], e se toma de la x del punto desplazado y no de la
+/// del pie: así la nariz y la salida, que siguen con ese mismo criterio, se
+/// unen sin escalón con las caras aunque e(x) tenga pendiente.
+fn shaped_offset(
     sign: f64,
     foot: &Foot,
-    s: f64,
     e_foot: f64,
-    profile: &NoseProfile,
+    half_of: &dyn Fn(f64) -> (f64, f64),
     along: &Along,
     path: &Path,
 ) -> Plane {
     let half = |e: f64| {
-        let (pressure, suction) = profile.half_thicknesses(s, e);
+        let (pressure, suction) = half_of(e);
         if sign > 0.0 { pressure } else { suction }
     };
     let displaced = |half: f64, r: f64| {
@@ -762,6 +844,27 @@ fn nose_offset(
         point = displaced(half(e), path.at(middle)[1]);
     }
     point
+}
+
+/// El punto de la nariz a la distancia `s` de la punta ([`shaped_offset`] con
+/// el perfil de la nariz).
+fn nose_offset(
+    sign: f64,
+    foot: &Foot,
+    s: f64,
+    e_foot: f64,
+    profile: &NoseProfile,
+    along: &Along,
+    path: &Path,
+) -> Plane {
+    shaped_offset(
+        sign,
+        foot,
+        e_foot,
+        &|e| profile.half_thicknesses(s, e),
+        along,
+        path,
+    )
 }
 
 /// El tramo de nariz de una línea: los pies de las filas (de la punta a la
@@ -934,6 +1037,168 @@ fn nose_rows(
     Ok(out)
 }
 
+/// La salida con forma de una línea ya planeada.
+struct Tail {
+    profile: TailProfile,
+    e1: f64,
+    /// m′ de la unión: el plano donde acaban las dos caras.
+    joint_conformal: f64,
+    /// Las m′ de las filas de la unión (la primera) a D2 (la última): a ángulo
+    /// de elipse uniforme, más densas hacia D2.
+    targets: Vec<f64>,
+    /// (m′, arco) de las estaciones 0..=J, para saber la distancia a D2.
+    arcs: Vec<(f64, f64)>,
+    notices: Vec<SolidNotice>,
+}
+
+/// Acota las cotas de la salida de la línea `index` y localiza la unión a
+/// L − longitud. `Err` si la nariz y la salida no caben juntas (`nose_lp` es
+/// la Lp ya acotada, si hay nariz) o si la cota no es finita.
+#[allow(clippy::too_many_arguments)]
+fn plan_tail(
+    index: usize,
+    dims: TrailingDims,
+    kind: TrailingKind,
+    path: &Path,
+    nodes: &[CamberPoint],
+    planes: &[Plane],
+    tangents: &[[f64; 2]],
+    e1: f64,
+    nose_lp: f64,
+) -> Result<Tail, BladeSolidError> {
+    let steps = nodes.len() - 1;
+    let arc = arcs(path, planes, steps);
+    let total = arc[steps];
+    let exit_r = nodes[steps].r;
+    let floor = crate::blade_thickness::node_floor(1.0);
+    let out_of_range = |length: f64| BladeSolidError::NoseOutOfRange {
+        line: index,
+        radius: exit_r,
+        lp: length,
+        limit: crate::blade_edges::TAIL_MAX_FRACTION * total,
+    };
+    let clamped = dims
+        .clamped(e1, total, floor)
+        .ok_or_else(|| out_of_range(dims.length))?;
+    if nose_lp + clamped.length > total {
+        return Err(BladeSolidError::NoseAndExitOverlap {
+            line: index,
+            radius: exit_r,
+        });
+    }
+    let at = [nodes[steps].m_conformal, nodes[steps].theta];
+    let line = |text: String| SolidNotice {
+        line: index,
+        at,
+        message: format!("línea de corriente {index} (0 es el cubo): {text}"),
+    };
+    let mut notices = Vec::new();
+    if clamped.length != dims.length {
+        notices.push(line(format!(
+            "la longitud de la salida {} mm se acotó a {} mm (entre e(1)/2 = {} mm y 0,3·L = {} mm)",
+            comma(dims.length * 1000.0, 2),
+            comma(clamped.length * 1000.0, 2),
+            comma(e1 / 2.0 * 1000.0, 2),
+            comma(crate::blade_edges::TAIL_MAX_FRACTION * total * 1000.0, 2),
+        )));
+    }
+    let minimum = comma(floor * 1000.0, 1).replace(",0", "");
+    if kind != TrailingKind::Ellipse && clamped.end != dims.end {
+        notices.push(line(format!(
+            "el espesor final del limado {} mm se acotó a {} mm (entre el mínimo de fundición de {minimum} mm y e(1) = {} mm)",
+            comma(dims.end * 1000.0, 2),
+            comma(clamped.end * 1000.0, 2),
+            comma(e1 * 1000.0, 2),
+        )));
+    }
+    if kind == TrailingKind::Ellipse {
+        notices.push(line(format!(
+            "la elipse de salida llega a espesor 0 en D2, bajo el mínimo de fundición de {minimum} mm"
+        )));
+    }
+    let joint = foot_at(total - clamped.length, &arc, planes, tangents, path);
+    let (joint_conformal, d2) = (joint.plane.conformal, planes[steps].conformal);
+    // Filas a ángulo de elipse uniforme: la distancia a D2 es
+    // (1 − cos α) de la longitud, con α de 90° (la unión) a 0° (D2).
+    let targets = (0..=TAIL_STEPS)
+        .map(|k| {
+            if k == 0 {
+                joint_conformal
+            } else if k == TAIL_STEPS {
+                d2
+            } else {
+                let alpha = std::f64::consts::FRAC_PI_2 * (1.0 - k as f64 / TAIL_STEPS as f64);
+                d2 - (1.0 - alpha.cos()) * (d2 - joint_conformal)
+            }
+        })
+        .collect();
+    Ok(Tail {
+        profile: TailProfile {
+            kind,
+            dims: clamped,
+        },
+        e1,
+        joint_conformal,
+        targets,
+        arcs: (0..=steps).map(|i| (planes[i].conformal, arc[i])).collect(),
+        notices,
+    })
+}
+
+/// Subdivisiones de cada tramo de la línea media desde la unión de la salida.
+const TAIL_SUBDIVISIONS: usize = 8;
+
+/// Las listas de estaciones con cada tramo posterior a `from` (una m′) partido
+/// en [`TAIL_SUBDIVISIONS`]: la salida con forma, sobre todo la elipse, no se
+/// resuelve con estaciones separadas más que ella. Las nuevas se interpolan
+/// como [`foot_at`] (plano y tangente lineales entre estaciones).
+fn refine_from(
+    from: f64,
+    stations: &[Station],
+    planes: &[Plane],
+    tangents: &[[f64; 2]],
+    along: &Along,
+    path: &Path,
+) -> (Vec<Station>, Vec<Plane>, Vec<[f64; 2]>) {
+    let (mut out_stations, mut out_planes, mut out_tangents) = (Vec::new(), Vec::new(), Vec::new());
+    for i in 0..planes.len() {
+        out_stations.push(stations[i]);
+        out_planes.push(planes[i]);
+        out_tangents.push(tangents[i]);
+        if i + 1 == planes.len() || planes[i + 1].conformal <= from {
+            continue;
+        }
+        for k in 1..TAIL_SUBDIVISIONS {
+            let u = k as f64 / TAIL_SUBDIVISIONS as f64;
+            let (a, b) = (planes[i], planes[i + 1]);
+            let plane = Plane {
+                conformal: a.conformal + u * (b.conformal - a.conformal),
+                theta: a.theta + u * (b.theta - a.theta),
+            };
+            let t = [
+                tangents[i][0] + u * (tangents[i + 1][0] - tangents[i][0]),
+                tangents[i][1] + u * (tangents[i + 1][1] - tangents[i][1]),
+            ];
+            let norm = t[0].hypot(t[1]);
+            let tangent = if norm > 0.0 {
+                [t[0] / norm, t[1] / norm]
+            } else {
+                tangents[i]
+            };
+            let r = path.at(plane.conformal)[1];
+            out_stations.push(Station {
+                conformal: plane.conformal,
+                theta: plane.theta,
+                e: along.thickness(plane.conformal),
+                r,
+            });
+            out_planes.push(plane);
+            out_tangents.push(tangent);
+        }
+    }
+    (out_stations, out_planes, out_tangents)
+}
+
 /// Las caras de presión y succión de cada línea de corriente.
 ///
 /// `lines` son las líneas de corriente de las que salió `camber`, en mm;
@@ -980,6 +1245,10 @@ pub fn blade_solid(
     let mut solid_lines = Vec::with_capacity(lines.len());
     let mut node_faces: Vec<(Vec<SolidPoint>, Vec<SolidPoint>)> = Vec::with_capacity(lines.len());
     let mut nose_notices: Vec<SolidNotice> = Vec::new();
+    // Por línea: el corte nominal de D2 (el del espesor del cuerpo) y la cara
+    // de succión entera hasta D2.
+    let mut nominal_exits: Vec<([SolidPoint; 3], Vec<SolidPoint>)> =
+        Vec::with_capacity(lines.len());
     for (index, (line, path)) in camber.lines.iter().zip(paths).enumerate() {
         let thickness = |x: f64| curves.at(line.psi, x);
         let nodes = &line.points;
@@ -1022,6 +1291,7 @@ pub fn blade_solid(
         let along = Along {
             nodes: nodes.iter().map(|p| (p.m_conformal, p.x)).collect(),
             thickness: Box::new(thickness),
+            tail: None,
         };
         // La nariz: con romo no hay, y las caras parten del nodo 0 con el canto
         // perpendicular. Con elipse o afilado parten de la unión, que se
@@ -1053,7 +1323,11 @@ pub fn blade_solid(
             ),
             None => (&stations[..], &planes[..], &tangents[..], steps, Mode::Foot),
         };
-        let pressure = face(
+        // Las caras hasta D2 con el espesor del cuerpo: con recortada son las
+        // caras; con salida con forma, el corte nominal de D2 (de donde salen
+        // el canto y el bloqueo del 1D) y la referencia de a2.
+        let d2_end = face_planes[face_end].conformal;
+        let cut_pressure = face(
             index,
             &path,
             face_stations,
@@ -1061,11 +1335,11 @@ pub fn blade_solid(
             face_tangents,
             &along,
             1.0,
-            face_end,
-            steps,
+            d2_end,
+            Grid::Equal(steps),
             first,
         )?;
-        let suction = face(
+        let cut_suction = face(
             index,
             &path,
             face_stations,
@@ -1073,10 +1347,106 @@ pub fn blade_solid(
             face_tangents,
             &along,
             -1.0,
-            face_end,
-            steps,
+            d2_end,
+            Grid::Equal(steps),
             first,
         )?;
+        let cut_exit = [
+            *cut_pressure.last().expect("la cara tiene puntos"),
+            mid_point(
+                cut_pressure.last().expect("la cara tiene puntos"),
+                cut_suction.last().expect("la cara tiene puntos"),
+                &path,
+            ),
+            *cut_suction.last().expect("la cara tiene puntos"),
+        ];
+        // La salida con forma: las caras acaban en la unión y la salida sigue
+        // en `tail`.
+        let tail = if edges.trailing == TrailingKind::Cut {
+            None
+        } else {
+            let nose_lp = nose.as_ref().map_or(0.0, |nose| nose.profile.dims.lp);
+            Some(plan_tail(
+                index,
+                edges.tail_at(line.psi, same).dims,
+                edges.trailing,
+                &path,
+                nodes,
+                &planes,
+                &tangents,
+                thickness(1.0),
+                nose_lp,
+            )?)
+        };
+        let (pressure, suction, tail_rows) = match &tail {
+            None => (cut_pressure.clone(), cut_suction.clone(), Vec::new()),
+            Some(tail) => {
+                let body = |sign: f64| {
+                    face(
+                        index,
+                        &path,
+                        face_stations,
+                        face_planes,
+                        face_tangents,
+                        &along,
+                        sign,
+                        tail.joint_conformal,
+                        Grid::Equal(steps),
+                        first,
+                    )
+                };
+                let (pressure, suction) = (body(1.0)?, body(-1.0)?);
+                let shaped = Along {
+                    nodes: nodes.iter().map(|p| (p.m_conformal, p.x)).collect(),
+                    thickness: Box::new(thickness),
+                    tail: Some(TailShape {
+                        profile: tail.profile,
+                        e1: tail.e1,
+                        arcs: tail.arcs.clone(),
+                    }),
+                };
+                let (fine_stations, fine_planes, fine_tangents) = refine_from(
+                    tail.joint_conformal,
+                    face_stations,
+                    face_planes,
+                    face_tangents,
+                    &shaped,
+                    &path,
+                );
+                let rest = &tail.targets[1..];
+                let side = |sign: f64| {
+                    face(
+                        index,
+                        &path,
+                        &fine_stations,
+                        &fine_planes,
+                        &fine_tangents,
+                        &shaped,
+                        sign,
+                        d2_end,
+                        Grid::Targets(rest),
+                        first,
+                    )
+                };
+                let (rows_p, rows_s) = (side(1.0)?, side(-1.0)?);
+                let (joint_p, joint_s) = (
+                    *pressure.last().expect("la cara tiene puntos"),
+                    *suction.last().expect("la cara tiene puntos"),
+                );
+                let mut rows = vec![[joint_p, mid_point(&joint_p, &joint_s, &path), joint_s]];
+                for (k, (p, q)) in rows_p.iter().zip(&rows_s).enumerate() {
+                    // La punta de la elipse en D2 es un solo punto.
+                    let q = if k + 1 == rows_p.len() && tail.profile.kind == TrailingKind::Ellipse {
+                        p
+                    } else {
+                        q
+                    };
+                    rows.push([*p, mid_point(p, q, &path), *q]);
+                }
+                (pressure, suction, rows)
+            }
+        };
+        nominal_exits.push((cut_exit, cut_suction));
         node_faces.push((
             nominal_sections(&path, &stations, &planes, &tangents, &along, 1.0, steps),
             nominal_sections(&path, &stations, &planes, &tangents, &along, -1.0, steps),
@@ -1087,6 +1457,9 @@ pub fn blade_solid(
         };
         if let Some(nose) = nose {
             nose_notices.extend(nose.notices);
+        }
+        if let Some(tail) = tail {
+            nose_notices.extend(tail.notices);
         }
         let middle = pressure
             .iter()
@@ -1099,6 +1472,7 @@ pub fn blade_solid(
             middle,
             suction,
             nose: nose_rows,
+            tail: tail_rows,
             true_thickness: Vec::new(),
         });
     }
@@ -1122,7 +1496,7 @@ pub fn blade_solid(
     for (index, line) in solid_lines.iter_mut().enumerate() {
         line.true_thickness = true_thickness(camber, index, &node_faces[index]);
     }
-    let readings = readings(camber, &solid_lines, blade_count);
+    let readings = readings(camber, &solid_lines, &nominal_exits, blade_count);
     let mut notices = notices(camber, &solid_lines);
     notices.extend(nose_notices);
     Ok(BladeSolid {
@@ -1217,6 +1591,44 @@ pub struct Throat {
     pub to: SolidPoint,
 }
 
+/// La garganta de salida de una línea: la distancia entre álabes a2 con la
+/// salida recortada y con la forma elegida.
+///
+/// **Definición de a2** (Gülich, *Centrifugal Pumps*, 4.ª ed., 2020, Tabla
+/// 0.2 y §3.3, ec. 3.8, p. 136): «la distancia entre álabes en la garganta»,
+/// la distancia más corta entre el canto de salida de un álabe y la superficie
+/// del álabe vecino, con βa2 = arcsen(a2/t2), t2 = π·d2/Z. Aquí: la distancia
+/// más corta, en 3D, entre los puntos del canto de salida del álabe vecino
+/// (θ + 2π/Z) y la cara de succión de éste.
+#[derive(Debug, Clone, PartialEq)]
+pub struct OutletGap {
+    /// a2 con la salida recortada, m.
+    pub cut: f64,
+    /// a2′ con la forma elegida (igual a `cut` con recortada), m.
+    pub shaped: f64,
+    /// El punto del canto del álabe vecino que da a2′.
+    pub from: SolidPoint,
+    /// El punto de la cara de succión más cercano a `from`.
+    pub to: SolidPoint,
+}
+
+impl OutletGap {
+    /// a2′/a2.
+    #[must_use]
+    pub fn ratio(&self) -> f64 {
+        self.shaped / self.cut
+    }
+
+    /// El rango de la ganancia de altura que sugiere el limado por succión:
+    /// H′/H = (a2′/a2)^x con x de 0,4 a 0,8, de modo que sale
+    /// (a2′/a2)^0,4 − 1 y (a2′/a2)^0,8 − 1 (Gülich, 4.5.2, p. 207).
+    #[must_use]
+    pub fn head_gain_range(&self) -> (f64, f64) {
+        let ratio = self.ratio();
+        (ratio.powf(0.4) - 1.0, ratio.powf(0.8) - 1.0)
+    }
+}
+
 /// Lo que se lee del álabe con espesor. De geometría: sin criterio en esta
 /// etapa.
 #[derive(Debug, Clone, PartialEq)]
@@ -1226,8 +1638,16 @@ pub struct SolidReadings {
     pub true_thickness_shroud: [f64; 4],
     /// Una por línea; `None` con un solo álabe, que no tiene vecino.
     pub throats: Vec<Option<Throat>>,
-    /// El canto de salida de cada línea, r·(θ_succión − θ_presión), m.
+    /// El canto de salida nominal de cada línea (el del espesor del cuerpo
+    /// cortado en D2), r·(θ_succión − θ_presión), m. Con recortada es el
+    /// canto del álabe; con salida con forma, el que sigue el 1D.
     pub exit_edges: Vec<f64>,
+    /// El canto real en D2 de la forma elegida de cada línea, m: con limado,
+    /// end/sen β2; con elipse, 0. Con recortada, igual a `exit_edges`.
+    pub shaped_exit_edges: Vec<f64>,
+    /// a2 de cada línea con la salida recortada y con la elegida; `None` con
+    /// un solo álabe.
+    pub outlet_gaps: Vec<Option<OutletGap>>,
     /// τ2 con el canto de la línea central: la forma de
     /// [`crate::blade_blockage`].
     pub exit_blockage: f64,
@@ -1252,7 +1672,12 @@ fn comma(value: f64, decimals: usize) -> String {
     format!("{value:.decimals$}").replace('.', ",")
 }
 
-fn readings(camber: &BladeCamber, lines: &[SolidLine], blade_count: u32) -> SolidReadings {
+fn readings(
+    camber: &BladeCamber,
+    lines: &[SolidLine],
+    nominal: &[([SolidPoint; 3], Vec<SolidPoint>)],
+    blade_count: u32,
+) -> SolidReadings {
     let steps = lines[0].pressure.len() - 1;
     let at_stations =
         |line: &SolidLine| READING_STATIONS.map(|x| line.true_thickness[node_at(steps, x)]);
@@ -1262,11 +1687,18 @@ fn readings(camber: &BladeCamber, lines: &[SolidLine], blade_count: u32) -> Soli
         .iter()
         .map(|line| (blade_count > 1).then(|| throat(line, pitch)))
         .collect();
-    let exit_edges: Vec<f64> = lines
+    let edge = |row: &[SolidPoint; 3]| row[0].r * (row[2].theta - row[0].theta);
+    // El nominal: el corte de D2 con el espesor del cuerpo; el 1D sigue con él.
+    let exit_edges: Vec<f64> = nominal.iter().map(|(exit, _)| edge(exit)).collect();
+    let shaped_exit_edges: Vec<f64> = lines
         .iter()
-        .map(|line| {
-            let [pressure, _, suction] = line.trailing_edge();
-            pressure.r * (suction.theta - pressure.theta)
+        .map(|line| edge(&line.trailing_edge()))
+        .collect();
+    let outlet_gaps = lines
+        .iter()
+        .zip(nominal)
+        .map(|(line, (exit, cut_suction))| {
+            (blade_count > 1).then(|| outlet_gap(line, exit, cut_suction, pitch))
         })
         .collect();
 
@@ -1285,6 +1717,8 @@ fn readings(camber: &BladeCamber, lines: &[SolidLine], blade_count: u32) -> Soli
         true_thickness_shroud: at_stations(&lines[lines.len() - 1]),
         throats,
         exit_edges,
+        shaped_exit_edges,
+        outlet_gaps,
         exit_blockage: 1.0 / (1.0 - ratio.min(0.6)),
     }
 }
@@ -1352,6 +1786,87 @@ fn throat(line: &SolidLine, pitch: f64) -> Throat {
         ..to
     };
     Throat { width, from, to }
+}
+
+/// El punto de `line` más cercano a `target` (cartesianas, m) y la distancia.
+fn nearest_on(target: [f64; 3], line: &[SolidPoint]) -> (f64, SolidPoint) {
+    let mut best: Option<(f64, SolidPoint)> = None;
+    for pair in line.windows(2) {
+        let (a, b) = (cartesian(&pair[0]), cartesian(&pair[1]));
+        let d = sub(b, a);
+        let squared = dot(d, d);
+        let t = if squared > 0.0 {
+            (dot(sub(target, a), d) / squared).clamp(0.0, 1.0)
+        } else {
+            0.0
+        };
+        let foot = [a[0] + t * d[0], a[1] + t * d[1], a[2] + t * d[2]];
+        let distance = norm(sub(target, foot));
+        if best
+            .as_ref()
+            .is_none_or(|(shortest, _)| distance < *shortest)
+        {
+            best = Some((
+                distance,
+                SolidPoint {
+                    z: foot[2],
+                    r: foot[0].hypot(foot[1]),
+                    theta: foot[1].atan2(foot[0]),
+                    m_conformal: pair[0].m_conformal
+                        + t * (pair[1].m_conformal - pair[0].m_conformal),
+                },
+            ));
+        }
+    }
+    best.expect("la cara tiene al menos dos puntos")
+}
+
+/// a2 de `line`: la distancia más corta entre el canto de salida del álabe
+/// vecino (θ + 2π/Z) y la cara de succión, con la salida recortada
+/// (`cut_exit`, `cut_suction`) y con la elegida (la de `line`).
+fn outlet_gap(
+    line: &SolidLine,
+    cut_exit: &[SolidPoint; 3],
+    cut_suction: &[SolidPoint],
+    pitch: f64,
+) -> OutletGap {
+    let measure = |exit: &[SolidPoint; 3], suction: &[SolidPoint]| {
+        let mut best: Option<(f64, SolidPoint, SolidPoint)> = None;
+        for point in exit {
+            let from = SolidPoint {
+                theta: point.theta + pitch,
+                ..*point
+            };
+            let (distance, to) = nearest_on(cartesian(&from), suction);
+            if best
+                .as_ref()
+                .is_none_or(|(shortest, ..)| distance < *shortest)
+            {
+                // θ de `to` en la misma vuelta que la de `from`.
+                let turns = ((from.theta - to.theta) / (2.0 * std::f64::consts::PI)).round();
+                let to = SolidPoint {
+                    theta: to.theta + turns * 2.0 * std::f64::consts::PI,
+                    ..to
+                };
+                best = Some((distance, from, to));
+            }
+        }
+        best.expect("el canto tiene tres puntos")
+    };
+    let shaped_suction: Vec<SolidPoint> = line
+        .suction
+        .iter()
+        .copied()
+        .chain(line.tail.iter().skip(1).map(|row| row[2]))
+        .collect();
+    let (cut, ..) = measure(cut_exit, cut_suction);
+    let (shaped, from, to) = measure(&line.trailing_edge(), &shaped_suction);
+    OutletGap {
+        cut,
+        shaped,
+        from,
+        to,
+    }
 }
 
 /// Un aviso por cada lectura de espesor real, en cualquier línea, bajo el

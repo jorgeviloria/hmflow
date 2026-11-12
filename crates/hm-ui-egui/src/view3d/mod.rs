@@ -71,12 +71,14 @@ pub(crate) fn scene_of(outcome: &Outcome, tolerance_mm: f64) -> Result<Scene, St
     Ok(scene)
 }
 
-/// Qué piezas se ven: las tres casillas provisionales de la barra.
+/// Qué piezas se ven: las casillas provisionales de la barra.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) struct Visibility {
     pub hub: bool,
     pub shroud: bool,
     pub blades: bool,
+    /// La superficie media junto al álabe con espesor. Oculta por defecto.
+    pub mean: bool,
 }
 
 impl Default for Visibility {
@@ -85,18 +87,32 @@ impl Default for Visibility {
             hub: true,
             shroud: true,
             blades: true,
+            mean: false,
         }
     }
 }
 
 impl Visibility {
-    pub(crate) fn shows(&self, id: PieceId) -> bool {
+    /// `has_solid`: la escena tiene álabes con espesor. Entonces la
+    /// superficie media sigue a su casilla; si no (porque el álabe con
+    /// espesor no sale), sigue a «Álabes» y se ve como siempre.
+    pub(crate) fn shows(&self, id: PieceId, has_solid: bool) -> bool {
         match id {
             PieceId::Hub => self.hub,
             PieceId::Shroud => self.shroud,
-            PieceId::BladeMean { .. } | PieceId::Blade { .. } => self.blades,
+            PieceId::Blade { .. } => self.blades,
+            PieceId::BladeMean { .. } if has_solid => self.mean,
+            PieceId::BladeMean { .. } => self.blades,
         }
     }
+}
+
+/// La escena tiene álabes con espesor.
+fn has_solid(scene: &Scene) -> bool {
+    scene
+        .pieces
+        .iter()
+        .any(|piece| matches!(piece.id, PieceId::Blade { .. }))
 }
 
 /// Ancho inicial del panel lateral del visor, en puntos de egui.
@@ -116,10 +132,11 @@ pub(crate) fn triad_axes(camera: &Camera) -> [[f32; 2]; 3] {
 
 /// La caja de las piezas que se ven, en f32 para la cámara.
 fn visible_bounds(scene: &Scene, visibility: &Visibility) -> Option<([f32; 3], [f32; 3])> {
+    let solid = has_solid(scene);
     scene
         .pieces
         .iter()
-        .filter(|piece| visibility.shows(piece.id))
+        .filter(|piece| visibility.shows(piece.id, solid))
         .filter_map(|piece| piece.surface.bounds())
         .reduce(|(low, high), (piece_low, piece_high)| {
             (
@@ -290,10 +307,12 @@ impl View3d {
         };
         let mut upload = std::mem::take(&mut self.upload);
 
+        let solid = self.scene.as_ref().is_some_and(has_solid);
         let action = bar(
             ui,
             &mut self.camera,
             &mut self.visibility,
+            solid,
             &mut self.white_background,
         );
         notice_strip(
@@ -323,7 +342,8 @@ impl View3d {
                 tolerance: SCENE_TOLERANCE_FINE_MM,
             };
             let scene = self.scene.as_ref().unwrap_or(&empty);
-            renderer.set_scene(scene, &|id| style_of(&styles, id), styles.curve);
+            let solid = has_solid(scene);
+            renderer.set_scene(scene, &|id| style_of(&styles, id, solid), styles.curve);
         }
 
         let (rect, response) =
@@ -350,10 +370,11 @@ impl View3d {
             (rect.height() * pixels_per_point).round().max(0.0) as u32,
         ];
         let visibility = self.visibility;
+        let solid = self.scene.as_ref().is_some_and(has_solid);
         if let Some(texture) = renderer.paint(
             size_px,
             &self.camera,
-            &|id| visibility.shows(id),
+            &|id| visibility.shows(id, solid),
             egui::Rgba::from(background).to_array(),
             CURVE_WIDTH_PX * pixels_per_point,
         ) {
@@ -390,6 +411,7 @@ fn bar(
     ui: &mut egui::Ui,
     camera: &mut Camera,
     visibility: &mut Visibility,
+    has_solid: bool,
     white_background: &mut bool,
 ) -> Option<BarAction> {
     let mut action = None;
@@ -420,6 +442,10 @@ fn bar(
         ui.checkbox(&mut visibility.hub, "Cubo");
         ui.checkbox(&mut visibility.shroud, "Tapa");
         ui.checkbox(&mut visibility.blades, "Álabes");
+        // Solo hay superficie media aparte si hay álabe con espesor.
+        if has_solid {
+            ui.checkbox(&mut visibility.mean, "Superficie media");
+        }
         ui.separator();
         ui.toggle_value(white_background, "Fondo blanco");
     });
@@ -452,10 +478,11 @@ fn paint_triad(
     }
 }
 
-/// Colores lineales de cubo, tapa, álabes y curvas con una paleta.
+/// Colores lineales de cubo, tapa, álabes, superficie media junto a un sólido
+/// y curvas con una paleta.
 #[derive(Debug, Clone, Copy, PartialEq)]
 struct Styles {
-    pieces: [PieceStyle; 3],
+    pieces: [PieceStyle; 4],
     curve: [f32; 4],
 }
 
@@ -475,16 +502,23 @@ fn styles_of(palette: &theme::Palette) -> Styles {
             PieceStyle {
                 color: linear(palette.accent, 1.0),
             },
+            // La superficie media junto al álabe con espesor: el mismo acento,
+            // translúcido.
+            PieceStyle {
+                color: linear(palette.accent, 0.35),
+            },
         ],
         curve: linear(palette.text, 1.0),
     }
 }
 
-fn style_of(styles: &Styles, id: PieceId) -> PieceStyle {
+fn style_of(styles: &Styles, id: PieceId, has_solid: bool) -> PieceStyle {
     match id {
         PieceId::Hub => styles.pieces[0],
         PieceId::Shroud => styles.pieces[1],
-        PieceId::BladeMean { .. } | PieceId::Blade { .. } => styles.pieces[2],
+        PieceId::Blade { .. } => styles.pieces[2],
+        PieceId::BladeMean { .. } if has_solid => styles.pieces[3],
+        PieceId::BladeMean { .. } => styles.pieces[2],
     }
 }
 
@@ -586,31 +620,32 @@ mod tests {
     #[test]
     fn visibility_hides_pieces_by_kind() {
         let all = Visibility::default();
+        // Sin álabe con espesor, la superficie media sigue a «Álabes», como hoy.
         for id in [
             PieceId::Hub,
             PieceId::Shroud,
             PieceId::BladeMean { index: 4 },
         ] {
-            assert!(all.shows(id), "{id:?}");
+            assert!(all.shows(id, false), "{id:?}");
         }
         let no_hub = Visibility {
             hub: false,
             ..Visibility::default()
         };
-        assert!(!no_hub.shows(PieceId::Hub));
-        assert!(no_hub.shows(PieceId::Shroud));
+        assert!(!no_hub.shows(PieceId::Hub, false));
+        assert!(no_hub.shows(PieceId::Shroud, false));
         let no_shroud = Visibility {
             shroud: false,
             ..Visibility::default()
         };
-        assert!(!no_shroud.shows(PieceId::Shroud));
-        assert!(no_shroud.shows(PieceId::BladeMean { index: 4 }));
+        assert!(!no_shroud.shows(PieceId::Shroud, false));
+        assert!(no_shroud.shows(PieceId::BladeMean { index: 4 }, false));
         let no_blades = Visibility {
             blades: false,
             ..Visibility::default()
         };
-        assert!(!no_blades.shows(PieceId::BladeMean { index: 4 }));
-        assert!(no_blades.shows(PieceId::Hub));
+        assert!(!no_blades.shows(PieceId::BladeMean { index: 4 }, false));
+        assert!(no_blades.shows(PieceId::Hub, false));
     }
 
     #[test]
@@ -664,6 +699,7 @@ mod tests {
             hub: false,
             shroud: false,
             blades: false,
+            mean: false,
         };
         assert_eq!(visible_bounds(&scene, &nothing), None);
     }
@@ -770,6 +806,151 @@ mod tests {
         view.sync(&changed, false);
         assert_eq!(view.builds, 2);
         assert_eq!(view.camera, camera);
+    }
+
+    /// Una curva de espesor editada en las dos paredes: nodos (x, e en mm).
+    fn edited(nodes: &[(f64, f64)]) -> hm_design::blade_thickness::BladeThickness {
+        use hm_design::blade_thickness::{BladeThickness, EditedThickness, ThicknessNode};
+        let curve: Vec<ThicknessNode> = nodes
+            .iter()
+            .map(|&(x, e)| ThicknessNode { x, e: e / 1000.0 })
+            .collect();
+        BladeThickness {
+            same: true,
+            edited: Some(EditedThickness {
+                hub: curve.clone(),
+                shroud: curve,
+            }),
+        }
+    }
+
+    fn thick_outcome(
+        shape: hm_design::blade_setup::BladeShape,
+        thickness: hm_design::blade_thickness::BladeThickness,
+    ) -> (Inputs, Outcome) {
+        let mut inputs = Inputs::default();
+        inputs.blade.shape = shape;
+        inputs.blade.streamlines = 5;
+        inputs.blade.thickness = thickness;
+        let outcome = compute(&inputs, &Basis::default()).unwrap();
+        (inputs, outcome)
+    }
+
+    /// La vista y el motor arman la misma escena con una curva de espesor
+    /// editada, y con ella sale el álabe con espesor.
+    #[test]
+    fn the_view_and_the_engine_build_the_same_thick_scene() {
+        use hm_design::blade_setup::BladeShape;
+        let curve = [(0.0, 6.0), (0.5, 7.0), (1.0, 3.0)];
+        for shape in [BladeShape::Free3D, BladeShape::Ruled3D] {
+            let (inputs, outcome) = thick_outcome(shape, edited(&curve));
+            let view = scene_of(&outcome, SCENE_TOLERANCE_FINE_MM).unwrap();
+            assert!(has_solid(&view), "{shape:?}: {:?}", view.notices);
+            let built =
+                crate::model::build_project(&inputs, &Basis::default(), None, "rodete").unwrap();
+            let engine = hm_engine::scene(&built.project, SCENE_TOLERANCE_FINE_MM).unwrap();
+            assert_eq!(view.fingerprint(), engine.fingerprint(), "{shape:?}");
+        }
+    }
+
+    #[test]
+    fn the_mean_surface_is_hidden_when_the_blade_has_thickness() {
+        let mean = PieceId::BladeMean { index: 0 };
+        let blade = PieceId::Blade { index: 0 };
+        let by_default = Visibility::default();
+        assert!(
+            !by_default.mean,
+            "la superficie media va oculta por defecto"
+        );
+        assert!(by_default.shows(blade, true));
+        assert!(!by_default.shows(mean, true));
+        // La casilla «Superficie media» la enseña junto al sólido.
+        let with_mean = Visibility {
+            mean: true,
+            ..Visibility::default()
+        };
+        assert!(with_mean.shows(mean, true));
+        assert!(with_mean.shows(blade, true));
+    }
+
+    #[test]
+    fn the_mean_surface_shows_when_the_solid_fails() {
+        use hm_design::blade_setup::BladeShape;
+        // 60 mm en el nodo central: el álabe con espesor no se construye.
+        let (_, outcome) = thick_outcome(
+            BladeShape::Free3D,
+            edited(&[(0.0, 6.0), (0.5, 60.0), (1.0, 3.0)]),
+        );
+        let scene = scene_of(&outcome, SCENE_TOLERANCE_FINE_MM).unwrap();
+        assert!(!has_solid(&scene));
+        assert!(
+            scene
+                .notices
+                .iter()
+                .any(|notice| notice.piece == PieceId::Blade { index: 0 }),
+            "{:?}",
+            scene.notices
+        );
+        // Sin sólido, la superficie media sigue a «Álabes» y se ve como hoy.
+        let visibility = Visibility::default();
+        let mean = PieceId::BladeMean { index: 0 };
+        assert!(scene.piece(mean).is_some());
+        assert!(visibility.shows(mean, has_solid(&scene)));
+        let no_blades = Visibility {
+            blades: false,
+            ..visibility
+        };
+        assert!(!no_blades.shows(mean, has_solid(&scene)));
+    }
+
+    #[test]
+    fn fit_ignores_the_hidden_mean_surface() {
+        let scene = Scene {
+            pieces: vec![
+                box_piece(PieceId::Hub, [0.0, 0.0, 0.0], [10.0, 10.0, 10.0]),
+                box_piece(
+                    PieceId::BladeMean { index: 0 },
+                    [-50.0, -50.0, -50.0],
+                    [100.0, 100.0, 100.0],
+                ),
+                box_piece(
+                    PieceId::Blade { index: 0 },
+                    [1.0, 1.0, 1.0],
+                    [20.0, 20.0, 20.0],
+                ),
+            ],
+            notices: Vec::new(),
+            tolerance: SCENE_TOLERANCE_FINE_MM,
+        };
+        let fitted = visible_bounds(&scene, &Visibility::default()).unwrap();
+        assert_eq!(fitted, ([0.0; 3], [20.0; 3]));
+        let with_mean = Visibility {
+            mean: true,
+            ..Visibility::default()
+        };
+        assert_eq!(
+            visible_bounds(&scene, &with_mean).unwrap(),
+            ([-50.0; 3], [100.0; 3])
+        );
+    }
+
+    #[test]
+    fn the_blades_checkbox_hides_the_thick_blades() {
+        let blade = PieceId::Blade { index: 3 };
+        let no_blades = Visibility {
+            blades: false,
+            ..Visibility::default()
+        };
+        assert!(!no_blades.shows(blade, true));
+        assert!(no_blades.shows(PieceId::Hub, true));
+        // Con «Álabes» apagado la superficie media sigue a su propia casilla.
+        let only_mean = Visibility {
+            blades: false,
+            mean: true,
+            ..Visibility::default()
+        };
+        assert!(!only_mean.shows(blade, true));
+        assert!(only_mean.shows(PieceId::BladeMean { index: 3 }, true));
     }
 
     /// `cargo test --release scene_timing -- --ignored --nocapture`

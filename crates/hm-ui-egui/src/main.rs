@@ -149,6 +149,10 @@ impl App {
                 }
             }
         }
+        // Solo para las capturas: `HMF_PANEL3D=1` abre el visor 3D lateral.
+        if std::env::var_os("HMF_PANEL3D").is_some() {
+            app.view3d.panel_open = true;
+        }
         blade_beta::seed_from_env(&mut app.session.inputs);
         // Solo para las capturas: `HMF_CHART=beta|thickness|profile`.
         if let Some(chart) =
